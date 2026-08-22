@@ -157,23 +157,6 @@ fb_ensure_bin() {
   return 1
 }
 
-fb_write_branding() {
-  mkdir -p filebrowser-branding
-  cat > filebrowser-branding/custom.css <<'CSS'
-/* Tronclass cloud background: vivid but calm, matching the login visual language. */
-:root{--tron-bg:#f4f7ff;--tron-ink:#16233f;--tron-blue:#4d8dff;--tron-violet:#9b6cff;--tron-cyan:#55d8e8;--tron-card:rgba(255,255,255,.82)}
-@media(prefers-color-scheme:dark){:root{--tron-bg:#080e1d;--tron-ink:#e8efff;--tron-blue:#3c7dff;--tron-violet:#a96cff;--tron-cyan:#24b9d0;--tron-card:rgba(16,24,45,.82)}}
-html,body,#app{background:transparent!important}
-body{color:var(--tron-ink)!important;background-color:var(--tron-bg)!important;background-image:radial-gradient(ellipse 55% 65% at 0% 0%,color-mix(in srgb,var(--tron-blue) 28%,transparent),transparent 72%),radial-gradient(ellipse 48% 60% at 100% 100%,color-mix(in srgb,var(--tron-violet) 30%,transparent),transparent 70%),radial-gradient(ellipse 35% 45% at 70% 5%,color-mix(in srgb,var(--tron-cyan) 13%,transparent),transparent 75%)!important;overflow-x:hidden}
-body:before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.22;background-image:linear-gradient(color-mix(in srgb,var(--tron-blue) 16%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--tron-blue) 16%,transparent) 1px,transparent 1px);background-size:46px 46px;mask-image:linear-gradient(to bottom right,black,transparent 72%);animation:tronGrid 22s linear infinite}
-body:after{content:"";position:fixed;z-index:-1;pointer-events:none;width:38vw;height:38vw;right:3vw;bottom:-18vw;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--tron-violet) 38%,transparent),transparent 68%);filter:blur(35px);animation:tronFloat 12s ease-in-out infinite alternate}
-.v-card,.card,.v-toolbar,.v-navigation-drawer,.v-dialog,.v-menu__content{background:var(--tron-card)!important;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
-@keyframes tronFloat{from{transform:translate3d(-3%,2%,0) scale(.95)}to{transform:translate3d(3%,-4%,0) scale(1.1)}}
-@keyframes tronGrid{from{background-position:0 0,0 0}to{background-position:46px 46px,46px 46px}}
-@media(prefers-reduced-motion:reduce){body:before,body:after{animation:none}}
-CSS
-}
-
 fb_init() {
   # 一般使用者（Dashboard SSO 免登入口）可見的範圍，相對於 root（cloud/）。
   # 想改成整個 cloud 就設成 "/"。
@@ -252,7 +235,7 @@ fb_init() {
 
     ./filebrowser config set -d "$db" \
       --address 127.0.0.1 --port "$port" --root "$PWD/cloud" \
-      --locale zh-tw --auth.method "$method" --baseurl "" --branding.files "$PWD/filebrowser-branding" >> logs/filebrowser-init.log 2>&1 \
+      --locale zh-tw --auth.method "$method" --baseurl "" >> logs/filebrowser-init.log 2>&1 \
       || echo "[filebrowser] config set 失敗（$label）"
 
     # 全域預設也鎖起來：noauth 模式下新 session 會沿用這組預設值。
@@ -396,7 +379,6 @@ start_filebrowser() {
       rm -f config/fb-reset
     fi
     fb_init
-    fb_write_branding
     fb_write_caddy
     fb_write_snippet
     echo "[filebrowser] 密碼 :26011 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001"
