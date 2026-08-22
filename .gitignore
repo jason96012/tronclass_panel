@@ -37,3 +37,27 @@ pterodactyl-upload*
 *.tgz
 *.zip
 /tmp
+
+# 同容器 Nextcloud（不要進 GitHub）
+frankenphp
+php
+php-fpm
+caddy
+filebrowser
+fb-data/
+filebrowser-runtime/
+cloud/
+config/filebrowser.enable
+config/filebrowser-admin.txt
+config/fb-sso.secret
+config/filebrowser-dashboard.snippet.toml
+nextcloud/
+nextcloud-data/
+nextcloud-runtime/
+config/nextcloud.enable
+config/nextcloud.env
+config/nextcloud-admin.txt
+config/nextcloud-oidc.secret
+config/nextcloud-dashboard.snippet.toml
+config/config.toml.bak.nextcloud.*
+

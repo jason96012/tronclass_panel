@@ -1032,6 +1032,9 @@ nc_bootstrap() {
 }
 
 start_nextcloud() {
+  echo "[ptero-start] Nextcloud 已停用並刪除，略過啟動"
+  purge_nextcloud_leftovers
+  return 0
   if [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]]; then
     echo "[ptero-start] 已改用 Filebrowser，略過 Nextcloud"
     return 0
@@ -1080,8 +1083,16 @@ if [[ -f Cargo.toml && -d src ]]; then
     echo "[ptero-start] 刪除不相容的 Cargo.lock"
     rm -f Cargo.lock
   fi
-  # mod.rs 宣告了模組但檔案沒上傳時，編譯會 E0583。有補檔腳本就自動寫入。
-  if [[ -f ./apply-fix-missing-rs-modules.sh ]]; then
+  # 舊版 materials_webdav 依賴 MaterialsConfig，或檔案根本沒上傳。
+  if [[ -f ./apply-fix-compile-purge-nc.sh ]]; then
+    if [[ ! -f src/adapters/admin_web/materials_webdav.rs \
+       || ! -f src/adapters/admin_web/oidc.rs \
+       || grep -q 'use crate::config::MaterialsConfig' src/adapters/admin_web/materials_webdav.rs 2>/dev/null \
+       || grep -q 'use crate::config::OidcConfig' src/adapters/admin_web/oidc.rs 2>/dev/null ]]; then
+      echo "[ptero-start] 套用相容模組並清除 Nextcloud"
+      bash ./apply-fix-compile-purge-nc.sh "$PWD" || true
+    fi
+  elif [[ -f ./apply-fix-missing-rs-modules.sh ]]; then
     if [[ ! -f src/adapters/admin_web/materials_webdav.rs || ! -f src/adapters/admin_web/oidc.rs || ! -f src/adapters/admin_web/fb_sso.rs ]]; then
       echo "[ptero-start] 補上缺少的 Rust 模組"
       bash ./apply-fix-missing-rs-modules.sh "$PWD" || true
