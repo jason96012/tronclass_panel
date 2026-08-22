@@ -1,11 +1,9 @@
 #!/bin/bash
 # 把程式碼推到 GitHub，絕不上傳個資／token／資料庫。
-# 設定（擇一，都不要 commit）：
-#   config/github.env 內容例如：
-#     GITHUB_TOKEN=ghp_xxxxxxxx
-#     GITHUB_REPO=jason96012/tronclass_rollcall
-#     GITHUB_BRANCH=main
-# 或環境變數同名。
+# config/github.env：
+#   GITHUB_TOKEN=ghp_或_github_pat_
+#   GITHUB_REPO=jason96012/tronclass_panel
+#   GITHUB_BRANCH=main
 set -uo pipefail
 cd /home/container 2>/dev/null || cd "$(dirname "$0")"
 
@@ -13,22 +11,49 @@ LOG=logs/github-sync.log
 mkdir -p logs
 
 if [[ -f config/github.env ]]; then
-  # shellcheck disable=SC1091
-  set -a
-  # 只讀 KEY=VALUE，避免執行惡意內容
   while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%$'\r'}"
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
     if [[ "$line" =~ ^(GITHUB_TOKEN|GITHUB_REPO|GITHUB_BRANCH)=(.*)$ ]]; then
-      export "${BASH_REMATCH[1]}=${BASH_REMATCH[2]}"
+      val="${BASH_REMATCH[2]}"
+      val="${val#\"}"
+      val="${val%\"}"
+      val="${val#\'}"
+      val="${val%\'}"
+      val="${val#"${val%%[![:space:]]*}"}"
+      val="${val%"${val##*[![:space:]]}"}"
+      export "${BASH_REMATCH[1]}=${val}"
     fi
   done < config/github.env
-  set +a
 fi
 
 TOKEN="${GITHUB_TOKEN:-}"
 REPO="${GITHUB_REPO:-}"
 BRANCH="${GITHUB_BRANCH:-main}"
+REPO="${REPO#https://github.com/}"
+REPO="${REPO#git@github.com:}"
+REPO="${REPO%.git}"
+REPO="${REPO%/}"
+
+do_push() {
+  git remote remove github-sync 2>/dev/null || true
+  git remote add github-sync "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+  if git -c http.extraHeader="AUTHORIZATION: bearer ${TOKEN}" push -u github-sync "HEAD:${BRANCH}"; then
+    echo "已推到 github.com/${REPO} ${BRANCH}"
+    git remote remove github-sync 2>/dev/null || true
+    return 0
+  fi
+  echo "bearer 失敗，改試 x-access-token URL"
+  if git push -u github-sync "HEAD:${BRANCH}"; then
+    echo "已推到 github.com/${REPO} ${BRANCH}"
+    git remote remove github-sync 2>/dev/null || true
+    return 0
+  fi
+  echo "push 失敗：token 無效或沒有 ${REPO} 的寫入權限"
+  echo "請用 jason96012 開 Fine-grained token，Contents = Read and write，只選 tronclass_panel"
+  git remote remove github-sync 2>/dev/null || true
+  return 1
+}
 
 {
   echo "===== $(date -Iseconds) ====="
@@ -40,19 +65,16 @@ BRANCH="${GITHUB_BRANCH:-main}"
     echo "未設定 GITHUB_TOKEN / GITHUB_REPO（config/github.env），略過推送"
     exit 0
   fi
+  echo "倉庫=${REPO} 分支=${BRANCH} token長度=${#TOKEN} 開頭=${TOKEN:0:7}..."
 
   if [[ ! -d .git ]]; then
     echo "初始化 git"
     git init
-    git checkout -B "$BRANCH" 2>/dev/null || git branch -M "$BRANCH" || true
-  else
-    git checkout -B "$BRANCH" 2>/dev/null || true
   fi
-
+  git checkout -B "$BRANCH" 2>/dev/null || git branch -M "$BRANCH" || true
   git config user.email "ptero-sync@local"
   git config user.name "ptero-sync"
 
-  # 只加程式檔，不要 git add -A（否則會掃到 .cargo / tailscale-state）
   git add -- .gitignore Cargo.toml Cargo.lock src 2>/dev/null || true
   [[ -d tools ]] && git add -- tools || true
   [[ -f config/config.toml.example ]] && git add -- config/config.toml.example || true
@@ -74,20 +96,12 @@ BRANCH="${GITHUB_BRANCH:-main}"
   fi
 
   if git diff --cached --quiet; then
-    echo "沒有可提交的程式變更"
-    exit 0
-  fi
-
-  echo "即將提交："
-  git diff --cached --name-only
-
-  git commit -m "ptero auto-sync $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  git remote remove github-sync 2>/dev/null || true
-  git remote add github-sync "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
-  if git push -u github-sync "HEAD:${BRANCH}"; then
-    echo "已推到 github.com/${REPO} ${BRANCH}"
+    echo "沒有新的檔案變更，仍嘗試推送既有 commit"
   else
-    echo "push 失敗"
+    echo "即將提交："
+    git diff --cached --name-only
+    git commit -m "ptero auto-sync $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   fi
-  git remote remove github-sync 2>/dev/null || true
+
+  do_push
 } >>"$LOG" 2>&1
