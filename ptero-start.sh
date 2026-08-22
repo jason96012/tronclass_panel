@@ -1256,12 +1256,13 @@ watchdog_pid_alive() {
     *cloudflared.pid) expected='cloudflared' ;;
     *tailscaled.pid) expected='tailscaled' ;;
     *ts-https-proxy.pid) expected='ts-https-proxy.py' ;;
+    *filebrowser-caddy.pid) expected='filebrowser|caddy' ;;
     *filebrowser-*.pid) expected='filebrowser' ;;
     *dashboard.pid) expected='tronclass_rollcall' ;;
     *) return 0 ;;
   esac
   cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-  [[ "$cmdline" == *"$expected"* ]]
+  [[ "$cmdline" =~ $expected ]]
 }
 
 watchdog_restart_tunnel() {
