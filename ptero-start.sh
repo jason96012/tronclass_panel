@@ -10,7 +10,21 @@ export CARGO_PROFILE_RELEASE_LTO=false
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 export CARGO_INCREMENTAL=1
 
-mkdir -p config logs
+mkdir -p config logs run
+
+# Atomic lock: only one copy of the Pterodactyl startup/supervisor may run.
+if ! mkdir run/ptero-start.lock 2>/dev/null; then
+  old="$(cat run/ptero-start.lock/pid 2>/dev/null || true)"
+  if [[ "$old" =~ ^[0-9]+$ ]] && kill -0 "$old" 2>/dev/null; then
+    echo "[ptero-start] 已有啟動程序執行中（PID $old），拒絕重複啟動"
+    exit 1
+  fi
+  rm -rf run/ptero-start.lock
+  mkdir run/ptero-start.lock || exit 1
+fi
+printf '%s\n' "$$" > run/ptero-start.lock/pid
+cleanup_start_lock() { rm -rf run/ptero-start.lock; }
+trap cleanup_start_lock EXIT INT TERM
 
 if [[ -x ./sync-to-github.sh || -f ./sync-to-github.sh ]]; then
   echo "[ptero-start] 背景同步程式碼到 GitHub（不含個資）"
@@ -330,10 +344,14 @@ start_filebrowser() {
   echo "[ptero-start] 啟動 Filebrowser（SSO 閘道 :26001）"
   (
     echo "===== $(date -Iseconds) filebrowser ====="
-    if command -v pkill >/dev/null 2>&1; then
-      pkill -f 'caddy run' >/dev/null 2>&1 || true
-      pkill -f './filebrowser ' >/dev/null 2>&1 || true
-    fi
+    for pidfile in logs/filebrowser-auth.pid logs/filebrowser-open.pid logs/filebrowser-admin.pid logs/filebrowser-caddy.pid; do
+      if [[ -s "$pidfile" ]]; then
+        pid="$(cat "$pidfile" 2>/dev/null || true)"
+        [[ "$pid" =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true
+      fi
+      rm -f "$pidfile"
+    done
+    sleep 1
     fb_ensure_bin || exit 0
     nc_ensure_caddy || true
     # 放一個空檔 config/fb-reset 就重建資料庫（帳號密碼保留在
@@ -1149,6 +1167,31 @@ start_nextcloud
 
 # 監控由本啟動程序建立的背景服務。Pterodactyl 只會監控啟動腳本的
 # 前景程序，因此不能只依靠 nohup；任何 connector/代理死亡都要自動拉起。
+rotate_one_log() {
+  local file="$1" max_bytes="${LOG_MAX_BYTES:-10485760}" keep="${LOG_ROTATE_KEEP:-5}" size i
+  [[ -f "$file" ]] || return 0
+  size="$(wc -c < "$file" 2>/dev/null || echo 0)"
+  [[ "$size" =~ ^[0-9]+$ ]] || return 0
+  (( size < max_bytes )) && return 0
+  for ((i=keep-1; i>=1; i--)); do
+    [[ -f "${file}.${i}" ]] && mv -f "${file}.${i}" "${file}.$((i+1))"
+  done
+  cp -f "$file" "${file}.1" 2>/dev/null || true
+  # copytruncate keeps the already-open stdout file descriptor valid.
+  : > "$file"
+  chmod 600 "$file" 2>/dev/null || true
+  rm -f "${file}.$((keep+1))"
+  echo "[watchdog] rotated $file (${size} bytes)" >> logs/watchdog.log
+}
+
+rotate_logs() {
+  local file
+  for file in logs/*.log; do
+    [[ -f "$file" ]] || continue
+    rotate_one_log "$file"
+  done
+}
+
 watchdog_http_ok() {
   local url="$1"
   command -v curl >/dev/null 2>&1 || return 0
@@ -1177,10 +1220,22 @@ watchdog_check_filebrowser_http() {
 }
 
 watchdog_pid_alive() {
-  local file="$1" pid
+  local file="$1" pid expected cmdline
   [[ -s "$file" ]] || return 1
   pid="$(cat "$file" 2>/dev/null || true)"
-  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # A reused PID must not be mistaken for our service.
+  case "$file" in
+    *cloudflared.pid) expected='cloudflared' ;;
+    *tailscaled.pid) expected='tailscaled' ;;
+    *ts-https-proxy.pid) expected='ts-https-proxy.py' ;;
+    *filebrowser-*.pid) expected='filebrowser' ;;
+    *dashboard.pid) expected='tronclass_rollcall' ;;
+    *) return 0 ;;
+  esac
+  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+  [[ "$cmdline" == *"$expected"* ]]
 }
 
 watchdog_restart_tunnel() {
