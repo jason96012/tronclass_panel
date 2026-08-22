@@ -311,27 +311,85 @@ nc_download_frankenphp() {
   return 1
 }
 
+nc_free_mb() {
+  df -Pm . 2>/dev/null | awk 'NR==2 {print $4}'
+}
+
+nc_need_mb() {
+  local need="$1" have
+  have="$(nc_free_mb)"
+  echo "[nextcloud] 剩餘磁碟約 ${have:-?} MB（這一步需要約 ${need} MB）"
+  if [[ -n "$have" && "$have" =~ ^[0-9]+$ && "$have" -lt "$need" ]]; then
+    echo "[nextcloud] 磁碟不夠。請在面板加大磁碟，或刪掉用不到的大目錄後重啟："
+    echo "[nextcloud]   target/release/deps  target/release/build  target/release/incremental  .cargo"
+    echo "[nextcloud] 有編譯好的 target/release/tronclass_rollcall 就夠跑，那些中間檔可刪。"
+    return 1
+  fi
+  return 0
+}
+
+nc_dl_resume() {
+  local url="$1" out="$2"
+  mkdir -p "$(dirname "$out")"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 5 --retry-all-errors -C - --output "$out" "$url" && return 0
+    # 續傳檔可能壞了，整份重抓
+    rm -f "$out"
+    curl -fL --retry 3 --output "$out" "$url" && return 0
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -c -O "$out" "$url" && return 0
+  fi
+  return 1
+}
+
 nc_download_nextcloud() {
   if [[ -f nextcloud/occ ]]; then
     echo "[nextcloud] 已有 nextcloud/ 程式"
     return 0
   fi
-  echo "[nextcloud] 下載 Nextcloud 31（約 200MB，第一次要幾分鐘）"
-  local zip=/tmp/nextcloud.zip
-  rm -f "$zip"
-  if ! dl "https://download.nextcloud.com/server/releases/latest-31.zip" "$zip"; then
+  mkdir -p nextcloud-runtime
+  # 不要寫 /tmp：Pterodactyl 的 /tmp 常常只有約 100MB
+  rm -f /tmp/nextcloud.zip
+  local zip="$PWD/nextcloud-runtime/nextcloud-31.zip"
+  local extract="$PWD/nextcloud-runtime/extract"
+  echo "[nextcloud] 下載 Nextcloud 31 到家目錄（不寫 /tmp）"
+  df -h . 2>/dev/null | head -n 2 || true
+  nc_need_mb 900 || return 1
+
+  if [[ -f "$zip" ]]; then
+    echo "[nextcloud] 發現未下完的 zip，嘗試續傳"
+  fi
+  if ! nc_dl_resume "https://download.nextcloud.com/server/releases/latest-31.zip" "$zip"; then
     echo "[nextcloud] 下載 Nextcloud 失敗"
     return 1
   fi
-  nc_extract_zip "$zip" /tmp/nc-extract || return 1
-  if [[ -d /tmp/nc-extract/nextcloud ]]; then
-    rm -rf nextcloud
-    mv /tmp/nc-extract/nextcloud nextcloud
-  else
-    echo "[nextcloud] zip 內容不是預期的 nextcloud/ 目錄"
+  local zsize
+  zsize="$(wc -c < "$zip" 2>/dev/null | tr -d ' ')"
+  echo "[nextcloud] zip 大小 ${zsize:-?} bytes"
+  if [[ -n "$zsize" && "$zsize" -lt 80000000 ]]; then
+    echo "[nextcloud] zip 太小，當失敗重抓"
+    rm -f "$zip"
     return 1
   fi
-  rm -rf /tmp/nc-extract "$zip"
+
+  echo "[nextcloud] 解壓（解完就刪 zip 省空間）"
+  rm -rf "$extract"
+  nc_extract_zip "$zip" "$extract" || {
+    echo "[nextcloud] 解壓失敗（磁碟可能不夠）"
+    rm -rf "$extract"
+    return 1
+  }
+  rm -f "$zip"
+  if [[ -d "$extract/nextcloud" ]]; then
+    rm -rf nextcloud
+    mv "$extract/nextcloud" nextcloud
+  else
+    echo "[nextcloud] zip 內容不是預期的 nextcloud/ 目錄"
+    rm -rf "$extract"
+    return 1
+  fi
+  rm -rf "$extract"
   echo "[nextcloud] Nextcloud 檔案就緒"
 }
 
