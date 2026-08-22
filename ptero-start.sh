@@ -336,7 +336,28 @@ fb_write_caddy() {
 
 :26001 {
     bind 127.0.0.1
-    encode gzip
+    # 只壓縮文字類。教材多半是 pdf/docx/pptx/mp4/zip，這些本身已壓縮，
+    # 再 gzip 只是白燒 CPU 又拖慢下載。
+    encode {
+        zstd
+        gzip 5
+        match {
+            header Content-Type text/*
+            header Content-Type application/json*
+            header Content-Type application/javascript*
+            header Content-Type application/xml*
+            header Content-Type image/svg+xml*
+        }
+    }
+    # Filebrowser 的前端是 SPA：一個頁面會拉幾十個 js/css/圖示，
+    # 每一個都觸發 forward_auth 就是幾十次到 Dashboard 的往返。
+    # 靜態資源不含任何使用者資料，直接放行給密碼實例（同一份前端），
+    # 真正要授權的是 /api/* 與頁面路由。
+    @fb_static path /static/* /themes/* *.js *.css *.woff2 *.woff *.ttf *.svg *.png *.ico
+    handle @fb_static {
+        reverse_proxy 127.0.0.1:26011
+    }
+
     forward_auth 127.0.0.1:${dash_port} {
         uri /admin/api/fb-sso-check
         copy_headers X-Fb-Authed X-Fb-Admin

@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -880,8 +880,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         ))
         .layer(axum::middleware::from_fn(https_redirect_middleware))
         .layer(
+            // The dashboard HTML is ~260 KB of inline script/CSS; it compresses
+            // to roughly a tenth of that. Brotli beats gzip on this kind of
+            // text payload, so offer it first and keep gzip as the fallback.
             tower_http::compression::CompressionLayer::new()
-                .gzip(true),
+                .br(true)
+                .gzip(true)
+                .deflate(true),
         )
         .with_state(state)
 }
@@ -1220,11 +1225,80 @@ async fn admin_security_headers_middleware(
     headers.insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
-            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:",
+            // Admin pages load no third-party scripts: every asset is served
+            // from /admin/static. cdn.jsdelivr.net and cloudflareinsights.com
+            // were inherited boilerplate and are removed so a compromised CDN
+            // cannot inject script here. (The LINE scanner pages that do use
+            // jsDelivr are served by a different router and are unaffected.)
+            //
+            // 'unsafe-inline' remains for script-src only because the dashboard
+            // still carries ~46 inline <script> blocks and ~43 on*= handlers.
+            // Removing it requires the nonce migration tracked separately.
+            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests",
         ),
     );
     if !cache_static {
-        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        // Admin HTML must always be revalidated (it is behind auth and may
+        // change on redeploy), but `no-store` also forbade conditional
+        // requests, so every navigation re-downloaded the full ~260 KB
+        // dashboard. `no-cache` still revalidates on each load while allowing
+        // the ETag below to answer with an empty 304.
+        if is_html_document(&response) {
+            headers.insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-cache, must-revalidate"),
+            );
+        } else {
+            headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        }
+    }
+    response
+}
+
+fn is_html_document(response: &Response) -> bool {
+    response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("text/html"))
+}
+
+/// Serve a static in-binary HTML page with a content-derived ETag so repeat
+/// navigations get a 304 instead of the full payload.
+fn html_page_response(headers: &HeaderMap, html: String) -> Response {
+    // The page content is fixed for the lifetime of the process (it is baked in
+    // with include_str!), so hash each distinct page only once instead of
+    // re-hashing ~260 KB on every navigation.
+    static ETAG_CACHE: OnceLock<std::sync::Mutex<HashMap<usize, String>>> = OnceLock::new();
+    let cache = ETAG_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let key = html.len();
+    let etag = {
+        let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(key)
+            .or_insert_with(|| {
+                let mut hasher = Sha256::new();
+                hasher.update(html.as_bytes());
+                format!("\"{}\"", hex::encode(&hasher.finalize()[..16]))
+            })
+            .clone()
+    };
+
+    let matches = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|c| c.trim() == etag));
+
+    if matches {
+        let mut response = StatusCode::NOT_MODIFIED.into_response();
+        if let Ok(value) = etag.parse::<HeaderValue>() {
+            response.headers_mut().insert(header::ETAG, value);
+        }
+        return response;
+    }
+
+    let mut response = Html(html).into_response();
+    if let Ok(value) = etag.parse::<HeaderValue>() {
+        response.headers_mut().insert(header::ETAG, value);
     }
     response
 }
@@ -1430,11 +1504,8 @@ async fn admin_dashboard_page_handler(
     if session_must_change_password(&state, &headers, &query.token).await {
         return must_change_password_redirect();
     }
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(inject_theme(ADMIN_DASHBOARD_HTML)),
-    )
-        .into_response()
+    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
+    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
 }
 
 async fn admin_activity_page_handler() -> Response {
@@ -2045,11 +2116,8 @@ async fn admin_page_handler(
     if session_must_change_password(&state, &headers, &query.token).await {
         return must_change_password_redirect();
     }
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(inject_theme(ADMIN_DASHBOARD_HTML)),
-    )
-        .into_response()
+    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
+    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
 }
 
 async fn admin_public_status_handler(

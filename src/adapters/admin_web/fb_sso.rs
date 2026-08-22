@@ -9,14 +9,18 @@ use sha2::Sha256;
 const COOKIE_NAME: &str = "tronclass_fb_sso";
 const COOKIE_MAX_AGE: u64 = 8 * 60 * 60;
 
-fn secret() -> String {
-    if let Ok(v) = std::env::var("TRONCLASS_FB_SSO_SECRET") {
-        let t = v.trim().to_string();
-        if !t.is_empty() {
-            return t;
-        }
-    }
-    String::new()
+/// The secret never changes while the process runs, but `verify()` used to
+/// re-read and re-allocate it from the environment on every call — and Caddy's
+/// forward_auth calls this once per HTTP request, including every static asset.
+/// Cache it once.
+static FB_SSO_SECRET: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn secret() -> &'static str {
+    FB_SSO_SECRET.get_or_init(|| {
+        std::env::var("TRONCLASS_FB_SSO_SECRET")
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default()
+    })
 }
 
 fn cookie_domain(headers: &HeaderMap) -> Option<String> {
