@@ -65,6 +65,46 @@ pub(super) const ADMIN_PASSKEY_HTML: &str = include_str!("static/passkey.html");
 /// into every HTML response. The security script intentionally remains
 /// parser-blocking: it must install its Web Storage guards before legacy body
 /// scripts execute. Shared URLs are browser-cacheable by their route handlers.
+/// Build-time asset version. Static assets are served with
+/// `immutable, max-age=604800`, so a stale `?v=` means the browser will not
+/// even revalidate for a week -- edited JS/CSS silently keeps running the old
+/// copy. Stamping it from the build makes every rebuild bust the cache
+/// automatically instead of relying on hand-edited version strings.
+pub(super) fn asset_version() -> &'static str {
+    option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("dev")
+}
+
+fn stamp_asset_urls(html: &str) -> String {
+    // Rewrite every ?v=<token> that belongs to an /admin/static/ URL.
+    let stamp: String = asset_version()
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    if stamp.is_empty() {
+        return html.to_string();
+    }
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(pos) = rest.find("?v=") {
+        out.push_str(&rest[..pos]);
+        out.push_str("?v=");
+        let after = &rest[pos + 3..];
+        let end = after
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(after.len());
+        let token = &after[..end];
+        // Leave functional markers such as ?v=auth / ?v=logout alone.
+        if token.starts_with("2026") {
+            out.push_str(&stamp);
+        } else {
+            out.push_str(token);
+        }
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 pub(super) fn inject_theme(html: &str) -> String {
     // FAST_PAGE_LOAD_V1: preload + put CSS at the start of <head> so parsing
     // the large inline dashboard scripts does not delay theme.css.
@@ -89,8 +129,8 @@ pub(super) fn inject_theme(html: &str) -> String {
             out.push_str(&html[..at]);
             out.push_str(&assets);
             out.push_str(&html[at..]);
-            return out;
+            return stamp_asset_urls(&out);
         }
     }
-    html.replacen("</head>", &(assets + "</head>"), 1)
+    stamp_asset_urls(&html.replacen("</head>", &(assets + "</head>"), 1))
 }
