@@ -319,10 +319,17 @@ fb_write_caddy() {
         reverse_proxy 127.0.0.1:26011
     }
 
+    # 公開分享連結不需要 Dashboard session；只放行 Filebrowser 的
+    # public share/download 路徑，其他所有頁面仍必須經 Dashboard SSO。
+    @public_share path /share/* /api/public/*
+    handle @public_share {
+      reverse_proxy 127.0.0.1:26011
+    }
+
     forward_auth 127.0.0.1:${dash_port} {
-        uri /admin/api/fb-sso-check
-        copy_headers X-Fb-Authed X-Fb-Admin
-        header_up X-Forwarded-Proto https
+      uri /admin/api/fb-sso-check
+      copy_headers X-Fb-Authed X-Fb-Admin
+      header_up X-Forwarded-Proto https
     }
 
     # 三種身分：
