@@ -1027,6 +1027,15 @@ start_nextcloud() {
 
 start_filebrowser
 
+# Filebrowser 開啟時，Dashboard 教材自動指向同一包 cloud/
+if [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]]; then
+  export TRONCLASS_MATERIALS_DIR="${TRONCLASS_MATERIALS_DIR:-cloud}"
+  export TRONCLASS_MATERIALS_BACKEND="${TRONCLASS_MATERIALS_BACKEND:-local}"
+  export TRONCLASS_MATERIALS_FRONTEND_URL="${TRONCLASS_MATERIALS_FRONTEND_URL:-https://files.jasoncloudserver.me}"
+  export TRONCLASS_MATERIALS_FRONTEND_MODE="${TRONCLASS_MATERIALS_FRONTEND_MODE:-button}"
+  echo "[ptero-start] Dashboard 教材 → ${TRONCLASS_MATERIALS_DIR}，雲端按鈕 ${TRONCLASS_MATERIALS_FRONTEND_URL}（mode=${TRONCLASS_MATERIALS_FRONTEND_MODE}）"
+fi
+
 start_nextcloud
 
 run_bin() {
