@@ -788,6 +788,86 @@ nc_start_server() {
   tail -n 20 logs/php-fpm.log 2>/dev/null || true
 }
 
+nc_sideload_apps() {
+  echo "[nextcloud] 改從 GitHub 放入應用（不走商店，避免 FPM EOF）"
+  mkdir -p nextcloud/apps nextcloud-runtime
+  nc_put_app() {
+    local name="$1"; shift
+    if [[ -f "nextcloud/apps/${name}/appinfo/info.xml" ]]; then
+      echo "[nextcloud] 已有 apps/${name}"
+      return 0
+    fi
+    local url tgz="$PWD/nextcloud-runtime/${name}.tgz"
+    for url in "$@"; do
+      echo "[nextcloud] 下載 ${name} $url"
+      rm -f "$tgz"
+      if nc_dl_resume "$url" "$tgz"; then
+        rm -rf nextcloud-runtime/app-extract
+        mkdir -p nextcloud-runtime/app-extract
+        if tar -tzf "$tgz" >/dev/null 2>&1 && tar -xzf "$tgz" -C nextcloud-runtime/app-extract; then
+          if [[ -d nextcloud-runtime/app-extract/${name} ]]; then
+            rm -rf "nextcloud/apps/${name}"
+            mv "nextcloud-runtime/app-extract/${name}" "nextcloud/apps/${name}"
+          else
+            local inner
+            inner="$(find nextcloud-runtime/app-extract -maxdepth 2 -name info.xml | head -1)"
+            if [[ -n "$inner" ]]; then
+              rm -rf "nextcloud/apps/${name}"
+              mv "$(dirname "$(dirname "$inner")")" "nextcloud/apps/${name}" 2>/dev/null || mv "$(dirname "$inner")/.." "nextcloud/apps/${name}"
+            fi
+          fi
+        fi
+        rm -f "$tgz"
+        rm -rf nextcloud-runtime/app-extract
+        if [[ -f "nextcloud/apps/${name}/appinfo/info.xml" ]]; then
+          echo "[nextcloud] ${name} 檔案就緒"
+          return 0
+        fi
+      fi
+    done
+    echo "[nextcloud] ${name} 下載失敗"
+    return 1
+  }
+
+  nc_put_app user_oidc \
+    "https://github.com/nextcloud-releases/user_oidc/releases/download/v8.10.1/user_oidc-v8.10.1.tar.gz" \
+    "https://github.com/nextcloud-releases/user_oidc/releases/download/v7.2.0/user_oidc-v7.2.0.tar.gz" \
+    "https://github.com/nextcloud-releases/user_oidc/releases/download/v6.2.0/user_oidc-v6.2.0.tar.gz"
+
+  nc_put_app groupfolders \
+    "https://github.com/nextcloud-releases/groupfolders/releases/download/v19.1.3/groupfolders-v19.1.3.tar.gz" \
+    "https://github.com/nextcloud-releases/groupfolders/releases/download/v18.1.2/groupfolders-v18.1.2.tar.gz" \
+    "https://github.com/nextcloud-releases/groupfolders/releases/download/v17.0.5/groupfolders-v17.0.5.tar.gz"
+
+  local db
+  db="$(find nextcloud-data nextcloud -name 'owncloud.db' -o -name 'nextcloud.db' 2>/dev/null | head -1)"
+  if [[ -z "$db" ]]; then
+    echo "[nextcloud] 找不到 sqlite，略過寫入 enabled"
+    return 0
+  fi
+  if ! nc_php_works ./php; then
+    echo "[nextcloud] 沒有可用 php，略過寫入 enabled"
+    return 0
+  fi
+  ./php -r '
+    $db=$argv[1];
+    $pdo=new PDO("sqlite:".$db);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $cols=$pdo->query("PRAGMA table_info(oc_appconfig)")->fetchAll(PDO::FETCH_ASSOC);
+    $names=array_map(function($c){return $c["name"];}, $cols);
+    foreach (["user_oidc","groupfolders"] as $app) {
+      if (in_array("type",$names,true) && in_array("lazy",$names,true)) {
+        $st=$pdo->prepare("INSERT INTO oc_appconfig (appid,configkey,configvalue,type,lazy) VALUES (?,?,?,?,?) ON CONFLICT(appid,configkey) DO UPDATE SET configvalue=excluded.configvalue");
+        $st->execute([$app,"enabled","yes",2,0]);
+      } else {
+        $st=$pdo->prepare("INSERT OR REPLACE INTO oc_appconfig (appid,configkey,configvalue) VALUES (?,?,?)");
+        $st->execute([$app,"enabled","yes"]);
+      }
+      echo "enabled $app\n";
+    }
+  ' "$db" && echo "[nextcloud] 已在資料庫啟用應用" || echo "[nextcloud] 寫資料庫失敗"
+}
+
 nc_bootstrap() {
   mkdir -p logs config nextcloud-runtime nextcloud-data
   echo "===== $(date -Iseconds) nextcloud in ptero-start ====="
@@ -795,6 +875,7 @@ nc_bootstrap() {
   nc_download_nextcloud || return 0
   nc_ensure_secrets
   nc_install || return 0
+  nc_sideload_apps
   nc_configure
   nc_start_server
   echo "[nextcloud] 完成。公開網址：${NEXTCLOUD_PUBLIC_URL:-https://files.jasoncloudserver.me}"
