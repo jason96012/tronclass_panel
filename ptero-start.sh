@@ -648,59 +648,53 @@ nc_setup_shared_cloud() {
 
 nc_already_running() {
   local port="${NEXTCLOUD_PORT:-26001}"
-  if command -v curl >/dev/null 2>&1; then
-    curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:${port}/" >/dev/null 2>&1 && return 0
-  fi
-  return 1
+  command -v curl >/dev/null 2>&1 || return 1
+  local body
+  body="$(curl -sS --max-time 3 "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+  echo "$body" | grep -qiE 'nextcloud|login|password|nc-|' || return 1
 }
 
 nc_start_server() {
   local port="${NEXTCLOUD_PORT:-26001}"
-  if nc_already_running; then
-    echo "[nextcloud] 已在 127.0.0.1:${port} 聽"
-    return 0
+  # 這台 CPU 上 FrankenPHP 接 PHP 請求會白畫面，一律用靜態 PHP
+  if [[ -f nextcloud-runtime/frankenphp.pid ]]; then
+    kill "$(cat nextcloud-runtime/frankenphp.pid)" >/dev/null 2>&1 || true
   fi
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -f 'frankenphp run' >/dev/null 2>&1 || true
+    pkill -f "php -S 127.0.0.1:${port}" >/dev/null 2>&1 || true
+  fi
+  sleep 1
   nc_write_php_ini
-  # FrankenPHP 在部分 Pterodactyl CPU 會 SIGILL，先測再決定
-  local use_franken=0
-  if [[ -x ./frankenphp ]] && ./frankenphp php-cli -r 'echo 1;' >/dev/null 2>&1; then
-    use_franken=1
+  if ! nc_php_works ./php; then
+    nc_ensure_php || return 1
   fi
-  if [[ "$use_franken" == "1" ]]; then
-    nc_write_caddyfile
-    echo "[nextcloud] 啟動 FrankenPHP :${port} → nextcloud/"
-    nohup ./frankenphp run --config "$PWD/nextcloud-runtime/Caddyfile" \
-      >> logs/nextcloud-frankenphp.log 2>&1 &
-    echo $! > nextcloud-runtime/frankenphp.pid
-    disown || true
-  else
-    if ! nc_php_works ./php; then
-      nc_ensure_php || return 1
-    fi
-    echo "[nextcloud] FrankenPHP 這台不能用，改 PHP 內建伺服器 :${port}"
-    cat > nextcloud-runtime/router.php << 'PHP'
+  echo "[nextcloud] 用靜態 PHP 內建伺服器 :${port}（不用 FrankenPHP，避免白畫面）"
+  cat > nextcloud/router.php << 'PHP'
 <?php
-$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
-$file = dirname(__DIR__) . '/nextcloud' . $path;
-if ($path !== '/' && $path !== '' && file_exists($file) && !is_dir($file)) {
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$file = __DIR__ . $path;
+if ($path !== '/' && is_file($file)) {
     return false;
 }
-require dirname(__DIR__) . '/nextcloud/index.php';
+require __DIR__ . '/index.php';
 PHP
-    nohup ./php -c "$PWD/nextcloud-runtime/php.ini" \
-      -S "127.0.0.1:${port}" -t "$PWD/nextcloud" \
-      "$PWD/nextcloud-runtime/router.php" \
-      >> logs/nextcloud-frankenphp.log 2>&1 &
-    echo $! > nextcloud-runtime/frankenphp.pid
-    disown || true
-  fi
-  sleep 2
-  if nc_already_running; then
-    echo "[nextcloud] 已聽 127.0.0.1:${port}"
-  else
-    echo "[nextcloud] 還沒起來，見 logs/nextcloud-frankenphp.log"
-    tail -n 40 logs/nextcloud-frankenphp.log 2>/dev/null || true
-  fi
+  nohup ./php -c "$PWD/nextcloud-runtime/php.ini" \
+    -S "127.0.0.1:${port}" -t "$PWD/nextcloud" \
+    "$PWD/nextcloud/router.php" \
+    >> logs/nextcloud-php.log 2>&1 &
+  echo $! > nextcloud-runtime/frankenphp.pid
+  disown || true
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if nc_already_running; then
+      echo "[nextcloud] 已聽 127.0.0.1:${port}（有 Nextcloud HTML）"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "[nextcloud] 還沒看到登入頁，見 logs/nextcloud-php.log"
+  tail -n 40 logs/nextcloud-php.log 2>/dev/null || true
 }
 
 nc_bootstrap() {
