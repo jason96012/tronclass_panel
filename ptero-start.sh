@@ -235,7 +235,7 @@ fb_init() {
 
     ./filebrowser config set -d "$db" \
       --address 127.0.0.1 --port "$port" --root "$PWD/cloud" \
-      --locale zh-tw --auth.method "$method" --baseurl "" >> logs/filebrowser-init.log 2>&1 \
+      --locale zh-tw --auth.method "$method" --baseurl "" --branding.files "" >> logs/filebrowser-init.log 2>&1 \
       || echo "[filebrowser] config set 失敗（$label）"
 
     # 全域預設也鎖起來：noauth 模式下新 session 會沿用這組預設值。
