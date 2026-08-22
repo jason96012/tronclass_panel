@@ -1,6 +1,95 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
+<!-- TT_STATUS_FETCH_DEDUPE_V1_START -->
+<script id="ttStatusFetchDedupeV1">
+(function () {
+  'use strict';
+  if (window.TT_STATUS_FETCH_DEDUPE_V1) return;
+  window.TT_STATUS_FETCH_DEDUPE_V1 = true;
+
+  // This page defines loadStatus() twice and calls it from four places, with
+  // no coordination, so /admin/api/status was firing 10+ times per load.
+  // The dashboard already solves this by wrapping fetch; the same guard is
+  // applied here so none of the existing callers need to change.
+  var nativeFetch = window.fetch.bind(window);
+  var cacheByKey = Object.create(null);
+  var inflightByKey = Object.create(null);
+  var ACTIVE_TTL = 20000;
+  var HIDDEN_TTL = 60000;
+
+  function urlOf(input) {
+    try {
+      if (typeof input === 'string') return new URL(input, location.origin);
+      if (input && input.url) return new URL(input.url, location.origin);
+    } catch (_) {}
+    return null;
+  }
+  function methodOf(input, init) {
+    return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  }
+  function coalescable(url) {
+    return url.pathname === '/admin/api/status'
+        || url.pathname === '/admin/api/timetable';
+  }
+  function keyOf(url) {
+    var c = new URL(url.href);
+    c.searchParams.delete('token');
+    if (c.pathname === '/admin/api/status') {
+      // history_limit is meaningless once include_history=false.
+      var noHist = c.searchParams.get('include_history') === 'false'
+        || c.searchParams.get('history_limit') === '0';
+      c.searchParams.delete('history_limit');
+      c.searchParams.delete('include_history');
+      if (noHist) c.searchParams.set('include_history', 'false');
+    }
+    try { c.searchParams.sort(); } catch (_) {}
+    return c.pathname + c.search;
+  }
+  function clearAll() {
+    cacheByKey = Object.create(null);
+    inflightByKey = Object.create(null);
+  }
+  function writes(url, method) {
+    return method !== 'GET' && (
+      url.pathname.indexOf('/admin/api/timetable') === 0 ||
+      url.pathname === '/admin/api/action'
+    );
+  }
+
+  window.fetch = function (input, init) {
+    var url = urlOf(input);
+    if (!url) return nativeFetch(input, init);
+    var method = methodOf(input, init);
+    if (writes(url, method)) clearAll();
+    if (method !== 'GET' || !coalescable(url)) return nativeFetch(input, init);
+
+    var key = keyOf(url);
+    var hit = cacheByKey[key];
+    var ttl = document.hidden ? HIDDEN_TTL : ACTIVE_TTL;
+    if (hit && (Date.now() - hit.at) < ttl) return Promise.resolve(hit.res.clone());
+    if (inflightByKey[key]) {
+      return inflightByKey[key].then(function (r) { return r.clone(); });
+    }
+
+    inflightByKey[key] = nativeFetch(input, init).then(function (res) {
+      delete inflightByKey[key];
+      if (res && res.ok) cacheByKey[key] = { res: res, at: Date.now() };
+      return res;
+    }, function (err) {
+      delete inflightByKey[key];
+      throw err;
+    });
+    return inflightByKey[key].then(function (r) { return r.clone(); });
+  };
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) clearAll();
+  }, { passive: true });
+})();
+</script>
+<!-- TT_STATUS_FETCH_DEDUPE_V1_END -->
+
 <script id="SUBPAGE_TOKEN_BOOT_V1">
 (function(){
   if(window.SUBPAGE_TOKEN_BOOT_V1) return;
@@ -2098,7 +2187,7 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
 })(window);
 
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2eee79b88cfae64',t:'MTc4NzM3MDUzNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f209111929a9a9',t:'MTc4NzQwMzM2NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2eee79b88cfae64',t:'MTc4NzM3MDUzNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f21371182d7db2',t:'MTc4NzQwMzc4OA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 
