@@ -296,8 +296,23 @@ nc_ensure_secrets() {
   OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-nextcloud}"
 }
 
+nc_write_php_ini() {
+  mkdir -p nextcloud-runtime
+  cat > nextcloud-runtime/php.ini << 'EOF'
+memory_limit=512M
+upload_max_filesize=512M
+post_max_size=512M
+max_execution_time=360
+max_input_time=360
+date.timezone=Asia/Taipei
+output_buffering=0
+EOF
+}
+
 nc_occ() {
-  (cd nextcloud && ../frankenphp php-cli -d memory_limit=512M occ "$@")
+  # frankenphp php-cli 不吃 php 的 -d，會把 -d 當成要執行的檔名
+  nc_write_php_ini
+  (cd nextcloud && PHPRC="$PWD/../nextcloud-runtime" ../frankenphp php-cli occ "$@")
 }
 
 nc_download_frankenphp() {
