@@ -78,6 +78,7 @@ start_tunnel() {
 
   echo "[ptero-start] 啟動 Cloudflare Tunnel"
   nohup ./cloudflared tunnel --no-autoupdate run --token "$token" > logs/cloudflared.log 2>&1 &
+  echo $! > logs/cloudflared.pid
   disown || true
   sleep 2
   echo "[ptero-start] cloudflared 最近 log："
@@ -124,6 +125,7 @@ start_tailscale() {
     --socket="$TS_VAR_ROOT/tailscaled.sock" \
     --tun=userspace-networking \
     > logs/tailscaled.log 2>&1 &
+  echo $! > logs/tailscaled.pid
   disown || true
   sleep 2
 
@@ -146,6 +148,7 @@ start_tailscale() {
     echo "[ptero-start] 憑證 OK，啟動本機 TLS 代理 :8443 -> :${PORT}"
     nohup python3 ./ts-https-proxy.py "${PORT}" ./tailscale-state/cert.pem ./tailscale-state/key.pem \
       > logs/ts-https-proxy.log 2>&1 &
+    echo $! > logs/ts-https-proxy.pid
     disown || true
     sleep 1
     ./tailscale --socket="$SOCK" serve reset >> logs/tailscale.log 2>&1 || true
@@ -1223,10 +1226,57 @@ fi
 
 start_nextcloud
 
+# 監控由本啟動程序建立的背景服務。Pterodactyl 只會監控啟動腳本的
+# 前景程序，因此不能只依靠 nohup；任何 connector/代理死亡都要自動拉起。
+watchdog_pid_alive() {
+  local file="$1" pid
+  [[ -s "$file" ]] || return 1
+  pid="$(cat "$file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+watchdog_start_tunnel() {
+  if ! watchdog_pid_alive logs/cloudflared.pid; then
+    echo "[watchdog] Cloudflare Tunnel 不存在，重新啟動"
+    start_tunnel
+  fi
+}
+
+watchdog_start_tailscale() {
+  if ! watchdog_pid_alive logs/tailscaled.pid; then
+    echo "[watchdog] tailscaled 不存在，重新啟動 Tailscale"
+    start_tailscale
+  fi
+}
+
+watchdog_loop() {
+  local bin="$1" child="$2"
+  while kill -0 "$child" 2>/dev/null; do
+    watchdog_start_tunnel
+    watchdog_start_tailscale
+    if [[ -f logs/ts-https-proxy.pid ]] && ! watchdog_pid_alive logs/ts-https-proxy.pid; then
+      echo "[watchdog] Tailscale TLS proxy 已停止；清除 pid，下一次重啟 Tailscale 時重建"
+      rm -f logs/ts-https-proxy.pid
+    fi
+    sleep "${WATCHDOG_INTERVAL_SECS:-15}"
+  done
+  wait "$child" 2>/dev/null || true
+  echo "[watchdog] $bin 已停止，讓 Pterodactyl 重新啟動整個服務"
+  exit 1
+}
+
 run_bin() {
   chmod +x "$1" 2>/dev/null || true
-  echo "[ptero-start] 啟動 $1"
-  exec "$1"
+  echo "[ptero-start] 啟動 $1（watchdog interval=${WATCHDOG_INTERVAL_SECS:-15}s）"
+  "$1" &
+  local child=$!
+  watchdog_loop "$1" "$child" &
+  local wd=$!
+  wait "$child"
+  local rc=$?
+  kill "$wd" 2>/dev/null || true
+  wait "$wd" 2>/dev/null || true
+  return "$rc"
 }
 
 # 已編譯過就直接跑。原本只認 FORCE_REBUILD，改了 .rs / static 檔卻忘了設，
@@ -1240,6 +1290,7 @@ if [[ -f "$BIN" && "${FORCE_REBUILD:-0}" != "1" ]]; then
   else
     echo "[ptero-start] binary 已是最新（$(date -r "$BIN" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)）"
     run_bin "$BIN"
+    exit $?
   fi
 fi
 
@@ -1275,6 +1326,7 @@ if [[ -f Cargo.toml && -d src ]]; then
   export TRONCLASS_BUILD_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
   if cargo build --release --no-default-features; then
     run_bin ./target/release/tronclass_rollcall
+    exit $?
   fi
   echo "[ptero-start] 編譯失敗"
   exit 1
