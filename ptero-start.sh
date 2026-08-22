@@ -241,24 +241,14 @@ nc_write_caddyfile() {
     admin off
     auto_https off
     persist_config off
-    frankenphp {
-        num_threads 2
-        php_ini {
-            memory_limit 512M
-            upload_max_filesize 512M
-            post_max_size 512M
-            max_execution_time 360
-            max_input_time 360
-            date.timezone Asia/Taipei
-            output_buffering 0
-        }
-    }
 }
 
 http://127.0.0.1:${port} {
     root * ${root}
     encode gzip
-    php_server
+    php_fastcgi 127.0.0.1:9001 {
+        env front_controller_active true
+    }
     file_server
     header {
         X-Content-Type-Options nosniff
@@ -646,56 +636,129 @@ nc_setup_shared_cloud() {
   echo "[nextcloud] 共用資料夾就緒：每個人進 Nextcloud 都看得到「教材」，一共 ${quota_gb}GB"
 }
 
+nc_ensure_caddy() {
+  if [[ -x ./caddy ]] && ./caddy version >/dev/null 2>&1; then
+    echo "[nextcloud] 已有 ./caddy"
+    return 0
+  fi
+  echo "[nextcloud] 下載 Caddy"
+  local tgz="$PWD/nextcloud-runtime/caddy.tgz"
+  local ver
+  for ver in 2.10.2 2.9.1 2.8.4; do
+    if nc_dl_resume "https://github.com/caddyserver/caddy/releases/download/v${ver}/caddy_${ver}_linux_amd64.tar.gz" "$tgz"; then
+      tar -xzf "$tgz" -C nextcloud-runtime caddy 2>/dev/null || tar -xzf "$tgz" -C nextcloud-runtime
+      if [[ -f nextcloud-runtime/caddy ]]; then
+        mv nextcloud-runtime/caddy ./caddy
+        chmod +x ./caddy
+        rm -f "$tgz"
+        echo "[nextcloud] Caddy OK"
+        return 0
+      fi
+    fi
+  done
+  echo "[nextcloud] 下載 Caddy 失敗"
+  return 1
+}
+
+nc_ensure_php_fpm() {
+  if [[ -x ./php-fpm ]]; then
+    echo "[nextcloud] 已有 ./php-fpm"
+    return 0
+  fi
+  echo "[nextcloud] 下載靜態 PHP-FPM 8.3"
+  mkdir -p nextcloud-runtime/fpm-extract
+  local ver tgz="$PWD/nextcloud-runtime/php-fpm.tar.gz"
+  for ver in 8.3.23 8.3.22 8.3.21 8.3.16; do
+    if nc_dl_resume "https://dl.static-php.dev/static-php-cli/common/php-${ver}-fpm-linux-x86_64.tar.gz" "$tgz"; then
+      rm -rf nextcloud-runtime/fpm-extract
+      mkdir -p nextcloud-runtime/fpm-extract
+      tar -xzf "$tgz" -C nextcloud-runtime/fpm-extract
+      local found
+      found="$(find nextcloud-runtime/fpm-extract -type f -name php-fpm | head -1)"
+      if [[ -n "$found" ]]; then
+        cp "$found" ./php-fpm
+        chmod +x ./php-fpm
+        rm -f "$tgz"
+        rm -rf nextcloud-runtime/fpm-extract
+        echo "[nextcloud] PHP-FPM OK"
+        return 0
+      fi
+    fi
+  done
+  echo "[nextcloud] 下載 PHP-FPM 失敗"
+  return 1
+}
+
+nc_write_fpm_conf() {
+  mkdir -p nextcloud-runtime
+  cat > nextcloud-runtime/php-fpm.conf << EOF
+[global]
+pid = $PWD/nextcloud-runtime/php-fpm.pid
+error_log = $PWD/logs/php-fpm.log
+daemonize = no
+
+[www]
+listen = 127.0.0.1:9001
+listen.allowed_clients = 127.0.0.1
+pm = ondemand
+pm.max_children = 8
+pm.process_idle_timeout = 20s
+pm.max_requests = 200
+catch_workers_output = yes
+php_admin_value[memory_limit] = 512M
+php_admin_value[upload_max_filesize] = 512M
+php_admin_value[post_max_size] = 512M
+php_admin_value[max_execution_time] = 360
+php_admin_value[date.timezone] = Asia/Taipei
+php_admin_value[auto_prepend_file] = $PWD/nextcloud-runtime/freetype-polyfill.php
+EOF
+}
+
 nc_already_running() {
   local port="${NEXTCLOUD_PORT:-26001}"
   command -v curl >/dev/null 2>&1 || return 1
   local body
-  body="$(curl -sS --max-time 3 "http://127.0.0.1:${port}/" 2>/dev/null || true)"
-  echo "$body" | grep -qiE 'nextcloud|login|password|nc-|' || return 1
+  body="$(curl -sS --max-time 5 "http://127.0.0.1:${port}/" 2>/dev/null || true)"
+  echo "$body" | grep -qiE 'nextcloud|login|password|nc-' || return 1
 }
 
 nc_start_server() {
   local port="${NEXTCLOUD_PORT:-26001}"
-  # 這台 CPU 上 FrankenPHP 接 PHP 請求會白畫面，一律用靜態 PHP
-  if [[ -f nextcloud-runtime/frankenphp.pid ]]; then
-    kill "$(cat nextcloud-runtime/frankenphp.pid)" >/dev/null 2>&1 || true
-  fi
   if command -v pkill >/dev/null 2>&1; then
     pkill -f 'frankenphp run' >/dev/null 2>&1 || true
     pkill -f 'php-serve.sh' >/dev/null 2>&1 || true
     pkill -f "php -S 127.0.0.1:${port}" >/dev/null 2>&1 || true
+    pkill -f 'php-fpm' >/dev/null 2>&1 || true
+    pkill -f 'caddy run' >/dev/null 2>&1 || true
   fi
   sleep 1
   nc_write_php_ini
-  if ! nc_php_works ./php; then
-    nc_ensure_php || return 1
+  nc_write_fpm_conf
+  nc_write_caddyfile
+
+  if nc_ensure_php_fpm && nc_ensure_caddy; then
+    echo "[nextcloud] 啟動 PHP-FPM + Caddy :${port}（可同時處理多個請求）"
+    nohup ./php-fpm -y "$PWD/nextcloud-runtime/php-fpm.conf" -c "$PWD/nextcloud-runtime/php.ini" \
+      >> logs/php-fpm.log 2>&1 &
+    echo $! > nextcloud-runtime/php-fpm.pid
+    disown || true
+    sleep 1
+    nohup ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile" --adapter caddyfile \
+      >> logs/nextcloud-php.log 2>&1 &
+    echo $! > nextcloud-runtime/frankenphp.pid
+    disown || true
+  else
+    echo "[nextcloud] FPM/Caddy 失敗，退回 php -S"
+    if ! nc_php_works ./php; then
+      nc_ensure_php || return 1
+    fi
+    nohup ./php -c "$PWD/nextcloud-runtime/php.ini" \
+      -S "127.0.0.1:${port}" -t "$PWD/nextcloud" \
+      >> logs/nextcloud-php.log 2>&1 &
+    echo $! > nextcloud-runtime/frankenphp.pid
+    disown || true
   fi
-  echo "[nextcloud] 用靜態 PHP 內建伺服器 :${port}（不用 FrankenPHP，避免白畫面）"
-  cat > nextcloud/router.php << 'PHP'
-<?php
-$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
-$file = __DIR__ . $path;
-if ($path !== '/' && is_file($file)) {
-    return false;
-}
-require __DIR__ . '/index.php';
-PHP
-  cat > nextcloud-runtime/php-serve.sh << EOF
-#!/bin/bash
-cd "$PWD"
-while true; do
-  echo "[nextcloud] php -S 127.0.0.1:${port} \$(date -Iseconds)"
-  ./php -c "$PWD/nextcloud-runtime/php.ini" \\
-    -S "127.0.0.1:${port}" -t "$PWD/nextcloud" \\
-    "$PWD/nextcloud/router.php"
-  echo "[nextcloud] php -S 結束，2 秒後重開"
-  sleep 2
-done
-EOF
-  chmod +x nextcloud-runtime/php-serve.sh
-  nohup bash nextcloud-runtime/php-serve.sh >> logs/nextcloud-php.log 2>&1 &
-  echo $! > nextcloud-runtime/frankenphp.pid
-  disown || true
+
   local i
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     if nc_already_running; then
@@ -704,8 +767,9 @@ EOF
     fi
     sleep 2
   done
-  echo "[nextcloud] 還沒看到登入頁，見 logs/nextcloud-php.log"
-  tail -n 40 logs/nextcloud-php.log 2>/dev/null || true
+  echo "[nextcloud] 還沒看到登入頁，見 logs/nextcloud-php.log logs/php-fpm.log"
+  tail -n 30 logs/nextcloud-php.log 2>/dev/null || true
+  tail -n 20 logs/php-fpm.log 2>/dev/null || true
 }
 
 nc_bootstrap() {
@@ -717,10 +781,6 @@ nc_bootstrap() {
   nc_ensure_secrets
   nc_install || return 0
   nc_configure
-  if [[ -f ./apply-nextcloud-sso-now.sh ]]; then
-    echo "[nextcloud] 執行 apply-nextcloud-sso-now.sh"
-    bash ./apply-nextcloud-sso-now.sh || true
-  fi
   nc_start_server
   echo "[nextcloud] 完成。公開網址：${NEXTCLOUD_PUBLIC_URL:-https://files.jasoncloudserver.me}"
   echo "[nextcloud] Tunnel：files.jasoncloudserver.me → http://127.0.0.1:${NEXTCLOUD_PORT:-26001}"
