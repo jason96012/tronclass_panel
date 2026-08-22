@@ -348,14 +348,21 @@ start_filebrowser() {
     fb_write_snippet
     echo "[filebrowser] 密碼 :26011 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001"
     nohup ./filebrowser -d "$PWD/fb-data/auth.db" >> logs/filebrowser-auth.log 2>&1 &
+    echo $! > logs/filebrowser-auth.pid
     nohup ./filebrowser -d "$PWD/fb-data/open.db" >> logs/filebrowser-open.log 2>&1 &
+    echo $! > logs/filebrowser-open.pid
     nohup ./filebrowser -d "$PWD/fb-data/admin.db" >> logs/filebrowser-admin.log 2>&1 &
+    echo $! > logs/filebrowser-admin.pid
     sleep 1
     if [[ -x ./caddy ]]; then
-      exec ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile.fb" --adapter caddyfile
+      ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile.fb" --adapter caddyfile &
+      echo $! > logs/filebrowser-caddy.pid
+      wait $!
     fi
     echo "[filebrowser] 沒有 caddy，改只開密碼版 :26001（無法 SSO）"
-    exec ./filebrowser -d "$PWD/fb-data/auth.db" -a 127.0.0.1 -p 26001
+    ./filebrowser -d "$PWD/fb-data/auth.db" -a 127.0.0.1 -p 26001 &
+    echo $! > logs/filebrowser-caddy.pid
+    wait $!
   ) >> logs/filebrowser.log 2>&1 &
   disown || true
 }
@@ -1156,11 +1163,31 @@ watchdog_start_tunnel() {
   fi
 }
 
+watchdog_restart_filebrowser() {
+  local now last=0
+  now="$(date +%s)"
+  last="$(cat logs/filebrowser-watchdog.last 2>/dev/null || echo 0)"
+  if (( now - last < ${FILEBROWSER_RESTART_BACKOFF_SECS:-30} )); then return; fi
+  printf '%s\n' "$now" > logs/filebrowser-watchdog.last
+  echo "[watchdog] Filebrowser/Caddy 服務異常，重新啟動（$(date -Iseconds)）" >> logs/filebrowser-watchdog.log
+  start_filebrowser
+}
+
+watchdog_check_filebrowser() {
+  [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]] || return 0
+  local bad=0 f
+  for f in logs/filebrowser-auth.pid logs/filebrowser-open.pid logs/filebrowser-admin.pid logs/filebrowser-caddy.pid; do
+    watchdog_pid_alive "$f" || bad=1
+  done
+  (( bad == 1 )) && watchdog_restart_filebrowser
+}
+
 
 watchdog_loop() {
   local bin="$1" child="$2"
   while kill -0 "$child" 2>/dev/null; do
     watchdog_start_tunnel
+    watchdog_check_filebrowser
     sleep "${WATCHDOG_INTERVAL_SECS:-15}"
   done
   wait "$child" 2>/dev/null || true

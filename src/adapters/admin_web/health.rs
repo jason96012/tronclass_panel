@@ -302,8 +302,13 @@ fn watchdog_status() -> serde_json::Value {
     let names = [
         ("dashboard", "主程式"),
         ("cloudflared", "Cloudflare Tunnel"),
+        ("filebrowser-auth", "Filebrowser 密碼服務"),
+        ("filebrowser-open", "Filebrowser 使用者服務"),
+        ("filebrowser-admin", "Filebrowser 管理員服務"),
+        ("filebrowser-caddy", "Filebrowser Caddy"),
     ];
-    let services: Vec<serde_json::Value> = names.iter().map(|(id, label)| {
+    let filebrowser_enabled = std::path::Path::new("config/filebrowser.enable").exists() || std::env::var("FILEBROWSER_ENABLE").ok().as_deref() == Some("1");
+    let services: Vec<serde_json::Value> = names.iter().filter(|(id, _)| filebrowser_enabled || !id.starts_with("filebrowser-")).map(|(id, label)| {
         let path = format!("logs/{id}.pid");
         let pid = std::fs::read_to_string(&path).ok().and_then(|v| v.trim().parse::<u32>().ok());
         let alive = pid.map(|p| unsafe { libc_kill_zero(p) }).unwrap_or(false);
