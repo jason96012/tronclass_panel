@@ -210,8 +210,8 @@ fb_ensure_bin() {
 }
 
 fb_init() {
-  mkdir -p cloud logs filebrowser
-  local db="$PWD/filebrowser/filebrowser.db"
+  mkdir -p cloud logs fb-data
+  local db="$PWD/fb-data/filebrowser.db"
   local pass=""
   if [[ -f config/filebrowser-admin.txt ]]; then
     pass="$(tr -d '\r\n' < config/filebrowser-admin.txt)"
@@ -279,7 +279,7 @@ start_filebrowser() {
     echo "[filebrowser] 聽 127.0.0.1:${NEXTCLOUD_PORT:-26001} 根目錄 $PWD/cloud"
     echo "[filebrowser] 帳號 admin，密碼在 config/filebrowser-admin.txt"
     echo "[filebrowser] 公開 https://files.jasoncloudserver.me"
-    exec ./filebrowser -d "$PWD/filebrowser/filebrowser.db"
+    exec ./filebrowser -d "$PWD/fb-data/filebrowser.db"
   ) >> logs/filebrowser.log 2>&1 &
   disown || true
 }
@@ -481,7 +481,7 @@ nc_ensure_php() {
 }
 
 nc_occ() {
-  nc_write_php_ini
+  nc_write_phe_php_ini
   if ! nc_php_works ./php; then
     nc_ensure_php || return 1
   fi
