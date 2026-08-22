@@ -228,19 +228,47 @@ fb_init() {
   fi
   local auth_db="$PWD/fb-data/auth.db"
   local open_db="$PWD/fb-data/open.db"
-  if [[ ! -f "$auth_db" ]]; then
-    ./filebrowser config init -d "$auth_db" >/dev/null 2>&1 || true
-    ./filebrowser users add admin "$pass" --perm.admin -d "$auth_db" >/dev/null 2>&1 || true
-  fi
-  ./filebrowser config set -d "$auth_db" \
-    --address 127.0.0.1 --port 26011 --root "$PWD/cloud" \
-    --locale zh-tw --auth.method json --baseurl "" >/dev/null 2>&1 || true
-  if [[ ! -f "$open_db" ]]; then
-    ./filebrowser config init -d "$open_db" >/dev/null 2>&1 || true
-  fi
-  ./filebrowser config set -d "$open_db" \
-    --address 127.0.0.1 --port 26012 --root "$PWD/cloud" \
-    --locale zh-tw --auth.method noauth --baseurl "" >/dev/null 2>&1 || true
+
+  # 確保資料庫「有使用者」。舊版只看檔案存在就跳過，一旦當初 users add 失敗，
+  # 就會永遠卡在「有 DB、沒使用者」→ Filebrowser 登入直接 500，且不會自我修復。
+  fb_db_has_user() {
+    local db="$1"
+    [[ -f "$db" ]] || return 1
+    ./filebrowser users ls -d "$db" 2>/dev/null | grep -qE '^[[:space:]]*[0-9]+' 
+  }
+
+  fb_prepare_db() {
+    local db="$1" method="$2" port="$3" label="$4"
+    if [[ ! -f "$db" ]]; then
+      echo "[filebrowser] 初始化 $label 資料庫"
+      if ! ./filebrowser config init -d "$db" >> logs/filebrowser-init.log 2>&1; then
+        echo "[filebrowser] config init 失敗（$label），詳見 logs/filebrowser-init.log"
+        return 1
+      fi
+    fi
+    if ! fb_db_has_user "$db"; then
+      echo "[filebrowser] $label 沒有任何使用者，建立 admin"
+      if ! ./filebrowser users add admin "$pass" --perm.admin -d "$db" >> logs/filebrowser-init.log 2>&1; then
+        # 已存在同名使用者時改成更新密碼，避免殘缺狀態卡死
+        ./filebrowser users update admin --password "$pass" -d "$db" >> logs/filebrowser-init.log 2>&1 \
+          || echo "[filebrowser] 建立/更新 admin 失敗（$label），詳見 logs/filebrowser-init.log"
+      fi
+    fi
+    ./filebrowser config set -d "$db" \
+      --address 127.0.0.1 --port "$port" --root "$PWD/cloud" \
+      --locale zh-tw --auth.method "$method" --baseurl "" >> logs/filebrowser-init.log 2>&1 \
+      || echo "[filebrowser] config set 失敗（$label）"
+    if fb_db_has_user "$db"; then
+      echo "[filebrowser] $label OK（port $port, auth=$method）"
+    else
+      echo "[filebrowser] 警告：$label 仍然沒有使用者，登入會 500"
+    fi
+  }
+
+  # 密碼版（:26011）
+  fb_prepare_db "$auth_db" json 26011 "auth.db"
+  # 免登版（:26012）。noauth 也必須要有一個使用者，否則同樣 500。
+  fb_prepare_db "$open_db" noauth 26012 "open.db"
 }
 
 fb_write_caddy() {
@@ -290,6 +318,13 @@ start_filebrowser() {
     fi
     fb_ensure_bin || exit 0
     nc_ensure_caddy || true
+    # 放一個空檔 config/fb-reset 就重建資料庫（帳號密碼保留在
+    # config/filebrowser-admin.txt）。用來救回 500 的殘缺 DB。
+    if [[ -f config/fb-reset ]]; then
+      echo "[filebrowser] 偵測到 config/fb-reset，重建資料庫"
+      rm -f fb-data/auth.db fb-data/open.db
+      rm -f config/fb-reset
+    fi
     fb_init
     fb_write_caddy
     fb_write_snippet
