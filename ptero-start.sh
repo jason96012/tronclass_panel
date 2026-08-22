@@ -1,6 +1,6 @@
 #!/bin/bash
-# Pterodactyl 一鍵：Cloudflare Tunnel（config/cf.token）+ 本程式
-# 全部在面板完成，不需要 SSH。
+# Pterodactyl 一鍵：Cloudflare Tunnel + Tailscale + 同容器 Nextcloud + 本程式
+# 全部在面板完成，不需要 SSH。只要覆蓋這一個檔。
 set -uo pipefail
 cd /home/container 2>/dev/null || cd "$(dirname "$0")"
 
@@ -42,6 +42,17 @@ read_token() {
   fi
 }
 
+dl() {
+  local url="$1" out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 3 -o "$out" "$url" && return 0
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -O "$out" "$url" && return 0
+  fi
+  return 1
+}
+
 start_tunnel() {
   local token
   token="$(read_token)"
@@ -57,12 +68,7 @@ start_tunnel() {
 
   if [[ ! -x ./cloudflared ]]; then
     echo "[ptero-start] 下載 cloudflared..."
-    if command -v curl >/dev/null 2>&1; then
-      curl -fsSL -o ./cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" || true
-    fi
-    if [[ ! -s ./cloudflared ]] && command -v wget >/dev/null 2>&1; then
-      wget -q -O ./cloudflared "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" || true
-    fi
+    dl "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64" ./cloudflared || true
     chmod +x ./cloudflared 2>/dev/null || true
   fi
   if [[ ! -x ./cloudflared ]]; then
@@ -79,17 +85,6 @@ start_tunnel() {
 }
 
 start_tunnel
-
-dl() {
-  local url="$1" out="$2"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$out" "$url" && return 0
-  fi
-  if command -v wget >/dev/null 2>&1; then
-    wget -q -O "$out" "$url" && return 0
-  fi
-  return 1
-}
 
 start_tailscale() {
   local key=""
@@ -175,6 +170,338 @@ start_tailscale() {
 }
 
 start_tailscale
+
+# ─── 同容器 Nextcloud（已併入本檔，不必再上傳 nextcloud-sidecar.sh）──────────
+
+nc_load_env() {
+  [[ -f config/nextcloud.env ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      local key="${BASH_REMATCH[1]}"
+      local val="${BASH_REMATCH[2]}"
+      val="${val#\"}"; val="${val%\"}"
+      val="${val#\'}"; val="${val%\'}"
+      export "$key=$val"
+    fi
+  done < config/nextcloud.env
+}
+
+nc_rand_hex() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 24
+    return
+  fi
+  python3 -c 'import secrets; print(secrets.token_hex(24))' 2>/dev/null && return
+  tr -dc 'a-f0-9' </dev/urandom | head -c 48
+  echo
+}
+
+nc_extract_zip() {
+  local zip="$1" dest="$2"
+  mkdir -p "$dest"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -q -o "$zip" -d "$dest" && return 0
+  fi
+  python3 - "$zip" "$dest" << 'PY'
+import sys, zipfile
+zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
+PY
+}
+
+nc_write_caddyfile() {
+  local root="$PWD/nextcloud"
+  local port="${NEXTCLOUD_PORT:-26001}"
+  mkdir -p nextcloud-runtime
+  cat > nextcloud-runtime/Caddyfile << EOF
+{
+    admin off
+    auto_https off
+    persist_config off
+    frankenphp {
+        num_threads 2
+        php_ini {
+            memory_limit 512M
+            upload_max_filesize 512M
+            post_max_size 512M
+            max_execution_time 360
+            max_input_time 360
+            date.timezone Asia/Taipei
+            output_buffering 0
+        }
+    }
+}
+
+http://127.0.0.1:${port} {
+    root * ${root}
+    encode gzip
+    php_server
+    file_server
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+        -Server
+    }
+}
+EOF
+}
+
+nc_ensure_secrets() {
+  local admin_user="${NEXTCLOUD_ADMIN_USER:-admin}"
+  local admin_pass="${NEXTCLOUD_ADMIN_PASSWORD:-}"
+  local oidc_secret="${OIDC_CLIENT_SECRET:-}"
+
+  if [[ -z "$admin_pass" && -f config/nextcloud-admin.txt ]]; then
+    admin_pass="$(tr -d '\r\n' < config/nextcloud-admin.txt)"
+  fi
+  if [[ -z "$admin_pass" ]]; then
+    admin_pass="$(nc_rand_hex)"
+    umask 077
+    printf '%s\n' "$admin_pass" > config/nextcloud-admin.txt
+    echo "[nextcloud] 已產生管理員密碼 → config/nextcloud-admin.txt"
+  fi
+
+  if [[ -z "$oidc_secret" && -f config/nextcloud-oidc.secret ]]; then
+    oidc_secret="$(tr -d '\r\n' < config/nextcloud-oidc.secret)"
+  fi
+  if [[ -z "$oidc_secret" ]]; then
+    oidc_secret="$(nc_rand_hex)"
+    umask 077
+    printf '%s\n' "$oidc_secret" > config/nextcloud-oidc.secret
+    echo "[nextcloud] 已產生 OIDC client_secret → config/nextcloud-oidc.secret"
+  fi
+
+  NEXTCLOUD_ADMIN_USER="$admin_user"
+  NEXTCLOUD_ADMIN_PASSWORD="$admin_pass"
+  OIDC_CLIENT_SECRET="$oidc_secret"
+  OIDC_CLIENT_ID="${OIDC_CLIENT_ID:-nextcloud}"
+}
+
+nc_occ() {
+  (cd nextcloud && ../frankenphp php-cli -d memory_limit=512M occ "$@")
+}
+
+nc_download_frankenphp() {
+  if [[ -x ./frankenphp ]]; then
+    echo "[nextcloud] 已有 ./frankenphp"
+    return 0
+  fi
+  echo "[nextcloud] 下載 FrankenPHP"
+  local ver="${FRANKENPHP_VERSION:-v1.9.1}"
+  local u
+  for u in \
+    "https://github.com/php/frankenphp/releases/download/${ver}/frankenphp-linux-x86_64" \
+    "https://github.com/php/frankenphp/releases/download/${ver}/frankenphp-linux-x86_64-mimalloc" \
+    "https://github.com/php/frankenphp/releases/download/${ver}/frankenphp-linux-x86_64-gnu" \
+    "https://github.com/php/frankenphp/releases/latest/download/frankenphp-linux-x86_64"
+  do
+    echo "[nextcloud] 嘗試 $u"
+    if dl "$u" ./frankenphp.tmp; then
+      chmod +x ./frankenphp.tmp
+      if ./frankenphp.tmp version >/dev/null 2>&1 || ./frankenphp.tmp --version >/dev/null 2>&1; then
+        mv ./frankenphp.tmp ./frankenphp
+        echo "[nextcloud] FrankenPHP OK"
+        return 0
+      fi
+    fi
+    rm -f ./frankenphp.tmp
+  done
+  echo "[nextcloud] 下載 FrankenPHP 失敗"
+  return 1
+}
+
+nc_download_nextcloud() {
+  if [[ -f nextcloud/occ ]]; then
+    echo "[nextcloud] 已有 nextcloud/ 程式"
+    return 0
+  fi
+  echo "[nextcloud] 下載 Nextcloud 31（約 200MB，第一次要幾分鐘）"
+  local zip=/tmp/nextcloud.zip
+  rm -f "$zip"
+  if ! dl "https://download.nextcloud.com/server/releases/latest-31.zip" "$zip"; then
+    echo "[nextcloud] 下載 Nextcloud 失敗"
+    return 1
+  fi
+  nc_extract_zip "$zip" /tmp/nc-extract || return 1
+  if [[ -d /tmp/nc-extract/nextcloud ]]; then
+    rm -rf nextcloud
+    mv /tmp/nc-extract/nextcloud nextcloud
+  else
+    echo "[nextcloud] zip 內容不是預期的 nextcloud/ 目錄"
+    return 1
+  fi
+  rm -rf /tmp/nc-extract "$zip"
+  echo "[nextcloud] Nextcloud 檔案就緒"
+}
+
+nc_install() {
+  if [[ -f nextcloud/config/config.php ]]; then
+    echo "[nextcloud] 已安裝過，略過 maintenance:install"
+    return 0
+  fi
+  echo "[nextcloud] 第一次安裝（SQLite）"
+  mkdir -p nextcloud-data
+  if ! nc_occ maintenance:install \
+    --database=sqlite \
+    --database-name=nextcloud \
+    --admin-user="$NEXTCLOUD_ADMIN_USER" \
+    --admin-pass="$NEXTCLOUD_ADMIN_PASSWORD" \
+    --data-dir="$PWD/nextcloud-data" \
+    --admin-email="admin@localhost"; then
+    echo "[nextcloud] occ maintenance:install 失敗"
+    return 1
+  fi
+  echo "[nextcloud] 安裝完成"
+}
+
+nc_write_snippet() {
+  local public="$1" issuer="$2"
+  local admin="$NEXTCLOUD_ADMIN_USER"
+  local provider_id="1"
+  local listed
+  listed="$(nc_occ user_oidc:provider 2>/dev/null || true)"
+  if [[ "$listed" =~ (^|[^0-9])([0-9]+)[[:space:]]+Dashboard ]]; then
+    provider_id="${BASH_REMATCH[2]}"
+  elif [[ "$listed" =~ Dashboard[^0-9]*([0-9]+) ]]; then
+    provider_id="${BASH_REMATCH[1]}"
+  fi
+
+  umask 077
+  cat > config/nextcloud-dashboard.snippet.toml << EOF
+# 由 ptero-start.sh 產生。請把下面兩段貼進 config/config.toml
+# （若還沒有 [materials] / [oidc]）。密碼見 config/nextcloud-admin.txt
+
+[materials]
+backend = "webdav"
+webdav_url = "${public}/remote.php/dav/files/${admin}/tronclass-materials"
+webdav_username = "${admin}"
+webdav_password = "${NEXTCLOUD_ADMIN_PASSWORD}"
+frontend_url = "${public}/apps/user_oidc/login/${provider_id}"
+frontend_mode = "sso"
+
+[oidc]
+enabled = true
+issuer = "${issuer}"
+client_id = "${OIDC_CLIENT_ID}"
+client_secret = "${OIDC_CLIENT_SECRET}"
+redirect_uri = "${public}/apps/user_oidc/code"
+EOF
+
+  if [[ -f config/config.toml ]] && ! grep -qE '^[[:space:]]*\[oidc\]' config/config.toml; then
+    cp -a config/config.toml "config/config.toml.bak.nextcloud.$(date +%Y%m%d%H%M%S)"
+    printf '\n# --- Nextcloud SSO（同容器）---\n' >> config/config.toml
+    cat config/nextcloud-dashboard.snippet.toml >> config/config.toml
+    echo "[nextcloud] 已把 [materials]/[oidc] 附加到 config/config.toml（有備份）"
+  else
+    echo "[nextcloud] config.toml 已有 [oidc] 或尚不存在，片段寫在 config/nextcloud-dashboard.snippet.toml"
+  fi
+}
+
+nc_configure() {
+  local public="${NEXTCLOUD_PUBLIC_URL:-https://files.jasoncloudserver.me}"
+  public="${public%/}"
+  local host="${public#https://}"
+  host="${host#http://}"
+  host="${host%%/*}"
+  local issuer="${DASHBOARD_ISSUER:-https://dashboard.jasoncloudserver.me}"
+  issuer="${issuer%/}"
+
+  nc_occ config:system:set trusted_domains 0 --value=localhost || true
+  nc_occ config:system:set trusted_domains 1 --value=127.0.0.1 || true
+  nc_occ config:system:set trusted_domains 2 --value="$host" || true
+  nc_occ config:system:set overwrite.cli.url --value="$public" || true
+  nc_occ config:system:set overwriteprotocol --value=https || true
+  nc_occ config:system:set overwritehost --value="$host" || true
+  nc_occ config:system:set overwritewebroot --value="" || true
+  nc_occ config:system:set trusted_proxies 0 --value=127.0.0.1 || true
+  nc_occ config:system:set htaccess.RewriteBase --value="/" || true
+  nc_occ background:cron >/dev/null 2>&1 || true
+
+  mkdir -p "nextcloud-data/${NEXTCLOUD_ADMIN_USER}/files/tronclass-materials"
+  nc_occ files:scan "$NEXTCLOUD_ADMIN_USER" >/dev/null 2>&1 || true
+
+  echo "[nextcloud] 安裝 OpenID 應用 user_oidc"
+  nc_occ app:install user_oidc >/dev/null 2>&1 || true
+  nc_occ app:enable user_oidc >/dev/null 2>&1 || true
+
+  if nc_occ user_oidc:provider 2>/dev/null | grep -qi Dashboard; then
+    echo "[nextcloud] OIDC provider Dashboard 已存在"
+  else
+    nc_occ user_oidc:provider "Dashboard" \
+      --clientid="$OIDC_CLIENT_ID" \
+      --clientsecret="$OIDC_CLIENT_SECRET" \
+      --discoveryuri="${issuer}/admin/oidc/.well-known/openid-configuration" \
+      --unique-uid=0 \
+      --mapping-uid="preferred_username" || \
+    echo "[nextcloud] user_oidc:provider 失敗（可之後在 Nextcloud 應用程式裡手動加）"
+  fi
+
+  nc_write_snippet "$public" "$issuer"
+}
+
+nc_already_running() {
+  local port="${NEXTCLOUD_PORT:-26001}"
+  python3 - "$port" << 'PY' >/dev/null 2>&1
+import socket, sys
+s = socket.socket()
+s.settimeout(0.4)
+try:
+    s.connect(("127.0.0.1", int(sys.argv[1])))
+except Exception:
+    raise SystemExit(1)
+s.close()
+PY
+}
+
+nc_start_server() {
+  local port="${NEXTCLOUD_PORT:-26001}"
+  if nc_already_running; then
+    echo "[nextcloud] 已在 127.0.0.1:${port} 聽"
+    return 0
+  fi
+  nc_write_caddyfile
+  echo "[nextcloud] 啟動 FrankenPHP :${port} → nextcloud/"
+  nohup ./frankenphp run --config "$PWD/nextcloud-runtime/Caddyfile" \
+    >> logs/nextcloud-frankenphp.log 2>&1 &
+  echo $! > nextcloud-runtime/frankenphp.pid
+  disown || true
+  sleep 2
+  if nc_already_running; then
+    echo "[nextcloud] 已聽 127.0.0.1:${port}"
+  else
+    echo "[nextcloud] 還沒起來，見 logs/nextcloud-frankenphp.log"
+    tail -n 40 logs/nextcloud-frankenphp.log 2>/dev/null || true
+  fi
+}
+
+nc_bootstrap() {
+  mkdir -p logs config nextcloud-runtime nextcloud-data
+  echo "===== $(date -Iseconds) nextcloud in ptero-start ====="
+  nc_load_env
+  nc_download_frankenphp || return 0
+  nc_download_nextcloud || return 0
+  nc_ensure_secrets
+  nc_install || return 0
+  nc_configure
+  nc_start_server
+  echo "[nextcloud] 完成。公開網址：${NEXTCLOUD_PUBLIC_URL:-https://files.jasoncloudserver.me}"
+  echo "[nextcloud] Tunnel：files.jasoncloudserver.me → http://127.0.0.1:${NEXTCLOUD_PORT:-26001}"
+}
+
+start_nextcloud() {
+  nc_load_env
+  if [[ ! -f config/nextcloud.enable && "${NEXTCLOUD_ENABLE:-0}" != "1" && ! -f nextcloud/config/config.php ]]; then
+    echo "[ptero-start] 同容器 Nextcloud 未啟用（新增空檔 config/nextcloud.enable 後重啟）"
+    return 0
+  fi
+  echo "[ptero-start] 背景啟動同容器 Nextcloud（127.0.0.1:${NEXTCLOUD_PORT:-26001}）"
+  # 下載／安裝在背景，不擋 Dashboard
+  ( nc_bootstrap ) >> logs/nextcloud.log 2>&1 &
+  disown || true
+}
+
+start_nextcloud
 
 run_bin() {
   chmod +x "$1" 2>/dev/null || true
