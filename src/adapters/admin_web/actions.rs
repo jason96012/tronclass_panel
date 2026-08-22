@@ -315,6 +315,11 @@ pub(super) async fn handle_admin_account_action(
                 Ok(true) => {
                     // Do not keep the old admin badge/button state for the cache TTL.
                     super::invalidate_admin_status_cache().await;
+                    // AdminSession caches is_admin at login time and lives for
+                    // 8 hours, so a demoted account would otherwise keep full
+                    // admin API access until its session expired. Force a
+                    // re-login so the new privilege level is picked up.
+                    state.revoke_sessions_for_account(&account_id).await;
                     (
                         StatusCode::OK,
                         Json(json!({

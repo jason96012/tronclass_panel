@@ -1412,25 +1412,31 @@ fn session_login_response(
     is_admin: bool,
     must_change_password: bool,
 ) -> Response {
-    fb_sso::append_fb_sso_cookie(
-        append_session_cookie(
-            (
-                StatusCode::OK,
-                Json(json!(AdminLoginResponse {
-                    token: SESSION_COOKIE_MARKER.to_string(),
-                    account_id: account_id.clone(),
-                    is_admin,
-                    must_change_password,
-                })),
-            )
-                .into_response(),
-            session_token,
-            request_headers,
-        ),
-        &account_id,
-        is_admin,
+    let response = append_session_cookie(
+        (
+            StatusCode::OK,
+            Json(json!(AdminLoginResponse {
+                token: SESSION_COOKIE_MARKER.to_string(),
+                account_id: account_id.clone(),
+                is_admin,
+                must_change_password,
+            })),
+        )
+            .into_response(),
+        session_token,
         request_headers,
-    )
+    );
+
+    // A bootstrap login authenticates with the upstream Tronclass password and
+    // is restricted to changing the Dashboard password. It must not also hand
+    // out a Filebrowser SSO ticket: that cookie is checked only for a valid
+    // signature, so it would grant full file access (and, for an admin, the
+    // whole cloud/ tree) without the account ever setting a Dashboard password.
+    if must_change_password {
+        return response;
+    }
+
+    fb_sso::append_fb_sso_cookie(response, &account_id, is_admin, request_headers)
 }
 
 #[derive(Debug, Deserialize)]
@@ -2716,6 +2722,23 @@ async fn admin_passkey_login_finish_handler(
                 .into_response();
         }
     };
+    // Password login refuses disabled accounts; passkey login must too,
+    // otherwise disabling an account leaves any registered passkey as a
+    // working back door.
+    if !account.enabled {
+        record_persistent_login_event(
+            &state,
+            &account.id,
+            Some(&account.id),
+            "login_failed",
+            "fail",
+            "帳號已停用，通行密鑰登入遭拒",
+            &ip,
+        )
+        .await;
+        return unauthorized_response();
+    }
+
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
     let token = state
