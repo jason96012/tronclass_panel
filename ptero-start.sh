@@ -788,6 +788,20 @@ nc_start_server() {
   tail -n 20 logs/php-fpm.log 2>/dev/null || true
 }
 
+nc_disable_apps_in_db() {
+  local db
+  db="$(find nextcloud-data nextcloud -name 'owncloud.db' -o -name 'nextcloud.db' 2>/dev/null | head -1)"
+  [[ -n "$db" && -x ./php ]] || return 0
+  ./php -r '
+    $db=$argv[1];
+    $pdo=new PDO("sqlite:".$db);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $st=$pdo->prepare("UPDATE oc_appconfig SET configvalue=? WHERE appid IN (\"user_oidc\",\"groupfolders\") AND configkey=\"enabled\"");
+    $st->execute(["no"]);
+    echo "disabled user_oidc groupfolders\n";
+  ' "$db" && echo "[nextcloud] 已停用不相容應用，網站應可再開" || true
+}
+
 nc_sideload_apps() {
   echo "[nextcloud] 改從 GitHub 放入應用（不走商店，避免 FPM EOF）"
   mkdir -p nextcloud/apps nextcloud-runtime
@@ -875,7 +889,7 @@ nc_bootstrap() {
   nc_download_nextcloud || return 0
   nc_ensure_secrets
   nc_install || return 0
-  nc_sideload_apps
+  nc_disable_apps_in_db
   nc_configure
   nc_start_server
   echo "[nextcloud] 完成。公開網址：${NEXTCLOUD_PUBLIC_URL:-https://files.jasoncloudserver.me}"
