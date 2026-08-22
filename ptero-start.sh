@@ -246,8 +246,11 @@ nc_write_caddyfile() {
 http://127.0.0.1:${port} {
     root * ${root}
     encode gzip
+    try_files {path} {path}/ /index.php?{query}
     php_fastcgi 127.0.0.1:9001 {
         env front_controller_active true
+        dial_timeout 10s
+        read_timeout 360s
     }
     file_server
     header {
@@ -736,19 +739,28 @@ nc_start_server() {
   nc_write_fpm_conf
   nc_write_caddyfile
 
+  local mode="php-s"
   if nc_ensure_php_fpm && nc_ensure_caddy; then
-    echo "[nextcloud] 啟動 PHP-FPM + Caddy :${port}（可同時處理多個請求）"
+    echo "[nextcloud] 啟動 PHP-FPM"
     nohup ./php-fpm -y "$PWD/nextcloud-runtime/php-fpm.conf" -c "$PWD/nextcloud-runtime/php.ini" \
       >> logs/php-fpm.log 2>&1 &
     echo $! > nextcloud-runtime/php-fpm.pid
     disown || true
-    sleep 1
-    nohup ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile" --adapter caddyfile \
-      >> logs/nextcloud-php.log 2>&1 &
-    echo $! > nextcloud-runtime/frankenphp.pid
-    disown || true
-  else
-    echo "[nextcloud] FPM/Caddy 失敗，退回 php -S"
+    sleep 2
+    if [[ -f nextcloud-runtime/php-fpm.pid ]] && kill -0 "$(cat nextcloud-runtime/php-fpm.pid)" 2>/dev/null; then
+      echo "[nextcloud] 啟動 Caddy :${port}"
+      nohup ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile" --adapter caddyfile \
+        >> logs/nextcloud-php.log 2>&1 &
+      echo $! > nextcloud-runtime/frankenphp.pid
+      disown || true
+      mode="fpm-caddy"
+    else
+      echo "[nextcloud] PHP-FPM 立刻結束，見 logs/php-fpm.log"
+    fi
+  fi
+
+  if [[ "$mode" != "fpm-caddy" ]]; then
+    echo "[nextcloud] 改用 php -S :${port}"
     if ! nc_php_works ./php; then
       nc_ensure_php || return 1
     fi
@@ -762,7 +774,7 @@ nc_start_server() {
   local i
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     if nc_already_running; then
-      echo "[nextcloud] 已聽 127.0.0.1:${port}（有 Nextcloud HTML）"
+      echo "[nextcloud] 已聽 127.0.0.1:${port}（有 Nextcloud HTML） mode=${mode}"
       return 0
     fi
     sleep 2
@@ -776,7 +788,6 @@ nc_bootstrap() {
   mkdir -p logs config nextcloud-runtime nextcloud-data
   echo "===== $(date -Iseconds) nextcloud in ptero-start ====="
   nc_load_env
-  nc_download_frankenphp || return 0
   nc_download_nextcloud || return 0
   nc_ensure_secrets
   nc_install || return 0
