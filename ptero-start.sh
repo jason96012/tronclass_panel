@@ -1080,6 +1080,19 @@ if [[ -f Cargo.toml && -d src ]]; then
     echo "[ptero-start] 刪除不相容的 Cargo.lock"
     rm -f Cargo.lock
   fi
+  # mod.rs 宣告了模組但檔案沒上傳時，編譯會 E0583。有補檔腳本就自動寫入。
+  if [[ -f ./apply-fix-missing-rs-modules.sh ]]; then
+    if [[ ! -f src/adapters/admin_web/materials_webdav.rs || ! -f src/adapters/admin_web/oidc.rs || ! -f src/adapters/admin_web/fb_sso.rs ]]; then
+      echo "[ptero-start] 補上缺少的 Rust 模組"
+      bash ./apply-fix-missing-rs-modules.sh "$PWD" || true
+    fi
+  fi
+  for _need in materials_webdav.rs oidc.rs fb_sso.rs; do
+    if [[ ! -f "src/adapters/admin_web/${_need}" ]]; then
+      echo "[ptero-start] 缺少 src/adapters/admin_web/${_need}"
+      echo "[ptero-start] 請上傳 apply-fix-missing-rs-modules.sh 或該 .rs 後刪 target/release/tronclass_rollcall 再重啟"
+    fi
+  done
   echo "[ptero-start] cargo build --release --no-default-features"
   if cargo build --release --no-default-features; then
     run_bin ./target/release/tronclass_rollcall
