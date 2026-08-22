@@ -210,8 +210,7 @@ fb_ensure_bin() {
 }
 
 fb_init() {
-  mkdir -p cloud logs fb-data
-  local db="$PWD/fb-data/filebrowser.db"
+  mkdir -p cloud/教材 logs fb-data
   local pass=""
   if [[ -f config/filebrowser-admin.txt ]]; then
     pass="$(tr -d '\r\n' < config/filebrowser-admin.txt)"
@@ -222,64 +221,87 @@ fb_init() {
     printf '%s\n' "$pass" > config/filebrowser-admin.txt
     echo "[filebrowser] 已產生密碼 → config/filebrowser-admin.txt"
   fi
-  if [[ ! -f "$db" ]]; then
-    echo "[filebrowser] 初始化資料庫"
-    ./filebrowser config init -d "$db" >/dev/null 2>&1 || true
-    ./filebrowser config set -d "$db" \
-      --address 127.0.0.1 \
-      --port "${NEXTCLOUD_PORT:-26001}" \
-      --root "$PWD/cloud" \
-      --locale zh-tw \
-      --auth.method noauth \
-      --baseurl "" >/dev/null 2>&1 || true
-    ./filebrowser users add admin "$pass" --perm.admin --lockPassword=false -d "$db" >/dev/null 2>&1 || true
+  if [[ ! -f config/fb-sso.secret ]]; then
+    umask 077
+    printf '%s\n' "$(fb_rand)$(fb_rand)" > config/fb-sso.secret
+    echo "[filebrowser] 已產生 SSO 密鑰 → config/fb-sso.secret"
   fi
-  # 已有資料庫也改成免登入（點教材直接進）
-  ./filebrowser config set -d "$db" \
-    --address 127.0.0.1 \
-    --port "${NEXTCLOUD_PORT:-26001}" \
-    --root "$PWD/cloud" \
-    --locale zh-tw \
-    --auth.method noauth >/dev/null 2>&1 || true
-  mkdir -p cloud/教材
+  local auth_db="$PWD/fb-data/auth.db"
+  local open_db="$PWD/fb-data/open.db"
+  if [[ ! -f "$auth_db" ]]; then
+    ./filebrowser config init -d "$auth_db" >/dev/null 2>&1 || true
+    ./filebrowser users add admin "$pass" --perm.admin -d "$auth_db" >/dev/null 2>&1 || true
+  fi
+  ./filebrowser config set -d "$auth_db" \
+    --address 127.0.0.1 --port 26011 --root "$PWD/cloud" \
+    --locale zh-tw --auth.method json --baseurl "" >/dev/null 2>&1 || true
+  if [[ ! -f "$open_db" ]]; then
+    ./filebrowser config init -d "$open_db" >/dev/null 2>&1 || true
+  fi
+  ./filebrowser config set -d "$open_db" \
+    --address 127.0.0.1 --port 26012 --root "$PWD/cloud" \
+    --locale zh-tw --auth.method noauth --baseurl "" >/dev/null 2>&1 || true
+}
+
+fb_write_caddy() {
+  local dash_port="${SERVER_PORT:-26000}"
+  mkdir -p nextcloud-runtime
+  cat > nextcloud-runtime/Caddyfile.fb << EOF
+{
+    admin off
+    auto_https off
+    persist_config off
+}
+
+:26001 {
+    bind 127.0.0.1
+    encode gzip
+    forward_auth 127.0.0.1:${dash_port} {
+        uri /admin/api/fb-sso-check
+        copy_headers X-Fb-Authed
+        header_up X-Forwarded-Proto https
+    }
+    @dash header X-Fb-Authed yes
+    handle @dash {
+        reverse_proxy 127.0.0.1:26012
+    }
+    handle {
+        reverse_proxy 127.0.0.1:26011
+    }
+}
+EOF
 }
 
 fb_write_snippet() {
-  umask 077
-  cat > config/filebrowser-dashboard.snippet.toml << EOF
-# Filebrowser 共用雲端。貼進 config.toml 的 [materials]（可蓋過 Nextcloud）
-
-[materials]
-backend = "local"
-# 教材目錄與 Filebrowser 同一包
-# 請把程式的 materials 指到 cloud/（或設環境變數 TRONCLASS_MATERIALS_DIR=cloud）
-frontend_url = "https://files.jasoncloudserver.me"
-frontend_mode = "button"
-EOF
-  echo "[filebrowser] 片段寫在 config/filebrowser-dashboard.snippet.toml"
-  echo "[filebrowser] 建議在面板環境變數加：TRONCLASS_MATERIALS_DIR=cloud"
+  echo "[filebrowser] 教材跳轉 https://files.jasoncloudserver.me/files"
+  echo "[filebrowser] 從 Dashboard 登入後免密碼；直接開 files. 網址要密碼（config/filebrowser-admin.txt）"
 }
 
 start_filebrowser() {
   if [[ ! -f config/filebrowser.enable && "${FILEBROWSER_ENABLE:-0}" != "1" ]]; then
     return 0
   fi
-  echo "[ptero-start] 啟動 Filebrowser（127.0.0.1:${NEXTCLOUD_PORT:-26001}）"
+  echo "[ptero-start] 啟動 Filebrowser（SSO 閘道 :26001）"
   (
     echo "===== $(date -Iseconds) filebrowser ====="
     if command -v pkill >/dev/null 2>&1; then
       pkill -f 'caddy run' >/dev/null 2>&1 || true
-      pkill -f 'php-fpm' >/dev/null 2>&1 || true
-      pkill -f 'php -S 127.0.0.1' >/dev/null 2>&1 || true
       pkill -f './filebrowser ' >/dev/null 2>&1 || true
     fi
     fb_ensure_bin || exit 0
+    nc_ensure_caddy || true
     fb_init
+    fb_write_caddy
     fb_write_snippet
-    echo "[filebrowser] 聽 127.0.0.1:${NEXTCLOUD_PORT:-26001} 根目錄 $PWD/cloud"
-    echo "[filebrowser] 帳號 admin，密碼在 config/filebrowser-admin.txt"
-    echo "[filebrowser] 公開 https://files.jasoncloudserver.me"
-    exec ./filebrowser -d "$PWD/fb-data/filebrowser.db"
+    echo "[filebrowser] 密碼實例 :26011 / 免登實例 :26012 / Caddy :26001"
+    nohup ./filebrowser -d "$PWD/fb-data/auth.db" >> logs/filebrowser-auth.log 2>&1 &
+    nohup ./filebrowser -d "$PWD/fb-data/open.db" >> logs/filebrowser-open.log 2>&1 &
+    sleep 1
+    if [[ -x ./caddy ]]; then
+      exec ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile.fb" --adapter caddyfile
+    fi
+    echo "[filebrowser] 沒有 caddy，改只開密碼版 :26001（無法 SSO）"
+    exec ./filebrowser -d "$PWD/fb-data/auth.db" -a 127.0.0.1 -p 26001
   ) >> logs/filebrowser.log 2>&1 &
   disown || true
 }
@@ -1033,6 +1055,10 @@ if [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]]; then
   export TRONCLASS_MATERIALS_BACKEND="${TRONCLASS_MATERIALS_BACKEND:-local}"
   export TRONCLASS_MATERIALS_FRONTEND_URL="${TRONCLASS_MATERIALS_FRONTEND_URL:-https://files.jasoncloudserver.me/files}"
   export TRONCLASS_MATERIALS_FRONTEND_MODE="${TRONCLASS_MATERIALS_FRONTEND_MODE:-redirect}"
+  if [[ -f config/fb-sso.secret ]]; then
+    export TRONCLASS_FB_SSO_SECRET="$(tr -d '\r\n' < config/fb-sso.secret)"
+  fi
+  export TRONCLASS_FB_SSO_DOMAIN="${TRONCLASS_FB_SSO_DOMAIN:-.jasoncloudserver.me}"
   echo "[ptero-start] Dashboard 教材 → ${TRONCLASS_MATERIALS_DIR}，雲端按鈕 ${TRONCLASS_MATERIALS_FRONTEND_URL}（mode=${TRONCLASS_MATERIALS_FRONTEND_MODE}）"
 fi
 

@@ -49,6 +49,9 @@ use self::pages::{
 };
 mod actions;
 mod files;
+pub mod materials_webdav;
+pub mod oidc;
+mod fb_sso;
 mod health;
 mod logs;
 mod mock;
@@ -717,6 +720,18 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
         .route("/admin/files", get(files::admin_files_page_handler))
+        .route(
+            "/.well-known/openid-configuration",
+            get(oidc::discovery_handler),
+        )
+        .route(
+            "/admin/oidc/.well-known/openid-configuration",
+            get(oidc::discovery_handler),
+        )
+        .route("/admin/oidc/authorize", get(oidc::authorize_handler))
+        .route("/admin/oidc/token", post(oidc::token_handler))
+        .route("/admin/oidc/userinfo", get(oidc::userinfo_handler))
+        .route("/admin/oidc/jwks", get(oidc::jwks_handler))
         .route("/admin/password", get(admin_password_page_handler))
         .route("/admin/passkey", get(admin_passkey_page_handler))
         .route("/admin/logs", get(logs::admin_logs_page_handler))
@@ -758,6 +773,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route("/admin/api/logs", get(logs::admin_logs_api_handler))
+        .route("/admin/api/fb-sso-check", get(fb_sso::fb_sso_check_handler))
         .route(
             "/admin/api/login",
             post(admin_login_handler).layer(DefaultBodyLimit::max(ADMIN_LOGIN_BODY_LIMIT)),
@@ -1023,6 +1039,7 @@ fn bootstrap_allowed_api_path(path: &str) -> bool {
         path,
         "/admin/api/login"
             | "/admin/api/logout"
+            | "/admin/api/fb-sso-check"
             | "/admin/api/password"
             | "/admin/api/status"
             | "/admin/api/public_status"
@@ -1280,18 +1297,22 @@ fn session_login_response(
     is_admin: bool,
     must_change_password: bool,
 ) -> Response {
-    append_session_cookie(
-        (
-            StatusCode::OK,
-            Json(json!(AdminLoginResponse {
-                token: SESSION_COOKIE_MARKER.to_string(),
-                account_id,
-                is_admin,
-                must_change_password,
-            })),
-        )
-            .into_response(),
-        session_token,
+    fb_sso::append_fb_sso_cookie(
+        append_session_cookie(
+            (
+                StatusCode::OK,
+                Json(json!(AdminLoginResponse {
+                    token: SESSION_COOKIE_MARKER.to_string(),
+                    account_id: account_id.clone(),
+                    is_admin,
+                    must_change_password,
+                })),
+            )
+                .into_response(),
+            session_token,
+            request_headers,
+        ),
+        &account_id,
         request_headers,
     )
 }
@@ -2822,7 +2843,9 @@ async fn admin_logout_handler(
         }
     }
 
-    append_expired_session_cookies((StatusCode::OK, Json(json!({ "ok": true }))).into_response())
+    fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
+        (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+    ))
 }
 
 fn password_json_pick(value: &serde_json::Value, keys: &[&str]) -> String {
