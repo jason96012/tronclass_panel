@@ -160,17 +160,16 @@ fb_ensure_bin() {
 fb_write_branding() {
   mkdir -p filebrowser-branding
   cat > filebrowser-branding/custom.css <<'CSS'
-/* Tronclass cloud dynamic background. Filebrowser built-in theme toggle and
-   prefers-color-scheme control the colors without covering the UI. */
-:root{--tron-bg:#eef4ff;--tron-a:#5b8cff;--tron-b:#9b7cff;--tron-card:rgba(255,255,255,.72)}
-@media(prefers-color-scheme:dark){:root{--tron-bg:#0b1020;--tron-a:#4d7cff;--tron-b:#b36cff;--tron-card:rgba(18,25,48,.78)}}
+/* Tronclass cloud background: vivid but calm, matching the login visual language. */
+:root{--tron-bg:#f4f7ff;--tron-ink:#16233f;--tron-blue:#4d8dff;--tron-violet:#9b6cff;--tron-cyan:#55d8e8;--tron-card:rgba(255,255,255,.82)}
+@media(prefers-color-scheme:dark){:root{--tron-bg:#080e1d;--tron-ink:#e8efff;--tron-blue:#3c7dff;--tron-violet:#a96cff;--tron-cyan:#24b9d0;--tron-card:rgba(16,24,45,.82)}}
 html,body,#app{background:transparent!important}
-body{background:var(--tron-bg)!important;overflow-x:hidden}
-body:before,body:after{content:"";position:fixed;z-index:-1;pointer-events:none;border-radius:50%;filter:blur(45px);opacity:.48;animation:tronFloat 14s ease-in-out infinite alternate}
-body:before{width:42vw;height:42vw;left:-12vw;top:-14vw;background:radial-gradient(circle,var(--tron-a),transparent 68%)}
-body:after{width:38vw;height:38vw;right:-10vw;bottom:-14vw;background:radial-gradient(circle,var(--tron-b),transparent 68%);animation-delay:-6s}
-.v-card,.card,.v-toolbar,.v-navigation-drawer,.v-dialog,.v-menu__content{background:var(--tron-card)!important;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
-@keyframes tronFloat{from{transform:translate3d(-2%,1%,0) scale(1)}to{transform:translate3d(3%,-3%,0) scale(1.08)}}
+body{color:var(--tron-ink)!important;background-color:var(--tron-bg)!important;background-image:radial-gradient(ellipse 55% 65% at 0% 0%,color-mix(in srgb,var(--tron-blue) 28%,transparent),transparent 72%),radial-gradient(ellipse 48% 60% at 100% 100%,color-mix(in srgb,var(--tron-violet) 30%,transparent),transparent 70%),radial-gradient(ellipse 35% 45% at 70% 5%,color-mix(in srgb,var(--tron-cyan) 13%,transparent),transparent 75%)!important;overflow-x:hidden}
+body:before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.22;background-image:linear-gradient(color-mix(in srgb,var(--tron-blue) 16%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--tron-blue) 16%,transparent) 1px,transparent 1px);background-size:46px 46px;mask-image:linear-gradient(to bottom right,black,transparent 72%);animation:tronGrid 22s linear infinite}
+body:after{content:"";position:fixed;z-index:-1;pointer-events:none;width:38vw;height:38vw;right:3vw;bottom:-18vw;border-radius:50%;background:radial-gradient(circle,color-mix(in srgb,var(--tron-violet) 38%,transparent),transparent 68%);filter:blur(35px);animation:tronFloat 12s ease-in-out infinite alternate}
+.v-card,.card,.v-toolbar,.v-navigation-drawer,.v-dialog,.v-menu__content{background:var(--tron-card)!important;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)}
+@keyframes tronFloat{from{transform:translate3d(-3%,2%,0) scale(.95)}to{transform:translate3d(3%,-4%,0) scale(1.1)}}
+@keyframes tronGrid{from{background-position:0 0,0 0}to{background-position:46px 46px,46px 46px}}
 @media(prefers-reduced-motion:reduce){body:before,body:after{animation:none}}
 CSS
 }
