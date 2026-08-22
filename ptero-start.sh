@@ -706,6 +706,10 @@ nc_bootstrap() {
   nc_ensure_secrets
   nc_install || return 0
   nc_configure
+  if [[ -f ./apply-nextcloud-sso-now.sh ]]; then
+    echo "[nextcloud] 執行 apply-nextcloud-sso-now.sh"
+    bash ./apply-nextcloud-sso-now.sh || true
+  fi
   nc_start_server
   echo "[nextcloud] 完成。公開網址：${NEXTCLOUD_PUBLIC_URL:-https://files.jasoncloudserver.me}"
   echo "[nextcloud] Tunnel：files.jasoncloudserver.me → http://127.0.0.1:${NEXTCLOUD_PORT:-26001}"
