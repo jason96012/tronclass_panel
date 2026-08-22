@@ -236,6 +236,8 @@ nc_write_caddyfile() {
   local root="$PWD/nextcloud"
   local port="${NEXTCLOUD_PORT:-26001}"
   mkdir -p nextcloud-runtime
+  # Cloudflare 送來 Host=files.xxx，不能只寫 http://127.0.0.1
+  # php_fastcgi 已內建轉 index.php，不要再加 try_files
   cat > nextcloud-runtime/Caddyfile << EOF
 {
     admin off
@@ -243,20 +245,19 @@ nc_write_caddyfile() {
     persist_config off
 }
 
-http://127.0.0.1:${port} {
+:${port} {
+    bind 127.0.0.1
     root * ${root}
     encode gzip
-    try_files {path} {path}/ /index.php?{query}
-    php_fastcgi 127.0.0.1:9001 {
-        env front_controller_active true
-        dial_timeout 10s
-        read_timeout 360s
-    }
+    php_fastcgi 127.0.0.1:9001
     file_server
     header {
         X-Content-Type-Options nosniff
         Referrer-Policy no-referrer
         -Server
+    }
+    log {
+        output file ${PWD}/logs/caddy-access.log
     }
 }
 EOF
@@ -720,9 +721,12 @@ EOF
 nc_already_running() {
   local port="${NEXTCLOUD_PORT:-26001}"
   command -v curl >/dev/null 2>&1 || return 1
-  local body
-  body="$(curl -sS --max-time 5 "http://127.0.0.1:${port}/" 2>/dev/null || true)"
-  echo "$body" | grep -qiE 'nextcloud|login|password|nc-' || return 1
+  local code body
+  code="$(curl -sS -o /tmp/nc-health.body -w '%{http_code}' --max-time 8 "http://127.0.0.1:${port}/" -H "Host: files.jasoncloudserver.me" 2>/dev/null || echo 000)"
+  body="$(cat /tmp/nc-health.body 2>/dev/null || true)"
+  echo "[nextcloud] health HTTP ${code} bytes ${#body}"
+  [[ "$code" == "200" || "$code" == "302" || "$code" == "301" || "$code" == "303" ]] || return 1
+  [[ "${#body}" -gt 20 || "$code" == "302" || "$code" == "301" ]]
 }
 
 nc_start_server() {
