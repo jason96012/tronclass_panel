@@ -22,6 +22,23 @@ if ! mkdir run/ptero-start.lock 2>/dev/null; then
   rm -rf run/ptero-start.lock
   mkdir run/ptero-start.lock || exit 1
 fi
+secure_runtime_permissions() {
+  # Keep credentials and runtime databases private even when the image starts
+  # with permissive defaults. Never change source/binary permissions here.
+  umask 077
+  chmod 700 config logs run 2>/dev/null || true
+  local f
+  for f in config/config.toml config/*.db config/*.db-* config/*.token config/*.env \
+           config/*secret* config/*-password.txt config/filebrowser-admin.txt; do
+    [[ -f "$f" ]] && chmod 600 "$f"
+  done
+  for f in config/accounts.db config/config.toml; do
+    [[ -f "$f" ]] && chmod 600 "$f"
+  done
+  find logs -maxdepth 1 -type f -exec chmod 600 {} + 2>/dev/null || true
+}
+secure_runtime_permissions
+
 printf '%s\n' "$$" > run/ptero-start.lock/pid
 cleanup_start_lock() { rm -rf run/ptero-start.lock; }
 trap cleanup_start_lock EXIT INT TERM
