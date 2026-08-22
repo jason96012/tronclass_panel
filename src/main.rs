@@ -787,7 +787,7 @@ async fn main() -> Result<()> {
     // contains the current source. Printed before logging is configured so it
     // always reaches the Pterodactyl console.
     println!(
-        "[BUILD] tronclass_rollcall AUTHFIX-6 compiled {} {}",
+        "[BUILD] tronclass_rollcall AUTHFIX-7 compiled {} {}",
         env!("CARGO_PKG_VERSION"),
         compile_time_stamp()
     );

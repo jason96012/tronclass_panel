@@ -1344,6 +1344,7 @@ fn session_login_response(
             request_headers,
         ),
         &account_id,
+        is_admin,
         request_headers,
     )
 }

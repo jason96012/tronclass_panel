@@ -232,6 +232,7 @@ fb_init() {
   fi
   local auth_db="$PWD/fb-data/auth.db"
   local open_db="$PWD/fb-data/open.db"
+  local admin_db="$PWD/fb-data/admin.db"
 
   # 確保資料庫「有使用者」。舊版只看檔案存在就跳過，一旦當初 users add 失敗，
   # 就會永遠卡在「有 DB、沒使用者」→ Filebrowser 登入直接 500，且不會自我修復。
@@ -260,6 +261,13 @@ fb_init() {
               --perm.modify=true --perm.delete=true --perm.rename=true
               --perm.share=true --perm.execute=false
               --scope "$FB_USER_SCOPE" )
+    elif [[ "$mode" == "admin-full" ]]; then
+      # Dashboard 管理員：看得到整個 cloud/，檔案操作全開。
+      # 仍保持 perm.admin=false，避免從免登入口新增/刪除 Filebrowser 帳號。
+      perms=( --perm.admin=false --perm.create=true --perm.download=true
+              --perm.modify=true --perm.delete=true --perm.rename=true
+              --perm.share=true --perm.execute=false
+              --scope "/" )
     else
       perms=( --perm.admin=true --scope "/" )
     fi
@@ -283,7 +291,9 @@ fb_init() {
       || echo "[filebrowser] config set 失敗（$label）"
 
     # 全域預設也鎖起來：noauth 模式下新 session 會沿用這組預設值。
-    if [[ "$mode" == "files-full" ]]; then
+    if [[ "$mode" == "files-full" || "$mode" == "admin-full" ]]; then
+      local gscope="/"
+      [[ "$mode" == "files-full" ]] && gscope="$FB_USER_SCOPE"
       ./filebrowser config set -d "$db" \
         --perm.admin=false --perm.create=true --perm.download=true \
         --perm.modify=true --perm.delete=true --perm.rename=true \
@@ -291,16 +301,14 @@ fb_init() {
       ./filebrowser config set -d "$db" --signup=false --createUserDir=false \
         >> logs/filebrowser-init.log 2>&1 || true
       # noauth 模式下新 session 會沿用全域預設 scope，必須一併鎖住。
-      ./filebrowser config set -d "$db" --scope "$FB_USER_SCOPE" \
+      ./filebrowser config set -d "$db" --scope "$gscope" \
         >> logs/filebrowser-init.log 2>&1 || true
     fi
 
     if fb_db_has_user "$db"; then
-      if [[ "$mode" == "files-full" ]]; then
-        echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode, scope=$FB_USER_SCOPE）"
-      else
-        echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode, scope=/）"
-      fi
+      local shown="/"
+      [[ "$mode" == "files-full" ]] && shown="$FB_USER_SCOPE"
+      echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode, scope=$shown）"
     else
       echo "[filebrowser] 警告：$label 仍然沒有使用者，登入會 500"
     fi
@@ -312,6 +320,8 @@ fb_init() {
   # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口
   # 檔案操作全開，只擋帳號管理與全域設定
   fb_prepare_db "$open_db" noauth 26012 "open.db" files-full
+  # 免登版（:26013）＝Dashboard 管理員，看得到整個 cloud/
+  fb_prepare_db "$admin_db" noauth 26013 "admin.db" admin-full
 }
 
 fb_write_caddy() {
@@ -329,14 +339,22 @@ fb_write_caddy() {
     encode gzip
     forward_auth 127.0.0.1:${dash_port} {
         uri /admin/api/fb-sso-check
-        copy_headers X-Fb-Authed
+        copy_headers X-Fb-Authed X-Fb-Admin
         header_up X-Forwarded-Proto https
     }
-    @dash header X-Fb-Authed yes
 
-    # 免登（一般使用者）通道：即使使用者權限已鎖，仍在代理層封掉
-    # 帳號管理與全域設定的 API/頁面，避免任何遺漏。GET 設定頁只是唯讀 UI，
-    # 真正會改到東西的是這些 API。
+    # 三種身分：
+    #   X-Fb-Admin: yes  → Dashboard 管理員，整個 cloud/（:26013）
+    #   X-Fb-Authed: yes → 一般使用者，只有教材（:26012）
+    #   兩者皆無        → 陌生訪客，要密碼（:26011）
+    @admin header X-Fb-Admin yes
+    @user {
+        header X-Fb-Authed yes
+        not header X-Fb-Admin yes
+    }
+
+    # 免登通道一律不得管理 Filebrowser 帳號或改全域設定，管理員也一樣：
+    # 那是伺服器層設定，應該從密碼入口進。
     @fb_admin_api {
         header X-Fb-Authed yes
         path /api/users* /api/settings*
@@ -349,7 +367,10 @@ fb_write_caddy() {
     }
     redir @fb_admin_page /files 302
 
-    handle @dash {
+    handle @admin {
+        reverse_proxy 127.0.0.1:26013
+    }
+    handle @user {
         reverse_proxy 127.0.0.1:26012
     }
     handle {
@@ -381,15 +402,16 @@ start_filebrowser() {
     # config/filebrowser-admin.txt）。用來救回 500 的殘缺 DB。
     if [[ -f config/fb-reset ]]; then
       echo "[filebrowser] 偵測到 config/fb-reset，重建資料庫"
-      rm -f fb-data/auth.db fb-data/open.db
+      rm -f fb-data/auth.db fb-data/open.db fb-data/admin.db
       rm -f config/fb-reset
     fi
     fb_init
     fb_write_caddy
     fb_write_snippet
-    echo "[filebrowser] 密碼實例 :26011 / 免登實例 :26012 / Caddy :26001"
+    echo "[filebrowser] 密碼 :26011 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001"
     nohup ./filebrowser -d "$PWD/fb-data/auth.db" >> logs/filebrowser-auth.log 2>&1 &
     nohup ./filebrowser -d "$PWD/fb-data/open.db" >> logs/filebrowser-open.log 2>&1 &
+    nohup ./filebrowser -d "$PWD/fb-data/admin.db" >> logs/filebrowser-admin.log 2>&1 &
     sleep 1
     if [[ -x ./caddy ]]; then
       exec ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile.fb" --adapter caddyfile
