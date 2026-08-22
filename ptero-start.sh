@@ -1162,9 +1162,17 @@ watchdog_check_filebrowser_http() {
   for port in 26001 26012 26013; do
     if ! watchdog_http_ok "http://127.0.0.1:${port}/"; then bad=1; fi
   done
+  local count=0
+  count="$(cat logs/filebrowser-http-failures 2>/dev/null || echo 0)"
   if (( bad == 1 )); then
-    echo "[watchdog] Filebrowser/Caddy HTTP health check 失敗" >> logs/filebrowser-watchdog.log
-    watchdog_restart_filebrowser
+    count=$((count + 1)); printf '%s\n' "$count" > logs/filebrowser-http-failures
+    echo "[watchdog] Filebrowser/Caddy HTTP health check 失敗（${count}/3）" >> logs/filebrowser-watchdog.log
+    if (( count >= ${WATCHDOG_FAILURE_THRESHOLD:-3} )); then
+      watchdog_restart_filebrowser
+      printf '0\n' > logs/filebrowser-http-failures
+    fi
+  else
+    rm -f logs/filebrowser-http-failures
   fi
 }
 
@@ -1243,10 +1251,18 @@ watchdog_loop() {
       watchdog_check_tunnel_connector
       watchdog_check_filebrowser
       watchdog_check_filebrowser_http
+      local dashboard_failures=0
+      dashboard_failures="$(cat logs/dashboard-http-failures 2>/dev/null || echo 0)"
       if ! watchdog_http_ok "http://127.0.0.1:${SERVER_PORT:-26000}/"; then
-        echo "[watchdog] Dashboard HTTP health check 失敗，停止主程式交由 Pterodactyl 重啟"
-        kill "$child" 2>/dev/null || true
-        break
+        dashboard_failures=$((dashboard_failures + 1)); printf '%s\n' "$dashboard_failures" > logs/dashboard-http-failures
+        echo "[watchdog] Dashboard HTTP health check 失敗（${dashboard_failures}/${WATCHDOG_FAILURE_THRESHOLD:-3}）"
+        if (( dashboard_failures >= ${WATCHDOG_FAILURE_THRESHOLD:-3} )); then
+          echo "[watchdog] Dashboard 連續健康檢查失敗，交由 Pterodactyl 重啟"
+          kill "$child" 2>/dev/null || true
+          break
+        fi
+      else
+        rm -f logs/dashboard-http-failures
       fi
     else
       echo "[watchdog] 啟動寬限中 ${elapsed}/${WATCHDOG_STARTUP_GRACE_SECS:-180}s"
