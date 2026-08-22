@@ -1540,6 +1540,22 @@ async fn admin_status_handler(
     let token = session_cookie_from_headers(&headers)
         .unwrap_or_else(|| query.token.trim().to_string());
     let Some(session) = state.authorize_any(&token).await else {
+        // Ptero only exposes logs, so make this failure self-diagnosing.
+        let raw_cookie = headers
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("<none>");
+        let names: Vec<&str> = raw_cookie
+            .split(';')
+            .filter_map(|p| p.trim().split_once('=').map(|(k, _)| k.trim()))
+            .collect();
+        warn!(
+            cookie_names = ?names,
+            parsed_token_len = token.len(),
+            xfp = ?headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()),
+            uses_https = request_uses_https(&headers),
+            "STATUS 401: session lookup failed"
+        );
         return unauthorized_response();
     };
 
@@ -2809,17 +2825,9 @@ async fn admin_login_handler(
 }
 
 fn session_token(headers: &HeaderMap, query_token: &str) -> String {
-    if let Some(raw) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()) {
-        for part in raw.split(';') {
-            let part = part.trim();
-            if let Some((k, v)) = part.split_once('=') {
-                if k.trim() == "tronclass_admin_session" && !v.trim().is_empty() {
-                    return v.trim().to_string();
-                }
-            }
-        }
-    }
-    query_token.trim().to_string()
+    // Must go through the shared parser so the hardened `__Host-` cookie used on
+    // HTTPS deployments is recognised too.
+    session_cookie_from_headers(headers).unwrap_or_else(|| query_token.trim().to_string())
 }
 
 async fn admin_logout_handler(
