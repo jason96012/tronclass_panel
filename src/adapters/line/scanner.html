@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tronclass QR Scanner</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f7f8fb;
+      --text: #172033;
+      --muted: #667085;
+      --panel: #ffffff;
+      --border: #d7dce5;
+      --accent: #2563eb;
+      --ok: #15803d;
+      --error: #b91c1c;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #10141f;
+        --text: #eef2ff;
+        --muted: #aab4c8;
+        --panel: #171d2b;
+        --border: #30394f;
+        --accent: #60a5fa;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    main {
+      width: min(720px, 100%);
+      margin: 0 auto;
+      padding: 20px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 24px;
+      line-height: 1.2;
+    }
+    p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .panel {
+      margin-top: 18px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    video, canvas {
+      display: block;
+      width: 100%;
+      max-height: 62vh;
+      border-radius: 8px;
+      background: #000;
+    }
+    canvas { display: none; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+    button {
+      min-height: 44px;
+      border: 0;
+      border-radius: 8px;
+      padding: 0 14px;
+      background: var(--accent);
+      color: white;
+      font-size: 15px;
+      font-weight: 650;
+    }
+    button.secondary {
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+    }
+    textarea {
+      width: 100%;
+      min-height: 96px;
+      margin-top: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      font: inherit;
+      color: var(--text);
+      background: transparent;
+      resize: vertical;
+    }
+    .zoom-controls {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .zoom-controls.visible { display: block; }
+    .zoom-controls label {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
+    }
+    input[type="range"] {
+      width: 100%;
+      margin-top: 10px;
+    }
+    #status {
+      margin-top: 12px;
+      font-weight: 650;
+    }
+    #status.ok { color: var(--ok); }
+    #status.error { color: var(--error); }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .metric {
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      text-align: center;
+    }
+    .metric strong {
+      display: block;
+      font-size: 22px;
+      color: var(--text);
+    }
+    .metric span {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .lists {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 14px;
+    }
+    .list h3 {
+      margin: 0 0 8px;
+      font-size: 15px;
+    }
+    .list ul {
+      min-height: 48px;
+      margin: 0;
+      padding: 10px 10px 10px 28px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .list.done h3 { color: var(--ok); }
+    .list.pending h3 { color: var(--error); }
+    @media (max-width: 560px) {
+      .summary { grid-template-columns: 1fr; }
+      .lists { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Tronclass QR Scanner</h1>
+    <p>掃描課堂 QR Code 後會自動回傳給本機，並套用到同一個 rollcall 的所有等待帳號。</p>
+
+    <section class="panel">
+      <video id="preview" playsinline muted></video>
+      <canvas id="canvas"></canvas>
+      <div class="actions">
+        <button id="start" type="button">開啟相機</button>
+        <button id="stop" type="button" class="secondary">停止</button>
+      </div>
+      <div id="zoomControls" class="zoom-controls">
+        <label for="zoom">
+          <span>鏡頭縮放</span>
+          <span id="zoomValue">1.0x</span>
+        </label>
+        <input id="zoom" type="range" min="1" max="1" step="0.1" value="1">
+      </div>
+      <div id="status">尚未掃描</div>
+    </section>
+
+    <section class="panel">
+      <p>簽到狀態會自動更新。已完成代表該帳號已回報 QR 簽到成功；未完成代表仍在等待有效 QR Code。</p>
+      <div class="summary">
+        <div class="metric"><strong id="totalCount">0</strong><span>總帳號</span></div>
+        <div class="metric"><strong id="doneCount">0</strong><span>已點到</span></div>
+        <div class="metric"><strong id="pendingCount">0</strong><span>未點到</span></div>
+      </div>
+      <div class="lists">
+        <div class="list done">
+          <h3>已點到</h3>
+          <ul id="doneList"><li>尚無</li></ul>
+        </div>
+        <div class="list pending">
+          <h3>還沒點到</h3>
+          <ul id="pendingList"><li>尚無</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <p>如果相機無法開啟，可以貼上掃描到的 URL 或 p 參數。</p>
+      <textarea id="manual" placeholder="https://elearn2.fju.edu.tw/scanner-jumper?p=..."></textarea>
+      <div class="actions">
+        <button id="submitManual" type="button">送出</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const provider = params.get("provider") || "";
+    const rollcallId = Number(params.get("rollcall_id") || "0");
+    const token = params.get("token") || "";
+    const accountId = params.get("account_id") || "";
+    const statusEl = document.getElementById("status");
+    const video = document.getElementById("preview");
+    const canvas = document.getElementById("canvas");
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    const zoomControls = document.getElementById("zoomControls");
+    const zoomSlider = document.getElementById("zoom");
+    const zoomValue = document.getElementById("zoomValue");
+    const totalCountEl = document.getElementById("totalCount");
+    const doneCountEl = document.getElementById("doneCount");
+    const pendingCountEl = document.getElementById("pendingCount");
+    const doneListEl = document.getElementById("doneList");
+    const pendingListEl = document.getElementById("pendingList");
+
+    const RESUBMIT_SAME_QR_MS = 3000;
+    let stream = null;
+    let videoTrack = null;
+    let scanning = false;
+    let submitInFlight = false;
+    let lastSubmittedData = "";
+    let lastSubmittedAt = 0;
+    let successfulSubmits = 0;
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = kind || "";
+    }
+
+    function validScannerParams() {
+      return Boolean(provider && rollcallId && token && accountId);
+    }
+
+    function renderList(el, items) {
+      el.innerHTML = "";
+      if (!items || items.length === 0) {
+        const li = document.createElement("li");
+        li.textContent = "尚無";
+        el.appendChild(li);
+        return;
+      }
+      for (const item of items) {
+        const li = document.createElement("li");
+        li.textContent = item;
+        el.appendChild(li);
+      }
+    }
+
+    async function refreshAttendanceStatus() {
+      if (!validScannerParams()) return;
+      try {
+        const query = new URLSearchParams({
+          provider,
+          rollcall_id: String(rollcallId),
+          account_id: accountId,
+          token
+        });
+        const res = await fetch(`/scanner/status?${query.toString()}`, { cache: "no-store" });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || "狀態讀取失敗");
+        totalCountEl.textContent = String(body.total_count || 0);
+        doneCountEl.textContent = String(body.completed_count || 0);
+        pendingCountEl.textContent = String(body.pending_count || 0);
+        renderList(doneListEl, body.completed_accounts || []);
+        renderList(pendingListEl, body.pending_accounts || []);
+      } catch (err) {
+        // 狀態輪詢失敗不停止掃描，只在狀態列提示。
+        if (!scanning) return;
+        setStatus((err && err.message) || "狀態讀取失敗", "error");
+      }
+    }
+
+    async function submitQr(qrData) {
+      const now = Date.now();
+      if (!qrData || !validScannerParams()) return;
+      if (submitInFlight) return;
+      if (qrData === lastSubmittedData && now - lastSubmittedAt < RESUBMIT_SAME_QR_MS) {
+        return;
+      }
+
+      submitInFlight = true;
+      lastSubmittedData = qrData;
+      lastSubmittedAt = now;
+      setStatus("正在回傳 QR Code...", "");
+
+      try {
+        const res = await fetch("/scanner/submit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider,
+            rollcall_id: rollcallId,
+            account_id: accountId,
+            token,
+            qr_data: qrData
+          })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body.error || "回傳失敗");
+        }
+        successfulSubmits += 1;
+        setStatus(
+          `已送出第 ${successfulSubmits} 次，${body.delivered_count || 0} 個帳號收到 QR Code。持續掃描中...`,
+          "ok"
+        );
+        refreshAttendanceStatus();
+      } catch (err) {
+        setStatus((err && err.message) || "回傳失敗，仍會持續掃描。", "error");
+      } finally {
+        submitInFlight = false;
+      }
+    }
+
+    function tick() {
+      if (!scanning) return;
+      if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+        requestAnimationFrame(tick);
+        return;
+      }
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const code = window.jsQR && window.jsQR(imageData.data, imageData.width, imageData.height);
+      if (code && code.data) {
+        submitQr(code.data);
+      }
+      requestAnimationFrame(tick);
+    }
+
+    function setZoomUiVisible(visible) {
+      zoomControls.classList.toggle("visible", Boolean(visible));
+    }
+
+    function formatZoom(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? `${n.toFixed(1)}x` : "不支援";
+    }
+
+    async function setupZoomControl(track) {
+      if (!track || !track.getCapabilities) {
+        setZoomUiVisible(false);
+        return;
+      }
+
+      const capabilities = track.getCapabilities();
+      if (!capabilities || typeof capabilities.zoom === "undefined") {
+        setZoomUiVisible(false);
+        return;
+      }
+
+      const settings = track.getSettings ? track.getSettings() : {};
+      const min = Number(capabilities.zoom.min ?? 1);
+      const max = Number(capabilities.zoom.max ?? min);
+      const step = Number(capabilities.zoom.step ?? 0.1);
+      const current = Number(settings.zoom ?? min);
+
+      zoomSlider.min = String(min);
+      zoomSlider.max = String(max);
+      zoomSlider.step = String(step || 0.1);
+      zoomSlider.value = String(Math.min(Math.max(current, min), max));
+      zoomValue.textContent = formatZoom(zoomSlider.value);
+      setZoomUiVisible(max > min);
+
+      zoomSlider.oninput = async () => {
+        const zoom = Number(zoomSlider.value);
+        zoomValue.textContent = formatZoom(zoom);
+        try {
+          await track.applyConstraints({ advanced: [{ zoom }] });
+        } catch (err) {
+          setStatus("此瀏覽器或鏡頭不允許調整縮放。", "error");
+        }
+      };
+    }
+
+    async function startCamera() {
+      if (!validScannerParams()) {
+        setStatus("掃描連結缺少必要參數", "error");
+        return;
+      }
+      if (!window.jsQR) {
+        setStatus("QR 解碼器尚未載入，請稍後再試或改用手動貼上。", "error");
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "environment",
+            width: { ideal: 1920 },
+            height: { ideal: 1080 }
+          },
+          audio: false
+        });
+        videoTrack = stream.getVideoTracks()[0] || null;
+        video.srcObject = stream;
+        await video.play();
+        await setupZoomControl(videoTrack);
+        scanning = true;
+        setStatus("正在掃描並持續回傳 QR Code...", "");
+        requestAnimationFrame(tick);
+      } catch (err) {
+        setStatus("無法開啟相機，請確認瀏覽器權限或使用 HTTPS。", "error");
+      }
+    }
+
+    function stopCamera() {
+      scanning = false;
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+      videoTrack = null;
+      video.srcObject = null;
+      setZoomUiVisible(false);
+      setStatus("已停止掃描", "");
+    }
+
+    document.getElementById("start").addEventListener("click", startCamera);
+    document.getElementById("stop").addEventListener("click", stopCamera);
+    document.getElementById("submitManual").addEventListener("click", () => {
+      const value = document.getElementById("manual").value.trim();
+      if (!value) {
+        setStatus("請先貼上 QR Code 內容", "error");
+        return;
+      }
+      submitQr(value);
+    });
+
+    refreshAttendanceStatus();
+    setInterval(refreshAttendanceStatus, 1500);
+    startCamera();
+  </script>
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a183d92dae1b4a3f',t:'MTc4MzU2MzYxNA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script defer src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>

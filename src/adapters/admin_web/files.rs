@@ -1,0 +1,1031 @@
+//! Materials file-manager page/API handlers for Admin Web.
+
+use super::*;
+use std::process::Stdio;
+use std::sync::Weak;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminFilesQuery {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminFilesHistoryQuery {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminFileDeleteRequest {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminFolderCreateRequest {
+    path: String,
+}
+
+const MATERIALS_LIST_CACHE_TTL: Duration = Duration::from_secs(3);
+const MAX_MULTIPART_FIELDS: usize = 32;
+const MAX_UPLOAD_FILES: usize = 16;
+const MAX_MATERIAL_FILENAME_BYTES: usize = 255;
+const OFFICE_PREVIEW_CONCURRENCY: usize = 2;
+const OFFICE_PREVIEW_MAX_PENDING: usize = 64;
+const OFFICE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(90);
+
+static OFFICE_PREVIEW_PENDING_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
+    once_cell::sync::Lazy::new(|| Semaphore::new(OFFICE_PREVIEW_MAX_PENDING));
+static OFFICE_PREVIEW_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
+    once_cell::sync::Lazy::new(|| Semaphore::new(OFFICE_PREVIEW_CONCURRENCY));
+static OFFICE_PREVIEW_LOCKS: once_cell::sync::Lazy<
+    tokio::sync::Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>,
+> = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
+
+#[derive(Clone)]
+struct MaterialsListSnapshot {
+    updated_at: Instant,
+    files: Vec<MaterialFileEntry>,
+    folders: Vec<String>,
+}
+
+static MATERIALS_LIST_CACHE: once_cell::sync::Lazy<
+    tokio::sync::Mutex<Option<MaterialsListSnapshot>>,
+> = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(None));
+
+async fn invalidate_materials_list_cache() {
+    *MATERIALS_LIST_CACHE.lock().await = None;
+}
+
+async fn cached_materials_list(
+    root: PathBuf,
+) -> std::result::Result<(Vec<MaterialFileEntry>, Vec<String>), Response> {
+    {
+        let cache = MATERIALS_LIST_CACHE.lock().await;
+        if let Some(snapshot) = cache.as_ref() {
+            if snapshot.updated_at.elapsed() <= MATERIALS_LIST_CACHE_TTL {
+                return Ok((snapshot.files.clone(), snapshot.folders.clone()));
+            }
+        }
+    }
+
+    // CLOUD_LIST_CACHE_SINGLE_SCAN_V1: scan files and folders in one blocking
+    // traversal, then reuse the result for short bursts from the files page.
+    let scan = tokio::task::spawn_blocking(move || list_material_tree(&root))
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("教材列表背景掃描失敗：{e}") })),
+            )
+                .into_response()
+        })?
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("讀取教材列表失敗：{e}") })),
+            )
+                .into_response()
+        })?;
+
+    let snapshot = MaterialsListSnapshot {
+        updated_at: Instant::now(),
+        files: scan.0.clone(),
+        folders: scan.1.clone(),
+    };
+    *MATERIALS_LIST_CACHE.lock().await = Some(snapshot);
+    Ok(scan)
+}
+
+const MATERIAL_STREAM_CHUNK_SIZE: usize = 64 * 1024;
+
+async fn stream_material_file_response(
+    path: PathBuf,
+    disposition_prefix: &str,
+    cache_control: Option<&str>,
+    read_error_label: &str,
+    build_error_label: &str,
+) -> Response {
+    // CLOUD_FILE_STREAMING_V1: avoid loading downloads/previews into a single
+    // Vec<u8>. Stream 64KB chunks from tokio::fs::File so large PDFs/videos do
+    // not spike memory usage per request.
+    let file = match tokio::fs::File::open(&path).await {
+        Ok(file) => file,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{read_error_label}：{e}") })),
+            )
+                .into_response();
+        }
+    };
+    let content_len = file.metadata().await.ok().map(|meta| meta.len());
+    let content_type = material_content_type(&path);
+    let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("file");
+    let disposition = format!(
+        "{}; filename=\"{}\"",
+        disposition_prefix,
+        sanitize_header_filename(file_name)
+    );
+
+    let stream = futures::stream::try_unfold(file, |mut file| async move {
+        let mut chunk = vec![0u8; MATERIAL_STREAM_CHUNK_SIZE];
+        let read = file.read(&mut chunk).await?;
+        if read == 0 {
+            Ok::<Option<(Vec<u8>, tokio::fs::File)>, std::io::Error>(None)
+        } else {
+            chunk.truncate(read);
+            Ok::<Option<(Vec<u8>, tokio::fs::File)>, std::io::Error>(Some((chunk, file)))
+        }
+    });
+
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_DISPOSITION, disposition);
+    if let Some(cache_control) = cache_control {
+        builder = builder.header(header::CACHE_CONTROL, cache_control);
+    }
+    if let Some(content_len) = content_len {
+        builder = builder.header(header::CONTENT_LENGTH, content_len.to_string());
+    }
+
+    builder
+        .body(axum::body::Body::from_stream(stream))
+        .unwrap_or_else(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{build_error_label}：{e}") })),
+            )
+                .into_response()
+        })
+}
+
+pub(super) async fn record_material_event(
+    state: &AdminWebState,
+    actor: &str,
+    action: &str,
+    path: &str,
+    folder: &str,
+    file_name: &str,
+    size: u64,
+    result: &str,
+    details: &str,
+) {
+    let _ = state
+        .accounts_db
+        .record_material_event(MaterialEventInput {
+            actor: actor.to_string(),
+            action: action.to_string(),
+            path: path.to_string(),
+            folder: folder.to_string(),
+            file_name: file_name.to_string(),
+            size: size.min(i64::MAX as u64) as i64,
+            result: result.to_string(),
+            details: details.to_string(),
+        })
+        .await;
+}
+
+pub(super) async fn admin_files_page_handler() -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Html(super::pages::inject_theme(ADMIN_FILES_HTML)),
+    )
+        .into_response()
+}
+
+pub(super) async fn admin_files_list_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminFilesQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+
+    let root = materials_root();
+    if let Err(e) = std::fs::create_dir_all(&root) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("建立 materials 目錄失敗：{e}") })),
+        )
+            .into_response();
+    }
+
+    let (files, folders) = match cached_materials_list(root).await {
+        Ok(list) => list,
+        Err(resp) => return resp,
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "is_admin": session.is_admin,
+            "max_file_size_mb": null,
+            "max_file_size_unlimited": true,
+            "allowed_extensions": MATERIAL_ALLOWED_EXTENSIONS,
+            "folders": folders,
+            "files": files,
+        })),
+    )
+        .into_response()
+}
+
+pub(super) async fn admin_files_download_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminFilesQuery>,
+) -> Response {
+    let Some(_session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) =
+        validate_optional_admin_text(query.path.as_deref(), ADMIN_MAX_PATH_BYTES, "path")
+    {
+        return response;
+    }
+
+    let Some(rel) = query
+        .path
+        .as_deref()
+        .and_then(safe_relative_path)
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid path" })),
+        )
+            .into_response();
+    };
+
+    let full_path = materials_root().join(rel);
+    if !full_path.is_file() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "file not found" })),
+        )
+            .into_response();
+    }
+
+    stream_material_file_response(
+        full_path,
+        "attachment",
+        None,
+        "讀取檔案失敗",
+        "建立下載回應失敗",
+    )
+    .await
+}
+
+fn material_total_size_for_upload(root: &std::path::Path) -> std::io::Result<u64> {
+    fn walk(path: &std::path::Path, total: &mut u64) -> std::io::Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(path)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                walk(&entry.path(), total)?;
+            } else if meta.is_file() {
+                *total = total.saturating_add(meta.len());
+            }
+        }
+        Ok(())
+    }
+    let mut total = 0;
+    walk(root, &mut total)?;
+    Ok(total)
+}
+
+pub(super) async fn admin_files_preview_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminFilesQuery>,
+) -> Response {
+    let Some(_session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) =
+        validate_optional_admin_text(query.path.as_deref(), ADMIN_MAX_PATH_BYTES, "path")
+    {
+        return response;
+    }
+
+    let Some(rel) = query
+        .path
+        .as_deref()
+        .and_then(safe_relative_path)
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid path" })),
+        )
+            .into_response();
+    };
+
+    let full_path = materials_root().join(rel);
+    if !full_path.is_file() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "file not found" })),
+        )
+            .into_response();
+    }
+
+    let ext = full_path
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    let response_path_buf;
+    let response_path: &std::path::Path = if matches!(ext.as_str(), "ppt" | "pptx") {
+        match ensure_office_pdf_preview(&full_path).await {
+            Ok(path) => {
+                response_path_buf = path;
+                response_path_buf.as_path()
+            }
+            Err(resp) => return resp,
+        }
+    } else if matches!(
+        ext.as_str(),
+        "pdf" | "jpg" | "jpeg" | "png" | "txt" | "md" | "mp4"
+    ) {
+        full_path.as_path()
+    } else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "此檔案格式不支援預覽，請下載查看" })),
+        )
+            .into_response();
+    };
+
+    stream_material_file_response(
+        response_path.to_path_buf(),
+        "inline",
+        Some("no-store"),
+        "讀取預覽檔失敗",
+        "建立預覽回應失敗",
+    )
+    .await
+}
+
+async fn office_preview_lock(cache_path: &Path) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = OFFICE_PREVIEW_LOCKS.lock().await;
+    locks.retain(|_, weak| weak.strong_count() > 0);
+    if let Some(lock) = locks.get(cache_path).and_then(Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(tokio::sync::Mutex::new(()));
+    locks.insert(cache_path.to_path_buf(), Arc::downgrade(&lock));
+    lock
+}
+
+async fn ensure_office_pdf_preview(source: &Path) -> Result<PathBuf, Response> {
+    let cache_dir = materials_root().join(".preview_cache");
+    if let Err(e) = tokio::fs::create_dir_all(&cache_dir).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("建立預覽快取失敗：{e}") })),
+        )
+            .into_response());
+    }
+
+    let meta = match tokio::fs::metadata(source).await {
+        Ok(meta) => meta,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("讀取原始檔資訊失敗：{e}") })),
+            )
+                .into_response());
+        }
+    };
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let stem = source
+        .file_stem()
+        .and_then(|v| v.to_str())
+        .unwrap_or("preview")
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect::<String>();
+    let mut cache_hasher = Sha256::new();
+    cache_hasher.update(source.to_string_lossy().as_bytes());
+    cache_hasher.update(meta.len().to_le_bytes());
+    cache_hasher.update(modified.to_le_bytes());
+    let cache_key = hex::encode(cache_hasher.finalize());
+    let cache_path = cache_dir.join(format!("{stem}_{}.pdf", &cache_key[..32]));
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    // Bound both converters and same-key waiters. A semaphore by itself limits
+    // child processes but otherwise has an unbounded FIFO of waiting requests.
+    let _pending_permit = OFFICE_PREVIEW_PENDING_SEMAPHORE
+        .try_acquire()
+        .map_err(|_| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({ "error": "too many pending Office preview requests" })),
+            )
+                .into_response()
+        })?;
+
+    // Requests for the same exact source revision share one conversion. The
+    // waiter rechecks the cache after acquiring the key lock.
+    let key_lock = office_preview_lock(&cache_path).await;
+    let _key_guard = key_lock.lock().await;
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    // Different documents may convert concurrently, but only up to this global
+    // process budget. Waiting requests do not spawn LibreOffice processes.
+    let _permit = OFFICE_PREVIEW_SEMAPHORE.acquire().await.map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "Office preview service is shutting down" })),
+        )
+            .into_response()
+    })?;
+    if cache_path.is_file() {
+        return Ok(cache_path);
+    }
+
+    let conversion_root =
+        cache_dir
+            .join(".work")
+            .join(format!("{}-{}", &cache_key[..16], Uuid::new_v4().simple()));
+    if let Err(e) = tokio::fs::create_dir_all(&conversion_root).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("建立隔離轉檔目錄失敗：{e}") })),
+        )
+            .into_response());
+    }
+
+    let programs = ["/usr/bin/libreoffice", "libreoffice", "soffice"];
+    let mut last_error = String::new();
+    for (attempt, program) in programs.into_iter().enumerate() {
+        let out_dir = conversion_root.join(format!("attempt-{attempt}"));
+        let profile_dir = out_dir.join("profile");
+        if let Err(e) = tokio::fs::create_dir_all(&profile_dir).await {
+            last_error = format!("建立 LibreOffice 隔離目錄失敗：{e}");
+            continue;
+        }
+        let Some(profile_url) = url::Url::from_directory_path(&profile_dir).ok() else {
+            last_error = "無法建立 LibreOffice 隔離設定路徑".to_string();
+            continue;
+        };
+
+        let mut command = tokio::process::Command::new(program);
+        command
+            .arg("--headless")
+            .arg(format!("-env:UserInstallation={profile_url}"))
+            .arg("--convert-to")
+            .arg("pdf")
+            .arg("--outdir")
+            .arg(&out_dir)
+            .arg(source)
+            // Never retain potentially unbounded child output in memory.
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            // Cancellation of this handler must not orphan LibreOffice.
+            .kill_on_drop(true);
+
+        let mut child = match command.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                last_error = format!("{program}: {e}");
+                continue;
+            }
+        };
+
+        let status = match tokio::time::timeout(OFFICE_PREVIEW_TIMEOUT, child.wait()).await {
+            Ok(Ok(status)) => Some(status),
+            Ok(Err(e)) => {
+                let kill_error = child.start_kill().err();
+                let reap_error = child.wait().await.err();
+                last_error = format!(
+                    "{program}: wait failed: {e}; kill={}; reap={}",
+                    kill_error
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "ok".to_string()),
+                    reap_error
+                        .map(|e| e.to_string())
+                        .unwrap_or_else(|| "ok".to_string())
+                );
+                None
+            }
+            Err(_) => {
+                // timeout() cancels only the wait future. Explicitly kill and
+                // then wait again so the OS process is always reaped.
+                let kill_error = child.start_kill().err();
+                let reap_error = child.wait().await.err();
+                last_error = match (kill_error, reap_error) {
+                    (None, None) => format!("{program}: timeout after 90 seconds"),
+                    (kill, reap) => format!(
+                        "{program}: timeout; kill={}; reap={}",
+                        kill.map(|e| e.to_string())
+                            .unwrap_or_else(|| "ok".to_string()),
+                        reap.map(|e| e.to_string())
+                            .unwrap_or_else(|| "ok".to_string())
+                    ),
+                };
+                None
+            }
+        };
+
+        if status.as_ref().is_some_and(|status| status.success()) {
+            let produced = out_dir.join(format!(
+                "{}.pdf",
+                source
+                    .file_stem()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("preview")
+            ));
+            if produced.is_file() {
+                match tokio::fs::rename(&produced, &cache_path).await {
+                    Ok(()) => {
+                        let _ = tokio::fs::remove_dir_all(&conversion_root).await;
+                        return Ok(cache_path);
+                    }
+                    Err(_) if cache_path.is_file() => {
+                        let _ = tokio::fs::remove_dir_all(&conversion_root).await;
+                        return Ok(cache_path);
+                    }
+                    Err(e) => last_error = format!("移動 LibreOffice 預覽輸出失敗：{e}"),
+                }
+            } else {
+                last_error = "LibreOffice 轉檔完成但找不到 PDF 輸出".to_string();
+            }
+        } else if let Some(status) = status {
+            last_error = format!("{program} exit status {status}");
+        }
+    }
+
+    let _ = tokio::fs::remove_dir_all(&conversion_root).await;
+    Err((
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": format!("PPT/PPTX 預覽需要 LibreOffice 轉 PDF，轉檔失敗：{last_error}。可先執行 sudo apt install -y libreoffice")
+        })),
+    )
+        .into_response())
+}
+
+pub(super) async fn admin_files_upload_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    mut multipart: Multipart,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    let root = materials_root();
+    if let Err(e) = tokio::fs::create_dir_all(&root).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("建立 materials 目錄失敗：{e}") })),
+        )
+            .into_response();
+    }
+
+    let mut folder = PathBuf::new();
+    let mut saved_files = Vec::new();
+    let mut current_materials_size: Option<u64> = None;
+    let mut field_count = 0usize;
+    let mut file_count = 0usize;
+
+    loop {
+        let mut field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("讀取 multipart 失敗：{e}") })),
+                )
+                    .into_response();
+            }
+        };
+        field_count = field_count.saturating_add(1);
+        if field_count > MAX_MULTIPART_FIELDS {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("too many multipart fields; max {MAX_MULTIPART_FIELDS}")
+                })),
+            )
+                .into_response();
+        }
+        let field_name = field.name().unwrap_or_default();
+        if let Err(response) = validate_admin_text(field_name, 64, "multipart field name") {
+            return response;
+        }
+        let is_folder = field_name == "folder";
+        let is_file = field_name == "file";
+
+        if is_folder {
+            // Do not call Field::text(): a malicious metadata field could consume
+            // nearly the entire upload allowance in one String.
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = match field.chunk().await {
+                    Ok(Some(chunk)) => chunk,
+                    Ok(None) => break,
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": format!("讀取資料夾欄位失敗：{e}") })),
+                        )
+                            .into_response();
+                    }
+                };
+                if bytes.len().saturating_add(chunk.len()) > ADMIN_MAX_PATH_BYTES {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": "資料夾路徑過長" })),
+                    )
+                        .into_response();
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": "資料夾路徑必須是 UTF-8" })),
+                    )
+                        .into_response();
+                }
+            };
+            folder = match safe_relative_path(&text) {
+                Some(path) => path,
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": "資料夾路徑不合法" })),
+                    )
+                        .into_response();
+                }
+            };
+            continue;
+        }
+
+        if !is_file {
+            continue;
+        }
+        file_count = file_count.saturating_add(1);
+        if file_count > MAX_UPLOAD_FILES {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("too many uploaded files; max {MAX_UPLOAD_FILES}")
+                })),
+            )
+                .into_response();
+        }
+
+        let raw_file_name = field.file_name().unwrap_or_default();
+        if let Err(response) =
+            validate_admin_text(raw_file_name, MAX_MATERIAL_FILENAME_BYTES, "file name")
+        {
+            return response;
+        }
+        let Some(file_name) = safe_file_name(raw_file_name) else {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "檔名不合法" })),
+            )
+                .into_response();
+        };
+        if !is_allowed_material_file(&file_name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": format!("不允許的檔案格式，允許：{}", MATERIAL_ALLOWED_EXTENSIONS.join(", "))
+                })),
+            )
+                .into_response();
+        }
+
+        // CLOUD_UPLOAD_STREAMING_V1: write multipart chunks directly to a temp
+        // file instead of collecting the full field into memory with bytes().
+        let known_materials_size = if let Some(size) = current_materials_size {
+            size
+        } else {
+            let size_root = root.clone();
+            let scanned =
+                tokio::task::spawn_blocking(move || material_total_size(&size_root).unwrap_or(0))
+                    .await
+                    .unwrap_or(0);
+            scanned
+        };
+
+        let dir = root.join(&folder);
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("建立資料夾失敗：{e}") })),
+            )
+                .into_response();
+        }
+        let dest = unique_material_path(&dir, &file_name);
+        let temp_path = dir.join(format!(".{}.uploading", Uuid::new_v4().simple()));
+        let mut out = match tokio::fs::File::create(&temp_path).await {
+            Ok(file) => file,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("建立暫存檔失敗：{e}") })),
+                )
+                    .into_response();
+            }
+        };
+
+        let mut written = 0u64;
+        loop {
+            let chunk = match field.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break,
+                Err(e) => {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("讀取上傳檔案失敗：{e}") })),
+                    )
+                        .into_response();
+                }
+            };
+            let chunk_len = chunk.len() as u64;
+            if written.saturating_add(chunk_len) > MATERIALS_MAX_FILE_SIZE as u64 {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Json(json!({ "error": "單一教材檔案不可超過 50 MiB" })),
+                )
+                    .into_response();
+            }
+            if known_materials_size
+                .saturating_add(written)
+                .saturating_add(chunk_len)
+                > MATERIALS_MAX_TOTAL_SIZE as u64
+            {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Json(json!({ "error": "教材總容量不可超過 10GB" })),
+                )
+                    .into_response();
+            }
+            if let Err(e) = out.write_all(&chunk).await {
+                let _ = tokio::fs::remove_file(&temp_path).await;
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("寫入暫存檔失敗：{e}") })),
+                )
+                    .into_response();
+            }
+            written = written.saturating_add(chunk_len);
+        }
+        if let Err(e) = out.flush().await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("寫入暫存檔失敗：{e}") })),
+            )
+                .into_response();
+        }
+        drop(out);
+
+        if let Err(e) = tokio::fs::rename(&temp_path, &dest).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("儲存檔案失敗：{e}" )})),
+            )
+                .into_response();
+        }
+
+        let rel = dest
+            .strip_prefix(&root)
+            .unwrap_or(&dest)
+            .to_string_lossy()
+            .replace('\\', "/");
+        current_materials_size = Some(known_materials_size.saturating_add(written));
+        let folder_label = folder.to_string_lossy().replace('\\', "/");
+        record_material_event(
+            &state,
+            &session.account_id,
+            "upload",
+            &rel,
+            &folder_label,
+            &file_name,
+            written,
+            "success",
+            "material_upload_history",
+        )
+        .await;
+        saved_files.push(rel);
+    }
+
+    if saved_files.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "沒有收到檔案" })),
+        )
+            .into_response();
+    }
+
+    invalidate_materials_list_cache().await;
+
+    crate::logs::record_audit(
+        "web",
+        &session.account_id,
+        "material_upload",
+        None,
+        Some(&format!("{} file(s)", saved_files.len())),
+        "上傳教材檔案",
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "files": saved_files })),
+    )
+        .into_response()
+}
+
+pub(super) async fn admin_files_delete_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    Json(req): Json<AdminFileDeleteRequest>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
+        return response;
+    }
+    let Some(rel) = safe_relative_path(&req.path).filter(|p| !p.as_os_str().is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid path" })),
+        )
+            .into_response();
+    };
+    let path = materials_root().join(rel);
+    if !path.is_file() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "file not found" })),
+        )
+            .into_response();
+    }
+
+    let event_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    let event_file_name = path
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let event_folder = Path::new(&req.path)
+        .parent()
+        .map(|p| p.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default();
+
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => {
+            record_material_event(
+                &state,
+                &session.account_id,
+                "delete_file",
+                &req.path,
+                &event_folder,
+                &event_file_name,
+                event_size,
+                "success",
+                "material_delete_file_history",
+            )
+            .await;
+            invalidate_materials_list_cache().await;
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "material_delete",
+                None,
+                Some(&req.path),
+                "刪除教材檔案",
+            );
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("刪除失敗：{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn admin_files_mkdir_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    Json(req): Json<AdminFolderCreateRequest>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
+        return response;
+    }
+
+    let Some(rel) = safe_relative_path(&req.path).filter(|p| !p.as_os_str().is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "資料夾名稱不合法" })),
+        )
+            .into_response();
+    };
+
+    let root = materials_root();
+    let dir = root.join(&rel);
+    match tokio::fs::create_dir_all(&dir).await {
+        Ok(()) => {
+            let rel_label = rel.to_string_lossy().replace('\\', "/");
+            record_material_event(
+                &state,
+                &session.account_id,
+                "create_folder",
+                &rel_label,
+                &rel_label,
+                "",
+                0,
+                "success",
+                "material_folder_create_history",
+            )
+            .await;
+            invalidate_materials_list_cache().await;
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "material_folder_create",
+                None,
+                Some(&rel_label),
+                "新增教材資料夾",
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "path": rel_label })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("建立資料夾失敗：{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn admin_files_history_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminFilesHistoryQuery>,
+) -> Response {
+    let Some(_session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+
+    let limit = query.limit.unwrap_or(100).clamp(1, 200);
+    match state.accounts_db.list_material_events(limit).await {
+        // Keep both response keys for the files page and the combined activity page.
+        Ok(events) => (
+            StatusCode::OK,
+            Json(json!({ "events": events.clone(), "items": events })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("讀取教材操作紀錄失敗：{e}") })),
+        )
+            .into_response(),
+    }
+}
