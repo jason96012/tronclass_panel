@@ -64,7 +64,6 @@ pub(super) async fn admin_health_api_handler(
         ],
     )
     .await;
-    let tailscale = run_health_command("tailscale", &["status", "--peers=false"]).await;
     // Pterodactyl (and most containers) have no systemd, so `systemctl` fails
     // with "exit status: 1" and that raw error used to be rendered as if it
     // were the service state. Report the real supervisor instead.
@@ -93,7 +92,6 @@ pub(super) async fn admin_health_api_handler(
             "commands": {
                 "disk": disk,
                 "process": process,
-                "tailscale": tailscale,
                 "systemctl": systemctl,
                 "watchdog": watchdog,
             }
@@ -243,20 +241,7 @@ pub(super) async fn admin_health_check_handler(
         "details": systemctl,
     }));
 
-    // 7. Tailscale
-    let tailscale = run_quick_check_command("tailscale", &["status", "--peers=false"]).await;
-    let tailscale_ok = !tailscale.contains("command failed")
-        && !tailscale.contains("timeout")
-        && !tailscale.contains("not found");
-    checks.push(json!({
-        "name": "Tailscale",
-        "ok": tailscale_ok,
-        "level": if tailscale_ok { "ok" } else { "warn" },
-        "message": tailscale.lines().next().unwrap_or("無輸出"),
-        "details": tailscale,
-    }));
-
-    // 8. watchdog background services
+    // 7. watchdog background services
     let wd = watchdog_status();
     let wd_down = wd.get("services").and_then(|v| v.as_array()).map(|xs| xs.iter().filter(|x| x.get("id").and_then(|v| v.as_str()) != Some("dashboard") && x.get("alive").and_then(|v| v.as_bool()) != Some(true)).count()).unwrap_or(0);
     checks.push(json!({
@@ -267,7 +252,7 @@ pub(super) async fn admin_health_check_handler(
         "details": wd,
     }));
 
-    // 9. logs recent errors
+    // 8. logs recent errors
     let recent_logs = crate::logs::snapshot(None, 30);
     let recent_bad = recent_logs
         .iter()
@@ -317,8 +302,6 @@ fn watchdog_status() -> serde_json::Value {
     let names = [
         ("dashboard", "主程式"),
         ("cloudflared", "Cloudflare Tunnel"),
-        ("tailscaled", "Tailscale"),
-        ("ts-https-proxy", "Tailscale TLS Proxy"),
     ];
     let services: Vec<serde_json::Value> = names.iter().map(|(id, label)| {
         let path = format!("logs/{id}.pid");

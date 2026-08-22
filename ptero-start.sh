@@ -1,5 +1,5 @@
 #!/bin/bash
-# Pterodactyl 一鍵：Cloudflare Tunnel + Tailscale + 同容器 Nextcloud + 本程式
+# Pterodactyl 一鍵：Cloudflare Tunnel + 同容器 Nextcloud + 本程式
 # 全部在面板完成，不需要 SSH。只要覆蓋這一個檔。
 set -uo pipefail
 cd /home/container 2>/dev/null || cd "$(dirname "$0")"
@@ -87,92 +87,6 @@ start_tunnel() {
 
 start_tunnel
 
-start_tailscale() {
-  local key=""
-  if [[ -n "${TS_AUTHKEY:-}" ]]; then
-    key="$(printf '%s' "${TS_AUTHKEY}" | tr -d '\r\n ')"
-  elif [[ -f config/tailscale.authkey ]]; then
-    key="$(tr -d '\r\n ' < config/tailscale.authkey)"
-  fi
-  if [[ -z "$key" ]]; then
-    echo "[ptero-start] 未設定 Tailscale（可把 auth key 放到 config/tailscale.authkey）"
-    return 0
-  fi
-  echo "[ptero-start] 讀到 Tailscale auth key（長度 ${#key}）"
-
-  if [[ ! -x ./tailscaled || ! -x ./tailscale ]]; then
-    echo "[ptero-start] 下載 Tailscale 靜態檔..."
-    local ver=""
-    ver="$(curl -fsSL https://api.github.com/repos/tailscale/tailscale/releases/latest 2>/dev/null | grep -o '"tag_name": *"v[^"]*"' | head -1 | grep -o 'v[0-9.]*' | tr -d v)"
-    [[ -n "$ver" ]] || ver="1.84.0"
-    dl "https://pkgs.tailscale.com/stable/tailscale_${ver}_amd64.tgz" /tmp/tailscale.tgz || {
-      echo "[ptero-start] 下載 Tailscale 失敗"
-      return 0
-    }
-    local dir
-    dir="$(tar -tzf /tmp/tailscale.tgz | head -1 | cut -d/ -f1)"
-    tar -xzf /tmp/tailscale.tgz -C /tmp
-    cp "/tmp/${dir}/tailscale" ./tailscale
-    cp "/tmp/${dir}/tailscaled" ./tailscaled
-    chmod +x ./tailscale ./tailscaled
-  fi
-
-  mkdir -p tailscale-state logs
-  export TS_VAR_ROOT="$PWD/tailscale-state"
-  echo "[ptero-start] 啟動 tailscaled（userspace，statedir=$TS_VAR_ROOT）"
-  nohup ./tailscaled \
-    --statedir="$TS_VAR_ROOT" \
-    --socket="$TS_VAR_ROOT/tailscaled.sock" \
-    --tun=userspace-networking \
-    > logs/tailscaled.log 2>&1 &
-  echo $! > logs/tailscaled.pid
-  disown || true
-  sleep 2
-
-  echo "[ptero-start] tailscale up"
-  ./tailscale --socket=./tailscale-state/tailscaled.sock up \
-    --authkey="$key" \
-    --hostname="${TS_HOSTNAME:-tronclass-ptero}" \
-    --accept-dns=false \
-    >> logs/tailscale.log 2>&1 || {
-    echo "[ptero-start] tailscale up 失敗，見 logs/tailscale.log"
-    tail -n 20 logs/tailscale.log 2>/dev/null || true
-    return 0
-  }
-
-  SOCK=./tailscale-state/tailscaled.sock
-  TS_HOST="${TS_HOSTNAME:-tronclass-ptero}.tail31b530.ts.net"
-
-  echo "[ptero-start] 申請 MagicDNS HTTPS 憑證 ${TS_HOST}"
-  if ./tailscale --socket="$SOCK" cert --cert-file=./tailscale-state/cert.pem --key-file=./tailscale-state/key.pem "$TS_HOST"; then
-    echo "[ptero-start] 憑證 OK，啟動本機 TLS 代理 :8443 -> :${PORT}"
-    nohup python3 ./ts-https-proxy.py "${PORT}" ./tailscale-state/cert.pem ./tailscale-state/key.pem \
-      > logs/ts-https-proxy.log 2>&1 &
-    echo $! > logs/ts-https-proxy.pid
-    disown || true
-    sleep 1
-    ./tailscale --socket="$SOCK" serve reset >> logs/tailscale.log 2>&1 || true
-    echo "[ptero-start] serve TCP 443 -> 127.0.0.1:8443（Tailscale 內 https:// 用這個）"
-    ./tailscale --socket="$SOCK" serve --bg --tcp=443 tcp://127.0.0.1:8443 || \
-      ./tailscale --socket="$SOCK" serve --bg tcp://127.0.0.1:8443 || true
-  else
-    echo "[ptero-start] 憑證失敗。後台 DNS 需 Enable HTTPS Certificates"
-    ./tailscale --socket="$SOCK" serve reset >> logs/tailscale.log 2>&1 || true
-  fi
-
-  echo "[ptero-start] Funnel（沒開 Tailscale 的手機掃 QR 用）"
-  ./tailscale --socket="$SOCK" funnel --bg "http://127.0.0.1:${PORT}" >> logs/tailscale.log 2>&1 || \
-  ./tailscale --socket="$SOCK" funnel 443 on >> logs/tailscale.log 2>&1 || \
-    echo "[ptero-start] Funnel 未開（可到後台打開 Funnel）"
-
-  echo "[ptero-start] Tailscale 狀態："
-  ./tailscale --socket="$SOCK" status 2>/dev/null | head -n 8 || true
-  echo "[ptero-start] serve / funnel："
-  ./tailscale --socket="$SOCK" serve status 2>/dev/null || true
-  ./tailscale --socket="$SOCK" funnel status 2>/dev/null || true
-}
-
-start_tailscale
 
 
 # ─── Filebrowser（單一 Go 執行檔，適合這台面板）────────────────────────────
@@ -1242,22 +1156,11 @@ watchdog_start_tunnel() {
   fi
 }
 
-watchdog_start_tailscale() {
-  if ! watchdog_pid_alive logs/tailscaled.pid; then
-    echo "[watchdog] tailscaled 不存在，重新啟動 Tailscale"
-    start_tailscale
-  fi
-}
 
 watchdog_loop() {
   local bin="$1" child="$2"
   while kill -0 "$child" 2>/dev/null; do
     watchdog_start_tunnel
-    watchdog_start_tailscale
-    if [[ -f logs/ts-https-proxy.pid ]] && ! watchdog_pid_alive logs/ts-https-proxy.pid; then
-      echo "[watchdog] Tailscale TLS proxy 已停止；清除 pid，下一次重啟 Tailscale 時重建"
-      rm -f logs/ts-https-proxy.pid
-    fi
     sleep "${WATCHDOG_INTERVAL_SECS:-15}"
   done
   wait "$child" 2>/dev/null || true
