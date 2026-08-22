@@ -1231,16 +1231,25 @@ watchdog_check_filebrowser() {
 
 
 watchdog_loop() {
-  local bin="$1" child="$2"
+  local bin="$1" child="$2" started_at now elapsed
+  started_at="$(date +%s)"
   while kill -0 "$child" 2>/dev/null; do
     watchdog_start_tunnel
-    watchdog_check_tunnel_connector
-    watchdog_check_filebrowser
-    watchdog_check_filebrowser_http
-    if ! watchdog_http_ok "http://127.0.0.1:${SERVER_PORT:-26000}/"; then
-      echo "[watchdog] Dashboard HTTP health check 失敗，停止主程式交由 Pterodactyl 重啟"
-      kill "$child" 2>/dev/null || true
-      break
+    now="$(date +%s)"
+    elapsed=$((now - started_at))
+    # Login/initialisation may take longer with many accounts. Do not kill a
+    # healthy process merely because its HTTP listener is not ready yet.
+    if (( elapsed >= ${WATCHDOG_STARTUP_GRACE_SECS:-180} )); then
+      watchdog_check_tunnel_connector
+      watchdog_check_filebrowser
+      watchdog_check_filebrowser_http
+      if ! watchdog_http_ok "http://127.0.0.1:${SERVER_PORT:-26000}/"; then
+        echo "[watchdog] Dashboard HTTP health check 失敗，停止主程式交由 Pterodactyl 重啟"
+        kill "$child" 2>/dev/null || true
+        break
+      fi
+    else
+      echo "[watchdog] 啟動寬限中 ${elapsed}/${WATCHDOG_STARTUP_GRACE_SECS:-180}s"
     fi
     sleep "${WATCHDOG_INTERVAL_SECS:-15}"
   done
