@@ -238,7 +238,7 @@ fb_init() {
   }
 
   fb_prepare_db() {
-    local db="$1" method="$2" port="$3" label="$4"
+    local db="$1" method="$2" port="$3" label="$4" mode="$5"
     if [[ ! -f "$db" ]]; then
       echo "[filebrowser] 初始化 $label 資料庫"
       if ! ./filebrowser config init -d "$db" >> logs/filebrowser-init.log 2>&1; then
@@ -246,29 +246,59 @@ fb_init() {
         return 1
       fi
     fi
+
+    # 免登實例：檔案操作全開（上傳/下載/覆寫/刪除/改名搬移/公開分享），
+    # 但不得管理帳號或改全域設定，也不能執行指令。
+    local -a perms
+    if [[ "$mode" == "files-full" ]]; then
+      perms=( --perm.admin=false --perm.create=true --perm.download=true
+              --perm.modify=true --perm.delete=true --perm.rename=true
+              --perm.share=true --perm.execute=false )
+    else
+      perms=( --perm.admin=true )
+    fi
+
     if ! fb_db_has_user "$db"; then
       echo "[filebrowser] $label 沒有任何使用者，建立 admin"
-      if ! ./filebrowser users add admin "$pass" --perm.admin -d "$db" >> logs/filebrowser-init.log 2>&1; then
-        # 已存在同名使用者時改成更新密碼，避免殘缺狀態卡死
+      if ! ./filebrowser users add admin "$pass" "${perms[@]}" -d "$db" >> logs/filebrowser-init.log 2>&1; then
         ./filebrowser users update admin --password "$pass" -d "$db" >> logs/filebrowser-init.log 2>&1 \
           || echo "[filebrowser] 建立/更新 admin 失敗（$label），詳見 logs/filebrowser-init.log"
       fi
     fi
+
+    # 每次啟動都重新套用權限。只在建立時設定的話，既有的 admin 使用者
+    # 會永遠保留舊的完整權限，限制形同虛設。
+    ./filebrowser users update admin "${perms[@]}" -d "$db" >> logs/filebrowser-init.log 2>&1 \
+      || echo "[filebrowser] 套用權限失敗（$label）"
+
     ./filebrowser config set -d "$db" \
       --address 127.0.0.1 --port "$port" --root "$PWD/cloud" \
       --locale zh-tw --auth.method "$method" --baseurl "" >> logs/filebrowser-init.log 2>&1 \
       || echo "[filebrowser] config set 失敗（$label）"
+
+    # 全域預設也鎖起來：noauth 模式下新 session 會沿用這組預設值。
+    if [[ "$mode" == "files-full" ]]; then
+      ./filebrowser config set -d "$db" \
+        --perm.admin=false --perm.create=true --perm.download=true \
+        --perm.modify=true --perm.delete=true --perm.rename=true \
+        --perm.share=true --perm.execute=false >> logs/filebrowser-init.log 2>&1 || true
+      ./filebrowser config set -d "$db" --signup=false --createUserDir=false \
+        >> logs/filebrowser-init.log 2>&1 || true
+    fi
+
     if fb_db_has_user "$db"; then
-      echo "[filebrowser] $label OK（port $port, auth=$method）"
+      echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode）"
     else
       echo "[filebrowser] 警告：$label 仍然沒有使用者，登入會 500"
     fi
   }
 
-  # 密碼版（:26011）
-  fb_prepare_db "$auth_db" json 26011 "auth.db"
-  # 免登版（:26012）。noauth 也必須要有一個使用者，否則同樣 500。
-  fb_prepare_db "$open_db" noauth 26012 "open.db"
+
+  # 密碼版（:26011）＝你的管理入口，保留完整權限
+  fb_prepare_db "$auth_db" json 26011 "auth.db" admin
+  # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口
+  # 檔案操作全開，只擋帳號管理與全域設定
+  fb_prepare_db "$open_db" noauth 26012 "open.db" files-full
 }
 
 fb_write_caddy() {
@@ -290,6 +320,22 @@ fb_write_caddy() {
         header_up X-Forwarded-Proto https
     }
     @dash header X-Fb-Authed yes
+
+    # 免登（一般使用者）通道：即使使用者權限已鎖，仍在代理層封掉
+    # 帳號管理與全域設定的 API/頁面，避免任何遺漏。GET 設定頁只是唯讀 UI，
+    # 真正會改到東西的是這些 API。
+    @fb_admin_api {
+        header X-Fb-Authed yes
+        path /api/users* /api/settings*
+    }
+    respond @fb_admin_api 403
+
+    @fb_admin_page {
+        header X-Fb-Authed yes
+        path /settings/users* /settings/global*
+    }
+    redir @fb_admin_page /files 302
+
     handle @dash {
         reverse_proxy 127.0.0.1:26012
     }
