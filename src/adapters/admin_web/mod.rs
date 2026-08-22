@@ -1508,25 +1508,12 @@ async fn admin_status_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = {
-        let from_cookie = headers
-            .get(axum::http::header::COOKIE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .split(';')
-            .filter_map(|part| {
-                let part = part.trim();
-                part.split_once('=').map(|(k, v)| (k.trim(), v.trim()))
-            })
-            .find(|(k, _)| *k == "tronclass_admin_session" || *k == "tronclass_dashboard_session")
-            .map(|(_, v)| v.to_string())
-            .unwrap_or_default();
-        if !from_cookie.is_empty() {
-            from_cookie
-        } else {
-            query.token.trim().to_string()
-        }
-    };
+    // Use the shared cookie parser. A bespoke copy here previously matched only
+    // the plain cookie names and therefore never saw the hardened
+    // `__Host-tronclass_admin_session` cookie that HTTPS / Cloudflare Tunnel
+    // deployments actually receive, making every status request return 401.
+    let token = session_cookie_from_headers(&headers)
+        .unwrap_or_else(|| query.token.trim().to_string());
     let Some(session) = state.authorize_any(&token).await else {
         return unauthorized_response();
     };
@@ -2022,25 +2009,10 @@ async fn admin_public_status_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = {
-        let from_cookie = headers
-            .get(axum::http::header::COOKIE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .split(';')
-            .filter_map(|part| {
-                let part = part.trim();
-                part.split_once('=').map(|(k, v)| (k.trim(), v.trim()))
-            })
-            .find(|(k, _)| *k == "tronclass_admin_session" || *k == "tronclass_dashboard_session")
-            .map(|(_, v)| v.to_string())
-            .unwrap_or_default();
-        if !from_cookie.is_empty() {
-            from_cookie
-        } else {
-            query.token.trim().to_string()
-        }
-    };
+    // Shared cookie parser: also matches the hardened `__Host-` cookie used on
+    // HTTPS / Cloudflare Tunnel deployments.
+    let token = session_cookie_from_headers(&headers)
+        .unwrap_or_else(|| query.token.trim().to_string());
     let Some(session) = state.authorize(&token).await else {
         return unauthorized_response();
     };
