@@ -94,6 +94,7 @@ pub(super) async fn admin_health_api_handler(
                 "process": process,
                 "systemctl": systemctl,
                 "watchdog": watchdog,
+                "cloudflare": cloudflare_connector_status(),
             }
         })),
     )
@@ -296,6 +297,13 @@ pub(super) async fn admin_health_check_handler(
         })),
     )
         .into_response()
+}
+
+fn cloudflare_connector_status() -> serde_json::Value {
+    let log = std::fs::read_to_string("logs/cloudflared.log").unwrap_or_default();
+    let recent: String = log.lines().rev().take(80).collect::<Vec<_>>().join("\n");
+    let error = regex::Regex::new("(?i)connection refused|no connection|failed to serve|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error").ok().map(|r| r.is_match(&recent)).unwrap_or(false);
+    json!({ "pid_alive": std::path::Path::new("logs/cloudflared.pid").exists(), "recent_error": error, "log_file": "logs/cloudflared.log" })
 }
 
 fn watchdog_status() -> serde_json::Value {

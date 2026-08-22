@@ -39,7 +39,8 @@
   function renderHealth(h){
     lastHealth=h;
     var acc=h.accounts||{}, mem=h.memory||{}, db=h.database||{}, cmd=h.commands||{}, wd=cmd.watchdog||{}, disk=parseDisk(cmd.disk);
-    var wdServices=wd.services||[], wdDown=wdServices.filter(function(x){return x.id!=='dashboard'&&!x.alive;});
+    var wdServices=wd.services||[], cf=cmd.cloudflare||{}, wdDown=wdServices.filter(function(x){return x.id!=='dashboard'&&!x.alive;});
+    if(cf.recent_error)wdDown.push({label:'Cloudflare Connector'});
     var memPct=pct(mem.mem_used,mem.mem_total), swapPct=pct(mem.swap_used,mem.swap_total), diskPct=disk?Number(String(disk.use||'0').replace('%','')):null;
     // Containers (Pterodactyl) have no systemd; the backend then reports
     // "running (container, ...)". Treat that as healthy instead of flagging
@@ -60,6 +61,7 @@
       card('服務',active?(svc.indexOf('running')===0?'執行中':'active'):String(cmd.systemctl||'-'),'PID '+(h.pid||'-')+'｜Uptime '+((h.uptime&&h.uptime.label)||'-'),active?'ok':'bad'),
       card('最後輪詢',acc.latest_poll_timestamp?new Date(Number(acc.latest_poll_timestamp)*1000).toLocaleString():'尚未','失敗 '+(acc.total_failures||0),(acc.total_failures||0)>0?'warn':'ok'),
       card('Load',h.loadavg||'-','系統負載'),
+      card('Cloudflare Connector',cf.recent_error?'近期有連線錯誤':(cf.pid_alive?'程序正常':'未啟動'),cf.recent_error?'請查看 cloudflared-watchdog.log':'PID + 最近 log 檢查',cf.recent_error?'bad':(cf.pid_alive?'ok':'warn')),
       card('Watchdog',wd.enabled?(wdDown.length?'有服務停止':'監控中'):'未啟用','PID + HTTP 檢查｜間隔 '+(wd.interval_secs||15)+' 秒｜'+(wdServices.map(function(x){return x.label+': '+(x.alive?'正常':'停止')}).join('、')||'尚無 PID'),wd.enabled?(wdDown.length?'bad':'ok'):'warn')
     ].join('');
     q('maintRaw').textContent=JSON.stringify({health:lastHealth,check:lastCheck},null,2);

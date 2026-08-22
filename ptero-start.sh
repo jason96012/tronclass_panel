@@ -1149,11 +1149,58 @@ start_nextcloud
 
 # 監控由本啟動程序建立的背景服務。Pterodactyl 只會監控啟動腳本的
 # 前景程序，因此不能只依靠 nohup；任何 connector/代理死亡都要自動拉起。
+watchdog_http_ok() {
+  local url="$1"
+  command -v curl >/dev/null 2>&1 || return 0
+  curl -fsS --max-time "${WATCHDOG_HTTP_TIMEOUT_SECS:-5}" -o /dev/null "$url" >/dev/null 2>&1
+}
+
+watchdog_check_filebrowser_http() {
+  [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]] || return 0
+  local bad=0 port
+  # Caddy is the public entry point; the individual services are checked too.
+  for port in 26001 26012 26013; do
+    if ! watchdog_http_ok "http://127.0.0.1:${port}/"; then bad=1; fi
+  done
+  if (( bad == 1 )); then
+    echo "[watchdog] Filebrowser/Caddy HTTP health check 失敗" >> logs/filebrowser-watchdog.log
+    watchdog_restart_filebrowser
+  fi
+}
+
 watchdog_pid_alive() {
   local file="$1" pid
   [[ -s "$file" ]] || return 1
   pid="$(cat "$file" 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null
+}
+
+watchdog_restart_tunnel() {
+  local now last=0 pid
+  now="$(date +%s)"
+  last="$(cat logs/cloudflared-watchdog.last 2>/dev/null || echo 0)"
+  if (( now - last < ${CLOUDFLARE_RESTART_BACKOFF_SECS:-30} )); then return; fi
+  printf '%s\n' "$now" > logs/cloudflared-watchdog.last
+  pid="$(cat logs/cloudflared.pid 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true
+  echo "[watchdog] Cloudflare Tunnel connector 異常，重新啟動（$(date -Iseconds)）" >> logs/cloudflared-watchdog.log
+  rm -f logs/cloudflared.pid
+  start_tunnel
+}
+
+watchdog_check_tunnel_connector() {
+  watchdog_pid_alive logs/cloudflared.pid || return 0
+  local recent public_url
+  recent="$(tail -n 80 logs/cloudflared.log 2>/dev/null || true)"
+  if printf '%s\n' "$recent" | grep -Eiq 'connection refused|no connection|failed to serve|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error'; then
+    watchdog_restart_tunnel
+    return
+  fi
+  public_url="${CLOUDFLARE_PUBLIC_URL:-}"
+  if [[ -n "$public_url" ]] && ! watchdog_http_ok "$public_url"; then
+    echo "[watchdog] Cloudflare public URL health check 失敗：$public_url" >> logs/cloudflared-watchdog.log
+    watchdog_restart_tunnel
+  fi
 }
 
 watchdog_start_tunnel() {
@@ -1187,7 +1234,14 @@ watchdog_loop() {
   local bin="$1" child="$2"
   while kill -0 "$child" 2>/dev/null; do
     watchdog_start_tunnel
+    watchdog_check_tunnel_connector
     watchdog_check_filebrowser
+    watchdog_check_filebrowser_http
+    if ! watchdog_http_ok "http://127.0.0.1:${SERVER_PORT:-26000}/"; then
+      echo "[watchdog] Dashboard HTTP health check 失敗，停止主程式交由 Pterodactyl 重啟"
+      kill "$child" 2>/dev/null || true
+      break
+    fi
     sleep "${WATCHDOG_INTERVAL_SECS:-15}"
   done
   wait "$child" 2>/dev/null || true
@@ -1200,6 +1254,7 @@ run_bin() {
   echo "[ptero-start] 啟動 $1（watchdog interval=${WATCHDOG_INTERVAL_SECS:-15}s）"
   "$1" &
   local child=$!
+  echo "$child" > logs/dashboard.pid
   watchdog_loop "$1" "$child" &
   local wd=$!
   wait "$child"
