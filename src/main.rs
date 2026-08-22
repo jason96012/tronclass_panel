@@ -775,8 +775,23 @@ fn enforce_private_process_umask() {
 
 // ─── 主函式 ───────────────────────────────────────────────────────────────────
 
+/// Compile timestamp baked in at build time via the `TRONCLASS_BUILD_STAMP`
+/// env var (set by ptero-start.sh); falls back to "unknown" for plain builds.
+fn compile_time_stamp() -> &'static str {
+    option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("unknown")
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Build marker: proves at a glance whether the running binary actually
+    // contains the current source. Printed before logging is configured so it
+    // always reaches the Pterodactyl console.
+    println!(
+        "[BUILD] tronclass_rollcall AUTHFIX-5 compiled {} {}",
+        env!("CARGO_PKG_VERSION"),
+        compile_time_stamp()
+    );
+
     enforce_private_process_umask();
 
     // ── 1. 解析命令列引數 ──────────────────────────────────────────────────────

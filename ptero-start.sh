@@ -1135,6 +1135,7 @@ if [[ -f Cargo.toml && -d src ]]; then
     fi
   done
   echo "[ptero-start] cargo build --release --no-default-features"
+  export TRONCLASS_BUILD_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
   if cargo build --release --no-default-features; then
     run_bin ./target/release/tronclass_rollcall
   fi
