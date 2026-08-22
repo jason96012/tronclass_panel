@@ -214,9 +214,8 @@ fb_init() {
               --perm.share=true --perm.execute=false
               --scope "$FB_USER_SCOPE" )
     elif [[ "$mode" == "admin-full" ]]; then
-      # Dashboard 管理員：看得到整個 cloud/，檔案操作全開。
-      # 仍保持 perm.admin=false，避免從免登入口新增/刪除 Filebrowser 帳號。
-      perms=( --perm.admin=false --perm.create=true --perm.download=true
+      # Dashboard 管理員：看得到整個 cloud/，並恢復 Filebrowser 管理權限。
+      perms=( --perm.admin=true --perm.create=true --perm.download=true
               --perm.modify=true --perm.delete=true --perm.rename=true
               --perm.share=true --perm.execute=false
               --scope "/" )
@@ -269,6 +268,16 @@ fb_init() {
 
   # 密碼版（:26011）＝你的管理入口，保留完整權限
   fb_prepare_db "$auth_db" json 26011 "auth.db" files-full
+  # Existing password users keep their own scope; update the dedicated low-
+  # privilege test user explicitly so it cannot retain the old `/` scope.
+  local low_user="${FILEBROWSER_LOW_PRIV_USER:-test}"
+  if [[ -n "$low_user" ]]; then
+    ./filebrowser users update "$low_user" \
+      --scope "/教材" --perm.admin=false --perm.create=true --perm.download=true \
+      --perm.modify=true --perm.delete=true --perm.rename=true --perm.share=true \
+      --perm.execute=false -d "$auth_db" >> logs/filebrowser-init.log 2>&1 \
+      || echo "[filebrowser] 低權限帳號 $low_user 不存在或權限更新失敗" >> logs/filebrowser-init.log
+  fi
   # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口
   # 檔案操作全開，只擋帳號管理與全域設定
   fb_prepare_db "$open_db" noauth 26012 "open.db" files-full
