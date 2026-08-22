@@ -202,12 +202,30 @@ nc_extract_zip() {
   local zip="$1" dest="$2"
   mkdir -p "$dest"
   if command -v unzip >/dev/null 2>&1; then
+    echo "[nextcloud] 用 unzip 解壓"
     unzip -q -o "$zip" -d "$dest" && return 0
   fi
-  python3 - "$zip" "$dest" << 'PY'
+  # rust yolk 通常沒有 python3 / unzip，用已下載的 FrankenPHP
+  if [[ -x ./frankenphp ]]; then
+    echo "[nextcloud] 用 FrankenPHP 解壓 zip"
+    ./frankenphp php-cli -d memory_limit=512M -r '
+      $z=$argv[1]; $d=$argv[2];
+      if (!class_exists("ZipArchive")) { fwrite(STDERR, "no ZipArchive\n"); exit(1); }
+      $zip = new ZipArchive();
+      if ($zip->open($z) !== true) { fwrite(STDERR, "open failed\n"); exit(1); }
+      if (!$zip->extractTo($d)) { fwrite(STDERR, "extract failed\n"); exit(1); }
+      $zip->close();
+    ' -- "$zip" "$dest" && return 0
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$zip" "$dest" << 'PY'
 import sys, zipfile
 zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])
 PY
+    return $?
+  fi
+  echo "[nextcloud] 沒有 unzip / python3 / ZipArchive"
+  return 1
 }
 
 nc_write_caddyfile() {
@@ -373,19 +391,30 @@ nc_download_nextcloud() {
     return 1
   fi
 
-  echo "[nextcloud] 解壓（解完就刪 zip 省空間）"
+  echo "[nextcloud] 解壓（解完就刪壓縮檔省空間）"
   rm -rf "$extract"
-  nc_extract_zip "$zip" "$extract" || {
-    echo "[nextcloud] 解壓失敗（磁碟可能不夠）"
+  if ! nc_extract_zip "$zip" "$extract"; then
+    echo "[nextcloud] zip 解不開，改下 tar.gz（系統一定有 tar）"
     rm -rf "$extract"
-    return 1
-  }
+    local tgz="$PWD/nextcloud-runtime/nextcloud-31.tar.gz"
+    if ! nc_dl_resume "https://download.nextcloud.com/server/releases/latest-31.tar.gz" "$tgz"; then
+      echo "[nextcloud] 下載 tar.gz 也失敗"
+      return 1
+    fi
+    mkdir -p "$extract"
+    if ! tar -xzf "$tgz" -C "$extract"; then
+      echo "[nextcloud] tar 解壓失敗"
+      rm -rf "$extract"
+      return 1
+    fi
+    rm -f "$tgz"
+  fi
   rm -f "$zip"
   if [[ -d "$extract/nextcloud" ]]; then
     rm -rf nextcloud
     mv "$extract/nextcloud" nextcloud
   else
-    echo "[nextcloud] zip 內容不是預期的 nextcloud/ 目錄"
+    echo "[nextcloud] 壓縮檔內容不是預期的 nextcloud/ 目錄"
     rm -rf "$extract"
     return 1
   fi
