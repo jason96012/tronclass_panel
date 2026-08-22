@@ -208,14 +208,18 @@ nc_extract_zip() {
   # rust yolk 通常沒有 python3 / unzip，用已下載的 FrankenPHP
   if [[ -x ./frankenphp ]]; then
     echo "[nextcloud] 用 FrankenPHP 解壓 zip"
-    ./frankenphp php-cli -d memory_limit=512M -r '
-      $z=$argv[1]; $d=$argv[2];
-      if (!class_exists("ZipArchive")) { fwrite(STDERR, "no ZipArchive\n"); exit(1); }
-      $zip = new ZipArchive();
-      if ($zip->open($z) !== true) { fwrite(STDERR, "open failed\n"); exit(1); }
-      if (!$zip->extractTo($d)) { fwrite(STDERR, "extract failed\n"); exit(1); }
-      $zip->close();
-    ' -- "$zip" "$dest" && return 0
+    nc_write_php_ini
+    cat > nextcloud-runtime/unzip.php << 'PHP'
+<?php
+$z = $argv[1] ?? '';
+$d = $argv[2] ?? '';
+if (!class_exists('ZipArchive')) { fwrite(STDERR, "no ZipArchive\n"); exit(1); }
+$zip = new ZipArchive();
+if ($zip->open($z) !== true) { fwrite(STDERR, "open failed\n"); exit(1); }
+if (!$zip->extractTo($d)) { fwrite(STDERR, "extract failed\n"); exit(1); }
+$zip->close();
+PHP
+    PHPRC="$PWD/nextcloud-runtime" ./frankenphp php-cli nextcloud-runtime/unzip.php "$zip" "$dest" && return 0
   fi
   if command -v python3 >/dev/null 2>&1; then
     python3 - "$zip" "$dest" << 'PY'
@@ -450,7 +454,7 @@ nc_install() {
     --admin-user="$NEXTCLOUD_ADMIN_USER" \
     --admin-pass="$NEXTCLOUD_ADMIN_PASSWORD" \
     --data-dir="$PWD/nextcloud-data" \
-    --admin-email="admin@localhost"; then
+    --admin-email="${NEXTCLOUD_ADMIN_EMAIL:-admin@jasoncloudserver.me}"; then
     echo "[nextcloud] occ maintenance:install 失敗"
     return 1
   fi
@@ -535,25 +539,51 @@ nc_configure() {
       --clientsecret="$OIDC_CLIENT_SECRET" \
       --discoveryuri="${issuer}/admin/oidc/.well-known/openid-configuration" \
       --unique-uid=0 \
-      --mapping-uid="preferred_username" || \
+      --mapping-uid="preferred_username" \
+      --mapping-groups="groups" || \
     echo "[nextcloud] user_oidc:provider 失敗（可之後在 Nextcloud 應用程式裡手動加）"
   fi
 
+  nc_setup_shared_cloud
   nc_write_snippet "$public" "$issuer"
+}
+
+nc_setup_shared_cloud() {
+  # 全班共用同一個資料夾，總容量預設 10GB（不是每人 10GB）
+  local quota_gb="${NEXTCLOUD_QUOTA_GB:-10}"
+  local bytes=$((quota_gb * 1024 * 1024 * 1024))
+  echo "[nextcloud] 設定共用雲端 ${quota_gb} GB（群組 classroom / 資料夾 教材）"
+
+  nc_occ group:add classroom >/dev/null 2>&1 || true
+  nc_occ group:adduser classroom "$NEXTCLOUD_ADMIN_USER" >/dev/null 2>&1 || true
+  nc_occ config:app:set files default_quota --value="${quota_gb} GB" >/dev/null 2>&1 || true
+  nc_occ user:setting "$NEXTCLOUD_ADMIN_USER" files quota "${quota_gb} GB" >/dev/null 2>&1 || true
+
+  nc_occ app:install groupfolders >/dev/null 2>&1 || true
+  nc_occ app:enable groupfolders >/dev/null 2>&1 || true
+
+  local list id
+  list="$(nc_occ groupfolders:list 2>/dev/null || true)"
+  if echo "$list" | grep -q 教材; then
+    echo "[nextcloud] 群組資料夾 教材 已存在"
+  else
+    nc_occ groupfolders:create 教材 >/dev/null 2>&1 || \
+      echo "[nextcloud] groupfolders:create 失敗（可之後在 Nextcloud 應用程式 → 群組資料夾手動建）"
+  fi
+  id="$(nc_occ groupfolders:list 2>/dev/null | awk '/教材/{print $1}' | tr -dc '0-9' | head -c 8)"
+  [[ -n "$id" ]] || id=1
+  nc_occ groupfolders:quota "$id" "$bytes" >/dev/null 2>&1 || true
+  nc_occ groupfolders:group "$id" classroom write >/dev/null 2>&1 || true
+  nc_occ groupfolders:group "$id" admin write >/dev/null 2>&1 || true
+  echo "[nextcloud] 共用資料夾就緒：每個人進 Nextcloud 都看得到「教材」，一共 ${quota_gb}GB"
 }
 
 nc_already_running() {
   local port="${NEXTCLOUD_PORT:-26001}"
-  python3 - "$port" << 'PY' >/dev/null 2>&1
-import socket, sys
-s = socket.socket()
-s.settimeout(0.4)
-try:
-    s.connect(("127.0.0.1", int(sys.argv[1])))
-except Exception:
-    raise SystemExit(1)
-s.close()
-PY
+  if command -v curl >/dev/null 2>&1; then
+    curl -sS --max-time 1 -o /dev/null "http://127.0.0.1:${port}/" >/dev/null 2>&1 && return 0
+  fi
+  return 1
 }
 
 nc_start_server() {
