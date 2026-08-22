@@ -69,6 +69,7 @@ pub(super) async fn admin_health_api_handler(
     // with "exit status: 1" and that raw error used to be rendered as if it
     // were the service state. Report the real supervisor instead.
     let systemctl = supervisor_status().await;
+    let watchdog = watchdog_status();
 
     (
         StatusCode::OK,
@@ -94,6 +95,7 @@ pub(super) async fn admin_health_api_handler(
                 "process": process,
                 "tailscale": tailscale,
                 "systemctl": systemctl,
+                "watchdog": watchdog,
             }
         })),
     )
@@ -254,7 +256,18 @@ pub(super) async fn admin_health_check_handler(
         "details": tailscale,
     }));
 
-    // 8. logs recent errors
+    // 8. watchdog background services
+    let wd = watchdog_status();
+    let wd_down = wd.get("services").and_then(|v| v.as_array()).map(|xs| xs.iter().filter(|x| x.get("id").and_then(|v| v.as_str()) != Some("dashboard") && x.get("alive").and_then(|v| v.as_bool()) != Some(true)).count()).unwrap_or(0);
+    checks.push(json!({
+        "name": "Tunnel / Watchdog",
+        "ok": wd_down == 0,
+        "level": if wd_down == 0 { "ok" } else { "bad" },
+        "message": if wd_down == 0 { format!("監控中，間隔 {} 秒", wd.get("interval_secs").and_then(|v| v.as_u64()).unwrap_or(15)) } else { format!("有 {wd_down} 個背景服務停止") },
+        "details": wd,
+    }));
+
+    // 9. logs recent errors
     let recent_logs = crate::logs::snapshot(None, 30);
     let recent_bad = recent_logs
         .iter()
@@ -299,6 +312,29 @@ pub(super) async fn admin_health_check_handler(
     )
         .into_response()
 }
+
+fn watchdog_status() -> serde_json::Value {
+    let names = [
+        ("dashboard", "主程式"),
+        ("cloudflared", "Cloudflare Tunnel"),
+        ("tailscaled", "Tailscale"),
+        ("ts-https-proxy", "Tailscale TLS Proxy"),
+    ];
+    let services: Vec<serde_json::Value> = names.iter().map(|(id, label)| {
+        let path = format!("logs/{id}.pid");
+        let pid = std::fs::read_to_string(&path).ok().and_then(|v| v.trim().parse::<u32>().ok());
+        let alive = pid.map(|p| unsafe { libc_kill_zero(p) }).unwrap_or(false);
+        json!({ "id": id, "label": label, "pid": pid, "alive": alive, "pid_file": path })
+    }).collect();
+    json!({ "enabled": std::path::Path::new("logs/cloudflared.pid").exists(), "interval_secs": std::env::var("WATCHDOG_INTERVAL_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(15), "services": services })
+}
+
+#[cfg(unix)]
+fn libc_kill_zero(pid: u32) -> bool {
+    std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().map(|s| s.success()).unwrap_or(false)
+}
+#[cfg(not(unix))]
+fn libc_kill_zero(_pid: u32) -> bool { false }
 
 /// True when this host actually uses systemd. Containers such as Pterodactyl
 /// do not, and probing them with `systemctl` only produces noise.
