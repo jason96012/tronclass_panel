@@ -575,7 +575,7 @@ watchdog_loop() {
       watchdog_check_filebrowser_http
       local dashboard_failures=0
       dashboard_failures="$(cat logs/dashboard-http-failures 2>/dev/null || echo 0)"
-      if ! watchdog_http_ok "http://127.0.0.1:${SERVER_PORT:-26000}/"; then
+      if ! watchdog_http_ok "http://127.0.0.1:${SERVER_PORT:-26000}/healthz"; then
         dashboard_failures=$((dashboard_failures + 1)); printf '%s\n' "$dashboard_failures" > logs/dashboard-http-failures
         echo "[watchdog] Dashboard HTTP health check 失敗（${dashboard_failures}/${WATCHDOG_FAILURE_THRESHOLD:-3}）"
         if (( dashboard_failures >= ${WATCHDOG_FAILURE_THRESHOLD:-3} )); then

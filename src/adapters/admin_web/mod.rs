@@ -648,6 +648,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
     let password_guard_state = state.clone();
     Router::new()
         .route("/", get(admin_root_redirect_handler))
+        .route("/healthz", get(health::healthz_handler))
         .route("/manifest.webmanifest", get(pwa::manifest_handler))
         .route("/service-worker.js", get(pwa::service_worker_handler))
         .route("/admin/pwa/icon.svg", get(pwa::icon_handler))

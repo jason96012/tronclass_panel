@@ -2,6 +2,14 @@
 
 use super::*;
 
+pub(super) async fn healthz_handler() -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({ "ok": true, "service": "tronclass_dashboard" })),
+    )
+        .into_response()
+}
+
 pub(super) async fn admin_health_page_handler() -> Response {
     (
         [(header::CACHE_CONTROL, "no-store")],
