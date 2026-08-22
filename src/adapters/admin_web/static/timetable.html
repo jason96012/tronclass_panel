@@ -800,6 +800,25 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
 }
 
 </style>
+<!-- TT_FULL_WIDTH_HEADER_V1_START -->
+<style id="ttFullWidthHeaderV1">
+  /* 頁首原本 max-width:1240px 置中，寬螢幕下左右留白過多。
+     改為貼齊視窗兩側，只保留舒適的內距。內容區 .page 維持置中，
+     因為表格若拉到超寬反而不易閱讀。 */
+  header .top{
+    max-width:none;
+    width:100%;
+    padding-left:clamp(16px, 3vw, 40px);
+    padding-right:clamp(16px, 3vw, 40px);
+  }
+  @media(max-width:820px){
+    header .top{
+      padding-left:12px;
+      padding-right:12px;
+    }
+  }
+</style>
+<!-- TT_FULL_WIDTH_HEADER_V1_END -->
 </head>
 <body>
 <header><div class="top"><div class="brand"><div class="logo">D</div><div><div class="brand-title">Tronclass<br>課表管理</div><div id="brandSub" class="brand-sub">載入中</div></div></div><div class="top-actions"><a id="backDashboard" class="button primary" href="/admin">回控制台</a><a id="meLink" class="button" href="/admin/me">我的頁面</a><button id="logoutBtn" class="danger" type="button">登出</button></div></div></header>
@@ -2079,7 +2098,7 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
 })(window);
 
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2eee79b88cfae64',t:'MTc4NzM3MDUzNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2eee79b88cfae64',t:'MTc4NzM3MDUzNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f209111929a9a9',t:'MTc4NzQwMzM2NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 
