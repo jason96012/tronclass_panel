@@ -171,6 +171,119 @@ start_tailscale() {
 
 start_tailscale
 
+
+# ─── Filebrowser（單一 Go 執行檔，適合這台面板）────────────────────────────
+
+fb_rand() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 16
+    return
+  fi
+  tr -dc 'a-f0-9' </dev/urandom | head -c 32
+  echo
+}
+
+fb_ensure_bin() {
+  if [[ -x ./filebrowser ]]; then
+    echo "[filebrowser] 已有 ./filebrowser"
+    return 0
+  fi
+  echo "[filebrowser] 下載 Filebrowser"
+  mkdir -p filebrowser-runtime
+  local tgz="$PWD/filebrowser-runtime/fb.tgz" ver
+  for ver in 2.32.3 2.32.0 2.31.2; do
+    if nc_dl_resume "https://github.com/filebrowser/filebrowser/releases/download/v${ver}/linux-amd64-filebrowser.tar.gz" "$tgz" \
+      || nc_dl_resume "https://github.com/filebrowser/filebrowser/releases/latest/download/linux-amd64-filebrowser.tar.gz" "$tgz"; then
+      tar -xzf "$tgz" -C filebrowser-runtime
+      if [[ -f filebrowser-runtime/filebrowser ]]; then
+        mv filebrowser-runtime/filebrowser ./filebrowser
+        chmod +x ./filebrowser
+        rm -f "$tgz"
+        echo "[filebrowser] 下載完成"
+        return 0
+      fi
+    fi
+    break
+  done
+  echo "[filebrowser] 下載失敗"
+  return 1
+}
+
+fb_init() {
+  mkdir -p cloud logs filebrowser
+  local db="$PWD/filebrowser/filebrowser.db"
+  local pass=""
+  if [[ -f config/filebrowser-admin.txt ]]; then
+    pass="$(tr -d '\r\n' < config/filebrowser-admin.txt)"
+  fi
+  if [[ -z "$pass" ]]; then
+    pass="$(fb_rand)"
+    umask 077
+    printf '%s\n' "$pass" > config/filebrowser-admin.txt
+    echo "[filebrowser] 已產生密碼 → config/filebrowser-admin.txt"
+  fi
+  if [[ ! -f "$db" ]]; then
+    echo "[filebrowser] 初始化資料庫"
+    ./filebrowser config init -d "$db" >/dev/null 2>&1 || true
+    ./filebrowser config set -d "$db" \
+      --address 127.0.0.1 \
+      --port "${NEXTCLOUD_PORT:-26001}" \
+      --root "$PWD/cloud" \
+      --locale zh-tw \
+      --auth.method json \
+      --baseurl "" >/dev/null 2>&1 || true
+    ./filebrowser users add admin "$pass" --perm.admin --lockPassword=false -d "$db" >/dev/null 2>&1 || \
+      ./filebrowser users update admin --password "$pass" -d "$db" >/dev/null 2>&1 || true
+  else
+    ./filebrowser config set -d "$db" \
+      --address 127.0.0.1 \
+      --port "${NEXTCLOUD_PORT:-26001}" \
+      --root "$PWD/cloud" \
+      --locale zh-tw >/dev/null 2>&1 || true
+  fi
+  mkdir -p cloud/教材
+}
+
+fb_write_snippet() {
+  umask 077
+  cat > config/filebrowser-dashboard.snippet.toml << EOF
+# Filebrowser 共用雲端。貼進 config.toml 的 [materials]（可蓋過 Nextcloud）
+
+[materials]
+backend = "local"
+# 教材目錄與 Filebrowser 同一包
+# 請把程式的 materials 指到 cloud/（或設環境變數 TRONCLASS_MATERIALS_DIR=cloud）
+frontend_url = "https://files.jasoncloudserver.me"
+frontend_mode = "button"
+EOF
+  echo "[filebrowser] 片段寫在 config/filebrowser-dashboard.snippet.toml"
+  echo "[filebrowser] 建議在面板環境變數加：TRONCLASS_MATERIALS_DIR=cloud"
+}
+
+start_filebrowser() {
+  if [[ ! -f config/filebrowser.enable && "${FILEBROWSER_ENABLE:-0}" != "1" ]]; then
+    return 0
+  fi
+  echo "[ptero-start] 啟動 Filebrowser（127.0.0.1:${NEXTCLOUD_PORT:-26001}）"
+  (
+    echo "===== $(date -Iseconds) filebrowser ====="
+    if command -v pkill >/dev/null 2>&1; then
+      pkill -f 'caddy run' >/dev/null 2>&1 || true
+      pkill -f 'php-fpm' >/dev/null 2>&1 || true
+      pkill -f 'php -S 127.0.0.1' >/dev/null 2>&1 || true
+      pkill -f './filebrowser ' >/dev/null 2>&1 || true
+    fi
+    fb_ensure_bin || exit 0
+    fb_init
+    fb_write_snippet
+    echo "[filebrowser] 聽 127.0.0.1:${NEXTCLOUD_PORT:-26001} 根目錄 $PWD/cloud"
+    echo "[filebrowser] 帳號 admin，密碼在 config/filebrowser-admin.txt"
+    echo "[filebrowser] 公開 https://files.jasoncloudserver.me"
+    exec ./filebrowser -d "$PWD/filebrowser/filebrowser.db"
+  ) >> logs/filebrowser.log 2>&1 &
+  disown || true
+}
+
 # ─── 同容器 Nextcloud（已併入本檔，不必再上傳 nextcloud-sidecar.sh）──────────
 
 nc_load_env() {
@@ -897,6 +1010,10 @@ nc_bootstrap() {
 }
 
 start_nextcloud() {
+  if [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]]; then
+    echo "[ptero-start] 已改用 Filebrowser，略過 Nextcloud"
+    return 0
+  fi
   nc_load_env
   if [[ ! -f config/nextcloud.enable && "${NEXTCLOUD_ENABLE:-0}" != "1" && ! -f nextcloud/config/config.php ]]; then
     echo "[ptero-start] 同容器 Nextcloud 未啟用（新增空檔 config/nextcloud.enable 後重啟）"
@@ -907,6 +1024,8 @@ start_nextcloud() {
   ( nc_bootstrap ) >> logs/nextcloud.log 2>&1 &
   disown || true
 }
+
+start_filebrowser
 
 start_nextcloud
 
