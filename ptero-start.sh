@@ -313,10 +313,52 @@ output_buffering=0
 EOF
 }
 
+nc_php_works() {
+  local bin="$1"
+  [[ -x "$bin" ]] || return 1
+  "$bin" -r 'echo "ok";' >/dev/null 2>&1
+}
+
+nc_ensure_php() {
+  if nc_php_works ./php; then
+    echo "[nextcloud] 使用 ./php"
+    return 0
+  fi
+  echo "[nextcloud] 下載靜態 PHP 8.3（FrankenPHP php-cli 在這台 CPU 會 Illegal instruction）"
+  mkdir -p nextcloud-runtime/php-extract
+  local ver tgz="$PWD/nextcloud-runtime/php-cli.tar.gz"
+  for ver in 8.3.23 8.3.22 8.3.21 8.3.16 8.3.12 8.2.28 8.4.10; do
+    echo "[nextcloud] 嘗試 php-${ver}-cli-linux-x86_64"
+    rm -f "$tgz"
+    if nc_dl_resume "https://dl.static-php.dev/static-php-cli/common/php-${ver}-cli-linux-x86_64.tar.gz" "$tgz"; then
+      rm -rf nextcloud-runtime/php-extract
+      mkdir -p nextcloud-runtime/php-extract
+      if tar -xzf "$tgz" -C nextcloud-runtime/php-extract; then
+        local found
+        found="$(find nextcloud-runtime/php-extract -type f -name php | head -1)"
+        if [[ -n "$found" ]]; then
+          cp "$found" ./php
+          chmod +x ./php
+          if nc_php_works ./php; then
+            rm -f "$tgz"
+            rm -rf nextcloud-runtime/php-extract
+            echo "[nextcloud] 靜態 PHP OK：$("$PWD/php" -r 'echo PHP_VERSION;')"
+            return 0
+          fi
+        fi
+      fi
+    fi
+  done
+  echo "[nextcloud] 靜態 PHP 下載失敗"
+  return 1
+}
+
 nc_occ() {
-  # frankenphp php-cli 不吃 php 的 -d，會把 -d 當成要執行的檔名
   nc_write_php_ini
-  (cd nextcloud && PHPRC="$PWD/../nextcloud-runtime" ../frankenphp php-cli occ "$@")
+  if ! nc_php_works ./php; then
+    nc_ensure_php || return 1
+  fi
+  (cd nextcloud && ../php -c ../nextcloud-runtime/php.ini occ "$@")
 }
 
 nc_download_frankenphp() {
@@ -592,12 +634,40 @@ nc_start_server() {
     echo "[nextcloud] 已在 127.0.0.1:${port} 聽"
     return 0
   fi
-  nc_write_caddyfile
-  echo "[nextcloud] 啟動 FrankenPHP :${port} → nextcloud/"
-  nohup ./frankenphp run --config "$PWD/nextcloud-runtime/Caddyfile" \
-    >> logs/nextcloud-frankenphp.log 2>&1 &
-  echo $! > nextcloud-runtime/frankenphp.pid
-  disown || true
+  nc_write_php_ini
+  # FrankenPHP 在部分 Pterodactyl CPU 會 SIGILL，先測再決定
+  local use_franken=0
+  if [[ -x ./frankenphp ]] && ./frankenphp php-cli -r 'echo 1;' >/dev/null 2>&1; then
+    use_franken=1
+  fi
+  if [[ "$use_franken" == "1" ]]; then
+    nc_write_caddyfile
+    echo "[nextcloud] 啟動 FrankenPHP :${port} → nextcloud/"
+    nohup ./frankenphp run --config "$PWD/nextcloud-runtime/Caddyfile" \
+      >> logs/nextcloud-frankenphp.log 2>&1 &
+    echo $! > nextcloud-runtime/frankenphp.pid
+    disown || true
+  else
+    if ! nc_php_works ./php; then
+      nc_ensure_php || return 1
+    fi
+    echo "[nextcloud] FrankenPHP 這台不能用，改 PHP 內建伺服器 :${port}"
+    cat > nextcloud-runtime/router.php << 'PHP'
+<?php
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+$file = dirname(__DIR__) . '/nextcloud' . $path;
+if ($path !== '/' && $path !== '' && file_exists($file) && !is_dir($file)) {
+    return false;
+}
+require dirname(__DIR__) . '/nextcloud/index.php';
+PHP
+    nohup ./php -c "$PWD/nextcloud-runtime/php.ini" \
+      -S "127.0.0.1:${port}" -t "$PWD/nextcloud" \
+      "$PWD/nextcloud-runtime/router.php" \
+      >> logs/nextcloud-frankenphp.log 2>&1 &
+    echo $! > nextcloud-runtime/frankenphp.pid
+    disown || true
+  fi
   sleep 2
   if nc_already_running; then
     echo "[nextcloud] 已聽 127.0.0.1:${port}"
