@@ -157,6 +157,24 @@ fb_ensure_bin() {
   return 1
 }
 
+fb_write_branding() {
+  mkdir -p filebrowser-branding
+  cat > filebrowser-branding/custom.css <<'CSS'
+/* Tronclass cloud dynamic background. Filebrowser built-in theme toggle and
+   prefers-color-scheme control the colors without covering the UI. */
+:root{--tron-bg:#eef4ff;--tron-a:#5b8cff;--tron-b:#9b7cff;--tron-card:rgba(255,255,255,.72)}
+@media(prefers-color-scheme:dark){:root{--tron-bg:#0b1020;--tron-a:#4d7cff;--tron-b:#b36cff;--tron-card:rgba(18,25,48,.78)}}
+html,body,#app{background:transparent!important}
+body{background:var(--tron-bg)!important;overflow-x:hidden}
+body:before,body:after{content:"";position:fixed;z-index:-1;pointer-events:none;border-radius:50%;filter:blur(45px);opacity:.48;animation:tronFloat 14s ease-in-out infinite alternate}
+body:before{width:42vw;height:42vw;left:-12vw;top:-14vw;background:radial-gradient(circle,var(--tron-a),transparent 68%)}
+body:after{width:38vw;height:38vw;right:-10vw;bottom:-14vw;background:radial-gradient(circle,var(--tron-b),transparent 68%);animation-delay:-6s}
+.v-card,.card,.v-toolbar,.v-navigation-drawer,.v-dialog,.v-menu__content{background:var(--tron-card)!important;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+@keyframes tronFloat{from{transform:translate3d(-2%,1%,0) scale(1)}to{transform:translate3d(3%,-3%,0) scale(1.08)}}
+@media(prefers-reduced-motion:reduce){body:before,body:after{animation:none}}
+CSS
+}
+
 fb_init() {
   # 一般使用者（Dashboard SSO 免登入口）可見的範圍，相對於 root（cloud/）。
   # 想改成整個 cloud 就設成 "/"。
@@ -235,7 +253,7 @@ fb_init() {
 
     ./filebrowser config set -d "$db" \
       --address 127.0.0.1 --port "$port" --root "$PWD/cloud" \
-      --locale zh-tw --auth.method "$method" --baseurl "" >> logs/filebrowser-init.log 2>&1 \
+      --locale zh-tw --auth.method "$method" --baseurl "" --branding.files "$PWD/filebrowser-branding" >> logs/filebrowser-init.log 2>&1 \
       || echo "[filebrowser] config set 失敗（$label）"
 
     # 全域預設也鎖起來：noauth 模式下新 session 會沿用這組預設值。
@@ -379,6 +397,7 @@ start_filebrowser() {
       rm -f config/fb-reset
     fi
     fb_init
+    fb_write_branding
     fb_write_caddy
     fb_write_snippet
     echo "[filebrowser] 密碼 :26011 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001"
