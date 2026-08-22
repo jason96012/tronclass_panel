@@ -1031,6 +1031,25 @@ nc_bootstrap() {
   echo "[nextcloud] Tunnel：files.jasoncloudserver.me → http://127.0.0.1:${NEXTCLOUD_PORT:-26001}"
 }
 
+# 清除 Nextcloud 殘留（停用後省磁碟）。找不到就安靜跳過。
+purge_nextcloud_leftovers() {
+  if command -v pkill >/dev/null 2>&1; then
+    pkill -f 'frankenphp' >/dev/null 2>&1 || true
+    pkill -f 'nextcloud-runtime/Caddyfile' >/dev/null 2>&1 || true
+  fi
+  local removed=0 d
+  for d in nextcloud nextcloud-data nextcloud-runtime; do
+    if [[ -e "$d" ]]; then
+      rm -rf -- "$d" && removed=1
+    fi
+  done
+  rm -f -- nextcloud.zip latest.zip frankenphp frankenphp.tmp 2>/dev/null || true
+  if [[ "$removed" == "1" ]]; then
+    echo "[ptero-start] 已清除 Nextcloud 殘留目錄"
+  fi
+  return 0
+}
+
 start_nextcloud() {
   echo "[ptero-start] Nextcloud 已停用並刪除，略過啟動"
   purge_nextcloud_leftovers
@@ -1085,10 +1104,12 @@ if [[ -f Cargo.toml && -d src ]]; then
   fi
   # 舊版 materials_webdav 依賴 MaterialsConfig，或檔案根本沒上傳。
   if [[ -f ./apply-fix-compile-purge-nc.sh ]]; then
-    if [[ ! -f src/adapters/admin_web/materials_webdav.rs \
-       || ! -f src/adapters/admin_web/oidc.rs \
-       || grep -q 'use crate::config::MaterialsConfig' src/adapters/admin_web/materials_webdav.rs 2>/dev/null \
-       || grep -q 'use crate::config::OidcConfig' src/adapters/admin_web/oidc.rs 2>/dev/null ]]; then
+    _need_fix=0
+    [[ -f src/adapters/admin_web/materials_webdav.rs ]] || _need_fix=1
+    [[ -f src/adapters/admin_web/oidc.rs ]] || _need_fix=1
+    grep -q 'use crate::config::MaterialsConfig' src/adapters/admin_web/materials_webdav.rs 2>/dev/null && _need_fix=1
+    grep -q 'use crate::config::OidcConfig' src/adapters/admin_web/oidc.rs 2>/dev/null && _need_fix=1
+    if [[ "$_need_fix" == "1" ]]; then
       echo "[ptero-start] 套用相容模組並清除 Nextcloud"
       bash ./apply-fix-compile-purge-nc.sh "$PWD" || true
     fi
