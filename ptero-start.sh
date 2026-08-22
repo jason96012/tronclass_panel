@@ -302,7 +302,26 @@ nc_ensure_secrets() {
 
 nc_write_php_ini() {
   mkdir -p nextcloud-runtime
-  cat > nextcloud-runtime/php.ini << 'EOF'
+  cat > nextcloud-runtime/freetype-polyfill.php << 'PHP'
+<?php
+// static-php common 的 GD 沒有 FreeType，Nextcloud 安裝產頭像會炸
+if (!function_exists('imagettfbbox')) {
+    function imagettfbbox($size, $angle, $fontfile, $text) {
+        $w = max(8, (int) (strlen((string) $text) * $size * 0.6));
+        $h = max(8, (int) $size);
+        return [0, $h, $w, $h, $w, 0, 0, 0];
+    }
+}
+if (!function_exists('imagettftext')) {
+    function imagettftext($image, $size, $angle, $x, $y, $color, $fontfile, $text) {
+        if (function_exists('imagestring')) {
+            imagestring($image, 5, (int) $x, max(0, (int) $y - 12), (string) $text, $color);
+        }
+        return true;
+    }
+}
+PHP
+  cat > nextcloud-runtime/php.ini << EOF
 memory_limit=512M
 upload_max_filesize=512M
 post_max_size=512M
@@ -310,6 +329,7 @@ max_execution_time=360
 max_input_time=360
 date.timezone=Asia/Taipei
 output_buffering=0
+auto_prepend_file=${PWD}/nextcloud-runtime/freetype-polyfill.php
 EOF
 }
 
@@ -495,8 +515,7 @@ nc_install() {
     --database-name=nextcloud \
     --admin-user="$NEXTCLOUD_ADMIN_USER" \
     --admin-pass="$NEXTCLOUD_ADMIN_PASSWORD" \
-    --data-dir="$PWD/nextcloud-data" \
-    --admin-email="${NEXTCLOUD_ADMIN_EMAIL:-admin@jasoncloudserver.me}"; then
+    --data-dir="$PWD/nextcloud-data"; then
     echo "[nextcloud] occ maintenance:install 失敗"
     return 1
   fi
