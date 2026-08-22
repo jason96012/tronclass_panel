@@ -1472,6 +1472,16 @@ impl AccountsDb {
         Ok(result.rows_affected())
     }
 
+    /// 檢查 SQLite 結構與索引是否完整。
+    pub async fn integrity_check(&self) -> Result<String> {
+        let result: String = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_one(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("SQLite integrity_check 執行失敗")?;
+        Ok(result)
+    }
+
     // ── 解析 ──────────────────────────────────────────────────────────────────
 
     /// 從資料庫載入所有帳號並解析成可執行的 `AccountConfig` 清單。

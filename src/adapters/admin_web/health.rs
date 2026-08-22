@@ -115,6 +115,29 @@ pub(super) async fn admin_health_check_handler(
     let mut checks = Vec::new();
 
     // 1. SQLite / accounts.db
+    match state.accounts_db.integrity_check().await {
+        Ok(result) if result.trim().eq_ignore_ascii_case("ok") => checks.push(json!({
+            "name": "SQLite 完整性",
+            "ok": true,
+            "level": "ok",
+            "message": "PRAGMA integrity_check：ok",
+            "details": result,
+        })),
+        Ok(result) => checks.push(json!({
+            "name": "SQLite 完整性",
+            "ok": false,
+            "level": "bad",
+            "message": "資料庫完整性檢查失敗",
+            "details": result,
+        })),
+        Err(e) => checks.push(json!({
+            "name": "SQLite 完整性",
+            "ok": false,
+            "level": "bad",
+            "message": "完整性檢查無法執行",
+            "details": e.to_string(),
+        })),
+    }
     match state.accounts_db.list().await {
         Ok(rows) => checks.push(json!({
             "name": "SQLite 帳號資料庫",
