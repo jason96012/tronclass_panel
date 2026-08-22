@@ -509,6 +509,13 @@ nc_install() {
     return 0
   fi
   echo "[nextcloud] 第一次安裝（SQLite）"
+  # 前幾次失敗會留下 admin 的檔案，再裝會報 Login is invalid because files already exist
+  if [[ -d nextcloud-data && ! -f nextcloud/config/config.php ]]; then
+    local bak="nextcloud-data.bak.$(date +%Y%m%d%H%M%S)"
+    echo "[nextcloud] 移走半套資料 → ${bak}"
+    mv nextcloud-data "$bak" || true
+  fi
+  rm -f nextcloud/config/config.php nextcloud/config/config.php.bak 2>/dev/null || true
   mkdir -p nextcloud-data
   if ! nc_occ maintenance:install \
     --database=sqlite \
