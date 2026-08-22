@@ -60,7 +60,7 @@
       card('服務',active?(svc.indexOf('running')===0?'執行中':'active'):String(cmd.systemctl||'-'),'PID '+(h.pid||'-')+'｜Uptime '+((h.uptime&&h.uptime.label)||'-'),active?'ok':'bad'),
       card('最後輪詢',acc.latest_poll_timestamp?new Date(Number(acc.latest_poll_timestamp)*1000).toLocaleString():'尚未','失敗 '+(acc.total_failures||0),(acc.total_failures||0)>0?'warn':'ok'),
       card('Load',h.loadavg||'-','系統負載'),
-      card('Watchdog',wd.enabled?(wdDown.length?'有服務停止':'監控中'):'未啟用','檢查間隔 '+(wd.interval_secs||15)+' 秒｜'+(wdServices.map(function(x){return x.label+': '+(x.alive?'正常':'停止')}).join('、')||'尚無 PID'),wd.enabled?(wdDown.length?'bad':'ok'):'warn')
+      card('Watchdog',wd.enabled?(wdDown.length?'有服務停止':'監控中'):'未啟用','PID + HTTP 檢查｜間隔 '+(wd.interval_secs||15)+' 秒｜'+(wdServices.map(function(x){return x.label+': '+(x.alive?'正常':'停止')}).join('、')||'尚無 PID'),wd.enabled?(wdDown.length?'bad':'ok'):'warn')
     ].join('');
     q('maintRaw').textContent=JSON.stringify({health:lastHealth,check:lastCheck},null,2);
   }

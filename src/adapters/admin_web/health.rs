@@ -314,7 +314,7 @@ fn watchdog_status() -> serde_json::Value {
         let alive = pid.map(|p| unsafe { libc_kill_zero(p) }).unwrap_or(false);
         json!({ "id": id, "label": label, "pid": pid, "alive": alive, "pid_file": path })
     }).collect();
-    json!({ "enabled": std::path::Path::new("logs/cloudflared.pid").exists(), "interval_secs": std::env::var("WATCHDOG_INTERVAL_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(15), "services": services })
+    json!({ "enabled": std::path::Path::new("logs/cloudflared.pid").exists(), "http_checks": true, "interval_secs": std::env::var("WATCHDOG_INTERVAL_SECS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(15), "services": services })
 }
 
 #[cfg(unix)]
