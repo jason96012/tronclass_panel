@@ -686,8 +686,155 @@
     }
   }
 </style>
+<style id="MOBILE_FILES_UX_V1">
+@media (max-width:820px){
+  .search-wrap{
+    display:flex!important;
+    grid-column:1/-1;
+    order:5;
+    width:100%!important;
+    margin:0!important;
+  }
+  .topbar{
+    display:grid!important;
+    grid-template-columns:1fr auto!important;
+    gap:10px!important;
+    align-items:center!important;
+  }
+  .brand-title{font-size:16px!important}
+  #filesBackDashboardBtn{display:none!important}
+  #refresh{display:none!important}
+  #dashboardLink{min-height:40px!important;padding:0 14px!important;border-radius:14px!important}
+
+  .content{padding:12px 12px calc(118px + env(safe-area-inset-bottom,0px))!important}
+  .content-head{
+    display:grid!important;
+    gap:8px!important;
+    margin-bottom:10px!important;
+  }
+  .content-head h1{font-size:22px!important;margin:0!important;letter-spacing:-.03em}
+  .content-head .toolbar-right,
+  .dropzone,
+  .view-toggle,
+  #listTable,
+  .section-title h2{display:none!important}
+
+  .breadcrumb{font-size:14px!important;line-height:1.45;word-break:break-all}
+  .breadcrumb a,.breadcrumb button{min-height:36px;padding:4px 0}
+
+  .toolbar{display:flex!important;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+  .toolbar-left{width:100%}
+  #summary{font-size:13px!important;color:var(--muted,#64748b)}
+  #sortBy{width:100%!important;min-height:44px!important;border-radius:14px!important;font-size:15px!important}
+
+  .folder-grid{
+    display:grid!important;
+    grid-template-columns:1fr!important;
+    gap:8px!important;
+    margin:0 0 14px!important;
+  }
+  .folder-card{
+    display:grid!important;
+    grid-template-columns:44px 1fr auto!important;
+    align-items:center!important;
+    gap:10px!important;
+    min-height:58px!important;
+    padding:10px 12px!important;
+    border-radius:16px!important;
+  }
+  .folder-icon{width:40px!important;height:40px!important;margin:0!important}
+  .folder-name{font-size:16px!important;font-weight:800!important}
+  .folder-card .button{min-height:40px!important}
+
+  .file-grid{
+    display:grid!important;
+    grid-template-columns:1fr!important;
+    gap:10px!important;
+  }
+  .file-card{
+    display:grid!important;
+    grid-template-columns:56px 1fr!important;
+    grid-template-rows:auto auto!important;
+    align-items:center;
+    border-radius:18px!important;
+    overflow:hidden;
+  }
+  .file-thumb{
+    grid-row:1;
+    height:56px!important;
+    width:56px!important;
+    border:0!important;
+    border-radius:14px;
+    margin:10px 0 10px 10px;
+  }
+  .file-info{
+    grid-row:1;
+    padding:10px 12px 6px 8px!important;
+    min-width:0;
+  }
+  .file-name{
+    font-size:16px!important;
+    font-weight:800!important;
+    line-height:1.35!important;
+    min-height:0!important;
+    -webkit-line-clamp:2;
+  }
+  .file-meta{font-size:12px!important;margin-top:4px}
+  .file-actions{
+    grid-column:1/-1;
+    display:grid!important;
+    grid-template-columns:repeat(auto-fit,minmax(88px,1fr))!important;
+    gap:8px!important;
+    padding:8px 10px 10px!important;
+    overflow:visible!important;
+  }
+  .file-actions a,.file-actions button{
+    min-height:44px!important;
+    font-size:14px!important;
+    font-weight:800!important;
+    border-radius:12px!important;
+    padding:0 8px!important;
+    width:100%;
+    justify-content:center;
+  }
+  .empty{
+    padding:36px 16px!important;
+    font-size:15px!important;
+    line-height:1.5;
+    border-radius:18px!important;
+    text-align:center;
+  }
+  .modal-backdrop{padding:0!important;align-items:stretch!important}
+  .modal{
+    width:100%!important;
+    height:100%!important;
+    max-height:100%!important;
+    border-radius:0!important;
+  }
+}
+</style>
+
 </head>
 <body>
+<div id="ncPortal" hidden>
+  <style>
+    #ncPortal{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px;
+      background:radial-gradient(circle at 20% 20%,rgba(0,130,201,.35),transparent 42%),#0082c9;color:#fff;
+      font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;text-align:center;padding:24px}
+    #ncPortal.owncloud{background:radial-gradient(circle at 20% 20%,rgba(27,79,114,.4),transparent 42%),#1d2d44}
+    #ncPortal svg{width:72px;height:72px}
+    #ncPortal h1{margin:0;font-size:28px;font-weight:850}
+    #ncPortal p{margin:0;opacity:.9;font-size:15px}
+    #ncPortal a,#ncPortal button{appearance:none;border:0;border-radius:14px;padding:12px 22px;font-weight:800;font-size:15px;cursor:pointer;text-decoration:none}
+    #ncOpen{background:#fff;color:#0082c9}
+    #ncStay{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.45)}
+  </style>
+  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 18a5 5 0 0 1-.6-9.96A7 7 0 0 1 19.5 11 4.5 4.5 0 0 1 19 20H7Z" fill="#fff"/></svg>
+  <h1 id="ncTitle">Nextcloud</h1>
+  <p id="ncHint">正在開啟教材雲端硬碟…</p>
+  <a id="ncOpen" href="#">立即前往</a>
+  <button id="ncStay" type="button">使用內建教材頁</button>
+</div>
 
 <header class="topbar">
   <div class="brand-wrap">
@@ -1076,6 +1223,38 @@
     try {
       const body = await api('/admin/api/files/list', { cache: 'no-store' });
       isAdmin = !!body.is_admin;
+      var stay = false;
+      try { stay = new URLSearchParams(location.search).get('stay') === '1'; } catch(_){}
+      var mode = String(body.frontend_mode || 'off').toLowerCase();
+      var cloudUrl = body.frontend_url ? String(body.frontend_url) : '';
+      if (cloudUrl && mode === 'redirect' && !stay) {
+        var own = /owncloud/i.test(cloudUrl);
+        var portal = document.getElementById('ncPortal');
+        if (portal) {
+          portal.hidden = false;
+          portal.classList.toggle('owncloud', own);
+          var title = document.getElementById('ncTitle');
+          if (title) title.textContent = own ? 'ownCloud' : 'Nextcloud';
+          var open = document.getElementById('ncOpen');
+          if (open) open.href = cloudUrl;
+        }
+        location.replace(cloudUrl);
+        return;
+      }
+      if (cloudUrl && mode === 'button') {
+        var bar = document.getElementById('ncOpenBar');
+        if (!bar) {
+          bar = document.createElement('a');
+          bar.id = 'ncOpenBar';
+          bar.target = '_blank';
+          bar.rel = 'noopener';
+          bar.style.cssText = 'display:inline-flex;align-items:center;margin:0 0 12px;padding:10px 16px;border-radius:14px;background:#0082c9;color:#fff;font-weight:800;text-decoration:none';
+          var head = document.querySelector('.content-head .toolbar-right') || document.querySelector('.content-head');
+          if (head) head.prepend(bar);
+        }
+        bar.href = cloudUrl;
+        bar.textContent = /owncloud/i.test(cloudUrl) ? '在 ownCloud 開啟' : '在 Nextcloud 開啟';
+      }
       files = (body.files || []).map(f => typeof f === 'string' ? { path: f, name: f } : f);
       folders = body.folders || [];
       render();
@@ -1409,7 +1588,7 @@
   setTimeout(ensure, 300);
 })();
 </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2ef32caf9fa4a18',t:'MTc4NzM3MzYxNQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 
