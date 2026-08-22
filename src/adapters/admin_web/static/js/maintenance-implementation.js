@@ -40,9 +40,13 @@
     lastHealth=h;
     var acc=h.accounts||{}, mem=h.memory||{}, db=h.database||{}, cmd=h.commands||{}, disk=parseDisk(cmd.disk);
     var memPct=pct(mem.mem_used,mem.mem_total), swapPct=pct(mem.swap_used,mem.swap_total), diskPct=disk?Number(String(disk.use||'0').replace('%','')):null;
-    var active=String(cmd.systemctl||'').trim()==='active';
+    // Containers (Pterodactyl) have no systemd; the backend then reports
+    // "running (container, ...)". Treat that as healthy instead of flagging
+    // "systemd 非 active" on a service that is demonstrably alive.
+    var svc=String(cmd.systemctl||'').trim();
+    var active=svc==='active'||svc.indexOf('running')===0;
     var bad=[]; var warn=[];
-    if(db.ok===false)bad.push('SQLite 異常'); if(!active)bad.push('systemd 非 active'); if(memPct>=90)bad.push('RAM 過高'); if(diskPct!=null&&diskPct>=90)bad.push('磁碟過高');
+    if(db.ok===false)bad.push('SQLite 異常'); if(!active)bad.push('服務非執行中'); if(memPct>=90)bad.push('RAM 過高'); if(diskPct!=null&&diskPct>=90)bad.push('磁碟過高');
     if((acc.paused||0)>0)warn.push('有帳號暫停'); if((acc.detected||0)>0)warn.push('有點名偵測'); if((acc.total_failures||0)>0)warn.push('有失敗紀錄'); if(memPct>=75&&memPct<90)warn.push('RAM 偏高'); if(diskPct!=null&&diskPct>=75&&diskPct<90)warn.push('磁碟偏高');
     var overall=q('maintFinalOverall'); overall.className='maint-final-overall '+(bad.length?'bad':warn.length?'warn':'');
     q('maintFinalSummary').textContent=bad.length?bad.join('、'):(warn.length?warn.join('、'):'服務、SQLite、記憶體、磁碟看起來正常');
@@ -52,7 +56,7 @@
       card('RAM',mem.mem_used_label||'-','可用 '+(mem.mem_available_label||'-')+'｜總量 '+(mem.mem_total_label||'-'),levelByPct(memPct),memPct),
       card('Swap',mem.swap_used_label||'-','總量 '+(mem.swap_total_label||'-')+'｜可用 '+(mem.swap_free_label||'-'),levelByPct(swapPct),swapPct),
       card('磁碟',disk?disk.use:'-',disk?(disk.used+' / '+disk.size+'｜可用 '+disk.avail):'讀取失敗',diskPct==null?'warn':levelByPct(diskPct),diskPct),
-      card('服務',active?'active':String(cmd.systemctl||'-'),'PID '+(h.pid||'-')+'｜Uptime '+((h.uptime&&h.uptime.label)||'-'),active?'ok':'bad'),
+      card('服務',active?(svc.indexOf('running')===0?'執行中':'active'):String(cmd.systemctl||'-'),'PID '+(h.pid||'-')+'｜Uptime '+((h.uptime&&h.uptime.label)||'-'),active?'ok':'bad'),
       card('最後輪詢',acc.latest_poll_timestamp?new Date(Number(acc.latest_poll_timestamp)*1000).toLocaleString():'尚未','失敗 '+(acc.total_failures||0),(acc.total_failures||0)>0?'warn':'ok'),
       card('Load',h.loadavg||'-','系統負載')
     ].join('');

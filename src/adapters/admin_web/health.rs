@@ -65,7 +65,10 @@ pub(super) async fn admin_health_api_handler(
     )
     .await;
     let tailscale = run_health_command("tailscale", &["status", "--peers=false"]).await;
-    let systemctl = run_health_command("systemctl", &["is-active", "tronclass-rollcall"]).await;
+    // Pterodactyl (and most containers) have no systemd, so `systemctl` fails
+    // with "exit status: 1" and that raw error used to be rendered as if it
+    // were the service state. Report the real supervisor instead.
+    let systemctl = supervisor_status().await;
 
     (
         StatusCode::OK,
@@ -219,12 +222,19 @@ pub(super) async fn admin_health_check_handler(
         "details": mem,
     }));
 
-    // 6. systemd
-    let systemctl =
-        run_quick_check_command("systemctl", &["is-active", "tronclass-rollcall"]).await;
-    let systemd_ok = systemctl.trim() == "active";
+    // 6. 程序監管（systemd 或容器）
+    let systemctl = supervisor_status().await;
+    let has_systemd = systemd_available().await;
+    // Under a container supervisor the process is alive by definition: this
+    // code is running. Only treat systemd as failed when systemd is actually
+    // in use and reports something other than active.
+    let systemd_ok = if has_systemd {
+        systemctl.trim() == "active"
+    } else {
+        true
+    };
     checks.push(json!({
-        "name": "systemd 服務",
+        "name": if has_systemd { "systemd 服務" } else { "程序狀態" },
         "ok": systemd_ok,
         "level": if systemd_ok { "ok" } else { "bad" },
         "message": systemctl.trim(),
@@ -288,6 +298,28 @@ pub(super) async fn admin_health_check_handler(
         })),
     )
         .into_response()
+}
+
+/// True when this host actually uses systemd. Containers such as Pterodactyl
+/// do not, and probing them with `systemctl` only produces noise.
+async fn systemd_available() -> bool {
+    std::path::Path::new("/run/systemd/system").exists()
+}
+
+/// Describe how this process is supervised, without pretending a missing
+/// systemd is a failure.
+async fn supervisor_status() -> String {
+    if systemd_available().await {
+        return run_health_command("systemctl", &["is-active", "tronclass-rollcall"]).await;
+    }
+    let pid = std::process::id();
+    let uptime = run_health_command("ps", &["-p", &pid.to_string(), "-o", "etime="]).await;
+    let uptime = uptime.trim();
+    if uptime.is_empty() || uptime.starts_with("exit") || uptime.starts_with("command failed") {
+        format!("running (container, pid {pid})")
+    } else {
+        format!("running (container, pid {pid}, uptime {uptime})")
+    }
 }
 
 async fn run_quick_check_command(program: &str, args: &[&str]) -> String {
