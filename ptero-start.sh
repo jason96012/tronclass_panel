@@ -210,7 +210,11 @@ fb_ensure_bin() {
 }
 
 fb_init() {
+  # 一般使用者（Dashboard SSO 免登入口）可見的範圍，相對於 root（cloud/）。
+  # 想改成整個 cloud 就設成 "/"。
+  FB_USER_SCOPE="${FB_USER_SCOPE:-/教材}"
   mkdir -p cloud/教材 logs fb-data
+  mkdir -p "cloud/${FB_USER_SCOPE#/}" 2>/dev/null || true
   local pass=""
   if [[ -f config/filebrowser-admin.txt ]]; then
     pass="$(tr -d '\r\n' < config/filebrowser-admin.txt)"
@@ -249,13 +253,15 @@ fb_init() {
 
     # 免登實例：檔案操作全開（上傳/下載/覆寫/刪除/改名搬移/公開分享），
     # 但不得管理帳號或改全域設定，也不能執行指令。
+    # scope 鎖在 /教材：使用者看不到也進不去 cloud/ 底下的其他資料夾。
     local -a perms
     if [[ "$mode" == "files-full" ]]; then
       perms=( --perm.admin=false --perm.create=true --perm.download=true
               --perm.modify=true --perm.delete=true --perm.rename=true
-              --perm.share=true --perm.execute=false )
+              --perm.share=true --perm.execute=false
+              --scope "$FB_USER_SCOPE" )
     else
-      perms=( --perm.admin=true )
+      perms=( --perm.admin=true --scope "/" )
     fi
 
     if ! fb_db_has_user "$db"; then
@@ -284,10 +290,17 @@ fb_init() {
         --perm.share=true --perm.execute=false >> logs/filebrowser-init.log 2>&1 || true
       ./filebrowser config set -d "$db" --signup=false --createUserDir=false \
         >> logs/filebrowser-init.log 2>&1 || true
+      # noauth 模式下新 session 會沿用全域預設 scope，必須一併鎖住。
+      ./filebrowser config set -d "$db" --scope "$FB_USER_SCOPE" \
+        >> logs/filebrowser-init.log 2>&1 || true
     fi
 
     if fb_db_has_user "$db"; then
-      echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode）"
+      if [[ "$mode" == "files-full" ]]; then
+        echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode, scope=$FB_USER_SCOPE）"
+      else
+        echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode, scope=/）"
+      fi
     else
       echo "[filebrowser] 警告：$label 仍然沒有使用者，登入會 500"
     fi
