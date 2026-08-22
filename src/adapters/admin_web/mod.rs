@@ -1193,6 +1193,10 @@ async fn admin_security_headers_middleware(
         return response;
     }
 
+    // Compute this before taking the mutable header borrow: reading `response`
+    // afterwards would conflict with the `headers` borrow held below.
+    let html_document = is_html_document(&response);
+
     let headers = response.headers_mut();
     headers.insert(
         HeaderName::from_static("x-content-type-options"),
@@ -1243,7 +1247,7 @@ async fn admin_security_headers_middleware(
         // requests, so every navigation re-downloaded the full ~260 KB
         // dashboard. `no-cache` still revalidates on each load while allowing
         // the ETag below to answer with an empty 304.
-        if is_html_document(&response) {
+        if html_document {
             headers.insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("private, no-cache, must-revalidate"),
