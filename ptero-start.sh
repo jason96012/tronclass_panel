@@ -41,7 +41,11 @@ secure_runtime_permissions
 
 printf '%s\n' "$$" > run/ptero-start.lock/pid
 cleanup_start_lock() { rm -rf run/ptero-start.lock; }
-trap cleanup_start_lock EXIT INT TERM
+# TERM must terminate this shell after releasing the lock; otherwise the shell
+# may continue waiting on a child and leave run/ptero-start.lock behind.
+trap 'cleanup_start_lock; exit 143' TERM
+trap 'cleanup_start_lock; exit 130' INT
+trap 'cleanup_start_lock' EXIT
 
 if [[ -x ./sync-to-github.sh || -f ./sync-to-github.sh ]]; then
   echo "[ptero-start] 背景同步程式碼到 GitHub（不含個資）"
