@@ -1092,9 +1092,18 @@ run_bin() {
   exec "$1"
 }
 
-# 已編譯過就直接跑，改程式後把環境變數 FORCE_REBUILD=1 再重啟
-if [[ -f ./target/release/tronclass_rollcall && "${FORCE_REBUILD:-0}" != "1" ]]; then
-  run_bin ./target/release/tronclass_rollcall
+# 已編譯過就直接跑。原本只認 FORCE_REBUILD，改了 .rs / static 檔卻忘了設，
+# 就會一直跑舊 binary，看起來像「修了沒效」。改成自動比對修改時間。
+BIN=./target/release/tronclass_rollcall
+if [[ -f "$BIN" && "${FORCE_REBUILD:-0}" != "1" ]]; then
+  newer="$(find src Cargo.toml Cargo.lock -newer "$BIN" 2>/dev/null | head -5)"
+  if [[ -n "$newer" ]]; then
+    echo "[ptero-start] 偵測到原始碼比 binary 新，將重新編譯："
+    printf '[ptero-start]   %s\n' $newer
+  else
+    echo "[ptero-start] binary 已是最新（$(date -r "$BIN" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)）"
+    run_bin "$BIN"
+  fi
 fi
 
 if [[ -f Cargo.toml && -d src ]]; then

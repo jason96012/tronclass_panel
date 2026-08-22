@@ -918,11 +918,30 @@ async fn https_redirect_middleware(
 }
 
 fn request_uses_https(headers: &HeaderMap) -> bool {
-    headers
+    if headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(',').next())
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("https"))
+    {
+        return true;
+    }
+    // Cloudflare Tunnel does not always set X-Forwarded-Proto. `CF-Visitor`
+    // carries the original scheme, and any `__Host-` cookie the browser already
+    // accepted proves the origin is HTTPS. Misdetecting HTTPS as HTTP makes the
+    // server emit a `__Host-` cookie without `Secure`, which browsers silently
+    // discard, producing an endless 401 login loop.
+    if headers
+        .get("cf-visitor")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("https"))
+    {
+        return true;
+    }
+    headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains(SECURE_SESSION_COOKIE))
 }
 
 fn session_cookie_name(headers: &HeaderMap) -> &'static str {
@@ -939,7 +958,13 @@ fn session_cookie_name(headers: &HeaderMap) -> &'static str {
 fn session_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
     let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in cookies.split(';') {
-        let (name, value) = pair.trim().split_once('=')?;
+        // NOTE: `?` here used to abort the whole scan as soon as any cookie in
+        // the header had no `=` (Cloudflare and analytics cookies routinely do),
+        // so the session cookie later in the list was never inspected.
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
         if name != SECURE_SESSION_COOKIE && name != LOCAL_SESSION_COOKIE {
             continue;
         }
