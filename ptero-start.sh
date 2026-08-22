@@ -230,17 +230,17 @@ fb_init() {
       --port "${NEXTCLOUD_PORT:-26001}" \
       --root "$PWD/cloud" \
       --locale zh-tw \
-      --auth.method json \
+      --auth.method noauth \
       --baseurl "" >/dev/null 2>&1 || true
-    ./filebrowser users add admin "$pass" --perm.admin --lockPassword=false -d "$db" >/dev/null 2>&1 || \
-      ./filebrowser users update admin --password "$pass" -d "$db" >/dev/null 2>&1 || true
-  else
-    ./filebrowser config set -d "$db" \
-      --address 127.0.0.1 \
-      --port "${NEXTCLOUD_PORT:-26001}" \
-      --root "$PWD/cloud" \
-      --locale zh-tw >/dev/null 2>&1 || true
+    ./filebrowser users add admin "$pass" --perm.admin --lockPassword=false -d "$db" >/dev/null 2>&1 || true
   fi
+  # 已有資料庫也改成免登入（點教材直接進）
+  ./filebrowser config set -d "$db" \
+    --address 127.0.0.1 \
+    --port "${NEXTCLOUD_PORT:-26001}" \
+    --root "$PWD/cloud" \
+    --locale zh-tw \
+    --auth.method noauth >/dev/null 2>&1 || true
   mkdir -p cloud/教材
 }
 
@@ -1031,8 +1031,8 @@ start_filebrowser
 if [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]]; then
   export TRONCLASS_MATERIALS_DIR="${TRONCLASS_MATERIALS_DIR:-cloud}"
   export TRONCLASS_MATERIALS_BACKEND="${TRONCLASS_MATERIALS_BACKEND:-local}"
-  export TRONCLASS_MATERIALS_FRONTEND_URL="${TRONCLASS_MATERIALS_FRONTEND_URL:-https://files.jasoncloudserver.me}"
-  export TRONCLASS_MATERIALS_FRONTEND_MODE="${TRONCLASS_MATERIALS_FRONTEND_MODE:-button}"
+  export TRONCLASS_MATERIALS_FRONTEND_URL="${TRONCLASS_MATERIALS_FRONTEND_URL:-https://files.jasoncloudserver.me/files}"
+  export TRONCLASS_MATERIALS_FRONTEND_MODE="${TRONCLASS_MATERIALS_FRONTEND_MODE:-redirect}"
   echo "[ptero-start] Dashboard 教材 → ${TRONCLASS_MATERIALS_DIR}，雲端按鈕 ${TRONCLASS_MATERIALS_FRONTEND_URL}（mode=${TRONCLASS_MATERIALS_FRONTEND_MODE}）"
 fi
 
