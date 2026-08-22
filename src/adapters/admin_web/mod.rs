@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -1280,22 +1280,14 @@ fn is_html_document(response: &Response) -> bool {
 /// Serve a static in-binary HTML page with a content-derived ETag so repeat
 /// navigations get a 304 instead of the full payload.
 fn html_page_response(headers: &HeaderMap, html: String) -> Response {
-    // The page content is fixed for the lifetime of the process (it is baked in
-    // with include_str!), so hash each distinct page only once instead of
-    // re-hashing ~260 KB on every navigation.
-    static ETAG_CACHE: OnceLock<std::sync::Mutex<HashMap<usize, String>>> = OnceLock::new();
-    let cache = ETAG_CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
-    let key = html.len();
-    let etag = {
-        let mut map = cache.lock().unwrap_or_else(|e| e.into_inner());
-        map.entry(key)
-            .or_insert_with(|| {
-                let mut hasher = Sha256::new();
-                hasher.update(html.as_bytes());
-                format!("\"{}\"", hex::encode(&hasher.finalize()[..16]))
-            })
-            .clone()
-    };
+    // Hash the body directly. An earlier version cached the digest keyed by
+    // length (pages differ by as little as 9 bytes -> wrong 304) and then by
+    // pointer (inject_theme allocates a fresh String each call -> never hit).
+    // SHA-256 over a few hundred KB is well under a millisecond and is dwarfed
+    // by the bytes this saves, so keep it simple and correct.
+    let mut hasher = Sha256::new();
+    hasher.update(html.as_bytes());
+    let etag = format!("\"{}\"", hex::encode(&hasher.finalize()[..16]));
 
     let matches = headers
         .get(header::IF_NONE_MATCH)
@@ -1522,12 +1514,8 @@ async fn admin_dashboard_page_handler(
     html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
 }
 
-async fn admin_activity_page_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(inject_theme(ADMIN_ACTIVITY_HTML)),
-    )
-        .into_response()
+async fn admin_activity_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_ACTIVITY_HTML))
 }
 
 // Cache admin flags for /admin/api/status to avoid querying accounts.db on every dashboard refresh.
@@ -1958,12 +1946,8 @@ async fn admin_notification_preferences_update_handler(
 
 const ADMIN_CLEAN_TIMETABLE_HTML: &str = include_str!("static/timetable.html");
 
-async fn admin_clean_timetable_page_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(inject_theme(ADMIN_CLEAN_TIMETABLE_HTML)),
-    )
-        .into_response()
+async fn admin_clean_timetable_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_CLEAN_TIMETABLE_HTML))
 }
 
 const ADMIN_STATIC_CACHE_CONTROL: &str = "public, max-age=604800, immutable, stale-while-revalidate=86400";
@@ -2086,20 +2070,12 @@ async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
     (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, loc)]).into_response()
 }
 
-async fn admin_password_page_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(inject_theme(ADMIN_PASSWORD_HTML)),
-    )
-        .into_response()
+async fn admin_password_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_PASSWORD_HTML))
 }
 
-async fn admin_passkey_page_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(inject_theme(ADMIN_PASSKEY_HTML)),
-    )
-        .into_response()
+async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_PASSKEY_HTML))
 }
 
 fn must_change_password_redirect() -> Response {
