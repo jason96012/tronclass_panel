@@ -268,7 +268,7 @@ fb_init() {
 
 
   # 密碼版（:26011）＝你的管理入口，保留完整權限
-  fb_prepare_db "$auth_db" json 26011 "auth.db" admin
+  fb_prepare_db "$auth_db" json 26011 "auth.db" files-full
   # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口
   # 檔案操作全開，只擋帳號管理與全域設定
   fb_prepare_db "$open_db" noauth 26012 "open.db" files-full
