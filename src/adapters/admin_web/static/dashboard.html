@@ -52,13 +52,43 @@
     return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
   }
   function statusKey(url) {
+    // Normalize semantically identical variants onto one key. The dashboard
+    // boots three separate status callers that ask for the same data in
+    // slightly different ways:
+    //   /admin/api/status
+    //   /admin/api/status?include_history=false
+    //   /admin/api/status?history_limit=0&include_history=false
+    // Keying on the raw query string made all three distinct, so the dedupe
+    // never fired and the slowest request on the page ran three times.
+    // history_limit is meaningless once include_history=false, and `token` is
+    // only a compatibility marker, so both are dropped from the key.
     var copy = new URL(url.href);
+    // Timetable responses differ per account, so account_id must stay in the
+    // key; only the meaningless token marker is stripped.
+    if (copy.pathname === '/admin/api/timetable') {
+      copy.searchParams.delete('token');
+      try { copy.searchParams.sort(); } catch (_) {}
+      return copy.pathname + copy.search;
+    }
+    var noHistory = copy.searchParams.get('include_history') === 'false'
+      || copy.searchParams.get('history_limit') === '0';
+    copy.searchParams.delete('token');
+    copy.searchParams.delete('history_limit');
+    copy.searchParams.delete('include_history');
+    if (noHistory) copy.searchParams.set('include_history', 'false');
     try { copy.searchParams.sort(); } catch (_) {}
     return copy.pathname + copy.search;
   }
   function isStatusRequest(input, init) {
     var url = requestUrl(input);
-    return !!url && requestMethod(input, init) === 'GET' && url.pathname === '/admin/api/status';
+    if (!url || requestMethod(input, init) !== 'GET') return false;
+    // renderAll() calls loadTimetable(), and renderAll() runs from several
+    // places during boot, so the timetable was fetched twice back-to-back for
+    // the same account. It is coalesced here rather than by editing
+    // loadTimetable, so the many overlapping dashboard patches that call it
+    // keep working untouched.
+    return url.pathname === '/admin/api/status'
+        || url.pathname === '/admin/api/timetable';
   }
   function isStateChangingRequest(input, init) {
     var url = requestUrl(input);
@@ -4866,5 +4896,5 @@ window.setTimeout(function(){
   setInterval(fix, 500);
 })();
 </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f1f632dcb66b60',t:'MTc4NzQwMjU5MQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

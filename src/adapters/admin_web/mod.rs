@@ -1239,16 +1239,20 @@ async fn admin_security_headers_middleware(
     headers.insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(
-            // Admin pages load no third-party scripts: every asset is served
-            // from /admin/static. cdn.jsdelivr.net and cloudflareinsights.com
-            // were inherited boilerplate and are removed so a compromised CDN
-            // cannot inject script here. (The LINE scanner pages that do use
-            // jsDelivr are served by a different router and are unaffected.)
+            // Admin pages load no third-party scripts of their own, so the
+            // inherited cdn.jsdelivr.net entry is dropped: a compromised public
+            // CDN must not be able to inject script here. (The LINE scanner
+            // pages that genuinely use jsDelivr are served by a different
+            // router and are unaffected.)
+            //
+            // static.cloudflareinsights.com is kept because Cloudflare injects
+            // its analytics beacon at the edge -- it is not in this source tree,
+            // so removing it only produced a console CSP error.
             //
             // 'unsafe-inline' remains for script-src only because the dashboard
             // still carries ~46 inline <script> blocks and ~43 on*= handlers.
             // Removing it requires the nonce migration tracked separately.
-            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests",
+            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests",
         ),
     );
     if !cache_static {
