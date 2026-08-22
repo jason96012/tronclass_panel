@@ -662,6 +662,7 @@ nc_start_server() {
   fi
   if command -v pkill >/dev/null 2>&1; then
     pkill -f 'frankenphp run' >/dev/null 2>&1 || true
+    pkill -f 'php-serve.sh' >/dev/null 2>&1 || true
     pkill -f "php -S 127.0.0.1:${port}" >/dev/null 2>&1 || true
   fi
   sleep 1
@@ -679,10 +680,20 @@ if ($path !== '/' && is_file($file)) {
 }
 require __DIR__ . '/index.php';
 PHP
-  nohup ./php -c "$PWD/nextcloud-runtime/php.ini" \
-    -S "127.0.0.1:${port}" -t "$PWD/nextcloud" \
-    "$PWD/nextcloud/router.php" \
-    >> logs/nextcloud-php.log 2>&1 &
+  cat > nextcloud-runtime/php-serve.sh << EOF
+#!/bin/bash
+cd "$PWD"
+while true; do
+  echo "[nextcloud] php -S 127.0.0.1:${port} \$(date -Iseconds)"
+  ./php -c "$PWD/nextcloud-runtime/php.ini" \\
+    -S "127.0.0.1:${port}" -t "$PWD/nextcloud" \\
+    "$PWD/nextcloud/router.php"
+  echo "[nextcloud] php -S 結束，2 秒後重開"
+  sleep 2
+done
+EOF
+  chmod +x nextcloud-runtime/php-serve.sh
+  nohup bash nextcloud-runtime/php-serve.sh >> logs/nextcloud-php.log 2>&1 &
   echo $! > nextcloud-runtime/frankenphp.pid
   disown || true
   local i
