@@ -717,6 +717,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin", get(admin_page_handler))
         .route("/admin/activity", get(admin_activity_page_handler))
         .route("/admin/dashboard", get(admin_dashboard_page_handler))
+        // "我的頁面" is linked from the header of three pages and from the PWA
+        // manifest shortcut, but had no route and returned 404. The dashboard
+        // already narrows itself to the session's own account for non-admins,
+        // so it is the correct destination.
+        .route("/admin/me", get(admin_dashboard_page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
         .route("/admin/files", get(files::admin_files_page_handler))
@@ -765,6 +770,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/api/files/mkdir",
             post(files::admin_files_mkdir_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/files/rmdir",
+            post(files::admin_files_rmdir_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(

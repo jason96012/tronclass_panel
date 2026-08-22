@@ -946,6 +946,106 @@ pub(super) async fn admin_files_delete_handler(
     }
 }
 
+/// Delete a folder and everything inside it.
+///
+/// The dashboard has always had a "delete folder" button, but the matching
+/// route was never registered, so it failed with a 404. `delete` cannot be
+/// reused because it rejects anything that is not a plain file.
+pub(super) async fn admin_files_rmdir_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    Json(req): Json<AdminFolderCreateRequest>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    // The UI hides this action from non-admins; enforce it server-side too.
+    if !session.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "刪除資料夾需要管理員權限" })),
+        )
+            .into_response();
+    }
+    if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
+        return response;
+    }
+
+    let Some(rel) = safe_relative_path(&req.path).filter(|p| !p.as_os_str().is_empty()) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid path" })),
+        )
+            .into_response();
+    };
+
+    let root = materials_root();
+    let dir = root.join(&rel);
+    // Never let a traversal or symlink escape the materials root, and never
+    // allow deleting the root itself.
+    let Ok(canonical_dir) = dir.canonicalize() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "folder not found" })),
+        )
+            .into_response();
+    };
+    let Ok(canonical_root) = root.canonicalize() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "materials root unavailable" })),
+        )
+            .into_response();
+    };
+    if !canonical_dir.starts_with(&canonical_root) || canonical_dir == canonical_root {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid path" })),
+        )
+            .into_response();
+    }
+    if !canonical_dir.is_dir() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "folder not found" })),
+        )
+            .into_response();
+    }
+
+    let rel_label = rel.to_string_lossy().replace('\\', "/");
+    match tokio::fs::remove_dir_all(&canonical_dir).await {
+        Ok(()) => {
+            record_material_event(
+                &state,
+                &session.account_id,
+                "delete_folder",
+                &rel_label,
+                &rel_label,
+                "",
+                0,
+                "success",
+                "material_folder_delete_history",
+            )
+            .await;
+            invalidate_materials_list_cache().await;
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "material_folder_delete",
+                None,
+                Some(&rel_label),
+                "刪除教材資料夾",
+            );
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("刪除資料夾失敗：{e}") })),
+        )
+            .into_response(),
+    }
+}
+
 pub(super) async fn admin_files_mkdir_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
