@@ -74,7 +74,7 @@ start_tunnel() {
     echo "[ptero-start] 沒有 Tunnel token。請新增檔案 config/cf.token（內容只有 Cloudflare 複製的 token）"
     return 0
   fi
-  if [[ "${#token}" -lt 40 ]]; then
+  if ! cloudflare_validate_config "$token"; then
     echo "[ptero-start] config/cf.token 太短，請貼完整 token（eyJ 開頭）"
     return 0
   fi
@@ -1193,9 +1193,18 @@ rotate_logs() {
 }
 
 watchdog_http_ok() {
-  local url="$1"
+  local url="$1" code
   command -v curl >/dev/null 2>&1 || return 0
-  curl -fsS --max-time "${WATCHDOG_HTTP_TIMEOUT_SECS:-5}" -o /dev/null "$url" >/dev/null 2>&1
+  code="$(curl -L -sS --max-time "${WATCHDOG_HTTP_TIMEOUT_SECS:-5}" -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
+  # 401/403 still prove the public route reached the application.
+  [[ "$code" =~ ^(2[0-9][0-9]|3[0-9][0-9]|401|403)$ ]]
+}
+
+cloudflare_validate_config() {
+  local token="$1"
+  [[ "$token" == eyJ* ]] || { echo "[watchdog] Cloudflare token 格式異常" >> logs/cloudflared-watchdog.log; return 1; }
+  [[ "${#token}" -ge 40 ]] || return 1
+  return 0
 }
 
 watchdog_check_filebrowser_http() {
@@ -1260,9 +1269,13 @@ watchdog_check_tunnel_connector() {
     return
   fi
   public_url="${CLOUDFLARE_PUBLIC_URL:-}"
-  if [[ -n "$public_url" ]] && ! watchdog_http_ok "$public_url"; then
-    echo "[watchdog] Cloudflare public URL health check 失敗：$public_url" >> logs/cloudflared-watchdog.log
-    watchdog_restart_tunnel
+  if [[ -n "$public_url" ]]; then
+    if watchdog_http_ok "$public_url"; then
+      echo "[watchdog] Cloudflare public URL OK：$public_url" >> logs/cloudflared-watchdog.log
+    else
+      echo "[watchdog] Cloudflare public URL health check 失敗：$public_url" >> logs/cloudflared-watchdog.log
+      watchdog_restart_tunnel
+    fi
   fi
 }
 
