@@ -41,16 +41,50 @@ fn cookie_domain(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// Percent-encode everything outside an unreserved ASCII set. Account IDs are
+/// often CJK names, and a raw non-ASCII byte makes the whole `Set-Cookie`
+/// header invalid, which silently drops EVERY cookie on the response.
+fn encode_account_id(account_id: &str) -> String {
+    let mut out = String::with_capacity(account_id.len());
+    for byte in account_id.as_bytes() {
+        let c = *byte as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '~') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+fn decode_account_id(encoded: &str) -> Option<String> {
+    let bytes = encoded.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = encoded.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
 fn sign(account_id: &str, exp: u64) -> Option<String> {
     let secret = secret();
     if secret.is_empty() {
         return None;
     }
+    // Sign the raw id, but transport the encoded form.
     let msg = format!("v1|{account_id}|{exp}");
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(msg.as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
-    Some(format!("v1.{account_id}.{exp}.{sig}"))
+    Some(format!("v1.{}.{exp}.{sig}", encode_account_id(account_id)))
 }
 
 fn verify(raw: &str) -> Option<String> {
@@ -62,7 +96,7 @@ fn verify(raw: &str) -> Option<String> {
     if parts.len() != 4 || parts[0] != "v1" {
         return None;
     }
-    let account_id = parts[1];
+    let account_id = decode_account_id(parts[1])?;
     let exp: u64 = parts[2].parse().ok()?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -71,18 +105,20 @@ fn verify(raw: &str) -> Option<String> {
     if exp < now || account_id.is_empty() || account_id.len() > 128 {
         return None;
     }
-    let expected = sign(account_id, exp)?;
+    let expected = sign(&account_id, exp)?;
     if expected != raw {
         return None;
     }
-    Some(account_id.to_string())
+    Some(account_id)
 }
 
 fn cookie_value_from_headers(headers: &HeaderMap) -> Option<String> {
     let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in cookies.split(';') {
-        let (name, value) = pair.trim().split_once('=')?;
-        if name == COOKIE_NAME {
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        if name.trim() == COOKIE_NAME {
             let v = value.trim();
             if !v.is_empty() {
                 return Some(v.to_string());
@@ -118,8 +154,15 @@ pub fn append_fb_sso_cookie(
     let cookie = format!(
         "{COOKIE_NAME}={token}; Path=/{domain}; Max-Age={COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure}"
     );
-    if let Ok(value) = cookie.parse::<HeaderValue>() {
-        response.headers_mut().append(header::SET_COOKIE, value);
+    match cookie.parse::<HeaderValue>() {
+        Ok(value) => {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
+        Err(e) => {
+            // Never fail silently: an invalid Set-Cookie here previously took
+            // the session cookie down with it.
+            tracing::error!(error = %e, account = %account_id, "fb_sso cookie 無法建立，已略過");
+        }
     }
     response
 }

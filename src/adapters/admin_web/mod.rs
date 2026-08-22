@@ -986,10 +986,16 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
     let cookie = format!(
         "{name}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Strict{secure}"
     );
-    let value = cookie
-        .parse::<HeaderValue>()
-        .expect("generated session cookie must be a valid HTTP header");
-    response.headers_mut().append(header::SET_COOKIE, value);
+    // The session token is generated hex so this always parses, but never panic
+    // on a header in the login path.
+    match cookie.parse::<HeaderValue>() {
+        Ok(value) => {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "session cookie 無法建立");
+        }
+    }
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
