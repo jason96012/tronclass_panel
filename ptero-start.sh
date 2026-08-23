@@ -497,10 +497,10 @@ fb_write_caddy() {
     handle @user {
         reverse_proxy 127.0.0.1:26102
     }
-    # 禁止外部密碼登入；只有 Dashboard SSO 通過 forward_auth 後，
-    # 才能進入 user/admin 入口。內部 Filebrowser 埠僅供 Caddy 使用，不直接公開。
+    # 未經 Dashboard SSO 的一般檔案頁面直接導向 Dashboard 登入，
+    # 不顯示任何 Filebrowser 內建登入或純文字錯誤頁。
     handle {
-      respond "請先從 Dashboard 的教材入口登入" 403
+      redir "${dashboard_url}" 302
     }
 }
 EOF
