@@ -747,6 +747,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/health/check",
             get(health::admin_health_check_handler),
         )
+        // Caddy uses this authenticated GET route only for Filebrowser's
+        // initial HTML shell, allowing the Rust Dashboard to add a return link.
+        .route(
+            "/admin/api/filebrowser-shell",
+            get(files::admin_filebrowser_shell_handler),
+        )
         .route(
             "/admin/api/files/list",
             get(files::admin_files_list_handler),

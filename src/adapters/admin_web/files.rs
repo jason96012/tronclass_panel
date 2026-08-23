@@ -201,6 +201,176 @@ pub(super) async fn admin_files_page_handler() -> Response {
         .into_response()
 }
 
+/// Serve Filebrowser's HTML shell with a same-origin link back to Dashboard.
+///
+/// Filebrowser is an external Go binary and only supports custom CSS branding.
+/// This small GET-only bridge keeps the Pterodactyl deployment self-contained:
+/// Caddy sends the initial `/files` document here, while all static assets,
+/// APIs, uploads and downloads continue to go directly to Filebrowser.
+pub(super) async fn admin_filebrowser_shell_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminFilesQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+
+    let backend = headers
+        .get("x-fb-backend")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("user")
+        .trim()
+        .to_ascii_lowercase();
+    let port = if backend == "admin" {
+        if !session.is_admin {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin Filebrowser backend requires an admin Dashboard session" })),
+            )
+                .into_response();
+        }
+        26013
+    } else {
+        26012
+    };
+
+    let upstream_url = format!("http://127.0.0.1:{port}/files");
+    let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("建立 Filebrowser shell client 失敗：{error}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let upstream = match client
+        .get(&upstream_url)
+        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("讀取 Filebrowser shell 失敗：{error}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let status = upstream.status();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("text/html; charset=utf-8")
+        .to_string();
+    let body = match upstream.bytes().await {
+        Ok(body) => body,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("讀取 Filebrowser shell body 失敗：{error}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let body = if content_type.to_ascii_lowercase().contains("text/html") {
+        inject_dashboard_link(body.as_ref())
+    } else {
+        body.to_vec()
+    };
+
+    Response::builder()
+        .status(status.as_u16())
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, body.len().to_string())
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("建立 Filebrowser shell response 失敗：{error}") })),
+            )
+                .into_response()
+        })
+}
+
+fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
+    let mut html = String::from_utf8_lossy(body).into_owned();
+    if html.contains("tronclass-dashboard-back-v1") {
+        return html.into_bytes();
+    }
+
+    let dashboard_url = std::env::var("TRONCLASS_DASHBOARD_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://dashboard.jasoncloudserver.me/admin/dashboard".to_string());
+    let dashboard_url = serde_json::to_string(&dashboard_url)
+        .unwrap_or_else(|_| "\"https://dashboard.jasoncloudserver.me/admin/dashboard\"".to_string())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+    let script = format!(
+        r#"
+<script id="tronclass-dashboard-back-script-v1" data-marker="tronclass-dashboard-back-v1">
+(function () {{
+  if (document.getElementById('tronclass-dashboard-back')) return;
+  var link = document.createElement('a');
+  link.id = 'tronclass-dashboard-back';
+  link.href = {dashboard_url};
+  link.textContent = '← 回到 Dashboard';
+  link.title = '回到 Tronclass Dashboard';
+  link.setAttribute('aria-label', '回到 Tronclass Dashboard');
+  link.setAttribute('rel', 'noopener');
+  link.style.cssText = [
+    'position:fixed', 'z-index:2147483647', 'top:10px', 'left:500px',
+    'display:flex', 'align-items:center', 'justify-content:center',
+    'min-height:40px', 'box-sizing:border-box', 'padding:0 16px',
+    'border-radius:8px', 'border:1px solid rgba(55,71,79,.22)',
+    'background:#ffffff', 'color:#37474f',
+    'font:600 14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    'text-decoration:none', 'box-shadow:0 2px 8px rgba(0,0,0,.14)',
+    'white-space:nowrap', 'transition:background .15s,color .15s,transform .15s'
+  ].join(';');
+  link.addEventListener('mouseenter', function () {{
+    link.style.background = '#e8f4ff';
+    link.style.color = '#1565c0';
+  }});
+  link.addEventListener('mouseleave', function () {{
+    link.style.background = '#ffffff';
+    link.style.color = '#37474f';
+  }});
+  link.addEventListener('mousedown', function () {{ link.style.transform = 'translateY(1px)'; }});
+  link.addEventListener('mouseup', function () {{ link.style.transform = 'none'; }});
+  document.body.appendChild(link);
+  var style = document.createElement('style');
+  style.textContent = '@media (max-width: 720px) {{ #tronclass-dashboard-back {{ left:64px !important; top:8px !important; min-height:36px !important; padding:0 10px !important; font-size:12px !important; }} }}';
+  document.head.appendChild(style);
+}})();
+</script>
+"#
+    );
+
+    if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {
+        html.insert_str(index, &script);
+    } else {
+        html.push_str(&script);
+    }
+    html.into_bytes()
+}
+
 pub(super) async fn admin_files_list_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
