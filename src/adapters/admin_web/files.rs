@@ -212,9 +212,30 @@ pub(super) async fn admin_filebrowser_shell_handler(
     Query(query): Query<AdminFilesQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
+    // The Dashboard session cookie is host-only by design. When Caddy sends
+    // the Filebrowser request here it normally carries the shared
+    // parent-domain `tronclass_fb_sso` ticket. The internal Caddy secret is a
+    // second valid proof for deployments where an old browser session has not
+    // received that parent-domain cookie yet.
+    let dashboard_session = state.authorize(&query.token).await;
+    let ticket = super::fb_sso::ticket_from_headers(&headers);
+    let trusted_caddy = super::fb_sso::shell_request_secret_valid(&headers);
+    if dashboard_session.is_none() && ticket.is_none() && !trusted_caddy {
         return unauthorized_response();
-    };
+    }
+    let is_admin = dashboard_session
+        .as_ref()
+        .map(|session| session.is_admin)
+        .or_else(|| ticket.as_ref().map(|(_, is_admin)| *is_admin))
+        .or_else(|| {
+            trusted_caddy.then(|| {
+                headers
+                    .get("x-fb-admin")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.eq_ignore_ascii_case("yes"))
+            })
+        })
+        .unwrap_or(false);
 
     let backend = headers
         .get("x-fb-backend")
@@ -223,7 +244,7 @@ pub(super) async fn admin_filebrowser_shell_handler(
         .trim()
         .to_ascii_lowercase();
     let port = if backend == "admin" {
-        if !session.is_admin {
+        if !is_admin {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({ "error": "admin Filebrowser backend requires an admin Dashboard session" })),

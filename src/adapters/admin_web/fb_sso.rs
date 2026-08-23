@@ -170,6 +170,27 @@ fn cookie_value_from_headers(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// Validate the shared parent-domain ticket when a request comes from the
+/// Filebrowser hostname. The HTML-shell bridge uses this because the
+/// Dashboard's `__Host-` session cookie cannot be shared with `files.`.
+pub(crate) fn ticket_from_headers(headers: &HeaderMap) -> Option<(String, bool)> {
+    cookie_value_from_headers(headers).and_then(|raw| verify(&raw))
+}
+
+/// Validate the secret Caddy adds only after `forward_auth` succeeds. This is
+/// needed by the Filebrowser HTML-shell bridge because the Dashboard session
+/// cookie is host-only and therefore is not sent to `files.`.
+pub(crate) fn shell_request_secret_valid(headers: &HeaderMap) -> bool {
+    let expected = secret();
+    if expected.is_empty() {
+        return false;
+    }
+    headers
+        .get("x-fb-shell-secret")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|provided| provided == expected)
+}
+
 pub fn append_fb_sso_cookie(
     mut response: Response,
     account_id: &str,

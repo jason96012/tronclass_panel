@@ -318,6 +318,10 @@ fb_init() {
 
 fb_write_caddy() {
   local dash_port="${SERVER_PORT:-26000}"
+  local shell_secret="disabled"
+  if [[ -f config/fb-sso.secret ]]; then
+    shell_secret="$(tr -d '\r\n' < config/fb-sso.secret)"
+  fi
   mkdir -p nextcloud-runtime
   cat > nextcloud-runtime/Caddyfile.fb << EOF
 {
@@ -398,6 +402,7 @@ fb_write_caddy() {
         rewrite * /admin/api/filebrowser-shell
         reverse_proxy 127.0.0.1:${dash_port} {
             header_up X-Fb-Backend admin
+            header_up X-Fb-Shell-Secret ${shell_secret}
             header_up X-Forwarded-Proto https
         }
     }
@@ -410,6 +415,7 @@ fb_write_caddy() {
         rewrite * /admin/api/filebrowser-shell
         reverse_proxy 127.0.0.1:${dash_port} {
             header_up X-Fb-Backend user
+            header_up X-Fb-Shell-Secret ${shell_secret}
             header_up X-Forwarded-Proto https
         }
     }
