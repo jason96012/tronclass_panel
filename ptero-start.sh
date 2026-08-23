@@ -355,6 +355,7 @@ fb_init() {
 
 fb_write_caddy() {
   local dash_port="${SERVER_PORT:-26000}"
+  local dashboard_url="${TRONCLASS_DASHBOARD_URL:-https://dashboard.jasoncloudserver.me/admin/dashboard}"
   local shell_secret="disabled"
   if [[ -f config/fb-sso.secret ]]; then
     shell_secret="$(tr -d '\r\n' < config/fb-sso.secret)"
@@ -416,6 +417,12 @@ fb_write_caddy() {
     handle @public_share {
       reverse_proxy 127.0.0.1:26012
     }
+
+    # Filebrowser's built-in password screen must never be the public entry
+    # point. Shared links are handled above; every other login navigation goes
+    # back to the Dashboard.
+    @fb_builtin_login path /login*
+    redir @fb_builtin_login "${dashboard_url}" 302
 
     forward_auth 127.0.0.1:${dash_port} {
       uri /admin/api/fb-sso-check
@@ -493,7 +500,7 @@ EOF
 
 fb_write_snippet() {
   echo "[filebrowser] 教材跳轉 https://files.jasoncloudserver.me/files"
-  echo "[filebrowser] 從 Dashboard 登入後免密碼；直接開 files. 網址要密碼（config/filebrowser-admin.txt）"
+  echo "[filebrowser] 只有 Dashboard SSO 可進入；未經 Dashboard 的 files. 登入會被拒絕，公開分享連結除外"
 }
 
 start_filebrowser() {
@@ -513,6 +520,13 @@ start_filebrowser() {
     sleep 1
     fb_ensure_bin || exit 0
     nc_ensure_caddy || true
+    # Never fall back to Filebrowser's built-in password screen on the public
+    # port. If Caddy cannot be installed, fail closed and keep the files site
+    # unavailable until the SSO gateway is available.
+    if [[ ! -x ./caddy ]]; then
+      echo "[filebrowser] Caddy 不可用，安全模式：不啟動公開 Filebrowser"
+      exit 0
+    fi
     # 放一個空檔 config/fb-reset 就重建資料庫（帳號密碼保留在
     # config/filebrowser-admin.txt）。用來救回 500 的殘缺 DB。
     if [[ -f config/fb-reset ]]; then
@@ -532,16 +546,9 @@ start_filebrowser() {
     sleep 1
     fb_write_caddy
 
-    if [[ -x ./caddy ]]; then
-      ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile.fb" --adapter caddyfile &
-      echo $! > logs/filebrowser-caddy.pid
-      wait $!
-    else
-      echo "[filebrowser] 沒有 caddy，改只開密碼版 :26001（無法 SSO）"
-      ./filebrowser -d "$PWD/fb-data/auth.db" -a 127.0.0.1 -p 26001 &
-      echo $! > logs/filebrowser-caddy.pid
-      wait $!
-    fi
+    ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile.fb" --adapter caddyfile &
+    echo $! > logs/filebrowser-caddy.pid
+    wait $!
   ) >> logs/filebrowser.log 2>&1 &
   disown || true
 }
@@ -606,6 +613,7 @@ cloudflare_validate_config() {
 
 watchdog_check_filebrowser_http() {
   [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]] || return 0
+  [[ -x ./caddy ]] || return 0
   local bad=0 port
   # Caddy is the public entry point; the individual services are checked too.
   for port in 26001 26012 26013; do
@@ -696,6 +704,7 @@ watchdog_restart_filebrowser() {
 
 watchdog_check_filebrowser() {
   [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]] || return 0
+  [[ -x ./caddy ]] || return 0
   local bad=0 f
   for f in logs/filebrowser-auth.pid logs/filebrowser-open.pid logs/filebrowser-admin.pid logs/filebrowser-caddy.pid; do
     watchdog_pid_alive "$f" || bad=1
