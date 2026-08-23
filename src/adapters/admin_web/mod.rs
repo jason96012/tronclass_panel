@@ -1303,14 +1303,13 @@ fn csp_header_value(nonce: Option<&str>) -> String {
         .map(|value| format!(" 'nonce-{value}'"))
         .unwrap_or_default();
     format!(
-        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests"
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'none'; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests"
     )
 }
 
 /// Add a per-response nonce to every inline `<script>` and `<style>` element.
-/// Static JavaScript/CSS files remain allowed by `'self'`; inline event
-/// handlers remain blocked. Legacy inline style attributes stay enabled because
-/// the existing responsive pages use them for their layout and runtime controls.
+/// Static JavaScript/CSS files remain allowed by `'self'`; inline event and
+/// style attributes are deliberately not allowed by the CSP below.
 fn add_csp_nonce_to_inline_tags(html: &str, nonce: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::with_capacity(html.len() + 512);
