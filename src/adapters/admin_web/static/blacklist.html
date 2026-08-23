@@ -31,10 +31,12 @@
     .brand-title{font-size:18px;font-weight:850;letter-spacing:-.025em;line-height:1.1;white-space:nowrap}
     .brand-sub{margin-top:4px;color:var(--muted);font-size:12px;line-height:1.2}
     .actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-left:auto}
-    a,button{font:inherit;min-height:40px;border:1px solid var(--line);border-radius:999px;padding:0 15px;background:var(--card);color:var(--text);text-decoration:none;cursor:pointer;white-space:nowrap;font-weight:750;transition:filter .15s ease,transform .15s ease}
-    a:hover,button:hover{filter:brightness(.97);transform:translateY(-1px)}
-    a.primary,button.primary{background:var(--primary);color:var(--primary-text);border-color:var(--primary)}
-    a.danger,button.danger{background:rgba(248,113,113,.14);color:var(--bad);border-color:rgba(248,113,113,.28)}
+    a,button{font:inherit;min-height:40px;display:inline-flex;align-items:center;justify-content:center;line-height:1;border:1px solid var(--line);border-radius:999px;padding:0 15px;background:var(--card);color:var(--muted);text-decoration:none;cursor:pointer;white-space:nowrap;font-weight:700;transition:filter .15s ease,transform .15s ease}
+    .actions a,.actions a:hover,.actions button,.actions button:hover{text-decoration:none!important}
+    .actions a:not(.primary),.actions button:not(.primary){color:var(--muted)!important}
+    a:hover,button:hover{filter:brightness(.97);transform:translateY(-1px);color:var(--text)}
+    a.primary,button.primary{background:var(--primary);color:var(--primary-text)!important;border-color:var(--primary)}
+    a.danger,button.danger{background:rgba(248,113,113,.14);color:var(--bad)!important;border-color:rgba(248,113,113,.28)}
     main{max-width:1200px;margin:24px auto;padding:0 18px 40px}
     .card{background:var(--card);border:1px solid var(--line2);border-radius:18px;box-shadow:0 12px 34px rgba(15,23,42,.07);overflow:hidden}
     .card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line2)}
