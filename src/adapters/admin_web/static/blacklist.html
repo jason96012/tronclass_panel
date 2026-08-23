@@ -45,8 +45,32 @@
     .recent-card{margin-top:18px}.card-head-copy{display:grid;gap:3px}.card-note{color:var(--muted);font-size:12px;line-height:1.4}.recent-table-wrap{overflow:auto}.recent-table{min-width:900px}.recent-table .account{font-weight:750}.recent-table .muted{color:var(--muted)}.recent-table .failure{color:var(--bad);font-weight:800}.recent-table .location{color:var(--muted);font-size:13px}.recent-table .action-cell{white-space:nowrap}.recent-table .action-cell button{min-height:34px;padding:0 11px;font-size:12px}
     @media(max-width:700px){
       .top{align-items:flex-start;flex-direction:column;gap:12px;padding:14px 16px}
-      .actions{width:100%;justify-content:flex-start}.actions>*{flex:1 1 auto}
-      main{margin:15px auto;padding:0 10px 32px}.card{overflow:auto}table{min-width:720px}
+      .brand{width:100%}.brand-title{font-size:17px}.brand-sub{font-size:11px}
+      .actions{display:grid;grid-template-columns:1fr 1fr;width:100%;gap:8px;justify-content:stretch}
+      .actions>*{width:100%;min-width:0;padding:0 8px;font-size:13px}
+      main{margin:15px auto;padding:0 10px 32px}.card{overflow:hidden}.card-head{align-items:flex-start;flex-direction:column;gap:5px;padding:14px}
+      #content,#recentContent{overflow:visible}
+      #content table,.recent-table{display:block;width:100%;min-width:0!important;border:0}
+      #content table thead,.recent-table thead{display:none}
+      #content table tbody,.recent-table tbody{display:grid;gap:10px;width:100%}
+      #content table tr,.recent-table tr{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:13px 12px;border:1px solid var(--line2);border-radius:15px;background:var(--card);box-shadow:0 4px 14px rgba(15,23,42,.05)}
+      #content table td,.recent-table td{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:3px 0;border:0;min-width:0;line-height:1.35;overflow-wrap:anywhere}
+      #content table td::before,.recent-table td::before{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em}
+      #content table td:nth-child(1)::before{content:'IP 位址'}
+      #content table td:nth-child(2)::before{content:'封鎖時間'}
+      #content table td:nth-child(3)::before{content:'操作者'}
+      #content table td:nth-child(4)::before{content:'原因'}
+      #content table td:nth-child(5)::before{content:'操作'}
+      .recent-table td:nth-child(1)::before{content:'時間'}
+      .recent-table td:nth-child(2)::before{content:'帳號'}
+      .recent-table td:nth-child(3)::before{content:'IP 位址'}
+      .recent-table td:nth-child(4)::before{content:'MAC 位址'}
+      .recent-table td:nth-child(5)::before{content:'位置'}
+      .recent-table td:nth-child(6)::before{content:'結果'}
+      .recent-table td:nth-child(7)::before{content:'操作'}
+      #content table td:last-child,.recent-table td:last-child{grid-column:1/-1;padding-top:8px;border-top:1px solid var(--line2)}
+      #content table td:last-child button,.recent-table .action-cell button{width:100%;min-height:44px;padding:0 12px;font-size:13px}
+      .recent-table .account,.recent-table .ip{font-size:14px}
     }
   </style>
 </head>
@@ -104,5 +128,5 @@
     loadAll();
   })();
   </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fa1e82aae14a81',t:'MTc4NzQ4ODEyOA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fa30682e1f0f9a',t:'MTc4NzQ4ODg2MQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
