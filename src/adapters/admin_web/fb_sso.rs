@@ -228,6 +228,26 @@ pub async fn fb_sso_check_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
 ) -> Response {
+    let ip = super::client_ip_from_headers(&headers);
+    if ip != "unknown" {
+        match state.accounts_db.is_ip_blacklisted(&ip).await {
+            Ok(true) => {
+                warn!(ip = %ip, "Filebrowser SSO rejected for blacklisted IP");
+                return (
+                    StatusCode::OK,
+                    [
+                        (HeaderName::from_static("x-fb-authed"), "no"),
+                        (HeaderName::from_static("x-fb-admin"), "no"),
+                        (header::CACHE_CONTROL, "no-store"),
+                    ],
+                    Json(json!({ "authed": false, "is_admin": false })),
+                )
+                    .into_response();
+            }
+            Ok(false) => {}
+            Err(error) => warn!(ip = %ip, error = %error, "檢查 Filebrowser SSO 黑名單失敗"),
+        }
+    }
     let ticket = cookie_value_from_headers(&headers)
         .and_then(|raw| verify_session_ticket(&raw));
     let active_ticket = match ticket {

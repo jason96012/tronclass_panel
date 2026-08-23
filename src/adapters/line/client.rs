@@ -243,6 +243,14 @@ fn render_line_messages(message: &OutboundMessage) -> Vec<SendMessage> {
 fn render_message(message: &OutboundMessage) -> String {
     match message {
         OutboundMessage::Text(text) => text.clone(),
+        OutboundMessage::SecurityAlert(event) => format!(
+            "⚠️ Dashboard 安全警示\n\n連續密碼錯誤\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n請由 Dashboard 黑名單頁面封鎖此 IP：\nhttps://dashboard.jasoncloudserver.me/admin/blacklist",
+            event.username,
+            event.ip,
+            event.user_failures,
+            event.ip_failures,
+            event.timestamp,
+        ),
         OutboundMessage::SystemStarted(event) => format!(
             "🚀 Tronclass Rollcall 已啟動\n\
              帳號：{} / {}\n\

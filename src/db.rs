@@ -141,6 +141,15 @@ pub struct ActivityEventRow {
     pub ip: String,
 }
 
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct IpBlacklistRow {
+    pub ip: String,
+    pub blocked_at: i64,
+    pub blocked_time: String,
+    pub blocked_by: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct TimetableEntryInput {
     pub weekday: String,
@@ -343,6 +352,27 @@ impl AccountsDb {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_activity_events_kind_id ON activity_events(kind, id DESC)")
             .execute(&pool).await.into_diagnostic().wrap_err("初始化 activity_events kind/id index 失敗")?;
         ensure_table_column(&pool, "activity_events", "ip", "TEXT NOT NULL DEFAULT ''").await?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS ip_blacklist (
+                ip TEXT PRIMARY KEY NOT NULL,
+                blocked_at INTEGER NOT NULL DEFAULT 0,
+                blocked_time TEXT NOT NULL DEFAULT '',
+                blocked_by TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT ''
+            )",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 ip_blacklist 資料表失敗")?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_ip_blacklist_blocked_at ON ip_blacklist(blocked_at DESC)")
+            .execute(&pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("初始化 ip_blacklist index 失敗")?;
+
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_accounts_username_provider ON accounts(username, provider, id)")
             .execute(&pool).await.into_diagnostic().wrap_err("初始化 accounts username/provider index 失敗")?;
 
@@ -896,6 +926,60 @@ impl AccountsDb {
             .wrap_err("讀取 activity_events 失敗")?
         };
         Ok(rows)
+    }
+
+    pub async fn is_ip_blacklisted(&self, ip: &str) -> Result<bool> {
+        let exists: i64 = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM ip_blacklist WHERE ip = ?)",
+        )
+        .bind(ip.trim())
+        .fetch_one(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("檢查 IP 黑名單失敗")?;
+        Ok(exists != 0)
+    }
+
+    pub async fn list_ip_blacklist(&self, limit: i64) -> Result<Vec<IpBlacklistRow>> {
+        let limit = limit.clamp(1, 4096);
+        sqlx::query_as::<_, IpBlacklistRow>(
+            "SELECT ip, blocked_at, blocked_time, blocked_by, reason
+             FROM ip_blacklist ORDER BY blocked_at DESC, ip ASC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("讀取 IP 黑名單失敗")
+    }
+
+    pub async fn block_ip(&self, ip: &str, blocked_by: &str, reason: &str) -> Result<bool> {
+        let now = Local::now();
+        let result = sqlx::query(
+            "INSERT OR IGNORE INTO ip_blacklist
+                (ip, blocked_at, blocked_time, blocked_by, reason)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(ip.trim())
+        .bind(now.timestamp())
+        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(truncate_event_text(blocked_by.to_string(), EVENT_IDENTITY_MAX_BYTES))
+        .bind(truncate_event_text(reason.to_string(), EVENT_DETAILS_MAX_BYTES))
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("寫入 IP 黑名單失敗")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn unblock_ip(&self, ip: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM ip_blacklist WHERE ip = ?")
+            .bind(ip.trim())
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("解除 IP 黑名單失敗")?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn list_passkey_credentials(

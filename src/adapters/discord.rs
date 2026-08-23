@@ -63,6 +63,7 @@ fn discord_notification_key(message: &OutboundMessage) -> &'static str {
         OutboundMessage::QrCodeRequested(_) => "qr_code",
         OutboundMessage::RollcallFinished(_) => "rollcall_finished",
         OutboundMessage::Status(_) => "status",
+        OutboundMessage::SecurityAlert(_) => "security_alert",
         OutboundMessage::MonitorPaused
         | OutboundMessage::MonitorResumed
         | OutboundMessage::ForcePollTriggered
@@ -91,6 +92,7 @@ static DISCORD_HTTP_THROTTLE: Lazy<Mutex<Instant>> = Lazy::new(|| Mutex::new(Ins
 static DISCORD_DASHBOARD_DEDUPE: Lazy<Mutex<HashMap<String, Instant>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 const COMPONENT_ACCOUNT_REJECT_PREFIX: &str = "trc:account-reject:";
+const COMPONENT_BLOCK_IP_PREFIX: &str = "trc:block-ip:";
 
 #[derive(Clone)]
 pub struct DiscordBotClient {
@@ -638,6 +640,20 @@ impl DiscordRuntime {
             let message = match action {
                 AccountReviewAction::Approve => self.approve_pending_account(token).await,
                 AccountReviewAction::Reject => self.reject_pending_account(token).await,
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        if let Some(ip) = parse_block_ip_custom_id(&component.data.custom_id) {
+            if user_id != self.bot.admin_user_id {
+                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
+                return Ok(());
+            }
+            let message = match self.accounts_db.block_ip(&ip, &user_id, "Discord security alert").await {
+                Ok(true) => OutboundMessage::Text(format!("✅ 已封鎖 IP `{ip}`。黑名單頁面可查看與解除封鎖。")),
+                Ok(false) => OutboundMessage::Text(format!("ℹ️ IP `{ip}` 已經在黑名單中。")),
+                Err(error) => OutboundMessage::Text(format!("❌ 封鎖 IP 失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -1395,6 +1411,21 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                 .label("Status")
                 .style(ButtonStyle::Primary)]),
         ],
+        OutboundMessage::SecurityAlert(event) => {
+            if parse_discord_ip(&event.ip).is_some() {
+                vec![CreateActionRow::Buttons(vec![
+                    CreateButton::new(format!("{COMPONENT_BLOCK_IP_PREFIX}{}", event.ip))
+                        .label("封鎖此 IP")
+                        .style(ButtonStyle::Danger),
+                    CreateButton::new_link(
+                        "https://dashboard.jasoncloudserver.me/admin/blacklist",
+                    )
+                    .label("查看黑名單"),
+                ])]
+            } else {
+                vec![]
+            }
+        }
         _ => vec![],
     }
 }
@@ -1447,6 +1478,10 @@ fn discord_component_audit(custom_id: &str) -> (&'static str, Option<String>) {
         };
     }
 
+    if let Some(ip) = parse_block_ip_custom_id(custom_id) {
+        return ("button_block_ip", Some(format!("ip={ip}")));
+    }
+
     match custom_id {
         COMPONENT_STATUS => ("button_status", None),
         COMPONENT_FORCE => ("button_force", None),
@@ -1496,6 +1531,14 @@ fn render_pending_account_request(request: &PendingAccountRequest) -> String {
 fn render_discord_message(message: &OutboundMessage) -> String {
     match message {
         OutboundMessage::Text(text) => text.clone(),
+        OutboundMessage::SecurityAlert(event) => format!(
+            "⚠️ Dashboard 安全警示\n\n連續密碼錯誤\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n\n請確認後按下「封鎖此 IP」。\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+            event.username,
+            event.ip,
+            event.user_failures,
+            event.ip_failures,
+            event.timestamp,
+        ),
         OutboundMessage::SystemStarted(event) => format!(
             "Tronclass Rollcall 已啟動\n帳號：{} / {}\n輪詢間隔：{} 秒\nAdapter：{}",
             event.account, event.user_name, event.poll_interval_secs, event.adapter_name
@@ -1682,6 +1725,15 @@ fn parse_interaction_reply(value: &str) -> Option<(u64, &str)> {
 
 fn parse_discord_id(value: &str) -> Option<u64> {
     value.trim().parse::<u64>().ok()
+}
+
+fn parse_discord_ip(value: &str) -> Option<String> {
+    value.trim().parse::<std::net::IpAddr>().ok().map(|ip| ip.to_string())
+}
+
+fn parse_block_ip_custom_id(value: &str) -> Option<String> {
+    let ip = value.strip_prefix(COMPONENT_BLOCK_IP_PREFIX)?;
+    parse_discord_ip(ip)
 }
 
 #[cfg(test)]

@@ -133,6 +133,7 @@ impl AdapterMessenger for AdapterHub {
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutboundMessage {
     Text(String),
+    SecurityAlert(SecurityAlertEvent),
     SystemStarted(SystemStartedEvent),
     RollcallDetected(RollcallEvent),
     NumberCodeRequested(NumberCodeRequest),
@@ -153,6 +154,19 @@ pub enum OutboundMessage {
     QrNoBoundAccount,
     QrNoPendingRequest,
     UnknownCommand { text: String },
+}
+
+/// Security alert emitted after repeated failed Dashboard authentication.
+///
+/// The IP is normalized by the server before this event is created and is
+/// rendered as a Discord component ID only for administrator recipients.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SecurityAlertEvent {
+    pub username: String,
+    pub ip: String,
+    pub user_failures: u32,
+    pub ip_failures: u32,
+    pub timestamp: String,
 }
 
 /// Outbound event emitted when a monitored account starts.

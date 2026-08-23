@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IP 黑名單｜Tronclass Dashboard</title>
+  <style>
+    :root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f5f7fb}
+    *{box-sizing:border-box}body{margin:0}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 24px;background:#fff;border-bottom:1px solid #e5e7eb}
+    h1{margin:0;font-size:22px}.sub{margin-top:5px;color:#64748b;font-size:13px}.actions{display:flex;gap:8px;flex-wrap:wrap}
+    a,button{font:inherit;border:1px solid #d7dee8;border-radius:9px;padding:9px 13px;background:#fff;color:#334155;text-decoration:none;cursor:pointer}
+    button.primary{background:#2563eb;color:#fff;border-color:#2563eb}button.danger{color:#b91c1c}button:hover,a:hover{filter:brightness(.97)}
+    main{max-width:1080px;margin:24px auto;padding:0 18px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.05);overflow:hidden}
+    .card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #e5e7eb}.summary{color:#64748b;font-size:13px}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid #eef2f7;font-size:14px;vertical-align:middle}th{background:#f8fafc;color:#64748b;font-size:12px}tr:last-child td{border-bottom:0}.ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;color:#0f172a}.empty,.error{padding:34px 18px;text-align:center;color:#64748b}.error{color:#b91c1c}
+    @media(max-width:700px){.top{align-items:flex-start;flex-direction:column;padding:15px}.card{overflow:auto}table{min-width:720px}main{margin:15px auto}}
+  </style>
+</head>
+<body>
+  <header class="top"><div><h1>IP 黑名單</h1><div class="sub">管理因登入失敗而封鎖的來源 IP</div></div><div class="actions"><a href="/admin">回 Dashboard</a><button class="primary" id="reload" type="button">重新整理</button></div></header>
+  <main><section class="card"><div class="card-head"><strong>已封鎖的 IP</strong><span class="summary" id="summary">載入中...</span></div><div id="content"><div class="empty">載入中...</div></div></section></main>
+  <script>
+  (function(){
+    'use strict';
+    function q(id){return document.getElementById(id)}
+    function esc(value){return String(value==null?'':value).replace(/[&<>"']/g,function(ch){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]})}
+    function token(){try{return(window.__tronBootToken||new URLSearchParams(location.search).get('token')||'').trim()}catch(_){return ''}}
+    function api(path,options){
+      var u=new URL(path,location.origin),t=token();if(t)u.searchParams.set('token',t);
+      return fetch(u.pathname+u.search,Object.assign({credentials:'same-origin',cache:'no-store'},options||{})).then(function(res){return res.json().catch(function(){return {}}).then(function(body){if(res.status===401||res.status===403){location.replace('/admin');throw new Error('未授權')}if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body})})
+    }
+    function render(rows){
+      q('summary').textContent=rows.length+' 筆';
+      if(!rows.length){q('content').innerHTML='<div class="empty">目前沒有黑名單 IP。</div>';return}
+      q('content').innerHTML='<table><thead><tr><th>IP</th><th>封鎖時間</th><th>操作者</th><th>原因</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){return '<tr><td class="ip">'+esc(row.ip)+'</td><td>'+esc(row.blocked_time)+'</td><td>'+esc(row.blocked_by)+'</td><td>'+esc(row.reason)+'</td><td><button class="danger" type="button" data-unblock="'+esc(row.ip)+'">解除封鎖</button></td></tr>'}).join('')+'</tbody></table>';
+    }
+    function load(){q('content').innerHTML='<div class="empty">載入中...</div>';api('/admin/api/blacklist').then(function(body){render(body.items||[])}).catch(function(error){q('summary').textContent='';q('content').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'})}
+    q('reload').addEventListener('click',load);
+    q('content').addEventListener('click',function(event){var button=event.target.closest('[data-unblock]');if(!button)return;var ip=button.getAttribute('data-unblock');if(!confirm('確定解除 '+ip+' 的封鎖？'))return;button.disabled=true;api('/admin/api/blacklist/unblock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})}).then(load).catch(function(error){button.disabled=false;alert(error.message||error)})});
+    load();
+  })();
+  </script>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f9abfadccc4a87',t:'MTc4NzQ4MzQzNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>

@@ -34,6 +34,7 @@ use uuid::Uuid;
 use crate::account::RawAccountConfig;
 use crate::adapters::events::{
     AdapterMessenger, NumberCodeRequest, OutboundMessage, QrCodeRequest, RollcallHistoryEntry,
+    SecurityAlertEvent,
 };
 use crate::adapters::requests::{NumberCodeInput, RequestAccountState};
 use crate::adapters::scanner::QrScannerRegistry;
@@ -44,8 +45,9 @@ mod class_reminder;
 mod pages;
 mod timetable;
 use self::pages::{
-    inject_theme, load_runtime_theme, ADMIN_ACTIVITY_HTML, ADMIN_DASHBOARD_HTML, ADMIN_FILES_HTML,
-    ADMIN_HEALTH_HTML, ADMIN_PASSKEY_HTML, ADMIN_PASSWORD_HTML,
+    inject_theme, load_runtime_theme, ADMIN_ACTIVITY_HTML, ADMIN_BLACKLIST_HTML,
+    ADMIN_DASHBOARD_HTML, ADMIN_FILES_HTML, ADMIN_HEALTH_HTML, ADMIN_PASSKEY_HTML,
+    ADMIN_PASSWORD_HTML,
 };
 mod actions;
 mod files;
@@ -209,6 +211,51 @@ fn rate_limited_response() -> Response {
         .into_response()
 }
 
+fn blocked_ip_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": "access_denied" })),
+    )
+        .into_response()
+}
+
+async fn ip_is_blacklisted(state: &AdminWebState, ip: &str) -> bool {
+    if ip == "unknown" {
+        return false;
+    }
+    match state.accounts_db.is_ip_blacklisted(ip).await {
+        Ok(blocked) => blocked,
+        Err(error) => {
+            warn!(ip = %ip, error = %error, "讀取 IP 黑名單失敗，暫不拒絕請求");
+            false
+        }
+    }
+}
+
+async fn reject_blacklisted_ip_middleware(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    // Static assets and logout remain available so a blocked browser can
+    // finish clearing its session. Authentication, Dashboard, Filebrowser SSO
+    // checks and all management APIs are denied.
+    if path.starts_with("/admin/static/")
+        || path == "/admin/pwa/icon.svg"
+        || path == "/healthz"
+        || path == "/admin/api/logout"
+    {
+        return next.run(request).await;
+    }
+    let ip = client_ip_from_headers(&headers);
+    if ip_is_blacklisted(&state, &ip).await {
+        return blocked_ip_response();
+    }
+    next.run(request).await
+}
+
 struct SecurityWatch {
     fails: HashMap<String, Vec<Instant>>,
     last_alert: HashMap<String, Instant>,
@@ -343,6 +390,24 @@ async fn notify_admins_discord(state: &AdminWebState, text: String) {
     }
 }
 
+async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAlertEvent) {
+    let Some(messenger) = state.messenger.clone() else {
+        warn!("security alert skipped: no Discord/LINE messenger");
+        return;
+    };
+    let recipients = admin_discord_recipients(state).await;
+    if recipients.is_empty() {
+        warn!("security alert skipped: no admin Discord user id");
+        return;
+    }
+    let message = OutboundMessage::SecurityAlert(event);
+    for to in recipients {
+        if let Err(error) = messenger.push(&to, &message).await {
+            warn!(to = %to, error = %error, "security alert notification 推送失敗");
+        }
+    }
+}
+
 async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str) {
     let (user_fails, ip_fails) = record_auth_failure(username, ip).await;
     // 解析被嘗試登入的帳號持有人綁定（可能為空：隨機 username 或未綁定）。
@@ -351,14 +416,17 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
     if user_fails >= SECURITY_FAIL_ALERT_THRESHOLD {
         let key = format!("fail-user:{}", username.trim().to_lowercase());
         if security_should_alert(&key).await {
-            let admin_text = format!(
-                "⚠️ Dashboard 安全警示\n類型：連續密碼錯誤\n帳號：{}\nIP：{}\n60 秒內失敗：{} 次\n時間：{}\n請到 /admin/activity 查看登入審計。",
-                username.trim(),
-                ip.trim(),
-                user_fails,
-                security_now_label()
-            );
-            notify_admins_discord(state, admin_text).await;
+            notify_admins_security_alert(
+                state,
+                SecurityAlertEvent {
+                    username: username.trim().to_string(),
+                    ip: ip.trim().to_string(),
+                    user_failures: user_fails,
+                    ip_failures: ip_fails,
+                    timestamp: security_now_label(),
+                },
+            )
+            .await;
 
             let user_text = format!(
                 "⚠️ 安全提醒\n有人連續嘗試登入你的 Dashboard 帳號（帳號：{}），60 秒內已失敗 {} 次。\n若非你本人操作，請立即變更 Dashboard 密碼。",
@@ -376,14 +444,17 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
     } else if ip_fails >= SECURITY_FAIL_ALERT_THRESHOLD {
         let key = format!("fail-ip:{}", ip.trim());
         if security_should_alert(&key).await {
-            let admin_text = format!(
-                "⚠️ Dashboard 安全警示\n類型：同一 IP 多次登入失敗\n最近帳號：{}\nIP：{}\n60 秒內失敗：{} 次\n時間：{}\n請到 /admin/activity 查看登入審計。",
-                username.trim(),
-                ip.trim(),
-                ip_fails,
-                security_now_label()
-            );
-            notify_admins_discord(state, admin_text).await;
+            notify_admins_security_alert(
+                state,
+                SecurityAlertEvent {
+                    username: username.trim().to_string(),
+                    ip: ip.trim().to_string(),
+                    user_failures: user_fails,
+                    ip_failures: ip_fails,
+                    timestamp: security_now_label(),
+                },
+            )
+            .await;
 
             let user_text = format!(
                 "⚠️ 安全提醒\n有人持續嘗試登入你的 Dashboard 帳號（帳號：{}）。\n若非你本人操作，請立即變更 Dashboard 密碼。",
@@ -646,6 +717,7 @@ impl AdminWebState {
 
 pub fn build_admin_router(state: AdminWebState) -> Router {
     let password_guard_state = state.clone();
+    let blacklist_guard_state = state.clone();
     Router::new()
         .route("/", get(admin_root_redirect_handler))
         .route("/healthz", get(health::healthz_handler))
@@ -725,6 +797,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route("/admin", get(admin_page_handler))
         .route("/admin/activity", get(admin_activity_page_handler))
+        .route("/admin/blacklist", get(admin_blacklist_page_handler))
         .route("/admin/dashboard", get(admin_dashboard_page_handler))
         // "我的頁面" is linked from the header of three pages and from the PWA
         // manifest shortcut, but had no route and returned 404. The dashboard
@@ -750,6 +823,17 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/passkey", get(admin_passkey_page_handler))
         .route("/admin/logs", get(logs::admin_logs_page_handler))
         .route("/admin/api/public_status", get(admin_public_status_handler))
+        .route("/admin/api/blacklist", get(admin_blacklist_list_handler))
+        .route(
+            "/admin/api/blacklist/block",
+            post(admin_blacklist_block_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/blacklist/unblock",
+            post(admin_blacklist_unblock_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         .route("/admin/api/health", get(health::admin_health_api_handler))
         .route(
             "/admin/api/health/check",
@@ -899,6 +983,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             axum::routing::get(admin_clean_timetable_page_handler),
         )
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            blacklist_guard_state,
+            reject_blacklisted_ip_middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             password_guard_state,
             require_dashboard_password_change_middleware,
@@ -1415,6 +1503,154 @@ struct AdminQuery {
     include_history: Option<bool>,
     #[serde(default)]
     history_limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AdminBlacklistIpRequest {
+    ip: String,
+}
+
+fn normalize_admin_ip(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 64 {
+        return None;
+    }
+    value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
+}
+
+async fn admin_blacklist_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return admin_login_redirect("/admin/blacklist");
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    html_page_response(&headers, inject_theme(ADMIN_BLACKLIST_HTML))
+}
+
+async fn admin_blacklist_list_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    match state.accounts_db.list_ip_blacklist(4096).await {
+        Ok(items) => (StatusCode::OK, Json(json!({ "items": items }))).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("讀取 IP 黑名單失敗：{error}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_blacklist_block_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminBlacklistIpRequest>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let Some(ip) = normalize_admin_ip(&request.ip) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid IP address" })),
+        )
+            .into_response();
+    };
+    match state
+        .accounts_db
+        .block_ip(&ip, &session.account_id, "Web Admin manual block")
+        .await
+    {
+        Ok(created) => {
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "ip_blacklist_block",
+                None,
+                Some(&ip),
+                "Web 管理頁封鎖 IP",
+            );
+            let _ = state
+                .accounts_db
+                .record_activity_event(crate::db::ActivityEventInput {
+                    kind: "security".to_string(),
+                    actor: session.account_id.clone(),
+                    action: "ip_blacklist_block".to_string(),
+                    account_id: String::new(),
+                    path: ip.clone(),
+                    result: "success".to_string(),
+                    details: "Web Admin manual block".to_string(),
+                    ip: ip.clone(),
+                })
+                .await;
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "blocked": created, "ip": ip })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("封鎖 IP 失敗：{error}") })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_blacklist_unblock_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminBlacklistIpRequest>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let Some(ip) = normalize_admin_ip(&request.ip) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid IP address" })),
+        )
+            .into_response();
+    };
+    match state.accounts_db.unblock_ip(&ip).await {
+        Ok(removed) => {
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "ip_blacklist_unblock",
+                None,
+                Some(&ip),
+                "Web 管理頁解除 IP 封鎖",
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "unblocked": removed, "ip": ip })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("解除 IP 封鎖失敗：{error}") })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2658,6 +2894,10 @@ async fn admin_passkey_login_start_handler(
     Json(req): Json<AdminPasskeyLoginStartRequest>,
 ) -> Response {
     let ip = client_ip_from_headers(&headers);
+    if ip_is_blacklisted(&state, &ip).await {
+        warn!(ip = %ip, "passkey login rejected for blacklisted IP");
+        return blocked_ip_response();
+    }
     if !state
         .rate_limiter
         .check_limit(&format!("passkey-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
@@ -2730,6 +2970,10 @@ async fn admin_passkey_login_finish_handler(
     Json(req): Json<AdminPasskeyLoginFinishRequest>,
 ) -> Response {
     let ip = client_ip_from_headers(&headers);
+    if ip_is_blacklisted(&state, &ip).await {
+        warn!(ip = %ip, "passkey finish rejected for blacklisted IP");
+        return blocked_ip_response();
+    }
     if !state
         .rate_limiter
         .check_limit(&format!("passkey-finish-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
@@ -2930,6 +3174,10 @@ async fn admin_login_handler(
         return response;
     }
     let ip = client_ip_from_headers(&headers);
+    if ip_is_blacklisted(&state, &ip).await {
+        warn!(ip = %ip, "password login rejected for blacklisted IP");
+        return blocked_ip_response();
+    }
     if !state
         .rate_limiter
         .check_limit(&format!("login-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
