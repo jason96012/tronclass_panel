@@ -53,7 +53,7 @@ pub fn frontend_mode() -> String {
     FRONTEND_MODE.read().unwrap().clone()
 }
 
-pub async fn list_tree() -> Result<(Vec<super::utils::MaterialFileEntry>, Vec<String>), String> {
+pub(super) async fn list_tree() -> Result<(Vec<super::utils::MaterialFileEntry>, Vec<String>), String> {
     Err("WebDAV 已停用，改用本機／Filebrowser".into())
 }
 
