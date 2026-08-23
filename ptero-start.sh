@@ -88,6 +88,21 @@ dl() {
   return 1
 }
 
+# Resumable downloader used by the optional Filebrowser/Caddy helpers.
+nc_dl_resume() {
+  local url="$1" out="$2"
+  mkdir -p "$(dirname "$out")"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 5 --retry-all-errors -C - --output "$out" "$url" && return 0
+    rm -f "$out"
+    curl -fL --retry 3 --output "$out" "$url" && return 0
+  fi
+  if command -v wget >/dev/null 2>&1; then
+    wget -c -O "$out" "$url" && return 0
+  fi
+  return 1
+}
+
 start_tunnel() {
   local token
   token="$(read_token)"
@@ -158,6 +173,22 @@ fb_ensure_bin() {
     break
   done
   echo "[filebrowser] 下載失敗"
+  return 1
+}
+
+nc_ensure_caddy() {
+  if [[ -x ./caddy ]]; then
+    echo "[filebrowser] 已有 ./caddy"
+    return 0
+  fi
+  echo "[filebrowser] 下載 Caddy"
+  if nc_dl_resume "https://caddyserver.com/api/download?os=linux&arch=amd64" ./caddy; then
+    chmod +x ./caddy
+    echo "[filebrowser] Caddy 下載完成"
+    return 0
+  fi
+  rm -f ./caddy
+  echo "[filebrowser] Caddy 下載失敗"
   return 1
 }
 
@@ -285,8 +316,52 @@ fb_init() {
   fb_prepare_db "$admin_db" noauth 26013 "admin.db" admin-full
 }
 
+fb_start_dashboard_proxy() {
+  local proxy_port="${1:-${FILEBROWSER_DASHBOARD_PROXY_PORT:-26014}}"
+  local fixed_backend="${2:-}"
+  export FILEBROWSER_DASHBOARD_PROXY_PORT="$proxy_port"
+  export FILEBROWSER_DASHBOARD_PROXY_ENABLED=0
+  if [[ "$fixed_backend" == "auth" ]]; then
+    export FILEBROWSER_DASHBOARD_PROXY_FIXED_BACKEND=auth
+  else
+    unset FILEBROWSER_DASHBOARD_PROXY_FIXED_BACKEND
+  fi
+
+  if [[ "${FILEBROWSER_DASHBOARD_PROXY_ENABLE:-1}" != "1" ]]; then
+    echo "[filebrowser] Dashboard 返回按鈕代理已停用"
+    return 1
+  fi
+  if [[ ! -f ./filebrowser-dashboard-proxy.py ]] || ! command -v python3 >/dev/null 2>&1; then
+    echo "[filebrowser] 缺少 filebrowser-dashboard-proxy.py 或 python3，略過返回 Dashboard 按鈕"
+    return 1
+  fi
+
+  local pidfile=logs/filebrowser-dashboard-proxy.pid
+  nohup python3 -u ./filebrowser-dashboard-proxy.py "$proxy_port" \
+    >> logs/filebrowser-dashboard-proxy.log 2>&1 &
+  echo $! > "$pidfile"
+  sleep 1
+  local pid
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    export FILEBROWSER_DASHBOARD_PROXY_ENABLED=1
+    echo "[filebrowser] Dashboard 返回按鈕代理 OK（port $proxy_port）"
+    return 0
+  fi
+  rm -f "$pidfile"
+  echo "[filebrowser] Dashboard 返回按鈕代理啟動失敗"
+  return 1
+}
+
 fb_write_caddy() {
   local dash_port="${SERVER_PORT:-26000}"
+  local proxy_port="${FILEBROWSER_DASHBOARD_PROXY_PORT:-26014}"
+  local user_target="127.0.0.1:26012"
+  local admin_target="127.0.0.1:26013"
+  if [[ "${FILEBROWSER_DASHBOARD_PROXY_ENABLED:-0}" == "1" ]]; then
+    user_target="127.0.0.1:${proxy_port}"
+    admin_target="127.0.0.1:${proxy_port}"
+  fi
   mkdir -p nextcloud-runtime
   cat > nextcloud-runtime/Caddyfile.fb << EOF
 {
@@ -357,10 +432,14 @@ fb_write_caddy() {
     redir @fb_admin_page /files 302
 
     handle @admin {
-        reverse_proxy 127.0.0.1:26013
+        reverse_proxy ${admin_target} {
+            header_up X-Fb-Backend admin
+        }
     }
     handle @user {
-        reverse_proxy 127.0.0.1:26012
+        reverse_proxy ${user_target} {
+            header_up X-Fb-Backend user
+        }
     }
     # 禁止外部密碼登入；只有 Dashboard SSO 通過 forward_auth 後，
     # 才能進入 user/admin 入口。26011 僅保留為內部備援，不由 Caddy 公開。
@@ -383,7 +462,7 @@ start_filebrowser() {
   echo "[ptero-start] 啟動 Filebrowser（SSO 閘道 :26001）"
   (
     echo "===== $(date -Iseconds) filebrowser ====="
-    for pidfile in logs/filebrowser-auth.pid logs/filebrowser-open.pid logs/filebrowser-admin.pid logs/filebrowser-caddy.pid; do
+    for pidfile in logs/filebrowser-auth.pid logs/filebrowser-open.pid logs/filebrowser-admin.pid logs/filebrowser-caddy.pid logs/filebrowser-dashboard-proxy.pid; do
       if [[ -s "$pidfile" ]]; then
         pid="$(cat "$pidfile" 2>/dev/null || true)"
         [[ "$pid" =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true
@@ -401,7 +480,6 @@ start_filebrowser() {
       rm -f config/fb-reset
     fi
     fb_init
-    fb_write_caddy
     fb_write_snippet
     echo "[filebrowser] 密碼 :26011 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001"
     nohup ./filebrowser -d "$PWD/fb-data/auth.db" >> logs/filebrowser-auth.log 2>&1 &
@@ -411,15 +489,32 @@ start_filebrowser() {
     nohup ./filebrowser -d "$PWD/fb-data/admin.db" >> logs/filebrowser-admin.log 2>&1 &
     echo $! > logs/filebrowser-admin.pid
     sleep 1
+
+    # Filebrowser only supports custom CSS branding. Put the functional
+    # Dashboard link in a localhost response proxy instead, so it survives
+    # Filebrowser upgrades without modifying its embedded frontend.
+    if [[ -x ./caddy ]]; then
+      fb_start_dashboard_proxy "${FILEBROWSER_DASHBOARD_PROXY_PORT:-26014}" || true
+    else
+      # Without Caddy, expose the proxy on the old public fallback port and
+      # let it forward to the password-protected auth instance (26011).
+      fb_start_dashboard_proxy 26001 auth || true
+    fi
+    fb_write_caddy
+
     if [[ -x ./caddy ]]; then
       ./caddy run --config "$PWD/nextcloud-runtime/Caddyfile.fb" --adapter caddyfile &
       echo $! > logs/filebrowser-caddy.pid
       wait $!
+    elif [[ -s logs/filebrowser-dashboard-proxy.pid ]] && kill -0 "$(cat logs/filebrowser-dashboard-proxy.pid 2>/dev/null || echo 0)" 2>/dev/null; then
+      echo "[filebrowser] 沒有 caddy，使用返回按鈕代理 :26001"
+      wait "$(cat logs/filebrowser-dashboard-proxy.pid)"
+    else
+      echo "[filebrowser] 沒有 caddy，改只開密碼版 :26001（無法 SSO）"
+      ./filebrowser -d "$PWD/fb-data/auth.db" -a 127.0.0.1 -p 26001 &
+      echo $! > logs/filebrowser-caddy.pid
+      wait $!
     fi
-    echo "[filebrowser] 沒有 caddy，改只開密碼版 :26001（無法 SSO）"
-    ./filebrowser -d "$PWD/fb-data/auth.db" -a 127.0.0.1 -p 26001 &
-    echo $! > logs/filebrowser-caddy.pid
-    wait $!
   ) >> logs/filebrowser.log 2>&1 &
   disown || true
 }
@@ -515,6 +610,7 @@ watchdog_pid_alive() {
     *tailscaled.pid) expected='tailscaled' ;;
     *ts-https-proxy.pid) expected='ts-https-proxy.py' ;;
     *filebrowser-caddy.pid) expected='filebrowser|caddy' ;;
+    *filebrowser-dashboard-proxy.pid) expected='filebrowser-dashboard-proxy.py' ;;
     *filebrowser-*.pid) expected='filebrowser' ;;
     *dashboard.pid) expected='tronclass_rollcall' ;;
     *) return 0 ;;
@@ -578,6 +674,9 @@ watchdog_check_filebrowser() {
   for f in logs/filebrowser-auth.pid logs/filebrowser-open.pid logs/filebrowser-admin.pid logs/filebrowser-caddy.pid; do
     watchdog_pid_alive "$f" || bad=1
   done
+  if [[ -s logs/filebrowser-dashboard-proxy.pid ]]; then
+    watchdog_pid_alive logs/filebrowser-dashboard-proxy.pid || bad=1
+  fi
   (( bad == 1 )) && watchdog_restart_filebrowser
 }
 
