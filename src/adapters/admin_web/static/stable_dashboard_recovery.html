@@ -368,7 +368,7 @@
 
 <!-- DASHBOARD_TIMETABLE_STANDALONE_REDIRECT_MOBILE_FIX_V1_START -->
 <script id="dashboardTimetableStandaloneRedirectMobileFixV1">
-(function(){'use strict';if(window.DASHBOARD_TIMETABLE_STANDALONE_REDIRECT_MOBILE_FIX_V1)return;window.DASHBOARD_TIMETABLE_STANDALONE_REDIRECT_MOBILE_FIX_V1=true;function tok(){try{return(new URLSearchParams(location.search).get('token')||localStorage.getItem('tronclass_admin_session')||sessionStorage.getItem('tronclass_admin_session')||'').trim()}catch(_){return''}}function go(edit){var t=tok();location.href='/admin/timetable'+(t?'?token='+encodeURIComponent(t)+(edit?'&edit=1':''):(edit?'?edit=1':''))}if((location.pathname==='/admin'||location.pathname==='/admin/'||location.pathname==='/admin/dashboard')&&location.hash==='#timetable'){setTimeout(function(){go(false)},80)}document.addEventListener('click',function(ev){var n=ev.target&&ev.target.closest&&ev.target.closest('[data-view="timetable"],[data-switch="timetable"],a[href$="#timetable"],button,a,[role="button"]');if(!n)return;var txt=(n.textContent||'').replace(/\s+/g,'').trim();if((n.dataset&&(n.dataset.view==='timetable'||n.dataset.switch==='timetable'))||txt==='課表'||txt.indexOf('編輯課表')>=0){ev.preventDefault();ev.stopPropagation();if(ev.stopImmediatePropagation)ev.stopImmediatePropagation();go(txt.indexOf('編輯課表')>=0)}},true);})();
+(function(){'use strict';if(window.DASHBOARD_TIMETABLE_STANDALONE_REDIRECT_MOBILE_FIX_V1)return;window.DASHBOARD_TIMETABLE_STANDALONE_REDIRECT_MOBILE_FIX_V1=true;function tok(){return''}function go(edit){location.href='/admin/timetable'+(edit?'?edit=1':'')}if((location.pathname==='/admin'||location.pathname==='/admin/'||location.pathname==='/admin/dashboard')&&location.hash==='#timetable'){setTimeout(function(){go(false)},80)}document.addEventListener('click',function(ev){var n=ev.target&&ev.target.closest&&ev.target.closest('[data-view="timetable"],[data-switch="timetable"],a[href$="#timetable"],button,a,[role="button"]');if(!n)return;var txt=(n.textContent||'').replace(/\s+/g,'').trim();if((n.dataset&&(n.dataset.view==='timetable'||n.dataset.switch==='timetable'))||txt==='課表'||txt.indexOf('編輯課表')>=0){ev.preventDefault();ev.stopPropagation();if(ev.stopImmediatePropagation)ev.stopImmediatePropagation();go(txt.indexOf('編輯課表')>=0)}},true);})();
 </script>
 <!-- DASHBOARD_TIMETABLE_STANDALONE_REDIRECT_MOBILE_FIX_V1_END -->
 
@@ -444,7 +444,7 @@
 (function(){'use strict';
 const LS='tronclass_admin_session',SAVED='tronclass_admin_saved_login',SEEN='tronclass_seen_rollcalls_v2';let status=null,view='overview',timer=null,ttEntries=[],ttEdit=false;
 const PERIOD={1:['08:10','09:00'],2:['09:10','10:00'],3:['10:10','11:00'],4:['11:10','12:00'],5:['12:10','13:00'],6:['13:10','14:00'],7:['14:10','15:00'],8:['15:10','16:00'],9:['16:10','17:00'],10:['17:10','18:00']};const DAY={mon:'星期一',tue:'星期二',wed:'星期三',thu:'星期四',fri:'星期五',sat:'星期六',sun:'星期日'};const DAYORDER={sun:0,mon:1,tue:2,wed:3,thu:4,fri:5,sat:6};
-function q(id){return document.getElementById(id)}function token(){try{return(new URLSearchParams(location.search).get('token')||localStorage.getItem(LS)||sessionStorage.getItem(LS)||'').trim()}catch(_){return''}}function storeToken(t){if(!t)return;localStorage.setItem(LS,t);sessionStorage.setItem(LS,t);try{const u=new URL(location.href);if(u.searchParams.has('token')){u.searchParams.delete('token');history.replaceState(null,'',u.pathname+u.search+u.hash)}}catch(_){}}function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function toast(t,ok=true){const el=q('toast');el.textContent=t;el.style.background=ok?'#172033':'#991b1b';el.classList.add('visible');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('visible'),3000)}function withToken(path){const t=token();if(!t)return path;const u=new URL(path,location.origin);u.searchParams.set('token',t);return u.pathname+u.search+u.hash}async function parse(res){const b=await res.json().catch(()=>({}));if(!res.ok){const e=new Error(b.error||('HTTP '+res.status));e.status=res.status;throw e}return b}async function api(path,opts={}){return fetch(withToken(path),opts).then(parse)}function apiMissing(el,msg){if(typeof el==='string')el=q(el);if(el)el.innerHTML='<div class="api-missing">'+esc(msg||'此功能的後端 API 尚未安裝，已安全略過，不影響其他功能。')+'</div>'}
+function q(id){return document.getElementById(id)}function token(){try{return(new URLSearchParams(location.search).get('token')||localStorage.getItem(LS)||sessionStorage.getItem(LS)||'').trim()}catch(_){return''}}function storeToken(t){if(!t)return;localStorage.setItem(LS,t);sessionStorage.setItem(LS,t);try{const u=new URL(location.href);if(u.searchParams.has('token')){u.searchParams.delete('token');history.replaceState(null,'',u.pathname+u.search+u.hash)}}catch(_){}}function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function toast(t,ok=true){const el=q('toast');el.textContent=t;el.style.background=ok?'#172033':'#991b1b';el.classList.add('visible');clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('visible'),3000)}function withToken(path){return path}async function parse(res){const b=await res.json().catch(()=>({}));if(!res.ok){const e=new Error(b.error||('HTTP '+res.status));e.status=res.status;throw e}return b}async function api(path,opts={}){return fetch(withToken(path),opts).then(parse)}function apiMissing(el,msg){if(typeof el==='string')el=q(el);if(el)el.innerHTML='<div class="api-missing">'+esc(msg||'此功能的後端 API 尚未安裝，已安全略過，不影響其他功能。')+'</div>'}
 try{if('serviceWorker'in navigator){navigator.serviceWorker.getRegistrations().then(rs=>rs.forEach(r=>r.unregister())).catch(()=>{});if(window.caches)caches.keys().then(keys=>keys.forEach(k=>caches.delete(k))).catch(()=>{})}}catch(_){}
 function showLogin(msg){document.body.classList.remove('logged-in');if(q('brandSub'))q('brandSub').textContent='請先登入';q('loginMsg').textContent=msg||'請先登入。'}function applyRole(){const isAdmin=!!(status&&status.is_admin);document.querySelectorAll('.admin-only').forEach(el=>el.classList.toggle('hidden',!isAdmin));if(!isAdmin&&view==='maintenance')switchView('overview');if(q('brandSub'))q('brandSub').textContent=(status&&status.current_account_id)||'已登入'}function showApp(){document.body.classList.add('logged-in');applyRole();syncLinks()}async function login(){const u=q('loginUsername').value.trim(),p=q('loginPassword').value;if(!u||!p){q('loginMsg').textContent='請輸入帳號與密碼';return}q('loginBtn').disabled=true;q('loginBtn').textContent='登入中...';q('loginMsg').textContent='登入中...';try{const body=await fetch('/admin/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:u,password:p}),cache:'no-store'}).then(parse);storeToken(body.token);if(q('rememberPassword').checked)localStorage.setItem(SAVED,JSON.stringify({username:u,password:p}));location.replace('/admin?v=full'+Date.now()+'#overview')}catch(e){q('loginMsg').textContent=e.message==='unauthorized'?'帳號或密碼錯誤':(e.message||'登入失敗');q('loginBtn').disabled=false;q('loginBtn').textContent='登入'}}function logout(){localStorage.removeItem(LS);sessionStorage.removeItem(LS);location.replace('/admin?v=logout'+Date.now())}function syncLinks(){['meLink','mMe'].forEach(id=>{if(q(id))q(id).href=withToken('/admin/me')});['filesLink','filesLink2','mFiles'].forEach(id=>{if(q(id))q(id).href=withToken('/admin/files')});['logsLink','mLogs'].forEach(id=>{if(q(id))q(id).href=withToken('/admin/logs')});if(q('mActivity'))q('mActivity').href=withToken('/admin/activity')}
 async function loadStatus(){try{status=await api('/admin/api/status',{cache:'no-store'});showApp();renderAll();checkRollcallAlert()}catch(e){if(e.status===401){localStorage.removeItem(LS);sessionStorage.removeItem(LS);showLogin('登入狀態失效，請重新登入。')}else{toast(e.message||'讀取狀態失敗',false)}}}
@@ -486,7 +486,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
   function textOf(el){ return (el && (el.textContent || el.value || '') || '').replace(/\s+/g,' ').trim(); }
   function token(){
     try{
-      var urlToken = new URLSearchParams(location.search).get('token');
+      var urlToken = ''; // F-03: token removed
       if(urlToken) return String(urlToken).trim();
       for(var i=0;i<TOKEN_KEYS.length;i++){
         var a = localStorage.getItem(TOKEN_KEYS[i]) || sessionStorage.getItem(TOKEN_KEYS[i]);
@@ -498,7 +498,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
   function withToken(path){
     var t = token();
     if(!t) return path;
-    return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
+    return path;
   }
   async function parseResponse(res){
     var body = await res.json().catch(function(){ return {}; });
@@ -638,7 +638,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
     var t=token();if(!t)return toast('請先用帳號密碼登入後，再設定通行密鑰。',false);
     try{
       toast('準備建立通行密鑰...');
-      var start=await postJson('/admin/api/passkey/register/start?token='+encodeURIComponent(t),null);
+      var start=await postJson('/admin/api/passkey/register/start',null);
       var cred=await navigator.credentials.create({publicKey:prepareCreateOptions(start.publicKey)});
       if(!cred)throw new Error('未建立通行密鑰');
       var body={ceremony_id:start.ceremony_id,response:{id:cred.id,attestationObject:b64urlEncode(cred.response.attestationObject),clientDataJSON:b64urlEncode(cred.response.clientDataJSON),transports:cred.response.getTransports?cred.response.getTransports():[]}};
@@ -894,7 +894,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
   function pStart(p){return PERIOD[Number(p||0)]?PERIOD[Number(p||0)][0]:''}
   function pEnd(p){return PERIOD[Number(p||0)]?PERIOD[Number(p||0)][1]:''}
   function token(){try{var u=new URLSearchParams(location.search).get('token');if(u)return String(u).trim();var keys=['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];for(var i=0;i<keys.length;i++){var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);if(v&&String(v).trim())return String(v).trim()}}catch(_){}return''}
-  function withToken(path){var t=token();if(!t)return path;var u=new URL(path,location.origin);if(!u.searchParams.get('token'))u.searchParams.set('token',t);return u.pathname+u.search+u.hash}
+  function withToken(path){return path}
   async function parseResponse(res){var b=await res.json().catch(function(){return{}});if(!res.ok){var e=new Error(b.error||b.message||('HTTP '+res.status));e.status=res.status;throw e}return b}
   async function api(path,opts){return fetch(withToken(path),opts||{}).then(parseResponse)}
   function hideEmptyToasts(){document.querySelectorAll('#toast,.toast').forEach(function(el){if(el.classList.contains('visible')&&!textOf(el)){el.classList.remove('visible');el.classList.add('tt-stable-empty-toast')}})}
@@ -1002,7 +1002,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
   function textOf(el){ return (el && (el.textContent || '') || '').replace(/\s+/g,' ').trim(); }
   function token(){
     try{
-      var u = new URLSearchParams(location.search).get('token');
+      var u = '';
       if(u) return String(u).trim();
       for(var i=0;i<TOKEN_KEYS.length;i++){
         var v = localStorage.getItem(TOKEN_KEYS[i]) || sessionStorage.getItem(TOKEN_KEYS[i]);
@@ -1011,13 +1011,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
     }catch(_){ }
     return '';
   }
-  function withToken(path){
-    var t = token();
-    if(!t) return path;
-    var u = new URL(path, location.origin);
-    if(!u.searchParams.get('token')) u.searchParams.set('token', t);
-    return u.pathname + u.search + u.hash;
-  }
+  function withToken(path){return path}
   async function parseResponse(res){
     var body = await res.json().catch(function(){ return {}; });
     if(!res.ok){ var e = new Error(body.error || body.message || ('HTTP '+res.status)); e.status = res.status; throw e; }
@@ -1222,7 +1216,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
   function norm(v){ return String(v || '').replace(/\s+/g,'').toLowerCase(); }
   function token(){
     try{
-      var u = new URLSearchParams(location.search).get('token');
+      var u = '';
       if(u) return String(u).trim();
       for(var i=0;i<TOKEN_KEYS.length;i++){
         var v = localStorage.getItem(TOKEN_KEYS[i]) || sessionStorage.getItem(TOKEN_KEYS[i]);
@@ -1231,13 +1225,7 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
     }catch(_){ }
     return '';
   }
-  function withToken(path){
-    var t = token();
-    if(!t) return path;
-    var u = new URL(path, location.origin);
-    if(!u.searchParams.get('token')) u.searchParams.set('token', t);
-    return u.pathname + u.search + u.hash;
-  }
+  function withToken(path){return path}
   async function parseResponse(res){
     var body = await res.json().catch(function(){ return {}; });
     if(!res.ok){ var e = new Error(body.error || body.message || ('HTTP '+res.status)); e.status = res.status; throw e; }
@@ -1558,5 +1546,5 @@ q('loginBtn').onclick=login;q('loginPassword').addEventListener('keydown',e=>{if
 </script>
 <!-- ANIMATED_LOGIN_STATIC_V1_END -->
 
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb42700c464a45',t:'MTc4NzUwMDA4NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

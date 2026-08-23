@@ -10,13 +10,13 @@
 
   function q(id){ return document.getElementById(id); }
   function isMobile(){ return window.matchMedia && matchMedia('(max-width:820px)').matches; }
-  function token(){ try { return (new URLSearchParams(location.search).get('token') || localStorage.getItem(LS_SESSION) || '').trim(); } catch(_) { return ''; } }
+  function token(){ return ''; }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); }
-  function withToken(path){ var t=token(); var u=new URL(path, location.origin); if(t)u.searchParams.set('token',t); return u.pathname+u.search+u.hash; }
+  function withToken(path){ return path; }
   function toast(text, ok){ var el=q('toast'); if(el){el.textContent=text;el.className='toast visible '+(ok===false?'bad':'ok');clearTimeout(el._timer);el._timer=setTimeout(function(){el.classList.remove('visible')},3200)} else console.log(text); }
   async function parseResponse(res){ var b=await res.json().catch(function(){return{}}); if(!res.ok){var e=new Error(b.error||('HTTP '+res.status)); e.status=res.status; throw e;} return b; }
   // MAINTENANCE_CORE_API_PHASE4F3
-  async function api(path){ if(window.TronclassRuntime&&window.TronclassRuntime.api)return window.TronclassRuntime.api(path,{cache:'no-store'}); var sep=path.indexOf('?')>=0?'&':'?'; return fetch(path+sep+'token='+encodeURIComponent(token()),{cache:'no-store'}).then(parseResponse); }
+  async function api(path){ if(window.TronclassRuntime&&window.TronclassRuntime.api)return window.TronclassRuntime.api(path,{cache:'no-store'}); return fetch(path,{credentials:'same-origin',cache:'no-store'}).then(parseResponse); }
   function pct(used,total){ used=Number(used||0); total=Number(total||0); return total>0?Math.max(0,Math.min(100,used/total*100)):0; }
   function levelByPct(p){ return p>=90?'bad':(p>=75?'warn':'ok'); }
   function parseDisk(out){ var lines=String(out||'').trim().split(/\n/); if(lines.length<2)return null; var c=lines[1].trim().split(/\s+/); return {size:c[1],used:c[2],avail:c[3],use:c[4],mount:c[5]}; }
@@ -80,7 +80,7 @@
   }
   async function doAction(action){
     if(action==='stop'&&!confirm('確定要暫停全部帳號監控？'))return;
-    try{await fetch('/admin/api/action?token='+encodeURIComponent(token()),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:action})}).then(parseResponse);toast('操作完成');loadHealth(false)}catch(e){toast(e.message||'操作失敗',false)}
+    try{await fetch('/admin/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:action})}).then(parseResponse);toast('操作完成');loadHealth(false)}catch(e){toast(e.message||'操作失敗',false)}
   }
   function copyDiag(){var text=JSON.stringify({health:lastHealth,check:lastCheck,time:new Date().toISOString()},null,2); if(navigator.clipboard)navigator.clipboard.writeText(text).then(function(){toast('已複製診斷摘要')}); else prompt('請手動複製：',text)}
   function cleanupMobileNav(){

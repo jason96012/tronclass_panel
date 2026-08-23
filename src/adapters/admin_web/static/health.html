@@ -17,7 +17,7 @@
       var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
       if(tok && url.origin===location.origin && url.pathname.indexOf('/admin/api/')===0 &&
          url.pathname!=='/admin/api/login' && !url.searchParams.get('token')){
-        url.searchParams.set('token', tok);
+        // F-03: token removed, auth via HttpOnly cookie
         input=url.pathname+url.search+url.hash;
       }
     }catch(_){}
@@ -33,7 +33,7 @@
       if(!(dest.pathname==='/admin'||dest.pathname==='/admin/'||dest.pathname==='/admin/dashboard'||dest.pathname==='/admin/timetable'||dest.pathname.indexOf('/admin/')===0)) return;
       var tok=window.__tronBootToken||'';
       if(tok && !dest.searchParams.get('token')){
-        dest.searchParams.set('token', tok);
+        // F-03: token removed, auth via HttpOnly cookie
         a.setAttribute('href', dest.pathname+dest.search+dest.hash);
       }
     }catch(_){}
@@ -167,7 +167,7 @@
       return;
     }
     document.documentElement.classList.add('tron-auth-pending');
-    fetch('/admin/api/status'+(window.__tronBootToken?('?token='+encodeURIComponent(window.__tronBootToken)):''), {credentials:'same-origin', cache:'no-store'}).then(function(r){
+    fetch('/admin/api/status', {credentials:'same-origin', cache:'no-store'}).then(function(r){
       if (r.ok) {
         document.documentElement.classList.remove('tron-auth-pending','tron-auth-logged-out');
         document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','auth-ok');
@@ -877,9 +877,9 @@ hr, .divider{
 <script>
 (function(){
   var t = '';
-  try { t = new URLSearchParams(location.search).get('token') || localStorage.getItem('tronclass_admin_session') || ''; } catch(_) {}
+  t = ''; // F-03: token removed
   var u = new URL('/admin', location.origin);
-  if (t) u.searchParams.set('token', t);
+  // F-03: token removed, auth via HttpOnly cookie
   u.hash = 'maintenance';
   document.getElementById('go').href = u.pathname + u.search + u.hash;
   setTimeout(function(){ location.replace(u.pathname + u.search + u.hash); }, 250);
@@ -913,15 +913,15 @@ hr, .divider{
   var activeItem = null;
   var pollTimer = null;
 
-  function token(){ try { return (new URLSearchParams(location.search).get('token') || localStorage.getItem(LS_SESSION) || '').trim(); } catch(_) { return ''; } }
+  function token(){ return ''; }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); }
   function readJson(key){ try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch(_) { return {}; } }
   function writeJson(key, obj){ try { localStorage.setItem(key, JSON.stringify(obj)); } catch(_) {} }
   function fmtTime(ts){ if(!ts) return '尚未'; try { return new Date(Number(ts)*1000).toLocaleString(); } catch(_) { return String(ts); } }
   function recent(ts, secs){ return !!ts && ((Date.now()/1000) - Number(ts)) < (secs || 1800); }
   function doneFor(account, rid){ if(!account||!rid)return false; if(String(account.last_success_rollcall_id||'')===String(rid))return true; return (account.rollcall_history||[]).some(function(h){return String(h.rollcall_id||'')===String(rid)&&!!h.success;}); }
-  function withToken(path){ var t=token(); if(!t)return path; var u=new URL(path, location.origin); u.searchParams.set('token',t); return u.pathname+u.search+u.hash; }
-  async function statusApi(){ var t=token(); if(!t)throw new Error('no token'); var ctrl=new AbortController(); var to=setTimeout(function(){ctrl.abort();},9000); try{var res=await fetch('/admin/api/status?token='+encodeURIComponent(t),{cache:'no-store',signal:ctrl.signal});var body=await res.json().catch(function(){return{}});if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body;}finally{clearTimeout(to);} }
+  function withToken(path){return path}
+  async function statusApi(){ var t=token(); if(!t)throw new Error('no token'); var ctrl=new AbortController(); var to=setTimeout(function(){ctrl.abort();},9000); try{var res=await fetch('/admin/api/status',{credentials:'same-origin',cache:'no-store',signal:ctrl.signal});var body=await res.json().catch(function(){return{}});if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body;}finally{clearTimeout(to);} }
   function collectDetected(data){ var map=new Map(); (data.accounts||[]).forEach(function(a){ if(!a.last_detected_timestamp||!recent(a.last_detected_timestamp,1800))return; var course=a.last_detected_course||'點名'; var rid=a.last_detected_rollcall_id||''; var key=(rid?String(rid):String(course)+':'+String(a.last_detected_timestamp))+':'+course; var item=map.get(key)||{key:key,course:course,rollcallId:rid,url:a.last_detected_url||'',ts:a.last_detected_timestamp,accounts:[],done:0,total:0}; if(!item.url&&a.last_detected_url)item.url=a.last_detected_url; item.ts=Math.max(Number(item.ts||0),Number(a.last_detected_timestamp||0)); item.accounts.push(a.account_id||a.username||'-'); item.total+=1; if(doneFor(a,rid))item.done+=1; map.set(key,item); }); return Array.from(map.values()).sort(function(a,b){return Number(b.ts||0)-Number(a.ts||0);}); }
   function ensureUi(){ if(!document.getElementById('rollcallAlertV2')){ var div=document.createElement('div'); div.id='rollcallAlertV2'; div.className='rollcall-alert-v2-backdrop'; div.innerHTML='<div class="rollcall-alert-v2-card" role="dialog" aria-modal="true"><div class="rollcall-alert-v2-head"><div><div class="rollcall-alert-v2-title">🔔 偵測到點名</div><div class="rollcall-alert-v2-sub">目前頁面已自動更新點名狀態。</div></div><button id="rollcallAlertV2Close" class="rollcall-alert-v2-close" type="button">×</button></div><div id="rollcallAlertV2Body" class="rollcall-alert-v2-body"></div></div>'; document.body.appendChild(div); document.getElementById('rollcallAlertV2Close').onclick=function(){hideModal(true);}; div.addEventListener('click',function(ev){if(ev.target===div)hideModal(true);}); } if(!document.getElementById('rollcallAlertV2Fab')){ var fab=document.createElement('button'); fab.id='rollcallAlertV2Fab'; fab.className='rollcall-alert-v2-fab'; fab.type='button'; fab.innerHTML='🔔 點名 <span id="rollcallAlertV2FabBadge" class="rollcall-alert-v2-badge">0</span>'; fab.onclick=function(){ if(currentItems[0])showModal(currentItems[0],false); }; document.body.appendChild(fab); } }
   function showBrowserNotification(item){ try{ if(!('Notification'in window)||Notification.permission!=='granted')return; var n=new Notification('偵測到點名',{body:(item.course||'點名')+(item.rollcallId?' #'+item.rollcallId:''),tag:'tronclass-rollcall-'+item.key}); n.onclick=function(){window.focus(); if(item.url)window.open(item.url,'_blank','noopener'); else showModal(item,false);}; }catch(_){} }
@@ -960,7 +960,7 @@ hr, .divider{
   function currentPath(){ return location.pathname + location.search + location.hash; }
   function nextTarget(){ var n = params().get('next') || ''; return n ? sameOriginAdminPath(n) : ''; }
   function loginUrl(){ var u = new URL('/admin', location.origin); var cur = currentPath(); if (cur && cur !== '/admin' && cur.indexOf('/admin?logout=1') !== 0) u.searchParams.set('next', cur); u.searchParams.set('v','auth'+Date.now()); return u.pathname + u.search; }
-  function withToken(path){ var t = token(); if (!t) return path; var u = new URL(path, location.origin); u.searchParams.set('token', t); u.searchParams.delete('logout'); return u.pathname + u.search + u.hash; }
+  function withToken(path){return path}
   function setClass(state){ document.documentElement.classList.remove('tron-auth-pending','tron-auth-ok','tron-auth-logged-out'); document.body && document.body.classList.remove('auth-ok','dash-auth-ok'); if (state === 'ok') { document.documentElement.classList.add('tron-auth-ok'); document.body && document.body.classList.add('auth-ok','dash-auth-ok'); } else if (state === 'pending') document.documentElement.classList.add('tron-auth-pending'); else document.documentElement.classList.add('tron-auth-logged-out'); }
   function setBrand(text){ var el=q('brandSub'); if(el) el.textContent = text || '請先登入'; }
   function setMsg(text, ok){ var el=q('loginMsg')||q('msg'); if(!el)return; el.textContent=text||''; el.className='small '+(ok?'ok':(text?'bad':'')); }
@@ -977,7 +977,7 @@ hr, .divider{
       if (u.pathname.indexOf('/admin/api/') === 0 && u.pathname !== '/admin/api/login' && u.pathname.indexOf('/admin/api/passkey/login/') !== 0) {
         var t = token();
         /* cookie session: do not fake 401 */
-        u.searchParams.set('token', t);
+        // F-03: token removed, auth via HttpOnly cookie
         input = u.pathname + u.search + u.hash;
       }
     } catch(_) {}
@@ -989,7 +989,7 @@ hr, .divider{
   async function statusApi(){ var res=await fetch('/admin/api/status',{cache:'no-store',credentials:'same-origin'}); return parseResponse(res); }
   function showLogin(reason){ setClass('out'); setBrand('請先登入'); fillSaved(); setMsg(reason||'請先登入。', false); if(!isLoginPage() && isAdminPath()) location.replace(loginUrl()); }
   function showAuthed(data){ setClass('ok'); setBrand((data&&data.current_account_id)||(data&&data.account_id)||'管理中心'); setMsg('', true); syncLinks(); var nt=nextTarget(); if (nt && isLoginPage()) location.replace(withToken(nt)); }
-  function dashboardUrl(tok){ var target=nextTarget()||'/admin#overview'; var u=new URL(target, location.origin); u.searchParams.set('token',tok); u.searchParams.set('v','login'+Date.now()); if(!u.hash)u.hash='overview'; return u.pathname+u.search+u.hash; }
+  function dashboardUrl(tok){ var target=nextTarget()||'/admin#overview'; var u=new URL(target, location.origin); u.searchParams.set('v','login'+Date.now()); if(!u.hash)u.hash='overview'; return u.pathname+u.search+u.hash; }
   function logout(){ localStorage.removeItem(LS_SESSION); localStorage.setItem(LS_LOGOUT,'1'); showLogin('已登出，請重新登入。'); setTimeout(function(){location.replace('/admin?logout=1&v=logout'+Date.now())},30); }
   async function doLogin(ev){ if(ev){ev.preventDefault();ev.stopPropagation();ev.stopImmediatePropagation&&ev.stopImmediatePropagation();} try{ setMsg('登入中...', true); var u=usernameInput(), p=passwordInput(); var body=await loginApi(u&&u.value,p&&p.value); localStorage.setItem(LS_SESSION,body.token); localStorage.removeItem(LS_LOGOUT); var r=rememberInput(); if(!r||r.checked)localStorage.setItem(LS_SAVED,JSON.stringify({username:String((u&&u.value)||'').trim(),password:String((p&&p.value)||'')})); showAuthed({current_account_id:body.account_id}); location.replace(dashboardUrl(body.token)); }catch(e){ showLogin(e.message||'登入失敗'); toast(e.message||'登入失敗', false); } }
   function isPasskey(el){ return /通行密鑰|passkey/i.test(String((el&&(el.textContent||el.value||el.id))||'')); }
@@ -1073,7 +1073,7 @@ hr, .divider{
         if (u.origin === location.origin && u.pathname.startsWith('/admin/api/') && u.pathname !== '/admin/api/login') {
           var t = latestToken();
           if (t && !u.searchParams.get('token')) {
-            u.searchParams.set('token', t);
+            // F-03: token removed, auth via HttpOnly cookie
             input = u.pathname + u.search + u.hash;
           }
         }
@@ -1232,7 +1232,7 @@ hr, .divider{
 <script id="RETURN_DASHBOARD_HREF_V1">
 (function(){
   function tok(){
-    try{ return (window.__tronBootToken||new URLSearchParams(location.search).get('token')||'').trim(); }catch(_){ return ''; }
+    return '';
   }
   function patch(){
     var t=tok();
@@ -1240,7 +1240,7 @@ hr, .divider{
       try{
         var u=new URL(a.getAttribute('href'), location.origin);
         if(!(u.pathname==='/admin'||u.pathname==='/admin/'||u.pathname==='/admin/dashboard')) return;
-        if(t && !u.searchParams.get('token')) u.searchParams.set('token', t);
+        // F-03: token removed, auth via HttpOnly cookie
         if(!u.hash) u.hash='overview';
         a.setAttribute('href', u.pathname+u.search+u.hash);
       }catch(_){}
@@ -1251,7 +1251,7 @@ hr, .divider{
   setTimeout(patch, 200);
 })();
 </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb411e18ec4a45',t:'MTc4NzUwMDAzMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 

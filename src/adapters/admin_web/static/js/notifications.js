@@ -15,21 +15,10 @@
   function q(id){ return document.getElementById(id); }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); }
   function getToken(){
-    try{
-      var urlToken = new URLSearchParams(location.search).get('token');
-      var keys = ['tronclass_admin_session','tronclass_admin_token','adminToken','token'];
-      if(urlToken) return String(urlToken).trim();
-      for(var i=0;i<keys.length;i++){
-        var v = localStorage.getItem(keys[i]) || sessionStorage.getItem(keys[i]);
-        if(v && String(v).trim()) return String(v).trim();
-      }
-    }catch(_){ }
     return '';
   }
   function withToken(path){
-    var t = getToken();
-    if(!t) return path;
-    return path + (path.indexOf('?') >= 0 ? '&' : '?') + 'token=' + encodeURIComponent(t);
+    return path;
   }
   async function parseResponse(res){
     var body = await res.json().catch(function(){ return {}; });
@@ -299,20 +288,11 @@
   function q(id){ return document.getElementById(id); }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g,function(ch){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch];}); }
   function token(){
-    try{
-      var u = new URLSearchParams(location.search).get('token');
-      if(u) return String(u).trim();
-      var keys=['tronclass_admin_session','tronclass_admin_token','adminToken','token'];
-      for(var i=0;i<keys.length;i++){
-        var v=localStorage.getItem(keys[i]) || sessionStorage.getItem(keys[i]);
-        if(v && String(v).trim()) return String(v).trim();
-      }
-    }catch(_){ }
     return '';
   }
-  function withToken(path){ var t=token(); return t ? path+(path.indexOf('?')>=0?'&':'?')+'token='+encodeURIComponent(t) : path; }
+  function withToken(path){ return path; }
   async function parseResponse(res){ var b=await res.json().catch(function(){return {};}); if(!res.ok){var e=new Error(b.error||b.message||('HTTP '+res.status)); e.status=res.status; throw e;} return b; }
-  async function api(path,opts){ return fetch(withToken(path),opts||{}).then(parseResponse); }
+  async function api(path,opts){ opts=opts||{}; opts.credentials=opts.credentials||'same-origin'; opts.cache=opts.cache||'no-store'; return fetch(path,opts).then(parseResponse); }
   function toast(msg, ok){ var el=q('toast'); if(el){ el.textContent=msg; el.className='toast visible '+(ok===false?'bad':'ok'); clearTimeout(el._classReminderTimer); el._classReminderTimer=setTimeout(function(){el.classList.remove('visible');},3000); } else alert(msg); }
 
   function manualSwitchView(view){

@@ -83,7 +83,7 @@
 
   async function secureLogout() {
     try {
-      await fetch('/admin/api/logout?token=' + encodeURIComponent(SESSION_MARKER), {
+      await fetch('/admin/api/logout', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
@@ -189,7 +189,7 @@
 
     passwordMessage('正在儲存...', true);
     try {
-      var response = await fetch('/admin/api/password?token=' + encodeURIComponent(SESSION_MARKER), {
+      var response = await fetch('/admin/api/password', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
@@ -214,7 +214,7 @@
         if (required) {
           // Reload once with the replacement normal session, so all protected
           // Dashboard data is fetched only after the required change succeeds.
-          location.replace('/admin?token=' + encodeURIComponent(SESSION_MARKER) + '#overview');
+          location.replace('/admin#overview');
           return;
         }
         var modal = document.getElementById('dashboardPasswordModalV1');
@@ -258,7 +258,7 @@
     try { marker = (localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY) || '').trim(); } catch (_) {}
     if (marker !== SESSION_MARKER || forcedPasswordChange) return;
     try {
-      var response = await fetch('/admin/api/status?token=' + encodeURIComponent(SESSION_MARKER), {
+      var response = await fetch('/admin/api/status', {
         credentials: 'same-origin',
         cache: 'no-store'
       });

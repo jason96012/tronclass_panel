@@ -21,8 +21,8 @@
   function textOf(el){return (el&&(el.textContent||el.value||'')||'').replace(/\s+/g,' ').trim()}
   function pStart(p){return PERIOD[Number(p||0)]?PERIOD[Number(p||0)][0]:''}
   function pEnd(p){return PERIOD[Number(p||0)]?PERIOD[Number(p||0)][1]:''}
-  function token(){try{var u=new URLSearchParams(location.search).get('token');if(u)return String(u).trim();var keys=['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];for(var i=0;i<keys.length;i++){var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);if(v&&String(v).trim())return String(v).trim()}}catch(_){}return''}
-  function withToken(path){var t=token();if(!t)return path;var u=new URL(path,location.origin);if(!u.searchParams.get('token'))u.searchParams.set('token',t);return u.pathname+u.search+u.hash}
+  function token(){return''}
+  function withToken(path){return path}
   async function parseResponse(res){var b=await res.json().catch(function(){return{}});if(!res.ok){var e=new Error(b.error||b.message||('HTTP '+res.status));e.status=res.status;throw e}return b}
   async function api(path,opts){return fetch(withToken(path),opts||{}).then(parseResponse)}
   function hideEmptyToasts(){document.querySelectorAll('#toast,.toast').forEach(function(el){if(el.classList.contains('visible')&&!textOf(el)){el.classList.remove('visible');el.classList.add('tt-stable-empty-toast')}})}
@@ -221,22 +221,10 @@
   function textOf(el){ return (el && (el.textContent || el.value || '') || '').replace(/\s+/g,' ').trim(); }
   function norm(v){ return String(v || '').replace(/\s+/g,'').toLowerCase(); }
   function token(){
-    try{
-      var u = new URLSearchParams(location.search).get('token');
-      if(u) return String(u).trim();
-      for(var i=0;i<TOKEN_KEYS.length;i++){
-        var v = localStorage.getItem(TOKEN_KEYS[i]) || sessionStorage.getItem(TOKEN_KEYS[i]);
-        if(v && String(v).trim()) return String(v).trim();
-      }
-    }catch(_){ }
     return '';
   }
   function withToken(path){
-    var t = token();
-    if(!t) return path;
-    var u = new URL(path, location.origin);
-    if(!u.searchParams.get('token')) u.searchParams.set('token', t);
-    return u.pathname + u.search + u.hash;
+    return path;
   }
   async function parseResponse(res){
     var body = await res.json().catch(function(){ return {}; });

@@ -17,7 +17,7 @@
       var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
       if(tok && url.origin===location.origin && url.pathname.indexOf('/admin/api/')===0 &&
          url.pathname!=='/admin/api/login' && !url.searchParams.get('token')){
-        url.searchParams.set('token', tok);
+        // F-03: token removed, auth via HttpOnly cookie
         input=url.pathname+url.search+url.hash;
       }
     }catch(_){}
@@ -33,7 +33,7 @@
       if(!(dest.pathname==='/admin'||dest.pathname==='/admin/'||dest.pathname==='/admin/dashboard'||dest.pathname==='/admin/timetable'||dest.pathname.indexOf('/admin/')===0)) return;
       var tok=window.__tronBootToken||'';
       if(tok && !dest.searchParams.get('token')){
-        dest.searchParams.set('token', tok);
+        // F-03: token removed, auth via HttpOnly cookie
         a.setAttribute('href', dest.pathname+dest.search+dest.hash);
       }
     }catch(_){}
@@ -144,7 +144,7 @@
       return;
     }
     document.documentElement.classList.add('tron-auth-pending');
-    fetch('/admin/api/status'+(window.__tronBootToken?('?token='+encodeURIComponent(window.__tronBootToken)):''), {credentials:'same-origin', cache:'no-store'}).then(function(r){
+    fetch('/admin/api/status', {credentials:'same-origin', cache:'no-store'}).then(function(r){
       if (r.ok) {
         document.documentElement.classList.remove('tron-auth-pending','tron-auth-logged-out');
         document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','auth-ok');
@@ -575,7 +575,7 @@
   
   function token(){
     try {
-      return (new URLSearchParams(location.search).get('token') || localStorage.getItem(LS_SESSION) || sessionStorage.getItem(LS_SESSION) || '').trim();
+      return ''; // F-03: token removed
     } catch(_) { return ''; }
   }
   
@@ -583,7 +583,7 @@
     try {
       const u = new URL(path, location.origin);
       const t = token();
-      if(t) u.searchParams.set('token', t);
+      // F-03: token removed, auth via HttpOnly cookie
       return u.pathname + u.search + u.hash;
     } catch(_) { return path; }
   }
@@ -627,7 +627,7 @@
     opts.credentials = opts.credentials || 'same-origin';
     const sep = path.includes('?') ? '&' : '?';
     try {
-      const res = await fetch(path + sep + 'token=' + encodeURIComponent(t), opts);
+      const res = await fetch(path, opts);
       if (res.status === 401 || res.status === 403) {
         localStorage.removeItem(LS_SESSION);
         sessionStorage.removeItem(LS_SESSION);
@@ -747,7 +747,7 @@
 <script id="RETURN_DASHBOARD_HREF_V1">
 (function(){
   function tok(){
-    try{ return (window.__tronBootToken||new URLSearchParams(location.search).get('token')||'').trim(); }catch(_){ return ''; }
+    return '';
   }
   function patch(){
     var t=tok();
@@ -755,7 +755,7 @@
       try{
         var u=new URL(a.getAttribute('href'), location.origin);
         if(!(u.pathname==='/admin'||u.pathname==='/admin/'||u.pathname==='/admin/dashboard')) return;
-        if(t && !u.searchParams.get('token')) u.searchParams.set('token', t);
+        // F-03: token removed, auth via HttpOnly cookie
         if(!u.hash) u.hash='overview';
         a.setAttribute('href', u.pathname+u.search+u.hash);
       }catch(_){}
@@ -766,7 +766,7 @@
   setTimeout(patch, 200);
 })();
 </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb4188b8e44a45',t:'MTc4NzUwMDA0OA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 

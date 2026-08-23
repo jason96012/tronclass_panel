@@ -23,7 +23,7 @@
       var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
       if(tok && url.origin===location.origin && url.pathname.indexOf('/admin/api/')===0 &&
          url.pathname!=='/admin/api/login' && !url.searchParams.get('token')){
-        url.searchParams.set('token', tok);
+        // F-03: token removed, auth via HttpOnly cookie
         input=url.pathname+url.search+url.hash;
       }
     }catch(_){}
@@ -39,7 +39,7 @@
       if(!(dest.pathname==='/admin'||dest.pathname==='/admin/'||dest.pathname==='/admin/dashboard'||dest.pathname==='/admin/timetable'||dest.pathname.indexOf('/admin/')===0)) return;
       var tok=window.__tronBootToken||'';
       if(tok && !dest.searchParams.get('token')){
-        dest.searchParams.set('token', tok);
+        // F-03: token removed, auth via HttpOnly cookie
         a.setAttribute('href', dest.pathname+dest.search+dest.hash);
       }
     }catch(_){}
@@ -123,7 +123,7 @@
   sanitizeCurrentUrl();
   window.tronAdminToken = function(){
     try {
-      var u = new URLSearchParams(location.search).get('token');
+      var u = '';
       if (u) return String(u).trim();
       return (localStorage.getItem(LS_SESSION) || sessionStorage.getItem(LS_SESSION) || '').trim();
     } catch(_) { return ''; }
@@ -158,7 +158,7 @@
       return;
     }
     document.documentElement.classList.add('tron-auth-pending');
-    fetch('/admin/api/status'+(window.__tronBootToken?('?token='+encodeURIComponent(window.__tronBootToken)):''), {credentials:'same-origin', cache:'no-store'}).then(function(r){
+    fetch('/admin/api/status', {credentials:'same-origin', cache:'no-store'}).then(function(r){
       if (r.ok) {
         document.documentElement.classList.remove('tron-auth-pending','tron-auth-logged-out');
         document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','auth-ok');
@@ -997,7 +997,7 @@
   
   function token(){
     try {
-      const u = new URLSearchParams(location.search).get('token');
+      const u = '';
       if (u) return String(u).trim();
       const keys = ['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];
       for (let i = 0; i < keys.length; i++) {
@@ -1012,7 +1012,7 @@
     try {
       const u = new URL(path, location.origin);
       const t = token();
-      if (t) u.searchParams.set('token', t);
+      // F-03: token removed, auth via HttpOnly cookie
       return u.pathname + u.search + u.hash;
     } catch(_) { return path; }
   }
@@ -1060,11 +1060,11 @@
   }
 
   function dl(path){
-    return '/admin/api/files/download?token=' + encodeURIComponent(token()) + '&path=' + encodeURIComponent(path);
+    return '/admin/api/files/download?path=' + encodeURIComponent(path);
   }
 
   function pv(path){
-    return '/admin/api/files/preview?token=' + encodeURIComponent(token()) + '&path=' + encodeURIComponent(path);
+    return '/admin/api/files/preview?path=' + encodeURIComponent(path);
   }
 
   async function api(path, opts={}, timeout=12000){
@@ -1075,7 +1075,7 @@
     opts.credentials = opts.credentials || 'same-origin';
     const sep = path.includes('?') ? '&' : '?';
     try {
-      const res = await fetch(path + sep + 'token=' + encodeURIComponent(t), opts);
+      const res = await fetch(path, opts);
       if (res.status === 401 || res.status === 403) {
         localStorage.removeItem(LS_SESSION);
         sessionStorage.removeItem(LS_SESSION);
@@ -1477,7 +1477,7 @@
 <script id="RETURN_DASHBOARD_HREF_V1">
 (function(){
   function tok(){
-    try{ return (window.__tronBootToken||new URLSearchParams(location.search).get('token')||'').trim(); }catch(_){ return ''; }
+    return '';
   }
   function patch(){
     var t=tok();
@@ -1485,7 +1485,7 @@
       try{
         var u=new URL(a.getAttribute('href'), location.origin);
         if(!(u.pathname==='/admin'||u.pathname==='/admin/'||u.pathname==='/admin/dashboard')) return;
-        if(t && !u.searchParams.get('token')) u.searchParams.set('token', t);
+        // F-03: token removed, auth via HttpOnly cookie
         if(!u.hash) u.hash='overview';
         a.setAttribute('href', u.pathname+u.search+u.hash);
       }catch(_){}
@@ -1502,11 +1502,11 @@
   if(window.FILES_MOBILE_HEADER_BACK_V1) return;
   window.FILES_MOBILE_HEADER_BACK_V1 = true;
   function tok(){
-    try{ return (window.__tronBootToken||new URLSearchParams(location.search).get('token')||'').trim(); }catch(_){ return ''; }
+    return '';
   }
   function href(){
     var t=tok();
-    return t ? '/admin?token='+encodeURIComponent(t)+'#overview' : '/admin#overview';
+    return '/admin#overview';
   }
   function tidy(){
     var top=document.querySelector('.top-actions');
@@ -1546,12 +1546,12 @@
   window.FILES_TOP_BACK_V2 = true;
   function tok(){
     try{
-      return (window.__tronBootToken || new URLSearchParams(location.search).get('token') || '').trim();
+      return ''; // F-03: token removed
     }catch(_){ return ''; }
   }
   function href(){
     var t = tok();
-    return t ? '/admin?token=' + encodeURIComponent(t) + '#overview' : '/admin#overview';
+    return '/admin#overview';
   }
   function ensure(){
     var header = document.querySelector('header.topbar, header, .topbar');
@@ -1583,7 +1583,7 @@
   setTimeout(ensure, 300);
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb40c5bd634a45',t:'MTc4NzUwMDAxNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 

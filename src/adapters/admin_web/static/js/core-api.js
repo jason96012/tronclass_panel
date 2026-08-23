@@ -31,8 +31,6 @@
   function statusPath(options){
     options = options || {};
     var u = new URL('/admin/api/status', location.origin);
-    var t = token();
-    if(t) u.searchParams.set('token', t);
     var includeHistory = options.include_history;
     if(includeHistory == null) includeHistory = options.includeHistory;
     var historyLimit = options.history_limit;

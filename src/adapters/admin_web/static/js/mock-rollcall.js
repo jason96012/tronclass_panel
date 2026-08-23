@@ -13,12 +13,11 @@
   var mockQrTimer = null;
 
   function q(id){ return document.getElementById(id); }
-  function token(){ try { return (new URLSearchParams(location.search).get('token') || localStorage.getItem(LS_SESSION) || '').trim(); } catch(_) { return ''; } }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); }
   function toast(text, ok){ var el=q('toast'); if(el){el.textContent=text;el.className='toast visible '+(ok===false?'bad':'ok');clearTimeout(el._timer);el._timer=setTimeout(function(){el.classList.remove('visible');},3200)} else alert(text); }
   async function parseResponse(res){ var body=await res.json().catch(function(){return{}}); if(!res.ok){var e=new Error(body.error||('HTTP '+res.status)); e.status=res.status; throw e;} return body; }
-  async function api(path, opts){ var sep=path.indexOf('?')>=0?'&':'?'; return fetch(path+sep+'token='+encodeURIComponent(token()), opts||{}).then(parseResponse); }
-  function withToken(path){ var t=token(); var u=new URL(path,location.origin); if(t)u.searchParams.set('token',t); return u.pathname+u.search+u.hash; }
+  async function api(path, opts){ opts=opts||{}; opts.credentials=opts.credentials||'same-origin'; opts.cache=opts.cache||'no-store'; return fetch(path, opts).then(parseResponse); }
+
 
   function switchView(view){
     var tab=document.querySelector('.tab[data-view="'+view+'"]');
@@ -75,7 +74,7 @@
   }
   async function loadMockAccounts(){ ensureMockPanel(); try{ var st=notifyStatus||await loadStatusOnce(); var html=(st.accounts||[]).map(function(a){return '<label class="mock-account"><input type="checkbox" value="'+esc(a.account_id)+'"><span>'+esc(a.account_id)+' <span class="small">'+esc(a.user_name||a.username||'')+'</span></span></label>';}).join(''); q('mockAccounts').innerHTML=html||'<div class="small">沒有帳號。</div>'; }catch(e){ q('mockAccounts').innerHTML='<div class="bad">帳號讀取失敗：'+esc(e.message||e)+'</div>'; } }
   function stopMockQr(){ if(mockQrTimer)clearInterval(mockQrTimer); mockQrTimer=null; q('mockQrImg').style.display='none'; q('stopMockQr').style.display='none'; }
-  function startMockQrPreview(body){ stopMockQr(); if(!body.qr_base||!body.rollcall_id)return; var interval=Math.max(1,Number(body.interval_secs||15)); function render(){ var slot=Math.floor(Date.now()/1000/interval); var payload='0~100!3~'+body.qr_base+'_'+slot+'!4~'+body.rollcall_id; q('mockQrPayload').textContent=payload; q('mockQrImg').src='/admin/api/mock/qr.svg?token='+encodeURIComponent(token())+'&data='+encodeURIComponent(payload)+'&t='+Date.now(); q('mockQrImg').style.display='block'; } render(); mockQrTimer=setInterval(render,1000); q('stopMockQr').style.display='inline-flex'; }
+  function startMockQrPreview(body){ stopMockQr(); if(!body.qr_base||!body.rollcall_id)return; var interval=Math.max(1,Number(body.interval_secs||15)); function render(){ var slot=Math.floor(Date.now()/1000/interval); var payload='0~100!3~'+body.qr_base+'_'+slot+'!4~'+body.rollcall_id; q('mockQrPayload').textContent=payload; q('mockQrImg').src='/admin/api/mock/qr.svg?data='+encodeURIComponent(payload)+'&t='+Date.now(); q('mockQrImg').style.display='block'; } render(); mockQrTimer=setInterval(render,1000); q('stopMockQr').style.display='inline-flex'; }
   async function triggerMockRollcall(){ var selected=Array.prototype.slice.call(document.querySelectorAll('#mockAccounts input:checked')).map(function(i){return i.value;}); if(!selected.length)return toast('請至少選一個帳號',false); try{ var body=await api('/admin/api/mock/start',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({kind:q('mockKind').value,selected_accounts:selected,code:q('mockCode').value.trim()||'1234',interval_secs:Number(q('mockInterval').value||15)})}); q('mockResult').classList.add('visible'); q('mockResultText').textContent='已觸發 Mock '+(body.kind==='qr'?'QR Code':'數字')+' 點名，帳號 '+selected.length+' 個。'; if(body.url){q('mockOpenUrl').href=body.url; q('mockOpenUrl').style.display='inline-flex';} if(body.kind==='qr')startMockQrPreview(body); else stopMockQr(); toast('Mock 點名已觸發'); }catch(e){toast(e.message||'Mock 點名失敗',false);} }
 
   function boot(){ ensureNotifyTab(); ensureMockPanel(); var n=0,t=setInterval(function(){ ensureNotifyTab(); ensureMockPanel(); n++; if(n>=12)clearInterval(t); },500); document.addEventListener('click',function(ev){ if(ev.target.closest&&ev.target.closest('[data-view="notifications"]'))setTimeout(loadNotifyPanel,80); if(ev.target.closest&&ev.target.closest('[data-view="rollcall"]'))setTimeout(loadMockAccounts,80); },true); if(location.hash==='#notifications')switchView('notifications'); }

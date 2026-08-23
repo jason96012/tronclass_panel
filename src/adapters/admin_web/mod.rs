@@ -1141,10 +1141,16 @@ fn append_expired_session_cookies(mut response: Response) -> Response {
     response
 }
 
-/// Promote the HttpOnly session cookie into the existing query extractor only
-/// inside the server. Browser-visible URLs retain at most the harmless
-/// `token=cookie` compatibility marker; the real random session token is never
-/// placed in localStorage or a URL.
+/// Promote the HttpOnly session cookie into the query extractor for internal
+/// handler consumption, and **always** strip any externally-supplied `token`
+/// query parameter. This ensures that session tokens never arrive via URL
+/// (which would leak into server logs, CDN logs, and browser history) and
+/// that handlers only see `token` values injected from the HttpOnly cookie
+/// by this middleware.
+///
+/// SECURITY-F03: The frontend has been migrated to cookie-only authentication.
+/// Any `token=` in the URL is either a stale legacy marker or an attacker
+/// attempting to inject a session token via query string. Both are stripped.
 async fn session_cookie_to_query_middleware(
     headers: HeaderMap,
     request: axum::extract::Request,
@@ -1153,24 +1159,39 @@ async fn session_cookie_to_query_middleware(
     if !request.uri().path().starts_with("/admin/api/") {
         return next.run(request).await;
     }
-    let Some(session_token) = session_cookie_from_headers(&headers) else {
+
+    let session_token = session_cookie_from_headers(&headers);
+    let has_token_param = request
+        .uri()
+        .query()
+        .is_some_and(|q| q.contains("token="));
+
+    // Fast path: no cookie and no token= in URL — pass through unchanged.
+    if session_token.is_none() && !has_token_param {
         return next.run(request).await;
-    };
+    }
 
     let (mut parts, body) = request.into_parts();
-    // Keep all borrows into `parts.uri` inside this block. Axum middleware
-    // futures must be Send while awaiting the next service.
     let rewritten = {
         let path = parts.uri.path().to_string();
         let existing_query = parts.uri.query().unwrap_or("");
         let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        // Always strip externally-supplied `token` parameters. Only the
+        // HttpOnly cookie value (if present) is re-injected below.
         for (name, value) in url::form_urlencoded::parse(existing_query.as_bytes()) {
             if name != "token" {
                 serializer.append_pair(&name, &value);
             }
         }
-        serializer.append_pair("token", &session_token);
-        format!("{path}?{}", serializer.finish())
+        if let Some(ref token) = session_token {
+            serializer.append_pair("token", token);
+        }
+        let query_string = serializer.finish();
+        if query_string.is_empty() {
+            path
+        } else {
+            format!("{path}?{query_string}")
+        }
     };
     if let Ok(uri) = rewritten.parse() {
         parts.uri = uri;
