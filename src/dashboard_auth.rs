@@ -138,7 +138,7 @@ fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, output_len:
         let mut u_mac = base_mac.clone();
         u_mac.update(salt);
         u_mac.update(&block_index.to_be_bytes());
-        let u_bytes: [u8; 32] = u_mac.finalize().into_bytes().into();
+        let mut u_bytes: [u8; 32] = u_mac.finalize().into_bytes().into();
         let mut block = u_bytes;
 
         // U_2 .. U_c
