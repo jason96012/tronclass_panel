@@ -42,6 +42,8 @@ const OFFICE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(90);
 // Serialize uploads so the 10 GiB quota check cannot be bypassed by two
 // simultaneous requests observing the same pre-upload size.
 const MATERIAL_UPLOAD_CONCURRENCY: usize = 1;
+const FILEBROWSER_USER_PORT: u16 = 26102;
+const FILEBROWSER_ADMIN_PORT: u16 = 26103;
 
 static MATERIAL_UPLOAD_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
     once_cell::sync::Lazy::new(|| Semaphore::new(MATERIAL_UPLOAD_CONCURRENCY));
@@ -297,9 +299,9 @@ pub(super) async fn admin_filebrowser_shell_handler(
             )
                 .into_response();
         }
-        26013
+        FILEBROWSER_ADMIN_PORT
     } else {
-        26012
+        FILEBROWSER_USER_PORT
     };
 
     let upstream_url = format!("http://127.0.0.1:{port}/files");
@@ -402,7 +404,7 @@ pub(super) async fn admin_filebrowser_share_shell_handler(headers: HeaderMap) ->
         Ok(client) => client,
         Err(_) => return unauthorized_response(),
     };
-    let upstream_url = format!("http://127.0.0.1:26012{share_path}");
+    let upstream_url = format!("http://127.0.0.1:{FILEBROWSER_USER_PORT}{share_path}");
     let upstream = match client
         .get(&upstream_url)
         .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")

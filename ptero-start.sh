@@ -249,8 +249,8 @@ fb_init() {
               --perm.share=true --perm.execute=false
               --scope "$FB_USER_SCOPE" )
     elif [[ "$mode" == "files-upload" ]]; then
-      # Optional write mode: SSO users may add materials, but must not alter
-      # or delete shared files. Enable explicitly with FILEBROWSER_USER_WRITE=1.
+      # Optional upload-only mode: SSO users may add materials, but must not
+      # alter or delete shared files. Enable with FILEBROWSER_USER_MODE=upload.
       perms=( --perm.admin=false --perm.create=true --perm.download=true
               --perm.modify=false --perm.delete=false --perm.rename=false
               --perm.share=false --perm.execute=false
@@ -326,8 +326,8 @@ fb_init() {
   }
 
 
-  # 密碼版（:26021）＝內部備援入口，保留完整權限
-  fb_prepare_db "$auth_db" json 26021 "auth.db" files-full
+  # 密碼版（:26101）＝內部備援入口，保留完整權限
+  fb_prepare_db "$auth_db" json 26101 "auth.db" files-full
   # Existing password users keep their own scope; update the dedicated low-
   # privilege test user explicitly so it cannot retain the old `/` scope.
   local low_user="${FILEBROWSER_LOW_PRIV_USER:-test}"
@@ -338,7 +338,7 @@ fb_init() {
       --perm.execute=false -d "$auth_db" >> logs/filebrowser-init.log 2>&1 \
       || echo "[filebrowser] 低權限帳號 $low_user 不存在或權限更新失敗" >> logs/filebrowser-init.log
   fi
-  # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口。
+  # 免登版（:26102）＝一般使用者從 Dashboard SSO 進來的入口。
   # 一般使用者可在 /教材 內下載、上傳、修改、刪除、改名及公開分享，
   # 但永遠看不到 cloud/教材 以外的內容。需要唯讀時可設定
   # FILEBROWSER_USER_MODE=readonly；需要只能上傳時可設定 upload。
@@ -348,9 +348,9 @@ fb_init() {
     upload) user_mode="files-upload" ;;
     *) user_mode="files-full" ;;
   esac
-  fb_prepare_db "$open_db" noauth 26012 "open.db" "$user_mode"
-  # 免登版（:26013）＝Dashboard 管理員，看得到整個 cloud/
-  fb_prepare_db "$admin_db" noauth 26013 "admin.db" admin-full
+  fb_prepare_db "$open_db" noauth 26102 "open.db" "$user_mode"
+  # 免登版（:26103）＝Dashboard 管理員，看得到整個 cloud/
+  fb_prepare_db "$admin_db" noauth 26103 "admin.db" admin-full
 }
 
 fb_write_caddy() {
@@ -369,7 +369,7 @@ fb_write_caddy() {
     persist_config off
 }
 
-:26001, :26011 {
+:26001, :26011, :26012, :26013, :26021 {
     bind 127.0.0.1
 
     # Filebrowser is public through the Cloudflare Tunnel, so apply a small
@@ -407,7 +407,7 @@ fb_write_caddy() {
     # 真正要授權的是 /api/* 與頁面路由。
     @fb_static path /static/* /themes/* *.js *.css *.woff2 *.woff *.ttf *.svg *.png *.ico
     handle @fb_static {
-        reverse_proxy 127.0.0.1:26021
+        reverse_proxy 127.0.0.1:26101
     }
 
     # 公開分享頁面不需要 Dashboard session，但先經 Rust bridge
@@ -423,7 +423,7 @@ fb_write_caddy() {
     # 分享實際內容與公開下載 API 仍直接走免登入的 /教材 實例。
     @public_share_api path /api/public/*
     handle @public_share_api {
-      reverse_proxy 127.0.0.1:26012
+      reverse_proxy 127.0.0.1:26102
     }
 
 
@@ -440,9 +440,9 @@ fb_write_caddy() {
     }
 
     # 三種身分：
-    #   X-Fb-Admin: yes  → Dashboard 管理員，整個 cloud/（:26013）
-    #   X-Fb-Authed: yes → 一般使用者，只有教材（:26012）
-    #   兩者皆無        → 陌生訪客，直接拒絕（內部 :26021 不公開）
+    #   X-Fb-Admin: yes  → Dashboard 管理員，整個 cloud/（:26103）
+    #   X-Fb-Authed: yes → 一般使用者，只有教材（:26102）
+    #   兩者皆無        → 陌生訪客，直接拒絕（內部 Filebrowser 不公開）
     @admin header X-Fb-Admin yes
     @user {
         header X-Fb-Authed yes
@@ -492,13 +492,13 @@ fb_write_caddy() {
         }
     }
     handle @admin {
-        reverse_proxy 127.0.0.1:26013
+        reverse_proxy 127.0.0.1:26103
     }
     handle @user {
-        reverse_proxy 127.0.0.1:26012
+        reverse_proxy 127.0.0.1:26102
     }
     # 禁止外部密碼登入；只有 Dashboard SSO 通過 forward_auth 後，
-    # 才能進入 user/admin 入口。26021 僅保留為內部備援，不由 Caddy 公開。
+    # 才能進入 user/admin 入口。內部 Filebrowser 埠僅供 Caddy 使用，不直接公開。
     handle {
       respond "請先從 Dashboard 的教材入口登入" 403
     }
@@ -545,7 +545,7 @@ start_filebrowser() {
     fi
     fb_init
     fb_write_snippet
-    echo "[filebrowser] 內部備援 :26021 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001/:26011"
+    echo "[filebrowser] 內部備援 :26101 / 使用者免登 :26102 / 管理員免登 :26103 / Caddy :26001/26011/26012/26013/26021"
     nohup ./filebrowser -d "$PWD/fb-data/auth.db" >> logs/filebrowser-auth.log 2>&1 &
     echo $! > logs/filebrowser-auth.pid
     nohup ./filebrowser -d "$PWD/fb-data/open.db" >> logs/filebrowser-open.log 2>&1 &
@@ -625,7 +625,7 @@ watchdog_check_filebrowser_http() {
   [[ -x ./caddy ]] || return 0
   local bad=0 port
   # Caddy is the public entry point; the individual services are checked too.
-  for port in 26001 26011 26012 26013; do
+  for port in 26001 26011 26012 26013 26021; do
     if ! watchdog_http_ok "http://127.0.0.1:${port}/"; then bad=1; fi
   done
   local count=0
