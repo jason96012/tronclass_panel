@@ -501,22 +501,33 @@ fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
     if (!element) return false;
     var href = element.getAttribute && element.getAttribute('href');
     var text = (element.textContent || '').trim().toLowerCase();
-    return isLoginTarget(href) || text === '登入' || text === 'login';
+    var label = ((element.getAttribute && (element.getAttribute('aria-label') || element.getAttribute('title'))) || '').toLowerCase();
+    return isLoginTarget(href) || text.indexOf('登入') >= 0 ||
+      text.indexOf('login') >= 0 || label.indexOf('登入') >= 0 || label.indexOf('login') >= 0;
+  }}
+  function loginControlFromEvent(event) {{
+    var node = event && event.target;
+    while (node && node !== document) {{
+      if (node.nodeType === 1 && isLoginControl(node)) return node;
+      node = node.parentNode;
+    }}
+    return null;
   }}
   function redirectToDashboard(event) {{
-    var control = event.target && event.target.closest && event.target.closest('a,button');
+    var control = loginControlFromEvent(event);
     if (!isLoginControl(control)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     window.location.replace(dashboard);
   }}
   function patchLoginLinks() {{
-    document.querySelectorAll('a[href],button').forEach(function (element) {{
+    document.querySelectorAll('a,button,[role="button"]').forEach(function (element) {{
       if (!isLoginControl(element)) return;
-      if (element.tagName === 'A') element.setAttribute('href', dashboard);
+      if (element.hasAttribute && element.hasAttribute('href')) element.setAttribute('href', dashboard);
       element.setAttribute('title', '前往 Tronclass Dashboard 登入');
     }});
   }}
+  document.addEventListener('pointerdown', redirectToDashboard, true);
   document.addEventListener('click', redirectToDashboard, true);
   ['pushState', 'replaceState'].forEach(function (method) {{
     var original = window.history[method];
@@ -541,7 +552,10 @@ fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
 "#
     );
 
-    if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {
+    let lower = html.to_ascii_lowercase();
+    if let Some(index) = lower.rfind("</head>") {
+        html.insert_str(index, &script);
+    } else if let Some(index) = lower.rfind("</body>") {
         html.insert_str(index, &script);
     } else {
         html.push_str(&script);
