@@ -2883,13 +2883,11 @@ async fn resolve_passkey_login_account(
 }
 
 fn passkey_login_decoy_response(wa: &Webauthn) -> Response {
-    // Keep the response shape identical for unknown, disabled and
-    // passkey-less accounts. The random descriptor is never persisted, so a
-    // follow-up finish request can only fail authentication.
-    let fake_credential = CredentialId(Uuid::new_v4().as_bytes().to_vec());
-    let fake_user_handle = Uuid::new_v4().as_bytes().to_vec();
-    let (challenge, _) =
-        wa.start_authentication_for_user(&fake_user_handle, &[fake_credential]);
+    // Usernameless/discoverable flow: never put a per-user credential ID in
+    // the response. Unknown, disabled and passkey-less accounts all receive
+    // the same empty allowCredentials challenge; the decoy state is not
+    // persisted, so a follow-up finish request can only fail authentication.
+    let (challenge, _) = wa.start_authentication(&[]);
     (
         StatusCode::OK,
         Json(json!({
@@ -2952,8 +2950,11 @@ async fn admin_passkey_login_start_handler(
     if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT || credentials.is_empty() {
         return passkey_login_decoy_response(&wa);
     }
-    let (challenge, auth_state) = wa
-        .start_authentication_with_creds_for_user(&passkey_user_handle(&account.id), &credentials);
+    // Keep allowCredentials empty even after finding the account. This makes
+    // the public challenge shape identical for existing and unknown accounts;
+    // the browser must use a discoverable passkey, while the server still
+    // scopes the finish step to the account named by the user.
+    let (challenge, auth_state) = wa.start_authentication(&[]);
     let ceremony_id = Uuid::new_v4().simple().to_string();
     cleanup_passkey_states().await;
     let mut pending = PASSKEY_AUTH_STATES.lock().await;

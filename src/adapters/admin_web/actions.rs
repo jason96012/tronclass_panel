@@ -9,10 +9,24 @@ use super::*;
 pub(super) async fn admin_action_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Json(action): Json<AdminActionRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
+    };
+
+    // Parse manually so Axum/serde's 422 rejection cannot expose Rust type
+    // names, field names, or parser line/column details to API callers.
+    let action: AdminActionRequest = match serde_json::from_slice(&body) {
+        Ok(action) => action,
+        Err(error) => {
+            tracing::debug!(error = %error, "admin action request rejected as invalid JSON");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
     };
 
     for (value, max_bytes, field) in [
