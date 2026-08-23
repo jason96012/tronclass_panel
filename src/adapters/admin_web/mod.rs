@@ -1222,12 +1222,12 @@ fn add_csp_nonce_to_inline_tags(html: &str, nonce: &str) -> String {
     while cursor < html.len() {
         let script_at = lower[cursor..].find("<script").map(|at| cursor + at);
         let style_at = lower[cursor..].find("<style").map(|at| cursor + at);
-        let Some(tag_at) = match (script_at, style_at) {
+        let Some(tag_at) = (match (script_at, style_at) {
             (Some(script), Some(style)) => Some(script.min(style)),
             (Some(script), None) => Some(script),
             (None, Some(style)) => Some(style),
             (None, None) => None,
-        } else {
+        }) else {
             out.push_str(&html[cursor..]);
             break;
         };

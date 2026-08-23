@@ -1231,7 +1231,7 @@ pub(super) async fn admin_files_upload_handler(
             Ok(path) => path,
             Err(error) => return material_path_error(&error, "folder not found"),
         };
-        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        if tokio::fs::create_dir_all(&dir).await.is_err() {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({ "error": "unable to create materials folder" })),
