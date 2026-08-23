@@ -383,6 +383,10 @@ fb_write_caddy() {
         Permissions-Policy "camera=(), microphone=(), geolocation=()"
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
     }
+    # Default CSP covers Caddy-generated 3xx responses too. Rust-generated
+    # HTML responses already carry a stronger per-response nonce policy, so
+    # this `?` form never overwrites their CSP header.
+    ?Content-Security-Policy "default-src 'none'"
     request_body {
         max_size 60MB
     }
