@@ -43,6 +43,7 @@
     .card-head strong{font-size:16px;font-weight:850}.summary{color:var(--muted);font-size:13px}
     table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--line2);font-size:14px;vertical-align:middle}th{background:var(--soft);color:var(--muted);font-size:12px}tr:last-child td{border-bottom:0}.ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;color:var(--text)}.empty,.error{padding:34px 18px;text-align:center;color:var(--muted)}.error{color:var(--bad)}
     .recent-card{margin-top:18px}.card-head-copy{display:grid;gap:3px}.card-note{color:var(--muted);font-size:12px;line-height:1.4}.recent-table-wrap{overflow:auto}.recent-table{min-width:900px}.recent-table .account{font-weight:750}.recent-table .muted{color:var(--muted)}.recent-table .failure{color:var(--bad);font-weight:800}.recent-table .location{color:var(--muted);font-size:13px}.recent-table .action-cell{white-space:nowrap}.recent-table .action-cell button{min-height:34px;padding:0 11px;font-size:12px}
+    .blacklist-mobile-nav,.blacklist-mobile-more{display:none}
     @media(max-width:700px){
       .top{align-items:flex-start;flex-direction:column;gap:12px;padding:14px 16px}
       .brand{width:100%}.brand-title{font-size:17px}.brand-sub{font-size:11px}
@@ -70,6 +71,18 @@
       #content table td:last-child,.recent-table td:last-child{grid-column:1/-1;padding-top:8px;border-top:1px solid var(--line2)}
       #content table td:last-child button,.recent-table .action-cell button{width:100%;min-height:44px;padding:0 12px;font-size:13px}
       .recent-table .account,.recent-table .ip{font-size:14px}
+      main{padding-bottom:124px}
+      .blacklist-mobile-nav{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:90;display:grid!important;grid-template-columns:repeat(5,1fr);gap:4px;padding:7px;border:1px solid var(--line);border-radius:24px;background:rgba(255,255,255,.94);box-shadow:0 18px 45px rgba(15,23,42,.22);backdrop-filter:blur(18px)}
+      @media(prefers-color-scheme:dark){.blacklist-mobile-nav{background:rgba(15,23,42,.94)}}
+      .blacklist-mobile-nav a,.blacklist-mobile-nav button{min-height:54px;border:0;border-radius:17px;padding:0 2px;background:transparent;color:var(--muted);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:900;text-decoration:none;line-height:1;cursor:pointer}
+      .blacklist-mobile-nav a.active,.blacklist-mobile-nav button.active{background:rgba(37,99,235,.12);color:var(--primary)}
+      .blacklist-mobile-nav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+      .blacklist-mobile-more{position:fixed;inset:0;z-index:95;display:none;align-items:flex-end;padding:10px 10px calc(88px + env(safe-area-inset-bottom,0px));background:rgba(15,23,42,.38)}
+      .blacklist-mobile-more.visible{display:flex}
+      .blacklist-mobile-more .sheet{width:100%;padding:12px;border:1px solid var(--line);border-radius:24px;background:var(--card);box-shadow:0 28px 70px rgba(0,0,0,.3)}
+      .blacklist-mobile-more h3{margin:3px 4px 12px;font-size:18px}
+      .blacklist-mobile-more .more-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+      .blacklist-mobile-more a{min-height:48px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line2);border-radius:15px;background:var(--soft);color:var(--text);font-weight:850;text-decoration:none}
     }
   </style>
 </head>
@@ -100,6 +113,16 @@
       <div id="recentContent"><div class="empty">載入中...</div></div>
     </section>
   </main>
+  <nav class="blacklist-mobile-nav" aria-label="Dashboard 導覽">
+    <a href="/admin" aria-label="總覽"><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4z"></path><path d="M14 20h6V4h-6z"></path><path d="M4 20h6v-3H4z"></path></svg><span>總覽</span></a>
+    <a href="/admin#accounts" aria-label="帳號"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg><span>帳號</span></a>
+    <a href="/admin#rollcall" aria-label="點名"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg><span>點名</span></a>
+    <a href="/admin/timetable" aria-label="課表"><svg viewBox="0 0 24 24"><path d="M4 5h16v15H4z"></path><path d="M8 3v4"></path><path d="M16 3v4"></path><path d="M4 10h16"></path></svg><span>課表</span></a>
+    <button id="blacklistMoreBtn" type="button" aria-label="更多"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg><span>更多</span></button>
+  </nav>
+  <div id="blacklistMore" class="blacklist-mobile-more" aria-hidden="true">
+    <div class="sheet"><h3>更多功能</h3><div class="more-grid"><a href="/admin/blacklist">黑名單</a><a href="/admin/files">雲端硬碟</a><a href="/admin/activity">登入／檔案紀錄</a><a href="/admin">回 Dashboard</a></div></div>
+  </div>
   <script>
   (function(){
     'use strict';
@@ -124,8 +147,11 @@
     q('reload').addEventListener('click',loadAll);
     q('content').addEventListener('click',function(event){var button=event.target.closest('[data-unblock]');if(!button)return;var ip=button.getAttribute('data-unblock');if(!confirm('確定解除 '+ip+' 的封鎖？'))return;button.disabled=true;api('/admin/api/blacklist/unblock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})}).then(loadAll).catch(function(error){button.disabled=false;alert(error.message||error)})});
     q('recentContent').addEventListener('click',function(event){var button=event.target.closest('[data-block-ip]');if(!button)return;var ip=button.getAttribute('data-block-ip');if(!confirm('確定將 IP '+ip+' 加入黑名單？'))return;button.disabled=true;api('/admin/api/blacklist/block',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})}).then(function(){alert('已將 '+ip+' 加入黑名單');loadAll()}).catch(function(error){button.disabled=false;alert(error.message||error)})});
+    var moreButton=q('blacklistMoreBtn'),moreSheet=q('blacklistMore');
+    function closeMore(){if(moreSheet){moreSheet.classList.remove('visible');moreSheet.setAttribute('aria-hidden','true')}}
+    if(moreButton&&moreSheet){moreButton.addEventListener('click',function(){moreSheet.classList.add('visible');moreSheet.setAttribute('aria-hidden','false')});moreSheet.addEventListener('click',function(event){if(event.target===moreSheet)closeMore()});document.addEventListener('keydown',function(event){if(event.key==='Escape')closeMore()})}
     loadAll();
   })();
   </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fa5157ad84f023',t:'MTc4NzQ5MDIxMA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
