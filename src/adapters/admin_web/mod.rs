@@ -1106,7 +1106,7 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
         ""
     };
     let cookie = format!(
-        "{name}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Strict{secure}"
+        "{name}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure}"
     );
     // The session token is generated hex so this always parses, but never panic
     // on a header in the login path.
@@ -1129,7 +1129,7 @@ fn append_expired_session_cookies(mut response: Response) -> Response {
         (SECURE_SESSION_COOKIE, "; Secure"),
         (LOCAL_SESSION_COOKIE, ""),
     ] {
-        let cookie = format!("{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure}");
+        let cookie = format!("{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{secure}");
         let value = cookie
             .parse::<HeaderValue>()
             .expect("generated expired cookie must be a valid HTTP header");
@@ -1290,7 +1290,7 @@ fn same_origin_request(headers: &HeaderMap) -> bool {
 }
 
 /// Reject browser cross-site state changes before they reach authenticated
-/// handlers. SameSite=Strict cookies remain the primary CSRF control.
+/// handlers. SameSite=Lax cookies remain the primary CSRF control.
 async fn admin_same_origin_middleware(
     headers: HeaderMap,
     request: axum::extract::Request,
@@ -3674,7 +3674,7 @@ mod tests {
         assert!(set_cookie.starts_with("__Host-tronclass_admin_session="));
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("Secure"));
-        assert!(set_cookie.contains("SameSite=Strict"));
+        assert!(set_cookie.contains("SameSite=Lax"));
 
         let rejected = admin_login_handler(
             State(state),
