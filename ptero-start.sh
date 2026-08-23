@@ -379,6 +379,8 @@ fb_write_caddy() {
         -Server
         X-Content-Type-Options "nosniff"
         X-Frame-Options "DENY"
+        Cross-Origin-Opener-Policy "same-origin"
+        Cross-Origin-Resource-Policy "same-origin"
         Referrer-Policy "no-referrer"
         Permissions-Policy "camera=(), microphone=(), geolocation=()"
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
