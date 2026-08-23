@@ -3300,18 +3300,28 @@ async fn admin_login_handler(
             None,
             "Web 管理頁登入失敗",
         );
-        record_persistent_login_event(
-            &state,
-            username,
-            None,
-            "login",
-            "failed",
-            "Web 管理頁登入失敗",
-            &ip,
-        )
-        .await;
-        // 連續密碼錯誤達門檻時，通知管理員與被嘗試登入的帳號持有人。
-        alert_password_failures(&state, username, &ip).await;
+        // PERFORMANCE_LOGIN_RESPONSE_V1:
+        // Fire-and-forget the failure audit and security alert so the user
+        // gets the 401 response immediately instead of waiting for SQLite
+        // writes and potential Discord notification round-trips.
+        {
+            let state = state.clone();
+            let user = username.to_string();
+            let ip = ip.clone();
+            tokio::spawn(async move {
+                record_persistent_login_event(
+                    &state,
+                    &user,
+                    None,
+                    "login",
+                    "failed",
+                    "Web 管理頁登入失敗",
+                    &ip,
+                )
+                .await;
+                alert_password_failures(&state, &user, &ip).await;
+            });
+        }
         return unauthorized_response();
     };
 
@@ -3344,16 +3354,30 @@ async fn admin_login_handler(
         None,
         login_message,
     );
-    record_persistent_login_event(
-        &state,
-        &account_id,
-        Some(&account_id),
-        login_action,
-        "success",
-        login_message,
-        &ip,
-    )
-    .await;
+    // PERFORMANCE_LOGIN_RESPONSE_V1:
+    // Fire-and-forget the persistent login event so the SQLite INSERT does
+    // not delay the response. The session cookie is already set; the audit
+    // row is best-effort and must not block the user.
+    {
+        let state = state.clone();
+        let actor = account_id.clone();
+        let acct = account_id.clone();
+        let action = login_action.to_string();
+        let msg = login_message.to_string();
+        let ip = ip.clone();
+        tokio::spawn(async move {
+            record_persistent_login_event(
+                &state,
+                &actor,
+                Some(&acct),
+                &action,
+                "success",
+                &msg,
+                &ip,
+            )
+            .await;
+        });
+    }
     session_login_response(
         &headers,
         &session_token,
