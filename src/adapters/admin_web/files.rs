@@ -509,13 +509,13 @@ fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
 "#
     );
 
-    if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {{
+    if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {
         html.insert_str(index, &script);
-    }} else {{
+    } else {
         html.push_str(&script);
-    }}
+    }
     html.into_bytes()
-}}
+}
 
 fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
     let mut html = String::from_utf8_lossy(body).into_owned();
