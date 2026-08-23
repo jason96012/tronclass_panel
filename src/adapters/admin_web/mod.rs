@@ -1524,7 +1524,8 @@ async fn admin_blacklist_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
         return admin_login_redirect("/admin/blacklist");
     };
     if !session.is_admin {
@@ -1535,9 +1536,11 @@ async fn admin_blacklist_page_handler(
 
 async fn admin_blacklist_list_handler(
     State(state): State<AdminWebState>,
+    headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
         return unauthorized_response();
     };
     if !session.is_admin {
@@ -1555,10 +1558,12 @@ async fn admin_blacklist_list_handler(
 
 async fn admin_blacklist_block_handler(
     State(state): State<AdminWebState>,
+    headers: HeaderMap,
     Query(query): Query<AdminQuery>,
     Json(request): Json<AdminBlacklistIpRequest>,
 ) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
         return unauthorized_response();
     };
     if !session.is_admin {
@@ -1614,10 +1619,12 @@ async fn admin_blacklist_block_handler(
 
 async fn admin_blacklist_unblock_handler(
     State(state): State<AdminWebState>,
+    headers: HeaderMap,
     Query(query): Query<AdminQuery>,
     Json(request): Json<AdminBlacklistIpRequest>,
 ) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
         return unauthorized_response();
     };
     if !session.is_admin {
