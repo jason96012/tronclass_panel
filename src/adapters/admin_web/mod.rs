@@ -2504,14 +2504,10 @@ async fn admin_passkey_register_finish_handler(
 async fn resolve_passkey_login_account(
     state: &AdminWebState,
     username: &str,
-) -> Result<crate::account::RawAccountConfig, Response> {
+) -> Option<crate::account::RawAccountConfig> {
     let username = username.trim();
     if username.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "username is required" })),
-        )
-            .into_response());
+        return None;
     }
     let mut candidates = Vec::new();
     if let Ok(Some(account)) = state.accounts_db.get(username).await {
@@ -2527,20 +2523,27 @@ async fn resolve_passkey_login_account(
         .filter(|account| account.enabled)
         .collect::<Vec<_>>();
     match enabled.as_slice() {
-        [account] => Ok(account.clone()),
-        [] => Err((
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "account not found or disabled" })),
-        )
-            .into_response()),
-        _ => Err((
-            StatusCode::BAD_REQUEST,
-            Json(
-                json!({ "error": "multiple accounts match this username; please use account ID" }),
-            ),
-        )
-            .into_response()),
+        [account] => Some(account.clone()),
+        _ => None,
     }
+}
+
+fn passkey_login_decoy_response(wa: &Webauthn) -> Response {
+    // Keep the response shape identical for unknown, disabled and
+    // passkey-less accounts. The random descriptor is never persisted, so a
+    // follow-up finish request can only fail authentication.
+    let fake_credential = CredentialId(Uuid::new_v4().as_bytes().to_vec());
+    let fake_user_handle = Uuid::new_v4().as_bytes().to_vec();
+    let (challenge, _) =
+        wa.start_authentication_for_user(&fake_user_handle, &[fake_credential]);
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ceremony_id": Uuid::new_v4().simple().to_string(),
+            "publicKey": challenge,
+        })),
+    )
+        .into_response()
 }
 
 async fn admin_passkey_login_start_handler(
@@ -2562,9 +2565,12 @@ async fn admin_passkey_login_start_handler(
         alert_abnormal_traffic(&state, "通行密鑰登入", &req.username, &ip).await;
         return rate_limited_response();
     }
-    let account = match resolve_passkey_login_account(&state, &req.username).await {
-        Ok(account) => account,
+    let wa = match passkey_webauthn_from_headers(&headers) {
+        Ok(wa) => wa,
         Err(resp) => return resp,
+    };
+    let Some(account) = resolve_passkey_login_account(&state, &req.username).await else {
+        return passkey_login_decoy_response(&wa);
     };
     let credentials = match state
         .accounts_db
@@ -2572,43 +2578,18 @@ async fn admin_passkey_login_start_handler(
         .await
     {
         Ok(credentials) => credentials,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
-            )
-                .into_response();
-        }
+        Err(_) => return passkey_login_decoy_response(&wa),
     };
-    if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "this account has too many stored passkeys; remove legacy entries before login" })),
-        )
-            .into_response();
+    if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT || credentials.is_empty() {
+        return passkey_login_decoy_response(&wa);
     }
-    if credentials.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "this account has no passkey; login with password then register one" })),
-        )
-            .into_response();
-    }
-    let wa = match passkey_webauthn_from_headers(&headers) {
-        Ok(wa) => wa,
-        Err(resp) => return resp,
-    };
     let (challenge, auth_state) = wa
         .start_authentication_with_creds_for_user(&passkey_user_handle(&account.id), &credentials);
     let ceremony_id = Uuid::new_v4().simple().to_string();
     cleanup_passkey_states().await;
     let mut pending = PASSKEY_AUTH_STATES.lock().await;
     if pending.len() >= MAX_PENDING_PASSKEY_STATES {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "too many pending passkey logins; retry shortly" })),
-        )
-            .into_response();
+        return passkey_login_decoy_response(&wa);
     }
     pending.insert(
         ceremony_id.clone(),
