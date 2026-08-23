@@ -197,6 +197,9 @@ fb_init() {
   # 想改成整個 cloud 就設成 "/"。
   FB_USER_SCOPE="${FB_USER_SCOPE:-/教材}"
   mkdir -p cloud/教材 logs fb-data
+  # Keep the storage and Filebrowser databases private to the Pterodactyl
+  # service user. Filebrowser and the Rust process run as that same user.
+  chmod 700 cloud fb-data 2>/dev/null || true
   mkdir -p "cloud/${FB_USER_SCOPE#/}" 2>/dev/null || true
   local pass=""
   if [[ -f config/filebrowser-admin.txt ]]; then
@@ -235,14 +238,28 @@ fb_init() {
       fi
     fi
 
-    # 免登實例：檔案操作全開（上傳/下載/覆寫/刪除/改名搬移/公開分享），
-    # 但不得管理帳號或改全域設定，也不能執行指令。
+    # 免登實例：一般使用者只可新增／下載教材，不能覆寫、刪除、改名或公開分享；
+    # 管理員實例才擁有完整檔案操作權限，且兩者都不能執行指令。
     # scope 鎖在 /教材：使用者看不到也進不去 cloud/ 底下的其他資料夾。
     local -a perms
     if [[ "$mode" == "files-full" ]]; then
+      # Legacy/full mode, kept for the password-protected maintenance DB.
       perms=( --perm.admin=false --perm.create=true --perm.download=true
               --perm.modify=true --perm.delete=true --perm.rename=true
               --perm.share=true --perm.execute=false
+              --scope "$FB_USER_SCOPE" )
+    elif [[ "$mode" == "files-upload" ]]; then
+      # Optional write mode: SSO users may add materials, but must not alter
+      # or delete shared files. Enable explicitly with FILEBROWSER_USER_WRITE=1.
+      perms=( --perm.admin=false --perm.create=true --perm.download=true
+              --perm.modify=false --perm.delete=false --perm.rename=false
+              --perm.share=false --perm.execute=false
+              --scope "$FB_USER_SCOPE" )
+    elif [[ "$mode" == "files-readonly" ]]; then
+      # Secure default for untrusted students: download only.
+      perms=( --perm.admin=false --perm.create=false --perm.download=true
+              --perm.modify=false --perm.delete=false --perm.rename=false
+              --perm.share=false --perm.execute=false
               --scope "$FB_USER_SCOPE" )
     elif [[ "$mode" == "admin-full" ]]; then
       # Dashboard 管理員：看得到整個 cloud/，並恢復 Filebrowser 管理權限。
@@ -273,23 +290,35 @@ fb_init() {
       || echo "[filebrowser] config set 失敗（$label）"
 
     # 全域預設也鎖起來：noauth 模式下新 session 會沿用這組預設值。
-    if [[ "$mode" == "files-full" || "$mode" == "admin-full" ]]; then
+    if [[ "$mode" == "files-full" || "$mode" == "admin-full" || "$mode" == "files-upload" || "$mode" == "files-readonly" ]]; then
       local gscope="/"
-      [[ "$mode" == "files-full" ]] && gscope="$FB_USER_SCOPE"
-      ./filebrowser config set -d "$db" \
-        --perm.admin=false --perm.create=true --perm.download=true \
-        --perm.modify=true --perm.delete=true --perm.rename=true \
-        --perm.share=true --perm.execute=false >> logs/filebrowser-init.log 2>&1 || true
+      [[ "$mode" == "files-full" || "$mode" == "files-upload" || "$mode" == "files-readonly" ]] && gscope="$FB_USER_SCOPE"
+      if [[ "$mode" == "files-upload" ]]; then
+        ./filebrowser config set -d "$db" \
+          --perm.admin=false --perm.create=true --perm.download=true \
+          --perm.modify=false --perm.delete=false --perm.rename=false \
+          --perm.share=false --perm.execute=false >> logs/filebrowser-init.log 2>&1 || true
+      elif [[ "$mode" == "files-readonly" ]]; then
+        ./filebrowser config set -d "$db" \
+          --perm.admin=false --perm.create=false --perm.download=true \
+          --perm.modify=false --perm.delete=false --perm.rename=false \
+          --perm.share=false --perm.execute=false >> logs/filebrowser-init.log 2>&1 || true
+      else
+        ./filebrowser config set -d "$db" \
+          --perm.admin=false --perm.create=true --perm.download=true \
+          --perm.modify=true --perm.delete=true --perm.rename=true \
+          --perm.share=true --perm.execute=false >> logs/filebrowser-init.log 2>&1 || true
+      fi
       ./filebrowser config set -d "$db" --signup=false --createUserDir=false \
         >> logs/filebrowser-init.log 2>&1 || true
-      # noauth 模式下新 session 會沿用全域預設 scope，必須一併鎖住。
+      # noauth 模式下新 session 會沿用全域預設值，必須一併鎖住 scope。
       ./filebrowser config set -d "$db" --scope "$gscope" \
         >> logs/filebrowser-init.log 2>&1 || true
     fi
 
     if fb_db_has_user "$db"; then
       local shown="/"
-      [[ "$mode" == "files-full" ]] && shown="$FB_USER_SCOPE"
+      [[ "$mode" == "files-full" || "$mode" == "files-upload" || "$mode" == "files-readonly" ]] && shown="$FB_USER_SCOPE"
       echo "[filebrowser] $label OK（port $port, auth=$method, mode=$mode, scope=$shown）"
     else
       echo "[filebrowser] 警告：$label 仍然沒有使用者，登入會 500"
@@ -305,13 +334,16 @@ fb_init() {
   if [[ -n "$low_user" ]]; then
     ./filebrowser users update "$low_user" \
       --scope "/教材" --perm.admin=false --perm.create=true --perm.download=true \
-      --perm.modify=true --perm.delete=true --perm.rename=true --perm.share=true \
+      --perm.modify=false --perm.delete=false --perm.rename=false --perm.share=false \
       --perm.execute=false -d "$auth_db" >> logs/filebrowser-init.log 2>&1 \
       || echo "[filebrowser] 低權限帳號 $low_user 不存在或權限更新失敗" >> logs/filebrowser-init.log
   fi
-  # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口
-  # 檔案操作全開，只擋帳號管理與全域設定
-  fb_prepare_db "$open_db" noauth 26012 "open.db" files-full
+  # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口。
+  # 安全預設為只能下載；若確定要讓一般使用者上傳，再設定
+  # FILEBROWSER_USER_WRITE=1（仍不能修改、刪除或公開分享既有檔案）。
+  local user_mode="files-readonly"
+  [[ "${FILEBROWSER_USER_WRITE:-0}" == "1" ]] && user_mode="files-upload"
+  fb_prepare_db "$open_db" noauth 26012 "open.db" "$user_mode"
   # 免登版（:26013）＝Dashboard 管理員，看得到整個 cloud/
   fb_prepare_db "$admin_db" noauth 26013 "admin.db" admin-full
 }
@@ -323,6 +355,7 @@ fb_write_caddy() {
     shell_secret="$(tr -d '\r\n' < config/fb-sso.secret)"
   fi
   mkdir -p nextcloud-runtime
+  chmod 700 nextcloud-runtime 2>/dev/null || true
   cat > nextcloud-runtime/Caddyfile.fb << EOF
 {
     admin off
@@ -332,6 +365,23 @@ fb_write_caddy() {
 
 :26001 {
     bind 127.0.0.1
+
+    # Filebrowser is public through the Cloudflare Tunnel, so apply a small
+    # edge hardening baseline and reject oversized uploads before they reach
+    # the Go process.
+    header {
+        -Server
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:"
+    }
+    request_body {
+        max_size 60MB
+    }
+
     # 只壓縮文字類。教材多半是 pdf/docx/pptx/mp4/zip，這些本身已壓縮，
     # 再 gzip 只是白燒 CPU 又拖慢下載。
     encode {
@@ -432,6 +482,7 @@ fb_write_caddy() {
     }
 }
 EOF
+  chmod 600 nextcloud-runtime/Caddyfile.fb 2>/dev/null || true
 }
 
 fb_write_snippet() {

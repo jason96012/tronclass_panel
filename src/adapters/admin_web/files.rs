@@ -39,7 +39,12 @@ const MAX_MATERIAL_FILENAME_BYTES: usize = 255;
 const OFFICE_PREVIEW_CONCURRENCY: usize = 2;
 const OFFICE_PREVIEW_MAX_PENDING: usize = 64;
 const OFFICE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(90);
+// Serialize uploads so the 10 GiB quota check cannot be bypassed by two
+// simultaneous requests observing the same pre-upload size.
+const MATERIAL_UPLOAD_CONCURRENCY: usize = 1;
 
+static MATERIAL_UPLOAD_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
+    once_cell::sync::Lazy::new(|| Semaphore::new(MATERIAL_UPLOAD_CONCURRENCY));
 static OFFICE_PREVIEW_PENDING_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
     once_cell::sync::Lazy::new(|| Semaphore::new(OFFICE_PREVIEW_MAX_PENDING));
 static OFFICE_PREVIEW_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
@@ -50,9 +55,21 @@ static OFFICE_PREVIEW_LOCKS: once_cell::sync::Lazy<
 
 #[derive(Clone)]
 struct MaterialsListSnapshot {
+    root: PathBuf,
     updated_at: Instant,
     files: Vec<MaterialFileEntry>,
     folders: Vec<String>,
+}
+
+fn session_materials_root(session: &AdminSession) -> PathBuf {
+    let root = materials_root();
+    if session.is_admin {
+        root
+    } else {
+        // Keep regular Dashboard users inside the shared教材 directory, in
+        // line with the Filebrowser `/教材` scope.
+        root.join("教材")
+    }
 }
 
 static MATERIALS_LIST_CACHE: once_cell::sync::Lazy<
@@ -66,10 +83,14 @@ async fn invalidate_materials_list_cache() {
 async fn cached_materials_list(
     root: PathBuf,
 ) -> std::result::Result<(Vec<MaterialFileEntry>, Vec<String>), Response> {
+    let root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(error) => return Err(material_path_error(&error, "materials folder not found")),
+    };
     {
         let cache = MATERIALS_LIST_CACHE.lock().await;
         if let Some(snapshot) = cache.as_ref() {
-            if snapshot.updated_at.elapsed() <= MATERIALS_LIST_CACHE_TTL {
+            if snapshot.root == root && snapshot.updated_at.elapsed() <= MATERIALS_LIST_CACHE_TTL {
                 return Ok((snapshot.files.clone(), snapshot.folders.clone()));
             }
         }
@@ -77,7 +98,8 @@ async fn cached_materials_list(
 
     // CLOUD_LIST_CACHE_SINGLE_SCAN_V1: scan files and folders in one blocking
     // traversal, then reuse the result for short bursts from the files page.
-    let scan = tokio::task::spawn_blocking(move || list_material_tree(&root))
+    let scan_root = root.clone();
+    let scan = tokio::task::spawn_blocking(move || list_material_tree(&scan_root))
         .await
         .map_err(|e| {
             (
@@ -95,6 +117,7 @@ async fn cached_materials_list(
         })?;
 
     let snapshot = MaterialsListSnapshot {
+        root,
         updated_at: Instant::now(),
         files: scan.0.clone(),
         folders: scan.1.clone(),
@@ -191,6 +214,29 @@ pub(super) async fn record_material_event(
             details: details.to_string(),
         })
         .await;
+}
+
+fn material_path_error(error: &std::io::Error, missing_message: &str) -> Response {
+    let (status, message) = match error.kind() {
+        std::io::ErrorKind::PermissionDenied => (
+            StatusCode::FORBIDDEN,
+            "invalid materials path",
+        ),
+        std::io::ErrorKind::NotFound => (StatusCode::NOT_FOUND, missing_message),
+        _ => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "materials storage unavailable",
+        ),
+    };
+    (status, Json(json!({ "error": message }))).into_response()
+}
+
+fn secure_existing_material_path_response(
+    root: &Path,
+    rel: &Path,
+    missing_message: &str,
+) -> std::result::Result<PathBuf, Response> {
+    secure_existing_material_path(root, rel).map_err(|error| material_path_error(&error, missing_message))
 }
 
 pub(super) async fn admin_files_page_handler() -> Response {
@@ -400,7 +446,7 @@ pub(super) async fn admin_files_list_handler(
         return unauthorized_response();
     };
 
-    let root = materials_root();
+    let root = session_materials_root(&session);
     if let Err(e) = std::fs::create_dir_all(&root) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -432,7 +478,7 @@ pub(super) async fn admin_files_download_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
 ) -> Response {
-    let Some(_session) = state.authorize(&query.token).await else {
+    let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
     if let Err(response) =
@@ -454,7 +500,11 @@ pub(super) async fn admin_files_download_handler(
             .into_response();
     };
 
-    let full_path = materials_root().join(rel);
+    let root = session_materials_root(&session);
+    let full_path = match secure_existing_material_path_response(&root, &rel, "file not found") {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
     if !full_path.is_file() {
         return (
             StatusCode::NOT_FOUND,
@@ -480,11 +530,14 @@ fn material_total_size_for_upload(root: &std::path::Path) -> std::io::Result<u64
         }
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
-            let meta = entry.metadata()?;
-            if meta.is_dir() {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
                 walk(&entry.path(), total)?;
-            } else if meta.is_file() {
-                *total = total.saturating_add(meta.len());
+            } else if file_type.is_file() {
+                *total = total.saturating_add(entry.metadata()?.len());
             }
         }
         Ok(())
@@ -498,7 +551,7 @@ pub(super) async fn admin_files_preview_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
 ) -> Response {
-    let Some(_session) = state.authorize(&query.token).await else {
+    let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
     if let Err(response) =
@@ -520,7 +573,11 @@ pub(super) async fn admin_files_preview_handler(
             .into_response();
     };
 
-    let full_path = materials_root().join(rel);
+    let root = session_materials_root(&session);
+    let full_path = match secure_existing_material_path_response(&root, &rel, "file not found") {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
     if !full_path.is_file() {
         return (
             StatusCode::NOT_FOUND,
@@ -579,7 +636,7 @@ async fn office_preview_lock(cache_path: &Path) -> Arc<tokio::sync::Mutex<()>> {
 }
 
 async fn ensure_office_pdf_preview(source: &Path) -> Result<PathBuf, Response> {
-    let cache_dir = materials_root().join(".preview_cache");
+    let cache_dir = materials_preview_cache_root();
     if let Err(e) = tokio::fs::create_dir_all(&cache_dir).await {
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -791,7 +848,17 @@ pub(super) async fn admin_files_upload_handler(
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
-    let root = materials_root();
+    let _upload_permit = match MATERIAL_UPLOAD_SEMAPHORE.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({ "error": "已有其他檔案正在上傳，請稍後再試" })),
+            )
+                .into_response();
+        }
+    };
+    let root = session_materials_root(&session);
     if let Err(e) = tokio::fs::create_dir_all(&root).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -926,18 +993,28 @@ pub(super) async fn admin_files_upload_handler(
             size
         } else {
             let size_root = root.clone();
-            let scanned =
-                tokio::task::spawn_blocking(move || material_total_size(&size_root).unwrap_or(0))
-                    .await
-                    .unwrap_or(0);
+            let scanned = match tokio::task::spawn_blocking(move || material_total_size(&size_root)).await
+            {
+                Ok(Ok(size)) => size,
+                Ok(Err(_)) | Err(_) => {
+                    return (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({ "error": "無法確認教材儲存空間，已停止上傳" })),
+                    )
+                        .into_response();
+                }
+            };
             scanned
         };
 
-        let dir = root.join(&folder);
+        let dir = match secure_material_path_for_create(&root, &folder) {
+            Ok(path) => path,
+            Err(error) => return material_path_error(&error, "folder not found"),
+        };
         if let Err(e) = tokio::fs::create_dir_all(&dir).await {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("建立資料夾失敗：{e}") })),
+                Json(json!({ "error": "unable to create materials folder" })),
             )
                 .into_response();
         }
@@ -1009,13 +1086,26 @@ pub(super) async fn admin_files_upload_handler(
         }
         drop(out);
 
-        if let Err(e) = tokio::fs::rename(&temp_path, &dest).await {
+        // A plain rename may replace an existing file if another upload won
+        // the same filename race. Create the destination with a non-overwriting
+        // hard link first, then remove the temporary name.
+        if let Err(e) = tokio::fs::hard_link(&temp_path, &dest).await {
             let _ = tokio::fs::remove_file(&temp_path).await;
+            let status = if e.kind() == std::io::ErrorKind::AlreadyExists {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("儲存檔案失敗：{e}" )})),
+                status,
+                Json(json!({ "error": "檔案名稱發生衝突，請重新上傳" })),
             )
                 .into_response();
+        }
+        if let Err(e) = tokio::fs::remove_file(&temp_path).await {
+            // The committed destination remains valid; report only a generic
+            // server error and never expose the temporary path.
+            tracing::warn!(error = %e, "清理教材上傳暫存檔失敗");
         }
 
         let rel = dest
@@ -1074,6 +1164,13 @@ pub(super) async fn admin_files_delete_handler(
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
+    if !session.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "刪除檔案需要管理員權限" })),
+        )
+            .into_response();
+    }
     if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
         return response;
     }
@@ -1084,7 +1181,11 @@ pub(super) async fn admin_files_delete_handler(
         )
             .into_response();
     };
-    let path = materials_root().join(rel);
+    let root = materials_root();
+    let path = match secure_existing_material_path_response(&root, &rel, "file not found") {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
     if !path.is_file() {
         return (
             StatusCode::NOT_FOUND,
@@ -1171,30 +1272,12 @@ pub(super) async fn admin_files_rmdir_handler(
     };
 
     let root = materials_root();
-    let dir = root.join(&rel);
-    // Never let a traversal or symlink escape the materials root, and never
-    // allow deleting the root itself.
-    let Ok(canonical_dir) = dir.canonicalize() else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "folder not found" })),
-        )
-            .into_response();
+    // Resolve and validate the complete path before deleting. This rejects
+    // traversal, symlinks and paths that escape the configured materials root.
+    let canonical_dir = match secure_existing_material_path_response(&root, &rel, "folder not found") {
+        Ok(path) => path,
+        Err(response) => return response,
     };
-    let Ok(canonical_root) = root.canonicalize() else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "materials root unavailable" })),
-        )
-            .into_response();
-    };
-    if !canonical_dir.starts_with(&canonical_root) || canonical_dir == canonical_root {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid path" })),
-        )
-            .into_response();
-    }
     if !canonical_dir.is_dir() {
         return (
             StatusCode::NOT_FOUND,
@@ -1257,8 +1340,11 @@ pub(super) async fn admin_files_mkdir_handler(
             .into_response();
     };
 
-    let root = materials_root();
-    let dir = root.join(&rel);
+    let root = session_materials_root(&session);
+    let dir = match secure_material_path_for_create(&root, &rel) {
+        Ok(path) => path,
+        Err(error) => return material_path_error(&error, "folder not found"),
+    };
     match tokio::fs::create_dir_all(&dir).await {
         Ok(()) => {
             let rel_label = rel.to_string_lossy().replace('\\', "/");

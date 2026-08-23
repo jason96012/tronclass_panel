@@ -52,6 +52,104 @@ pub(super) fn materials_root() -> PathBuf {
     PathBuf::from("materials")
 }
 
+/// Keep generated previews outside the Filebrowser root. Preview PDFs can
+/// contain sensitive content and must never become ordinary user-visible files.
+pub(super) fn materials_preview_cache_root() -> PathBuf {
+    if let Ok(value) = std::env::var("TRONCLASS_MATERIALS_CACHE_DIR") {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    PathBuf::from("run/material-preview-cache")
+}
+
+fn permission_denied(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::PermissionDenied, message)
+}
+
+/// Reject symlinks in every existing component below the materials root.
+///
+/// Checking only the textual path is not enough: `safe_relative_path` blocks
+/// `../`, but an attacker could otherwise upload into or download from a
+/// directory symlink that points outside `cloud/`.
+fn ensure_no_material_symlinks(root: &Path, rel: &Path) -> std::io::Result<()> {
+    let mut current = root.to_path_buf();
+    for component in rel.components() {
+        let Component::Normal(name) = component else {
+            return Err(permission_denied("invalid materials path component"));
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(permission_denied("symlinks are not allowed in materials paths"));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Resolve an existing file or directory and prove that it remains below the
+/// canonical materials root. The returned path contains no symlink component.
+pub(super) fn secure_existing_material_path(
+    root: &Path,
+    rel: &Path,
+) -> std::io::Result<PathBuf> {
+    if rel.as_os_str().is_empty() {
+        return Err(permission_denied("materials root is not an item"));
+    }
+    let canonical_root = root.canonicalize()?;
+    ensure_no_material_symlinks(&canonical_root, rel)?;
+    let candidate = canonical_root.join(rel);
+    let meta = std::fs::symlink_metadata(&candidate)?;
+    if meta.file_type().is_symlink() {
+        return Err(permission_denied("symlinks are not allowed in materials paths"));
+    }
+    let canonical = candidate.canonicalize()?;
+    if canonical == canonical_root || !canonical.starts_with(&canonical_root) {
+        return Err(permission_denied("materials path escapes its root"));
+    }
+    Ok(canonical)
+}
+
+/// Validate a path that may not exist yet, while ensuring every existing
+/// parent is a real directory below the materials root. This is used before
+/// `create_dir_all`, which would otherwise follow a directory symlink.
+pub(super) fn secure_material_path_for_create(
+    root: &Path,
+    rel: &Path,
+) -> std::io::Result<PathBuf> {
+    let canonical_root = root.canonicalize()?;
+    ensure_no_material_symlinks(&canonical_root, rel)?;
+    let candidate = canonical_root.join(rel);
+    let mut current = canonical_root.clone();
+    let mut components = rel.components().peekable();
+    while let Some(component) = components.next() {
+        let Component::Normal(name) = component else {
+            return Err(permission_denied("invalid materials path component"));
+        };
+        current.push(name);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(permission_denied("symlinks are not allowed in materials paths"));
+            }
+            Ok(meta) if components.peek().is_some() && !meta.is_dir() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotADirectory,
+                    "materials path component is not a directory",
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(candidate)
+}
+
 pub(super) fn safe_relative_path(value: &str) -> Option<PathBuf> {
     if value.len() > 1024 {
         return None;
@@ -67,7 +165,10 @@ pub(super) fn safe_relative_path(value: &str) -> Option<PathBuf> {
         match (components.next(), components.next()) {
             (Some(Component::Normal(component)), None) => {
                 let text = component.to_str()?;
-                if text.contains('\0') || text == ".." {
+                if text.contains('\0')
+                    || text == ".."
+                    || text.chars().any(|character| character.is_control())
+                {
                     return None;
                 }
                 out.push(text);
@@ -87,6 +188,8 @@ pub(super) fn safe_file_name(value: &str) -> Option<String> {
         || file_name.contains('/')
         || file_name.contains('\\')
         || file_name.contains('\0')
+        || file_name.chars().any(|character| character.is_control())
+        || file_name.starts_with('.')
         || file_name == "."
         || file_name == ".."
     {
@@ -158,15 +261,28 @@ pub(super) fn collect_material_files(
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
         let path = entry.path();
-        let meta = entry.metadata()?;
-        if meta.is_dir() {
+        let file_type = entry.file_type()?;
+        // Do not follow symlinks while listing. A symlink can otherwise make
+        // the dashboard disclose files outside the materials root.
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             collect_material_files(root, &path, files)?;
             continue;
         }
-        if !meta.is_file() {
+        if !file_type.is_file() {
             continue;
         }
+        let meta = entry.metadata()?;
         let rel = path.strip_prefix(root).unwrap_or(&path);
         let rel_path = rel.to_string_lossy().replace('\\', "/");
         let name = path
@@ -219,9 +335,20 @@ fn collect_material_tree(
             ));
         }
         let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
         let path = entry.path();
-        let meta = entry.metadata()?;
-        if meta.is_dir() {
+        let file_type = entry.file_type()?;
+        // Never follow links while building the visible tree.
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
             let rel = path.strip_prefix(root).unwrap_or(&path);
             let rel_path = rel.to_string_lossy().replace('\\', "/");
             if !rel_path.trim().is_empty() {
@@ -230,9 +357,10 @@ fn collect_material_tree(
             collect_material_tree(root, &path, files, folders)?;
             continue;
         }
-        if !meta.is_file() {
+        if !file_type.is_file() {
             continue;
         }
+        let meta = entry.metadata()?;
         let rel = path.strip_prefix(root).unwrap_or(&path);
         let rel_path = rel.to_string_lossy().replace('\\', "/");
         let name = path
@@ -289,9 +417,16 @@ pub(super) fn collect_material_folders(
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with('.'))
+        {
+            continue;
+        }
         let path = entry.path();
-        let meta = entry.metadata()?;
-        if !meta.is_dir() {
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() || !file_type.is_dir() {
             continue;
         }
         let rel = path.strip_prefix(root).unwrap_or(&path);
@@ -459,11 +594,14 @@ pub(super) fn material_total_size(root: &Path) -> std::io::Result<u64> {
         }
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
-            let meta = entry.metadata()?;
-            if meta.is_dir() {
+            let file_type = entry.file_type()?;
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
                 walk(&entry.path(), total)?;
-            } else if meta.is_file() {
-                *total = total.saturating_add(meta.len());
+            } else if file_type.is_file() {
+                *total = total.saturating_add(entry.metadata()?.len());
             }
         }
         Ok(())
