@@ -326,8 +326,8 @@ fb_init() {
   }
 
 
-  # 密碼版（:26011）＝你的管理入口，保留完整權限
-  fb_prepare_db "$auth_db" json 26011 "auth.db" files-full
+  # 密碼版（:26021）＝內部備援入口，保留完整權限
+  fb_prepare_db "$auth_db" json 26021 "auth.db" files-full
   # Existing password users keep their own scope; update the dedicated low-
   # privilege test user explicitly so it cannot retain the old `/` scope.
   local low_user="${FILEBROWSER_LOW_PRIV_USER:-test}"
@@ -369,7 +369,7 @@ fb_write_caddy() {
     persist_config off
 }
 
-:26001 {
+:26001, :26011 {
     bind 127.0.0.1
 
     # Filebrowser is public through the Cloudflare Tunnel, so apply a small
@@ -407,7 +407,7 @@ fb_write_caddy() {
     # 真正要授權的是 /api/* 與頁面路由。
     @fb_static path /static/* /themes/* *.js *.css *.woff2 *.woff *.ttf *.svg *.png *.ico
     handle @fb_static {
-        reverse_proxy 127.0.0.1:26011
+        reverse_proxy 127.0.0.1:26021
     }
 
     # 公開分享連結不需要 Dashboard session；分享資料庫使用一般使用者
@@ -433,7 +433,7 @@ fb_write_caddy() {
     # 三種身分：
     #   X-Fb-Admin: yes  → Dashboard 管理員，整個 cloud/（:26013）
     #   X-Fb-Authed: yes → 一般使用者，只有教材（:26012）
-    #   兩者皆無        → 陌生訪客，要密碼（:26011）
+    #   兩者皆無        → 陌生訪客，直接拒絕（內部 :26021 不公開）
     @admin header X-Fb-Admin yes
     @user {
         header X-Fb-Authed yes
@@ -489,7 +489,7 @@ fb_write_caddy() {
         reverse_proxy 127.0.0.1:26012
     }
     # 禁止外部密碼登入；只有 Dashboard SSO 通過 forward_auth 後，
-    # 才能進入 user/admin 入口。26011 僅保留為內部備援，不由 Caddy 公開。
+    # 才能進入 user/admin 入口。26021 僅保留為內部備援，不由 Caddy 公開。
     handle {
       respond "請先從 Dashboard 的教材入口登入" 403
     }
@@ -536,7 +536,7 @@ start_filebrowser() {
     fi
     fb_init
     fb_write_snippet
-    echo "[filebrowser] 密碼 :26011 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001"
+    echo "[filebrowser] 內部備援 :26021 / 使用者免登 :26012 / 管理員免登 :26013 / Caddy :26001/:26011"
     nohup ./filebrowser -d "$PWD/fb-data/auth.db" >> logs/filebrowser-auth.log 2>&1 &
     echo $! > logs/filebrowser-auth.pid
     nohup ./filebrowser -d "$PWD/fb-data/open.db" >> logs/filebrowser-open.log 2>&1 &
@@ -616,7 +616,7 @@ watchdog_check_filebrowser_http() {
   [[ -x ./caddy ]] || return 0
   local bad=0 port
   # Caddy is the public entry point; the individual services are checked too.
-  for port in 26001 26012 26013; do
+  for port in 26001 26011 26012 26013; do
     if ! watchdog_http_ok "http://127.0.0.1:${port}/"; then bad=1; fi
   done
   local count=0
