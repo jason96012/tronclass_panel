@@ -382,7 +382,6 @@ fb_write_caddy() {
         Referrer-Policy "no-referrer"
         Permissions-Policy "camera=(), microphone=(), geolocation=()"
         Strict-Transport-Security "max-age=31536000; includeSubDomains"
-        Content-Security-Policy "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:"
     }
     request_body {
         max_size 60MB

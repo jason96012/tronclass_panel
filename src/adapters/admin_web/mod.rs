@@ -1195,9 +1195,85 @@ async fn admin_same_origin_middleware(
     next.run(request).await
 }
 
-/// Security headers for the externally reachable Admin Web. Inline scripts are
-/// still permitted because the legacy dashboard is currently static-inline; a
-/// future frontend migration can remove 'unsafe-inline' and adopt CSP nonces.
+fn generate_csp_nonce() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+fn csp_header_value(nonce: Option<&str>) -> String {
+    let script_nonce = nonce
+        .map(|value| format!(" 'nonce-{value}'"))
+        .unwrap_or_default();
+    let style_nonce = nonce
+        .map(|value| format!(" 'nonce-{value}'"))
+        .unwrap_or_default();
+    format!(
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'none'; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests"
+    )
+}
+
+/// Add a per-response nonce to every inline `<script>` and `<style>` element.
+/// Static JavaScript/CSS files remain allowed by `'self'`; inline event and
+/// style attributes are deliberately not allowed by the CSP below.
+fn add_csp_nonce_to_inline_tags(html: &str, nonce: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len() + 512);
+    let mut cursor = 0usize;
+
+    while cursor < html.len() {
+        let script_at = lower[cursor..].find("<script").map(|at| cursor + at);
+        let style_at = lower[cursor..].find("<style").map(|at| cursor + at);
+        let Some(tag_at) = match (script_at, style_at) {
+            (Some(script), Some(style)) => Some(script.min(style)),
+            (Some(script), None) => Some(script),
+            (None, Some(style)) => Some(style),
+            (None, None) => None,
+        } else {
+            out.push_str(&html[cursor..]);
+            break;
+        };
+
+        let tag_name_len = if lower[tag_at..].starts_with("<script") {
+            "<script".len()
+        } else {
+            "<style".len()
+        };
+        let next_byte = html.as_bytes().get(tag_at + tag_name_len).copied();
+        if !next_byte
+            .map(|byte| byte.is_ascii_whitespace() || byte == b'>' || byte == b'/')
+            .unwrap_or(false)
+        {
+            // Ignore string literals such as `"<script..."` inside an inline
+            // script; they are not HTML elements and must not be rewritten.
+            let end = (tag_at + tag_name_len).min(html.len());
+            out.push_str(&html[cursor..end]);
+            cursor = end;
+            continue;
+        }
+        let Some(relative_end) = lower[tag_at..].find('>') else {
+            out.push_str(&html[cursor..]);
+            break;
+        };
+        let tag_end = tag_at + relative_end;
+        let tag = &html[tag_at..=tag_end];
+        out.push_str(&html[cursor..tag_at]);
+        if tag.to_ascii_lowercase().contains(" nonce=") {
+            out.push_str(tag);
+        } else {
+            let without_close = tag.strip_suffix('>').unwrap_or(tag);
+            out.push_str(without_close);
+            out.push_str(" nonce=\"");
+            out.push_str(nonce);
+            out.push_str("\">");
+        }
+        cursor = tag_end + 1;
+    }
+
+    out
+}
+
+/// Security headers for the externally reachable Admin Web. Inline elements
+/// receive a fresh nonce in `html_page_response`; inline event/style
+/// attributes are blocked instead of enabling the global inline bypass.
 async fn admin_security_headers_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -1247,25 +1323,13 @@ async fn admin_security_headers_middleware(
         HeaderName::from_static("strict-transport-security"),
         HeaderValue::from_static("max-age=31536000; includeSubDomains"),
     );
-    headers.insert(
-        HeaderName::from_static("content-security-policy"),
-        HeaderValue::from_static(
-            // Admin pages load no third-party scripts of their own, so the
-            // inherited cdn.jsdelivr.net entry is dropped: a compromised public
-            // CDN must not be able to inject script here. (The LINE scanner
-            // pages that genuinely use jsDelivr are served by a different
-            // router and are unaffected.)
-            //
-            // static.cloudflareinsights.com is kept because Cloudflare injects
-            // its analytics beacon at the edge -- it is not in this source tree,
-            // so removing it only produced a console CSP error.
-            //
-            // 'unsafe-inline' remains for script-src only because the dashboard
-            // still carries ~46 inline <script> blocks and ~43 on*= handlers.
-            // Removing it requires the nonce migration tracked separately.
-            "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' 'unsafe-inline' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests",
-        ),
-    );
+    // Page handlers install a nonce-bearing CSP. Use the strict no-inline
+    // fallback only for JSON/static responses that do not contain inline code.
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        if let Ok(value) = csp_header_value(None).parse::<HeaderValue>() {
+            headers.insert(header::CONTENT_SECURITY_POLICY, value);
+        }
+    }
     if !cache_static {
         // Admin HTML must always be revalidated (it is behind auth and may
         // change on redeploy), but `no-store` also forbade conditional
@@ -1295,11 +1359,11 @@ fn is_html_document(response: &Response) -> bool {
 /// Serve a static in-binary HTML page with a content-derived ETag so repeat
 /// navigations get a 304 instead of the full payload.
 fn html_page_response(headers: &HeaderMap, html: String) -> Response {
-    // Hash the body directly. An earlier version cached the digest keyed by
-    // length (pages differ by as little as 9 bytes -> wrong 304) and then by
-    // pointer (inject_theme allocates a fresh String each call -> never hit).
-    // SHA-256 over a few hundred KB is well under a millisecond and is dwarfed
-    // by the bytes this saves, so keep it simple and correct.
+    let nonce = generate_csp_nonce();
+    let html = add_csp_nonce_to_inline_tags(&html, &nonce);
+
+    // Hash the nonce-bearing body directly. Each response gets a fresh nonce,
+    // so a previously cached ETag cannot be reused for a different response.
     let mut hasher = Sha256::new();
     hasher.update(html.as_bytes());
     let etag = format!("\"{}\"", hex::encode(&hasher.finalize()[..16]));
@@ -1314,12 +1378,22 @@ fn html_page_response(headers: &HeaderMap, html: String) -> Response {
         if let Ok(value) = etag.parse::<HeaderValue>() {
             response.headers_mut().insert(header::ETAG, value);
         }
+        if let Ok(value) = csp_header_value(Some(&nonce)).parse::<HeaderValue>() {
+            response
+                .headers_mut()
+                .insert(header::CONTENT_SECURITY_POLICY, value);
+        }
         return response;
     }
 
     let mut response = Html(html).into_response();
     if let Ok(value) = etag.parse::<HeaderValue>() {
         response.headers_mut().insert(header::ETAG, value);
+    }
+    if let Ok(value) = csp_header_value(Some(&nonce)).parse::<HeaderValue>() {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, value);
     }
     response
 }

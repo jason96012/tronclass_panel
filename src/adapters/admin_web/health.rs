@@ -10,12 +10,8 @@ pub(super) async fn healthz_handler() -> Response {
         .into_response()
 }
 
-pub(super) async fn admin_health_page_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(super::pages::inject_theme(ADMIN_HEALTH_HTML)),
-    )
-        .into_response()
+pub(super) async fn admin_health_page_handler(headers: HeaderMap) -> Response {
+    super::html_page_response(&headers, super::pages::inject_theme(ADMIN_HEALTH_HTML))
 }
 
 pub(super) async fn admin_health_api_handler(

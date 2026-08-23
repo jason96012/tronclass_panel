@@ -241,12 +241,8 @@ fn secure_existing_material_path_response(
     secure_existing_material_path(root, rel).map_err(|error| material_path_error(&error, missing_message))
 }
 
-pub(super) async fn admin_files_page_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(super::pages::inject_theme(ADMIN_FILES_HTML)),
-    )
-        .into_response()
+pub(super) async fn admin_files_page_handler(headers: HeaderMap) -> Response {
+    super::html_page_response(&headers, super::pages::inject_theme(ADMIN_FILES_HTML))
 }
 
 /// Serve Filebrowser's HTML shell with a same-origin link back to Dashboard.
@@ -350,17 +346,27 @@ pub(super) async fn admin_filebrowser_shell_handler(
         }
     };
 
-    let body = if content_type.to_ascii_lowercase().contains("text/html") {
-        inject_dashboard_link(body.as_ref())
+    let is_html = content_type.to_ascii_lowercase().contains("text/html");
+    let nonce = is_html.then(|| super::generate_csp_nonce());
+    let body = if is_html {
+        let body = inject_dashboard_link(body.as_ref());
+        let text = String::from_utf8_lossy(&body);
+        super::add_csp_nonce_to_inline_tags(&text, nonce.as_deref().unwrap_or_default()).into_bytes()
     } else {
         body.to_vec()
     };
 
-    Response::builder()
+    let mut builder = Response::builder()
         .status(status.as_u16())
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, body.len().to_string())
-        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::CACHE_CONTROL, "no-store");
+    if let Some(nonce) = nonce.as_deref() {
+        if let Ok(value) = super::csp_header_value(Some(nonce)).parse::<HeaderValue>() {
+            builder = builder.header(header::CONTENT_SECURITY_POLICY, value);
+        }
+    }
+    builder
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|error| {
             (
@@ -452,17 +458,27 @@ pub(super) async fn admin_filebrowser_share_shell_handler(headers: HeaderMap) ->
                 .into_response();
         }
     };
-    let body = if content_type.to_ascii_lowercase().contains("text/html") {
-        inject_share_login_redirect(body.as_ref())
+    let is_html = content_type.to_ascii_lowercase().contains("text/html");
+    let nonce = is_html.then(|| super::generate_csp_nonce());
+    let body = if is_html {
+        let body = inject_share_login_redirect(body.as_ref());
+        let text = String::from_utf8_lossy(&body);
+        super::add_csp_nonce_to_inline_tags(&text, nonce.as_deref().unwrap_or_default()).into_bytes()
     } else {
         body.to_vec()
     };
 
-    Response::builder()
+    let mut builder = Response::builder()
         .status(status.as_u16())
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CONTENT_LENGTH, body.len().to_string())
-        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::CACHE_CONTROL, "no-store");
+    if let Some(nonce) = nonce.as_deref() {
+        if let Ok(value) = super::csp_header_value(Some(nonce)).parse::<HeaderValue>() {
+            builder = builder.header(header::CONTENT_SECURITY_POLICY, value);
+        }
+    }
+    builder
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|_| unauthorized_response())
 }

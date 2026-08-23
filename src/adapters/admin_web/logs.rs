@@ -3,12 +3,8 @@
 use super::pages::{inject_theme, ADMIN_LOGS_HTML};
 use super::*;
 
-pub(super) async fn admin_logs_page_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(inject_theme(ADMIN_LOGS_HTML)),
-    )
-        .into_response()
+pub(super) async fn admin_logs_page_handler(headers: HeaderMap) -> Response {
+    super::html_page_response(&headers, inject_theme(ADMIN_LOGS_HTML))
 }
 
 pub(super) async fn admin_logs_api_handler(
