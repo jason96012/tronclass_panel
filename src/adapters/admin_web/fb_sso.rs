@@ -78,40 +78,34 @@ fn decode_account_id(encoded: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// v2 tickets carry an admin flag so the proxy can route admins to a
-/// full-scope Filebrowser instance. v1 (no flag) is still accepted on read so
-/// existing sessions do not break; those are treated as non-admin.
-fn sign_v2(account_id: &str, exp: u64, is_admin: bool) -> Option<String> {
+/// v3 tickets carry the role and the live Dashboard session token, so a
+/// Filebrowser SSO ticket cannot outlive logout, session expiry or restart.
+fn sign_v3(account_id: &str, session_token: &str, exp: u64, is_admin: bool) -> Option<String> {
     let secret = secret();
-    if secret.is_empty() {
+    if secret.is_empty()
+        || session_token.len() != 32
+        || !session_token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
         return None;
     }
     let role = if is_admin { "a" } else { "u" };
-    // Sign the raw id, but transport the encoded form.
-    let msg = format!("v2|{account_id}|{exp}|{role}");
+    // Bind the parent-domain ticket to the live in-memory Dashboard session.
+    // A signed account id alone would remain valid after logout or restart.
+    let msg = format!("v3|{account_id}|{session_token}|{exp}|{role}");
     let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
     mac.update(msg.as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
     Some(format!(
-        "v2.{}.{exp}.{role}.{sig}",
-        encode_account_id(account_id)
+        "v3.{}.{}.{exp}.{role}.{sig}",
+        encode_account_id(account_id),
+        session_token,
     ))
 }
 
-fn sign(account_id: &str, exp: u64) -> Option<String> {
-    let secret = secret();
-    if secret.is_empty() {
-        return None;
-    }
-    let msg = format!("v1|{account_id}|{exp}");
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).ok()?;
-    mac.update(msg.as_bytes());
-    let sig = hex::encode(mac.finalize().into_bytes());
-    Some(format!("v1.{}.{exp}.{sig}", encode_account_id(account_id)))
-}
-
-/// Returns (account_id, is_admin).
-fn verify(raw: &str) -> Option<(String, bool)> {
+/// Returns (account_id, is_admin, live_dashboard_session_token).
+/// Older v1/v2 tickets are intentionally rejected so they cannot survive a
+/// Dashboard logout/restart. Users receive a v3 ticket on their next login.
+fn verify_session_ticket(raw: &str) -> Option<(String, bool, String)> {
     let secret = secret();
     if secret.is_empty() {
         return None;
@@ -122,36 +116,28 @@ fn verify(raw: &str) -> Option<(String, bool)> {
         .unwrap_or_default()
         .as_secs();
 
-    match parts.as_slice() {
-        ["v2", enc, exp, role, _sig] => {
-            let account_id = decode_account_id(enc)?;
-            let exp: u64 = exp.parse().ok()?;
-            if exp < now || account_id.is_empty() || account_id.len() > 128 {
-                return None;
-            }
-            let is_admin = match *role {
-                "a" => true,
-                "u" => false,
-                _ => return None,
-            };
-            if sign_v2(&account_id, exp, is_admin)? != raw {
-                return None;
-            }
-            Some((account_id, is_admin))
-        }
-        ["v1", enc, exp, _sig] => {
-            let account_id = decode_account_id(enc)?;
-            let exp: u64 = exp.parse().ok()?;
-            if exp < now || account_id.is_empty() || account_id.len() > 128 {
-                return None;
-            }
-            if sign(&account_id, exp)? != raw {
-                return None;
-            }
-            Some((account_id, false))
-        }
-        _ => None,
+    let ["v3", enc, session_token, exp, role, _sig] = parts.as_slice() else {
+        return None;
+    };
+    let account_id = decode_account_id(enc)?;
+    let exp: u64 = exp.parse().ok()?;
+    if exp < now
+        || account_id.is_empty()
+        || account_id.len() > 128
+        || session_token.len() != 32
+        || !session_token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return None;
     }
+    let is_admin = match *role {
+        "a" => true,
+        "u" => false,
+        _ => return None,
+    };
+    if sign_v3(&account_id, session_token, exp, is_admin)? != raw {
+        return None;
+    }
+    Some((account_id, is_admin, session_token.to_string()))
 }
 
 fn cookie_value_from_headers(headers: &HeaderMap) -> Option<String> {
@@ -168,13 +154,6 @@ fn cookie_value_from_headers(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
-}
-
-/// Validate the shared parent-domain ticket when a request comes from the
-/// Filebrowser hostname. The HTML-shell bridge uses this because the
-/// Dashboard's `__Host-` session cookie cannot be shared with `files.`.
-pub(crate) fn ticket_from_headers(headers: &HeaderMap) -> Option<(String, bool)> {
-    cookie_value_from_headers(headers).and_then(|raw| verify(&raw))
 }
 
 /// Validate the secret Caddy adds only after `forward_auth` succeeds. This is
@@ -195,6 +174,7 @@ pub fn append_fb_sso_cookie(
     mut response: Response,
     account_id: &str,
     is_admin: bool,
+    session_token: &str,
     headers: &HeaderMap,
 ) -> Response {
     if account_id.is_empty() || account_id == "<token-admin>" {
@@ -204,7 +184,7 @@ pub fn append_fb_sso_cookie(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let Some(token) = sign_v2(account_id, now + COOKIE_MAX_AGE, is_admin) else {
+    let Some(token) = sign_v3(account_id, session_token, now + COOKIE_MAX_AGE, is_admin) else {
         return response;
     };
     let domain = cookie_domain(headers)
@@ -243,11 +223,30 @@ pub fn append_expired_fb_sso_cookie(mut response: Response) -> Response {
     response
 }
 
-/// Caddy forward_auth：永遠 200，用 X-Fb-Authed 告訴要不要免登。
-pub async fn fb_sso_check_handler(headers: HeaderMap) -> Response {
-    let ticket = cookie_value_from_headers(&headers).and_then(|raw| verify(&raw));
-    let authed = ticket.is_some();
-    let is_admin = ticket.as_ref().map(|(_, a)| *a).unwrap_or(false);
+/// Caddy forward_auth：只有仍存在且未過期的 Dashboard session 才能免登。
+pub async fn fb_sso_check_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+) -> Response {
+    let ticket = cookie_value_from_headers(&headers)
+        .and_then(|raw| verify_session_ticket(&raw));
+    let active_ticket = match ticket {
+        Some((account_id, ticket_is_admin, session_token)) => state
+            .authorize_any(&session_token)
+            .await
+            .filter(|session| {
+                session.account_id == account_id
+                    && session.is_admin == ticket_is_admin
+                    && !session.must_change_password
+            })
+            .map(|_| (account_id, ticket_is_admin)),
+        None => None,
+    };
+    let authed = active_ticket.is_some();
+    let is_admin = active_ticket
+        .as_ref()
+        .map(|(_, is_admin)| *is_admin)
+        .unwrap_or(false);
     let flag = if authed { "yes" } else { "no" };
     // X-Fb-Admin lets Caddy route admins to the full-scope instance.
     let admin_flag = if is_admin { "yes" } else { "no" };

@@ -1447,7 +1447,13 @@ fn session_login_response(
         return response;
     }
 
-    fb_sso::append_fb_sso_cookie(response, &account_id, is_admin, request_headers)
+    fb_sso::append_fb_sso_cookie(
+        response,
+        &account_id,
+        is_admin,
+        session_token,
+        request_headers,
+    )
 }
 
 #[derive(Debug, Deserialize)]

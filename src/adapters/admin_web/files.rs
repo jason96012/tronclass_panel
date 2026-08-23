@@ -261,20 +261,16 @@ pub(super) async fn admin_filebrowser_shell_handler(
     headers: HeaderMap,
 ) -> Response {
     // The Dashboard session cookie is host-only by design. When Caddy sends
-    // the Filebrowser request here it normally carries the shared
-    // parent-domain `tronclass_fb_sso` ticket. The internal Caddy secret is a
-    // second valid proof for deployments where an old browser session has not
-    // received that parent-domain cookie yet.
+    // the Filebrowser request here, the Caddy-only secret is the proof that
+    // `forward_auth` already validated the live Dashboard session.
     let dashboard_session = state.authorize(&query.token).await;
-    let ticket = super::fb_sso::ticket_from_headers(&headers);
     let trusted_caddy = super::fb_sso::shell_request_secret_valid(&headers);
-    if dashboard_session.is_none() && ticket.is_none() && !trusted_caddy {
+    if dashboard_session.is_none() && !trusted_caddy {
         return unauthorized_response();
     }
     let is_admin = dashboard_session
         .as_ref()
         .map(|session| session.is_admin)
-        .or_else(|| ticket.as_ref().map(|(_, is_admin)| *is_admin))
         .or_else(|| {
             trusted_caddy.then(|| {
                 headers
