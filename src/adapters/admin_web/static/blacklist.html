@@ -5,19 +5,62 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>IP 黑名單｜Tronclass Dashboard</title>
   <style>
-    :root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f5f7fb}
-    *{box-sizing:border-box}body{margin:0}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 24px;background:#fff;border-bottom:1px solid #e5e7eb}
-    h1{margin:0;font-size:22px}.sub{margin-top:5px;color:#64748b;font-size:13px}.actions{display:flex;gap:8px;flex-wrap:wrap}
-    a,button{font:inherit;border:1px solid #d7dee8;border-radius:9px;padding:9px 13px;background:#fff;color:#334155;text-decoration:none;cursor:pointer}
-    button.primary{background:#2563eb;color:#fff;border-color:#2563eb}button.danger{color:#b91c1c}button:hover,a:hover{filter:brightness(.97)}
-    main{max-width:1080px;margin:24px auto;padding:0 18px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 8px 24px rgba(15,23,42,.05);overflow:hidden}
-    .card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid #e5e7eb}.summary{color:#64748b;font-size:13px}
-    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid #eef2f7;font-size:14px;vertical-align:middle}th{background:#f8fafc;color:#64748b;font-size:12px}tr:last-child td{border-bottom:0}.ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;color:#0f172a}.empty,.error{padding:34px 18px;text-align:center;color:#64748b}.error{color:#b91c1c}
-    @media(max-width:700px){.top{align-items:flex-start;flex-direction:column;padding:15px}.card{overflow:auto}table{min-width:720px}main{margin:15px auto}}
+    :root{
+      color-scheme:light dark;
+      --bg:#f6f8fc;--card:#fff;--soft:#f1f5f9;--text:#172033;
+      --muted:#64748b;--line:#d8dee8;--line2:#e7ebf1;
+      --primary:#2563eb;--primary-text:#fff;--bad:#b42318;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",system-ui,sans-serif;
+    }
+    @media(prefers-color-scheme:dark){
+      :root{--bg:#0f141d;--card:#161d29;--soft:#111827;--text:#eef2ff;--muted:#9aa4b5;--line:#303948;--line2:#252e3c;--primary:#60a5fa;--primary-text:#07111f;--bad:#f87171}
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text)}
+    body{-webkit-tap-highlight-color:transparent}
+    .top{
+      position:sticky;top:0;z-index:30;
+      display:flex;align-items:center;justify-content:space-between;gap:24px;
+      min-height:76px;padding:14px 36px;
+      background:rgba(246,248,252,.94);backdrop-filter:blur(16px);
+      border-bottom:1px solid var(--line2);
+    }
+    @media(prefers-color-scheme:dark){.top{background:rgba(15,20,29,.94)}}
+    .brand{display:flex;align-items:center;gap:14px;min-width:0}
+    .logo{width:42px;height:42px;flex:0 0 auto;display:grid;place-items:center;border-radius:14px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;font-size:19px;font-weight:950;box-shadow:0 0 20px rgba(59,130,246,.25)}
+    .brand-title{font-size:18px;font-weight:850;letter-spacing:-.025em;line-height:1.1;white-space:nowrap}
+    .brand-sub{margin-top:4px;color:var(--muted);font-size:12px;line-height:1.2}
+    .actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-left:auto}
+    a,button{font:inherit;min-height:40px;border:1px solid var(--line);border-radius:999px;padding:0 15px;background:var(--card);color:var(--text);text-decoration:none;cursor:pointer;white-space:nowrap;font-weight:750;transition:filter .15s ease,transform .15s ease}
+    a:hover,button:hover{filter:brightness(.97);transform:translateY(-1px)}
+    a.primary,button.primary{background:var(--primary);color:var(--primary-text);border-color:var(--primary)}
+    a.danger,button.danger{background:rgba(248,113,113,.14);color:var(--bad);border-color:rgba(248,113,113,.28)}
+    main{max-width:1200px;margin:24px auto;padding:0 18px 40px}
+    .card{background:var(--card);border:1px solid var(--line2);border-radius:18px;box-shadow:0 12px 34px rgba(15,23,42,.07);overflow:hidden}
+    .card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line2)}
+    .card-head strong{font-size:16px;font-weight:850}.summary{color:var(--muted);font-size:13px}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--line2);font-size:14px;vertical-align:middle}th{background:var(--soft);color:var(--muted);font-size:12px}tr:last-child td{border-bottom:0}.ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;color:var(--text)}.empty,.error{padding:34px 18px;text-align:center;color:var(--muted)}.error{color:var(--bad)}
+    @media(max-width:700px){
+      .top{align-items:flex-start;flex-direction:column;gap:12px;padding:14px 16px}
+      .actions{width:100%;justify-content:flex-start}.actions>*{flex:1 1 auto}
+      main{margin:15px auto;padding:0 10px 32px}.card{overflow:auto}table{min-width:720px}
+    }
   </style>
 </head>
 <body>
-  <header class="top"><div><h1>IP 黑名單</h1><div class="sub">管理因登入失敗而封鎖的來源 IP</div></div><div class="actions"><a href="/admin">回 Dashboard</a><button class="primary" id="reload" type="button">重新整理</button></div></header>
+  <header class="top">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">D</div>
+      <div><div class="brand-title">Tronclass Dashboard</div><div class="brand-sub">IP 黑名單管理</div></div>
+    </div>
+    <div class="actions">
+      <a id="dashboardPasswordButtonV1" href="/admin/password">變更密碼</a>
+      <a href="/admin/passkey">設定通行密鑰</a>
+      <a href="/admin">回 Dashboard</a>
+      <button id="logoutBtn" class="danger" type="button">登出</button>
+      <button class="primary" id="reload" type="button">重新整理</button>
+    </div>
+  </header>
   <main><section class="card"><div class="card-head"><strong>已封鎖的 IP</strong><span class="summary" id="summary">載入中...</span></div><div id="content"><div class="empty">載入中...</div></div></section></main>
   <script>
   (function(){
@@ -40,6 +83,5 @@
     load();
   })();
   </script>
-<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f9abfadccc4a87',t:'MTc4NzQ4MzQzNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</body>
 </html>
