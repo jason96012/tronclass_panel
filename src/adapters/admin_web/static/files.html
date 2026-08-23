@@ -1169,7 +1169,7 @@
     return '<div class="folder-card" data-open-folder="' + esc(f) + '">' +
       '<div class="folder-icon"></div>' +
       '<div class="folder-name">' + esc(base(f)) + '</div>' +
-      (isAdmin ? '<button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button>' : '') +
+      '<button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button>' +
     '</div>';
   }
 
@@ -1184,7 +1184,7 @@
       '<div class="file-actions">' +
         '<a class="button secondary" href="' + dl(f.path) + '">下載</a>' +
         (['pdf','jpg','jpeg','png','txt','md','mp4'].includes(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
-        (isAdmin ? '<button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button>' : '') +
+        '<button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button>' +
       '</div>' +
     '</div>';
   }
@@ -1193,9 +1193,9 @@
     const tbody = q('listBody');
     if (!tbody) return;
     tbody.innerHTML = folds.map(f => 
-      '<tr><td><button class="button secondary" style="min-height:30px;padding:0 8px" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td><td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td><td>' + (isAdmin ? '<button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button>' : '') + '</td></tr>'
+      '<tr><td><button class="button secondary" style="min-height:30px;padding:0 8px" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td><td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td><td><button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button></td></tr>'
     ).concat(fList.map(f => 
-      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '">下載</a>' + (isAdmin ? '<button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button>' : '') + '</td></tr>'
+      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '">下載</a><button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
     )).join('') || '<tr><td colspan="5" class="empty">目前資料夾為空</td></tr>';
   }
 
@@ -1362,7 +1362,6 @@
   }
 
   async function delFolder(path){
-    if (!isAdmin) return toast('刪除資料夾需要管理員權限', false);
     if (!confirm('確定刪除資料夾及其所有內容？\n' + path)) return;
     try {
       await api('/admin/api/files/rmdir', {
@@ -1584,7 +1583,7 @@
   setTimeout(ensure, 300);
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 

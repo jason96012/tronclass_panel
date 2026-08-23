@@ -1164,13 +1164,6 @@ pub(super) async fn admin_files_delete_handler(
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
-    if !session.is_admin {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "刪除檔案需要管理員權限" })),
-        )
-            .into_response();
-    }
     if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
         return response;
     }
@@ -1181,7 +1174,7 @@ pub(super) async fn admin_files_delete_handler(
         )
             .into_response();
     };
-    let root = materials_root();
+    let root = session_materials_root(&session);
     let path = match secure_existing_material_path_response(&root, &rel, "file not found") {
         Ok(path) => path,
         Err(response) => return response,
@@ -1251,14 +1244,8 @@ pub(super) async fn admin_files_rmdir_handler(
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
-    // The UI hides this action from non-admins; enforce it server-side too.
-    if !session.is_admin {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "刪除資料夾需要管理員權限" })),
-        )
-            .into_response();
-    }
+    // Both roles may delete folders, but the scoped root below prevents a
+    // regular user from reaching anything outside /教材.
     if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
         return response;
     }
@@ -1271,7 +1258,7 @@ pub(super) async fn admin_files_rmdir_handler(
             .into_response();
     };
 
-    let root = materials_root();
+    let root = session_materials_root(&session);
     // Resolve and validate the complete path before deleting. This rejects
     // traversal, symlinks and paths that escape the configured materials root.
     let canonical_dir = match secure_existing_material_path_response(&root, &rel, "folder not found") {
@@ -1341,6 +1328,9 @@ pub(super) async fn admin_files_mkdir_handler(
     };
 
     let root = session_materials_root(&session);
+    if let Err(error) = tokio::fs::create_dir_all(&root).await {
+        return material_path_error(&error, "materials folder unavailable");
+    }
     let dir = match secure_material_path_for_create(&root, &rel) {
         Ok(path) => path,
         Err(error) => return material_path_error(&error, "folder not found"),
@@ -1387,9 +1377,16 @@ pub(super) async fn admin_files_history_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesHistoryQuery>,
 ) -> Response {
-    let Some(_session) = state.authorize(&query.token).await else {
+    let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
+    if !session.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "讀取教材操作紀錄需要管理員權限" })),
+        )
+            .into_response();
+    }
 
     let limit = query.limit.unwrap_or(100).clamp(1, 200);
     match state.accounts_db.list_material_events(limit).await {

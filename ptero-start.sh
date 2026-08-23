@@ -238,12 +238,12 @@ fb_init() {
       fi
     fi
 
-    # 免登實例：一般使用者只可新增／下載教材，不能覆寫、刪除、改名或公開分享；
-    # 管理員實例才擁有完整檔案操作權限，且兩者都不能執行指令。
+    # 免登實例：一般使用者的完整檔案操作仍鎖在 /教材；管理員實例
+    # 才能看到整個 cloud/。兩者都不能執行指令或管理 Filebrowser 帳號。
     # scope 鎖在 /教材：使用者看不到也進不去 cloud/ 底下的其他資料夾。
     local -a perms
     if [[ "$mode" == "files-full" ]]; then
-      # Legacy/full mode, kept for the password-protected maintenance DB.
+      # Full file operations are allowed only inside the configured scope.
       perms=( --perm.admin=false --perm.create=true --perm.download=true
               --perm.modify=true --perm.delete=true --perm.rename=true
               --perm.share=true --perm.execute=false
@@ -339,10 +339,15 @@ fb_init() {
       || echo "[filebrowser] 低權限帳號 $low_user 不存在或權限更新失敗" >> logs/filebrowser-init.log
   fi
   # 免登版（:26012）＝一般使用者從 Dashboard SSO 進來的入口。
-  # 安全預設為只能下載；若確定要讓一般使用者上傳，再設定
-  # FILEBROWSER_USER_WRITE=1（仍不能修改、刪除或公開分享既有檔案）。
-  local user_mode="files-readonly"
-  [[ "${FILEBROWSER_USER_WRITE:-0}" == "1" ]] && user_mode="files-upload"
+  # 一般使用者可在 /教材 內下載、上傳、修改、刪除、改名及公開分享，
+  # 但永遠看不到 cloud/教材 以外的內容。需要唯讀時可設定
+  # FILEBROWSER_USER_MODE=readonly；需要只能上傳時可設定 upload。
+  local user_mode="files-full"
+  case "${FILEBROWSER_USER_MODE:-full}" in
+    readonly) user_mode="files-readonly" ;;
+    upload) user_mode="files-upload" ;;
+    *) user_mode="files-full" ;;
+  esac
   fb_prepare_db "$open_db" noauth 26012 "open.db" "$user_mode"
   # 免登版（:26013）＝Dashboard 管理員，看得到整個 cloud/
   fb_prepare_db "$admin_db" noauth 26013 "admin.db" admin-full
@@ -404,11 +409,12 @@ fb_write_caddy() {
         reverse_proxy 127.0.0.1:26011
     }
 
-    # 公開分享連結不需要 Dashboard session；只放行 Filebrowser 的
-    # public share/download 路徑，其他所有頁面仍必須經 Dashboard SSO。
+    # 公開分享連結不需要 Dashboard session；分享資料庫使用一般使用者
+    # 的 /教材 實例，讓一般使用者建立的分享連結可以正常開啟。
+    # 這是刻意公開的功能，分享連結本身等同持有權限。
     @public_share path /share/* /api/public/*
     handle @public_share {
-      reverse_proxy 127.0.0.1:26011
+      reverse_proxy 127.0.0.1:26012
     }
 
     forward_auth 127.0.0.1:${dash_port} {
