@@ -476,9 +476,26 @@ fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
   var dashboard = {dashboard_url};
   function isLoginTarget(value) {{
     var href = String(value || '').trim();
-    return href === '/login' || href.indexOf('/login?') === 0 ||
-      href === '/#/login' || href.indexOf('/#/login?') === 0 ||
-      href === '#/login' || href.indexOf('#/login?') === 0;
+    if (href === '/login' || href.indexOf('/login?') === 0 ||
+        href === '/#/login' || href.indexOf('/#/login?') === 0 ||
+        href === '#/login' || href.indexOf('#/login?') === 0) return true;
+    try {{
+      var parsed = new URL(href, location.origin);
+      return parsed.origin === location.origin &&
+        (parsed.pathname === '/login' || parsed.pathname.indexOf('/login/') === 0);
+    }} catch (_) {{ return false; }}
+  }}
+
+  function isLoginLocation() {{
+    var path = String(location.pathname || '');
+    var hash = String(location.hash || '');
+    return path === '/login' || path.indexOf('/login/') === 0 ||
+      hash === '#/login' || hash.indexOf('#/login?') === 0 ||
+      hash.indexOf('#/login/') === 0;
+  }}
+
+  function redirectIfLoginRoute() {{
+    if (isLoginLocation()) window.location.replace(dashboard);
   }}
   function isLoginControl(element) {{
     if (!element) return false;
@@ -491,7 +508,7 @@ fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
     if (!isLoginControl(control)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    window.location.assign(dashboard);
+    window.location.replace(dashboard);
   }}
   function patchLoginLinks() {{
     document.querySelectorAll('a[href],button').forEach(function (element) {{
@@ -501,10 +518,23 @@ fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
     }});
   }}
   document.addEventListener('click', redirectToDashboard, true);
+  ['pushState', 'replaceState'].forEach(function (method) {{
+    var original = window.history[method];
+    if (typeof original !== 'function') return;
+    window.history[method] = function () {{
+      var result = original.apply(this, arguments);
+      setTimeout(redirectIfLoginRoute, 0);
+      return result;
+    }};
+  }});
+  window.addEventListener('popstate', redirectIfLoginRoute);
+  window.addEventListener('hashchange', redirectIfLoginRoute);
+  redirectIfLoginRoute();
   patchLoginLinks();
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', patchLoginLinks);
   setTimeout(patchLoginLinks, 100);
   setTimeout(patchLoginLinks, 500);
+  setInterval(redirectIfLoginRoute, 100);
   try {{ new MutationObserver(patchLoginLinks).observe(document.documentElement, {{childList:true, subtree:true}}); }} catch (_) {{}}
 }})();
 </script>
