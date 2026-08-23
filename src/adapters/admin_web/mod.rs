@@ -2551,10 +2551,6 @@ async fn admin_passkey_login_start_handler(
     headers: HeaderMap,
     Json(req): Json<AdminPasskeyLoginStartRequest>,
 ) -> Response {
-    if let Err(response) = validate_admin_text(&req.username, ADMIN_MAX_USERNAME_BYTES, "username")
-    {
-        return response;
-    }
     let ip = client_ip_from_headers(&headers);
     if !state
         .rate_limiter
@@ -2563,6 +2559,21 @@ async fn admin_passkey_login_start_handler(
     {
         warn!(ip = %ip, "passkey login rate limited by ip");
         alert_abnormal_traffic(&state, "通行密鑰登入", &req.username, &ip).await;
+        return rate_limited_response();
+    }
+    if let Err(response) = validate_admin_text(&req.username, ADMIN_MAX_USERNAME_BYTES, "username")
+    {
+        return response;
+    }
+    let username_key = req.username.trim().to_lowercase();
+    if !username_key.is_empty()
+        && !state
+            .rate_limiter
+            .check_limit(&format!("passkey-user:{username_key}"), RATE_LIMIT_MAX_ATTEMPTS)
+            .await
+    {
+        warn!(ip = %ip, "passkey login rate limited by username");
+        alert_abnormal_traffic(&state, "通行密鑰帳號探測", &req.username, &ip).await;
         return rate_limited_response();
     }
     let wa = match passkey_webauthn_from_headers(&headers) {
@@ -2612,6 +2623,16 @@ async fn admin_passkey_login_finish_handler(
     headers: HeaderMap,
     Json(req): Json<AdminPasskeyLoginFinishRequest>,
 ) -> Response {
+    let ip = client_ip_from_headers(&headers);
+    if !state
+        .rate_limiter
+        .check_limit(&format!("passkey-finish-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
+        .await
+    {
+        warn!(ip = %ip, "passkey finish rate limited by ip");
+        alert_abnormal_traffic(&state, "通行密鑰驗證", "", &ip).await;
+        return rate_limited_response();
+    }
     if let Err(response) =
         validate_admin_text(&req.ceremony_id, ADMIN_MAX_IDENTIFIER_BYTES, "ceremony_id")
     {
@@ -2620,7 +2641,6 @@ async fn admin_passkey_login_finish_handler(
     if let Err(response) = validate_admin_text(&req.response.id, 4096, "credential id") {
         return response;
     }
-    let ip = client_ip_from_headers(&headers);
     let wa = match passkey_webauthn_from_headers(&headers) {
         Ok(wa) => wa,
         Err(resp) => return resp,
@@ -2636,6 +2656,24 @@ async fn admin_passkey_login_finish_handler(
                 .into_response();
         }
     };
+    if !state
+        .rate_limiter
+        .check_limit(
+            &format!("passkey-finish-account:{}", ceremony.account_id),
+            RATE_LIMIT_MAX_ATTEMPTS,
+        )
+        .await
+    {
+        warn!(account = %ceremony.account_id, ip = %ip, "passkey finish rate limited by account");
+        alert_abnormal_traffic(
+            &state,
+            "通行密鑰驗證",
+            &ceremony.account_id,
+            &ip,
+        )
+        .await;
+        return rate_limited_response();
+    }
     let mut credentials = match state
         .accounts_db
         .list_passkey_credentials(&ceremony.account_id)
