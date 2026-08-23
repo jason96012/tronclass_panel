@@ -373,6 +373,150 @@ pub(super) async fn admin_filebrowser_shell_handler(
         })
 }
 
+/// Serve a public share page while replacing Filebrowser's built-in login
+/// action with the Dashboard login. Public shares intentionally bypass SSO,
+/// so this handler authenticates the Caddy hop with the shared secret rather
+/// than requiring a Dashboard session.
+pub(super) async fn admin_filebrowser_share_shell_handler(headers: HeaderMap) -> Response {
+    if !super::fb_sso::shell_request_secret_valid(&headers) {
+        return unauthorized_response();
+    }
+
+    let share_path = headers
+        .get("x-fb-share-path")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    if !share_path.starts_with("/share/") || share_path.len() > ADMIN_MAX_PATH_BYTES {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid public share path" })),
+        )
+            .into_response();
+    }
+
+    let client = match reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(Duration::from_secs(30))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => return unauthorized_response(),
+    };
+    let upstream_url = format!("http://127.0.0.1:26012{share_path}");
+    let upstream = match client
+        .get(&upstream_url)
+        .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
+        .send()
+        .await
+    {
+        Ok(response) => response,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "public share unavailable" })),
+            )
+                .into_response();
+        }
+    };
+
+    let status = upstream.status();
+    let content_type = upstream
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("text/html; charset=utf-8")
+        .to_string();
+    let body = match upstream.bytes().await {
+        Ok(body) => body,
+        Err(_) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": "public share response unavailable" })),
+            )
+                .into_response();
+        }
+    };
+    let body = if content_type.to_ascii_lowercase().contains("text/html") {
+        inject_share_login_redirect(body.as_ref())
+    } else {
+        body.to_vec()
+    };
+
+    Response::builder()
+        .status(status.as_u16())
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CONTENT_LENGTH, body.len().to_string())
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(axum::body::Body::from(body))
+        .unwrap_or_else(|_| unauthorized_response())
+}
+
+fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
+    let mut html = String::from_utf8_lossy(body).into_owned();
+    if html.contains("tronclass-dashboard-share-login-v1") {
+        return html.into_bytes();
+    }
+
+    let dashboard_url = std::env::var("TRONCLASS_DASHBOARD_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://dashboard.jasoncloudserver.me/admin".to_string());
+    let dashboard_url = serde_json::to_string(&dashboard_url)
+        .unwrap_or_else(|_| "\"https://dashboard.jasoncloudserver.me/admin\"".to_string())
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026");
+    let script = format!(
+        r#"
+<script id="tronclass-dashboard-share-login-script-v1" data-marker="tronclass-dashboard-share-login-v1">
+(function () {{
+  var dashboard = {dashboard_url};
+  function isLoginTarget(value) {{
+    var href = String(value || '').trim();
+    return href === '/login' || href.indexOf('/login?') === 0 ||
+      href === '/#/login' || href.indexOf('/#/login?') === 0 ||
+      href === '#/login' || href.indexOf('#/login?') === 0;
+  }}
+  function isLoginControl(element) {{
+    if (!element) return false;
+    var href = element.getAttribute && element.getAttribute('href');
+    var text = (element.textContent || '').trim().toLowerCase();
+    return isLoginTarget(href) || text === '登入' || text === 'login';
+  }}
+  function redirectToDashboard(event) {{
+    var control = event.target && event.target.closest && event.target.closest('a,button');
+    if (!isLoginControl(control)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    window.location.assign(dashboard);
+  }}
+  function patchLoginLinks() {{
+    document.querySelectorAll('a[href],button').forEach(function (element) {{
+      if (!isLoginControl(element)) return;
+      if (element.tagName === 'A') element.setAttribute('href', dashboard);
+      element.setAttribute('title', '前往 Tronclass Dashboard 登入');
+    }});
+  }}
+  document.addEventListener('click', redirectToDashboard, true);
+  patchLoginLinks();
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', patchLoginLinks);
+  setTimeout(patchLoginLinks, 100);
+  setTimeout(patchLoginLinks, 500);
+  try {{ new MutationObserver(patchLoginLinks).observe(document.documentElement, {{childList:true, subtree:true}}); }} catch (_) {{}}
+}})();
+</script>
+"#
+    );
+
+    if let Some(index) = html.to_ascii_lowercase().rfind("</body>") {{
+        html.insert_str(index, &script);
+    }} else {{
+        html.push_str(&script);
+    }}
+    html.into_bytes()
+}}
+
 fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
     let mut html = String::from_utf8_lossy(body).into_owned();
     if html.contains("tronclass-dashboard-back-v1") {

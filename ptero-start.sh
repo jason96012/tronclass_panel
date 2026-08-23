@@ -410,13 +410,22 @@ fb_write_caddy() {
         reverse_proxy 127.0.0.1:26021
     }
 
-    # 公開分享連結不需要 Dashboard session；分享資料庫使用一般使用者
-    # 的 /教材 實例，讓一般使用者建立的分享連結可以正常開啟。
-    # 這是刻意公開的功能，分享連結本身等同持有權限。
-    @public_share path /share/* /api/public/*
-    handle @public_share {
+    # 公開分享頁面不需要 Dashboard session，但先經 Rust bridge
+    # 把 Filebrowser 內建的「登入」動作改成 Dashboard 登入。
+    @public_share_page path /share/*
+    handle @public_share_page {
+      reverse_proxy 127.0.0.1:${dash_port} {
+        header_up X-Fb-Share-Path {http.request.uri}
+        header_up X-Fb-Shell-Secret ${shell_secret}
+        header_up X-Forwarded-Proto https
+      }
+    }
+    # 分享實際內容與公開下載 API 仍直接走免登入的 /教材 實例。
+    @public_share_api path /api/public/*
+    handle @public_share_api {
       reverse_proxy 127.0.0.1:26012
     }
+
 
     # Filebrowser's built-in password screen must never be the public entry
     # point. Shared links are handled above; every other login navigation goes

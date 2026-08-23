@@ -754,6 +754,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(files::admin_filebrowser_shell_handler),
         )
         .route(
+            "/share/{*path}",
+            get(files::admin_filebrowser_share_shell_handler),
+        )
+        .route(
             "/admin/api/files/list",
             get(files::admin_files_list_handler),
         )
