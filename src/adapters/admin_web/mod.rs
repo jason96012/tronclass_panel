@@ -1294,10 +1294,11 @@ async fn admin_security_headers_middleware(
         || path == "/service-worker.js";
     let cache_static = path.starts_with("/admin/static/") || path == "/admin/pwa/icon.svg";
     let mut response = next.run(request).await;
-    if !is_admin_path {
-        return response;
-    }
 
+    // This middleware covers the whole Admin Web router, including `/` and
+    // other redirect/error responses. Security headers must not depend on the
+    // final status code being 200 or the path starting with `/admin`.
+    //
     // Compute this before taking the mutable header borrow: reading `response`
     // afterwards would conflict with the `headers` borrow held below.
     let html_document = is_html_document(&response);
@@ -1338,7 +1339,7 @@ async fn admin_security_headers_middleware(
             headers.insert(header::CONTENT_SECURITY_POLICY, value);
         }
     }
-    if !cache_static {
+    if is_admin_path && !cache_static {
         // Admin HTML must always be revalidated (it is behind auth and may
         // change on redeploy), but `no-store` also forbade conditional
         // requests, so every navigation re-downloaded the full ~260 KB
