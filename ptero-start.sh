@@ -404,6 +404,11 @@ fb_write_caddy() {
     # 每一個都觸發 forward_auth 就是幾十次到 Dashboard 的往返。
     # 靜態資源不含任何使用者資料，直接放行給密碼實例（同一份前端），
     # 真正要授權的是 /api/* 與頁面路由。
+    @trusted_types_assets path /admin/static/js/dompurify.min.js /admin/static/js/trusted-types-init.js
+    handle @trusted_types_assets {
+        reverse_proxy 127.0.0.1:${dash_port}
+    }
+
     @fb_static path /static/* /themes/* *.js *.css *.woff2 *.woff *.ttf *.svg *.png *.ico
     handle @fb_static {
         reverse_proxy 127.0.0.1:26101

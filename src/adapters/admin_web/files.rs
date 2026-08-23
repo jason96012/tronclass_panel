@@ -350,7 +350,8 @@ pub(super) async fn admin_filebrowser_shell_handler(
     let nonce = is_html.then(|| super::generate_csp_nonce());
     let body = if is_html {
         let body = inject_dashboard_link(body.as_ref());
-        let text = String::from_utf8_lossy(&body);
+        let mut text = String::from_utf8_lossy(&body).into_owned();
+        inject_filebrowser_trusted_types_assets(&mut text);
         super::add_csp_nonce_to_inline_tags(&text, nonce.as_deref().unwrap_or_default()).into_bytes()
     } else {
         body.to_vec()
@@ -462,7 +463,8 @@ pub(super) async fn admin_filebrowser_share_shell_handler(headers: HeaderMap) ->
     let nonce = is_html.then(|| super::generate_csp_nonce());
     let body = if is_html {
         let body = inject_share_login_redirect(body.as_ref());
-        let text = String::from_utf8_lossy(&body);
+        let mut text = String::from_utf8_lossy(&body).into_owned();
+        inject_filebrowser_trusted_types_assets(&mut text);
         super::add_csp_nonce_to_inline_tags(&text, nonce.as_deref().unwrap_or_default()).into_bytes()
     } else {
         body.to_vec()
@@ -593,6 +595,22 @@ fn inject_share_login_redirect(body: &[u8]) -> Vec<u8> {
     html.into_bytes()
 }
 
+fn inject_filebrowser_trusted_types_assets(html: &mut String) {
+    if html.contains("trusted-types-init.js") {
+        return;
+    }
+    let assets = concat!(
+        "<script src=\"/admin/static/js/dompurify.min.js?v=20260823trustedtypes\"></script>",
+        "<script src=\"/admin/static/js/trusted-types-init.js?v=20260823trustedtypes\"></script>"
+    );
+    let lower = html.to_ascii_lowercase();
+    if let Some(index) = lower.rfind("</head>") {
+        html.insert_str(index, assets);
+    } else {
+        html.insert_str(0, assets);
+    }
+}
+
 fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
     let mut html = String::from_utf8_lossy(body).into_owned();
     if html.contains("tronclass-dashboard-back-v1") {
@@ -621,16 +639,28 @@ fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
   link.title = '回到 Tronclass Dashboard';
   link.setAttribute('aria-label', '回到 Tronclass Dashboard');
   link.setAttribute('rel', 'noopener');
-  link.style.cssText = [
-    'position:fixed', 'z-index:2147483647', 'top:10px', 'left:500px',
-    'display:flex', 'align-items:center', 'justify-content:center',
-    'min-height:40px', 'box-sizing:border-box', 'padding:0 16px',
-    'border-radius:8px', 'border:1px solid rgba(55,71,79,.22)',
-    'background:#ffffff', 'color:#37474f', 'cursor:pointer',
-    'font:600 14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'text-decoration:none', 'box-shadow:0 2px 8px rgba(0,0,0,.14)',
-    'white-space:nowrap', 'transition:background .15s,color .15s,transform .15s'
-  ].join(';');
+  // Set individual CSS properties instead of cssText so the strict CSP's
+  // style-src-attr policy does not block this trusted UI control.
+  link.style.position = 'fixed';
+  link.style.zIndex = '2147483647';
+  link.style.top = '10px';
+  link.style.left = '500px';
+  link.style.display = 'flex';
+  link.style.alignItems = 'center';
+  link.style.justifyContent = 'center';
+  link.style.minHeight = '40px';
+  link.style.boxSizing = 'border-box';
+  link.style.padding = '0 16px';
+  link.style.borderRadius = '8px';
+  link.style.border = '1px solid rgba(55,71,79,.22)';
+  link.style.background = '#ffffff';
+  link.style.color = '#37474f';
+  link.style.cursor = 'pointer';
+  link.style.font = '600 14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
+  link.style.textDecoration = 'none';
+  link.style.boxShadow = '0 2px 8px rgba(0,0,0,.14)';
+  link.style.whiteSpace = 'nowrap';
+  link.style.transition = 'background .15s,color .15s,transform .15s';
   link.addEventListener('mouseenter', function () {{
     link.style.background = '#e8f4ff';
     link.style.color = '#1565c0';
@@ -643,6 +673,7 @@ fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
   link.addEventListener('mouseup', function () {{ link.style.transform = 'none'; }});
   document.body.appendChild(link);
   var style = document.createElement('style');
+  if (document.currentScript && document.currentScript.nonce) style.setAttribute('nonce', document.currentScript.nonce);
   style.textContent = '@media (max-width: 720px) {{ #tronclass-dashboard-back {{ left:64px !important; top:8px !important; min-height:36px !important; padding:0 10px !important; font-size:12px !important; }} }}';
   document.head.appendChild(style);
 }})();

@@ -29,6 +29,8 @@ pub(super) fn theme_css() -> String {
 }
 
 pub(super) const TIMETABLE_UX_JS: &str = include_str!("static/timetable_ux.js");
+pub(super) const DOMPURIFY_JS: &str = include_str!("static/js/dompurify.min.js");
+pub(super) const TRUSTED_TYPES_INIT_JS: &str = include_str!("static/js/trusted-types-init.js");
 pub(super) const SESSION_SECURITY_JS: &str = include_str!("static/js/session-security.js");
 pub(super) const CORE_API_JS: &str = include_str!("static/js/core-api.js");
 pub(super) const ACCOUNTS_MODULE_JS: &str = include_str!("static/js/accounts.js");
@@ -110,6 +112,9 @@ pub(super) fn inject_theme(html: &str) -> String {
     // the large inline dashboard scripts does not delay theme.css.
     const SHARED_ASSETS: &str = concat!(
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
+        r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260823trustedtypes" as="script">"#,
+        r#"<script src="/admin/static/js/dompurify.min.js?v=20260823trustedtypes"></script>"#,
+        r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
         r#"<link rel="preload" href="/admin/static/session-security.js?v=20260821fast" as="script">"#,
         r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260821fast"></script>"#,
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#

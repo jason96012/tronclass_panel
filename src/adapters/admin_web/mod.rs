@@ -663,6 +663,14 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route("/admin/static/core-api.js", get(admin_core_api_js_handler))
         .route(
+            "/admin/static/js/dompurify.min.js",
+            get(admin_dompurify_js_handler),
+        )
+        .route(
+            "/admin/static/js/trusted-types-init.js",
+            get(admin_trusted_types_init_js_handler),
+        )
+        .route(
             "/admin/static/accounts.js",
             get(admin_accounts_module_js_handler),
         )
@@ -1207,7 +1215,7 @@ fn csp_header_value(nonce: Option<&str>) -> String {
         .map(|value| format!(" 'nonce-{value}'"))
         .unwrap_or_default();
     format!(
-        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'none'; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests"
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'none'; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests"
     )
 }
 
@@ -2161,6 +2169,17 @@ async fn admin_accounts_module_js_handler() -> Response {
 
 async fn admin_core_api_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::CORE_API_JS)
+}
+
+async fn admin_dompurify_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DOMPURIFY_JS)
+}
+
+async fn admin_trusted_types_init_js_handler() -> Response {
+    admin_static_asset(
+        "application/javascript; charset=utf-8",
+        pages::TRUSTED_TYPES_INIT_JS,
+    )
 }
 
 async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
