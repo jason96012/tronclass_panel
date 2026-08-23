@@ -351,30 +351,30 @@ fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
   var link = document.createElement('a');
   link.id = 'tronclass-dashboard-back';
   link.href = {dashboard_url};
-  link.textContent = '← Dashboard';
+  link.textContent = '回到 Dashboard';
   link.title = '回到 Tronclass Dashboard';
   link.setAttribute('aria-label', '回到 Tronclass Dashboard');
   link.setAttribute('rel', 'noopener');
   link.style.cssText = [
     'position:fixed', 'z-index:2147483647', 'top:10px', 'left:500px',
     'display:flex', 'align-items:center', 'justify-content:center',
-    'min-height:36px', 'box-sizing:border-box', 'padding:0 10px',
-    'border-radius:6px', 'border:1px solid transparent',
-    'background:transparent', 'color:#607d8b', 'cursor:pointer',
-    'font:500 14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
-    'text-decoration:none', 'box-shadow:none',
-    'white-space:nowrap', 'transition:background .15s,color .15s,border-color .15s'
+    'min-height:40px', 'box-sizing:border-box', 'padding:0 16px',
+    'border-radius:8px', 'border:1px solid rgba(55,71,79,.22)',
+    'background:#ffffff', 'color:#37474f', 'cursor:pointer',
+    'font:600 14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+    'text-decoration:none', 'box-shadow:0 2px 8px rgba(0,0,0,.14)',
+    'white-space:nowrap', 'transition:background .15s,color .15s,transform .15s'
   ].join(';');
   link.addEventListener('mouseenter', function () {{
-    link.style.background = '#f1f3f4';
-    link.style.borderColor = '#eceff1';
-    link.style.color = '#37474f';
+    link.style.background = '#e8f4ff';
+    link.style.color = '#1565c0';
   }});
   link.addEventListener('mouseleave', function () {{
-    link.style.background = 'transparent';
-    link.style.borderColor = 'transparent';
-    link.style.color = '#607d8b';
+    link.style.background = '#ffffff';
+    link.style.color = '#37474f';
   }});
+  link.addEventListener('mousedown', function () {{ link.style.transform = 'translateY(1px)'; }});
+  link.addEventListener('mouseup', function () {{ link.style.transform = 'none'; }});
   document.body.appendChild(link);
   var style = document.createElement('style');
   style.textContent = '@media (max-width: 720px) {{ #tronclass-dashboard-back {{ left:64px !important; top:8px !important; min-height:36px !important; padding:0 10px !important; font-size:12px !important; }} }}';
