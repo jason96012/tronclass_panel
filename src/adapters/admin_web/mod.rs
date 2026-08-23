@@ -1617,7 +1617,13 @@ async fn admin_dashboard_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    if session_must_change_password(&state, &headers, &query.token).await {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        // `/admin` remains the public login shell, but `/admin/dashboard` must
+        // never return a 200 login SPA to an unauthenticated caller.
+        return admin_login_redirect("/admin/dashboard");
+    };
+    if session.must_change_password {
         return must_change_password_redirect();
     }
     // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
@@ -2181,6 +2187,12 @@ async fn admin_trusted_types_init_js_handler() -> Response {
         "application/javascript; charset=utf-8",
         pages::TRUSTED_TYPES_INIT_JS,
     )
+}
+
+fn admin_login_redirect(next_path: &str) -> Response {
+    let encoded_next: String = url::form_urlencoded::byte_serialize(next_path.as_bytes()).collect();
+    let location = format!("/admin?next={encoded_next}");
+    (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
 }
 
 async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
@@ -2892,8 +2904,21 @@ fn login_client_identifier(headers: &HeaderMap) -> String {
 async fn admin_login_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
-    Json(login): Json<AdminLoginRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
+    let login: AdminLoginRequest = match serde_json::from_slice(&body) {
+        Ok(login) => login,
+        Err(error) => {
+            // Keep parser details in server logs only; never expose field names,
+            // line numbers or the serde/axum implementation to a caller.
+            tracing::debug!(error = %error, "admin login request rejected as invalid JSON");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
+    };
     if let Err(response) =
         validate_admin_text(&login.username, ADMIN_MAX_USERNAME_BYTES, "username")
     {
