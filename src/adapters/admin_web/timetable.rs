@@ -300,10 +300,20 @@ pub(super) async fn admin_timetable_list_handler(
 pub(super) async fn admin_timetable_import_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Json(req): Json<AdminTimetableImportRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
+    };
+    let req: AdminTimetableImportRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
     };
     if let Err(response) = validate_optional_admin_text(
         req.account_id.as_deref(),
@@ -399,10 +409,20 @@ pub(super) async fn admin_timetable_import_handler(
 pub(super) async fn admin_timetable_clear_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Json(req): Json<AdminTimetableClearRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
+    };
+    let req: AdminTimetableClearRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
     };
     if let Err(response) = validate_optional_admin_text(
         req.account_id.as_deref(),
@@ -467,7 +487,7 @@ pub(super) async fn admin_timetable_templates_list_handler(
 pub(super) async fn admin_timetable_template_save_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Json(req): Json<AdminTimetableTemplateSaveRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
@@ -475,6 +495,16 @@ pub(super) async fn admin_timetable_template_save_handler(
     if !session.is_admin {
         return unauthorized_response();
     }
+    let req: AdminTimetableTemplateSaveRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
+    };
     if let Err(response) = validate_admin_text(
         &req.name,
         MAX_TIMETABLE_TEMPLATE_NAME_BYTES,
@@ -561,10 +591,20 @@ pub(super) async fn admin_timetable_template_save_handler(
 pub(super) async fn admin_timetable_template_apply_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Json(req): Json<AdminTimetableTemplateApplyRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
+    };
+    let req: AdminTimetableTemplateApplyRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
     };
     if let Err(response) = validate_admin_text(
         &req.name,

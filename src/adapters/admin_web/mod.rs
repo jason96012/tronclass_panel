@@ -2229,10 +2229,20 @@ async fn admin_notification_preferences_get_handler(
 async fn admin_notification_preferences_update_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Json(req): Json<AdminNotificationPreferencesUpdateRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
+    };
+    let req: AdminNotificationPreferencesUpdateRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
     };
     if req.preferences.len() > ADMIN_MAX_NOTIFICATION_PREFERENCES {
         return (

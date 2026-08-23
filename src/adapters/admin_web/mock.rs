@@ -68,10 +68,25 @@ pub(super) async fn admin_mock_page_handler(headers: HeaderMap) -> Response {
 pub(super) async fn admin_mock_start_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Json(req): Json<AdminMockStartRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
+    // 授權檢查優先，避免未認證請求觸發 body 解析洩漏框架指紋（F-01）
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+
+    let req: AdminMockStartRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
     };
     if !session.is_admin {
         return unauthorized_response();
