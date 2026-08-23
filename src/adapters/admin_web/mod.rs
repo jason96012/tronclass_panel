@@ -1996,7 +1996,11 @@ async fn admin_status_handler(
             uses_https = request_uses_https(&headers),
             "STATUS 401: session lookup failed"
         );
-        return unauthorized_response();
+        // The session store is in memory, so a restart/rebuild invalidates the
+        // old HttpOnly cookie. Expire both cookie variants immediately; otherwise
+        // the browser keeps sending the dead 32-byte token and every page loops
+        // through STATUS 401 forever.
+        return append_expired_session_cookies(unauthorized_response());
     };
 
     let include_history = query.include_history.unwrap_or(true);
