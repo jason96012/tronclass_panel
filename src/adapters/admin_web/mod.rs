@@ -1231,13 +1231,16 @@ async fn require_dashboard_password_change_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let path = request.uri().path().to_string();
-    if !path.starts_with("/admin/api/") || bootstrap_allowed_api_path(&path) {
+    let path = request.uri().path();
+    if !path.starts_with("/admin/api/") || bootstrap_allowed_api_path(path) {
         return next.run(request).await;
     }
 
-    let token = session_cookie_from_headers(request.headers())
-        .or_else(|| session_token_from_uri(request.uri()));
+    // PERFORMANCE_PASSWORD_CHECK_AUTH_V1:
+    // The session_cookie_to_query_middleware already ran and injected the
+    // cookie into the URI query string. Read from URI only — avoids a second
+    // pass through the Cookie header on every authenticated request.
+    let token = session_token_from_uri(request.uri());
     if let Some(token) = token {
         if let Some(session) = state.authorize(&token).await {
             if session.must_change_password {
@@ -1398,7 +1401,8 @@ async fn admin_security_headers_middleware(
 ) -> Response {
     // FAST_PAGE_LOAD_V1: remember path before moving the request so versioned
     // /admin/static assets can keep their Cache-Control instead of no-store.
-    let path = request.uri().path().to_string();
+    // PERFORMANCE_PATH_CHECK_V1: use &str directly, no allocation needed.
+    let path = request.uri().path();
     let is_admin_path = path.starts_with("/admin")
         || path == "/manifest.webmanifest"
         || path == "/service-worker.js";
@@ -1994,33 +1998,25 @@ async fn admin_status_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    // Use the shared cookie parser. A bespoke copy here previously matched only
-    // the plain cookie names and therefore never saw the hardened
-    // `__Host-tronclass_admin_session` cookie that HTTPS / Cloudflare Tunnel
-    // deployments actually receive, making every status request return 401.
-    let token = session_cookie_from_headers(&headers)
-        .unwrap_or_else(|| query.token.trim().to_string());
+    // PERFORMANCE_STATUS_AUTH_V1:
+    // The session_cookie_to_query_middleware already injected the HttpOnly
+    // cookie into query.token, so we can skip redundant header parsing.
+    // Fall back to direct cookie read only if middleware was bypassed.
+    let token = if query.token.trim().is_empty() {
+        session_cookie_from_headers(&headers)
+            .unwrap_or_default()
+    } else {
+        query.token.trim().to_string()
+    };
     let Some(session) = state.authorize_any(&token).await else {
-        // Ptero only exposes logs, so make this failure self-diagnosing.
-        let raw_cookie = headers
-            .get(header::COOKIE)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("<none>");
-        let names: Vec<&str> = raw_cookie
-            .split(';')
-            .filter_map(|p| p.trim().split_once('=').map(|(k, _)| k.trim()))
-            .collect();
-        warn!(
-            cookie_names = ?names,
+        // Session expired or missing — this is a normal event (e.g., after
+        // server restart or cookie expiry), not a warning. Log at debug level
+        // to avoid flooding the console during routine re-authentication.
+        tracing::debug!(
             parsed_token_len = token.len(),
-            xfp = ?headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()),
             uses_https = request_uses_https(&headers),
-            "STATUS 401: session lookup failed"
+            "STATUS 401: no valid session"
         );
-        // The session store is in memory, so a restart/rebuild invalidates the
-        // old HttpOnly cookie. Expire both cookie variants immediately; otherwise
-        // the browser keeps sending the dead 32-byte token and every page loops
-        // through STATUS 401 forever.
         return append_expired_session_cookies(unauthorized_response());
     };
 
@@ -2096,14 +2092,20 @@ async fn admin_status_handler(
                 let started_at = status.started_at;
                 drop(status);
 
-                let target = account.target.lock().await.clone();
+                // PERFORMANCE_STATUS_TARGET_V1:
+                // Extract only the fields we need from the target lock instead
+                // of cloning the entire AdapterAccountTarget struct.
+                let (line_user_id, discord_user_id) = {
+                    let target = account.target.lock().await;
+                    (target.line_user_id.clone(), target.discord_user_id.clone())
+                };
                 let running = *account.is_running.lock().await;
 
                 AdminAccountStatus {
                     account_id: account.account_id.clone(),
                     username: account.username.clone(),
-                    line_user_id: target.line_user_id,
-                    discord_user_id: target.discord_user_id,
+                    line_user_id,
+                    discord_user_id,
                     account_admin,
                     is_running: running,
                     user_name,
@@ -2527,10 +2529,13 @@ async fn admin_public_status_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    // Shared cookie parser: also matches the hardened `__Host-` cookie used on
-    // HTTPS / Cloudflare Tunnel deployments.
-    let token = session_cookie_from_headers(&headers)
-        .unwrap_or_else(|| query.token.trim().to_string());
+    // PERFORMANCE_STATUS_AUTH_V1: prefer middleware-injected query.token
+    let token = if query.token.trim().is_empty() {
+        session_cookie_from_headers(&headers)
+            .unwrap_or_default()
+    } else {
+        query.token.trim().to_string()
+    };
     let Some(session) = state.authorize(&token).await else {
         return unauthorized_response();
     };
@@ -3388,9 +3393,16 @@ async fn admin_login_handler(
 }
 
 fn session_token(headers: &HeaderMap, query_token: &str) -> String {
-    // Must go through the shared parser so the hardened `__Host-` cookie used on
-    // HTTPS deployments is recognised too.
-    session_cookie_from_headers(headers).unwrap_or_else(|| query_token.trim().to_string())
+    // PERFORMANCE_SESSION_TOKEN_V1:
+    // The session_cookie_to_query_middleware already injected the HttpOnly
+    // cookie into query.token for /admin/api/ paths. Prefer query.token
+    // first to avoid redundant Cookie header parsing on every request.
+    // Fall back to direct cookie read for non-API paths (page handlers).
+    let trimmed = query_token.trim();
+    if !trimmed.is_empty() {
+        return trimmed.to_string();
+    }
+    session_cookie_from_headers(headers).unwrap_or_default()
 }
 
 async fn admin_logout_handler(
@@ -3579,7 +3591,7 @@ fn resolve_visible_accounts<'a>(
 }
 
 fn unauthorized_response() -> Response {
-    warn!("admin web unauthorized request");
+    tracing::debug!("admin web unauthorized request");
     (
         StatusCode::UNAUTHORIZED,
         Json(json!({ "error": "unauthorized" })),

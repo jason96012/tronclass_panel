@@ -381,6 +381,12 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
     let max_failures = config.monitor.max_failures_before_reauth;
     let retry_interval = Duration::from_secs(config.monitor.retry_interval_secs);
 
+    // PERFORMANCE_MONITOR_TARGET_CACHE_V1:
+    // Cache adapter_target at the start of each iteration to avoid 5+ lock
+    // acquisitions per loop cycle. The target rarely changes (only on
+    // Discord/LINE rebind), so one read per iteration is sufficient.
+    let mut cached_target = ctx.adapter_target.lock().await.clone();
+
     loop {
         // ── 等待觸發（定時、強制 or 重新認證）──────────────────────────────────
         let poll_interval =
@@ -392,6 +398,9 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
             &schedule,
         )
         .await;
+
+        // Refresh cached target once per iteration
+        cached_target = ctx.adapter_target.lock().await.clone();
 
         match trigger {
             MonitorTrigger::ForcePoll => debug!("由強制觸發啟動本次輪詢"),
@@ -405,19 +414,18 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                 info!("收到重新認證請求");
                 if let Err(e) = do_reauth(&mut ctx).await {
                     error!(error = %e, "重新認證失敗");
-                    let target = ctx.adapter_target.lock().await.clone();
-                    // BACKGROUND_MANUAL_REAUTH_NOTIFICATIONS_PHASE_M7B3A
+                    // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                     notify_background(
                         ctx.messenger.clone(),
-                        target,
+                        cached_target.clone(),
                         OutboundMessage::Text(format!("❌ [{}] 重新認證失敗：{e}", account_label)),
                     );
                 } else {
                     consecutive_failures = 0;
-                    let target = ctx.adapter_target.lock().await.clone();
+                    // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                     notify_background(
                         ctx.messenger.clone(),
-                        target,
+                        cached_target.clone(),
                         OutboundMessage::Text(format!("✅ [{}] 重新認證成功！", account_label)),
                     );
                 }
@@ -517,10 +525,10 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                     }
 
                     if let Some(bot) = &ctx.messenger {
-                        let target = ctx.adapter_target.lock().await.clone();
+                        // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                         let _ = bot
                             .push_to_account_or_admin(
-                                &target,
+                                &cached_target,
                                 &OutboundMessage::Text(format!(
                                     "⚠️ [{}] 簽到監控遇到錯誤，嘗試重新認證...\n錯誤：{e}",
                                     account_label
@@ -538,10 +546,10 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                                 s.consecutive_failures = 0;
                             }
                             if let Some(bot) = &ctx.messenger {
-                                let target = ctx.adapter_target.lock().await.clone();
+                                // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                                 let _ = bot
                                     .push_to_account_or_admin(
-                                        &target,
+                                        &cached_target,
                                         &OutboundMessage::Text(format!(
                                             "✅ [{}] 自動重新認證成功！",
                                             account_label
@@ -553,10 +561,10 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                         Err(reauth_err) => {
                             error!(error = %reauth_err, "重新認證失敗！");
                             if let Some(bot) = &ctx.messenger {
-                                let target = ctx.adapter_target.lock().await.clone();
+                                // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                                 let _ = bot
                                     .push_to_account_or_admin(
-                                        &target,
+                                        &cached_target,
                                         &OutboundMessage::Text(format!(
                                             "❌ [{}] 自動重新認證失敗：{reauth_err}\n\n\
                                          請手動更新 accounts.toml 中對應帳號的 manual_cookie，\n\
@@ -1010,19 +1018,24 @@ fn redact_sensitive_display_text(input: &str) -> String {
 }
 
 fn redact_sensitive_tokens(input: &str) -> String {
-    input
-        .split_whitespace()
-        .map(|part| {
-            let trimmed = part
-                .trim_matches(|c: char| matches!(c, ',' | ';' | ')' | '(' | '[' | ']' | '{' | '}'));
-            if looks_like_sensitive_token(trimmed) {
-                "[隱藏]".to_string()
-            } else {
-                part.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    // PERFORMANCE_REDACT_V1: avoid intermediate Vec allocation by writing
+    // directly to the output buffer.
+    let mut output = String::with_capacity(input.len());
+    let mut first = true;
+    for part in input.split_whitespace() {
+        if !first {
+            output.push(' ');
+        }
+        first = false;
+        let trimmed = part
+            .trim_matches(|c: char| matches!(c, ',' | ';' | ')' | '(' | '[' | ']' | '{' | '}'));
+        if looks_like_sensitive_token(trimmed) {
+            output.push_str("[隱藏]");
+        } else {
+            output.push_str(part);
+        }
+    }
+    output
 }
 
 fn looks_like_sensitive_token(value: &str) -> bool {
