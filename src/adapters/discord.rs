@@ -41,6 +41,7 @@ const COMPONENT_NUMBER_AUTO_PREFIX: &str = "trc:number-auto:";
 const COMPONENT_ACCOUNT_APPROVE_PREFIX: &str = "trc:account-approve:";
 const COMPONENT_BLOCK_IP_PREFIX: &str = "trc:block-ip:";
 const COMPONENT_UNBLOCK_IP_PREFIX: &str = "trc:unblock-ip:";
+const COMPONENT_UNBLOCK_OWN_IP_PREFIX: &str = "trc:unblock-own-ip:";
 const DISCORD_SEND_INTERVAL_MS: u64 = 350;
 const DISCORD_DASHBOARD_DEDUPE_TTL_SECS: u64 = 10 * 60;
 const MAX_DISCORD_DM_CHANNEL_CACHE: usize = 2048;
@@ -641,6 +642,28 @@ impl DiscordRuntime {
             let message = match action {
                 AccountReviewAction::Approve => self.approve_pending_account(token).await,
                 AccountReviewAction::Reject => self.reject_pending_account(token).await,
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        if let Some((account_id, ip)) = parse_unblock_own_ip_custom_id(&component.data.custom_id) {
+            let is_admin = user_id == self.bot.admin_user_id;
+            let authorized = is_admin || self.accounts_db.get(&account_id).await.ok().flatten()
+                .is_some_and(|account| account.discord_user_id.trim() == user_id);
+            if !authorized {
+                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
+                return Ok(());
+            }
+            let result = if is_admin {
+                self.accounts_db.unblock_ip(&ip).await
+            } else {
+                self.accounts_db.unblock_own_automatic_ip(&ip, &account_id).await
+            };
+            let message = match result {
+                Ok(true) => OutboundMessage::Text(format!("✅ 已移除自動黑名單：`{ip}`。")),
+                Ok(false) => OutboundMessage::Text("ℹ️ 找不到可由你解除的自動黑名單。".to_string()),
+                Err(error) => OutboundMessage::Text(format!("❌ 移除黑名單失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -1409,7 +1432,11 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
         ],
         OutboundMessage::SecurityAlert(event) => {
             if parse_discord_ip(&event.ip).is_some() {
-                let action = if event.ip_is_blacklisted {
+                let action = if event.ip_is_blacklisted && event.allow_owner_unblock {
+                    CreateButton::new(format!("{COMPONENT_UNBLOCK_OWN_IP_PREFIX}{}|{}", event.account_id, event.ip))
+                        .label("移除黑名單")
+                        .style(ButtonStyle::Success)
+                } else if event.ip_is_blacklisted {
                     CreateButton::new(format!("{COMPONENT_UNBLOCK_IP_PREFIX}{}", event.ip))
                         .label("移除黑名單")
                         .style(ButtonStyle::Success)
@@ -1745,6 +1772,13 @@ fn parse_block_ip_custom_id(value: &str) -> Option<String> {
 fn parse_unblock_ip_custom_id(value: &str) -> Option<String> {
     let ip = value.strip_prefix(COMPONENT_UNBLOCK_IP_PREFIX)?;
     parse_discord_ip(ip)
+}
+
+fn parse_unblock_own_ip_custom_id(value: &str) -> Option<(String, String)> {
+    let value = value.strip_prefix(COMPONENT_UNBLOCK_OWN_IP_PREFIX)?;
+    let (account_id, ip) = value.split_once('|')?;
+    if account_id.trim().is_empty() || account_id.len() > 64 { return None; }
+    Some((account_id.to_string(), parse_discord_ip(ip)?))
 }
 
 #[cfg(test)]

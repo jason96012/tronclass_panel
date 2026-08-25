@@ -171,6 +171,10 @@ pub struct SecurityAlertEvent {
     /// the IP automatically. Adapters can then offer an unblock action rather
     /// than a redundant block action.
     pub ip_is_blacklisted: bool,
+    /// Account that caused an automatic block. Used only for self-service
+    /// Discord unblock authorization; never rendered as a credential.
+    pub account_id: String,
+    pub allow_owner_unblock: bool,
 }
 
 /// Outbound event emitted when a monitored account starts.

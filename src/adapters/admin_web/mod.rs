@@ -460,6 +460,12 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                 .await
             {
                 Ok(true) => {
+                    let owner_account_id = state.accounts_db.get(username).await.ok().flatten()
+                        .map(|account| account.id)
+                        .unwrap_or_else(|| username.trim().to_string());
+                    if let Err(error) = state.accounts_db.set_auto_block_owner(blocked_ip, &owner_account_id).await {
+                        warn!(ip = %blocked_ip, error = %error, "automatic blacklist owner record failed");
+                    }
                     warn!(ip = %blocked_ip, ip_fails, "IP automatically blacklisted after repeated Dashboard login failures");
                     crate::logs::record_audit(
                         "web",
@@ -484,18 +490,27 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                         .await;
                     // This notification deliberately has no alert cooldown:
                     // block_ip returning true makes it a one-time state change.
-                    notify_admins_security_alert(
-                        state,
-                        SecurityAlertEvent {
-                            username: username.trim().to_string(),
-                            ip: blocked_ip.clone(),
-                            user_failures: user_fails,
-                            ip_failures: ip_fails,
-                            timestamp: security_now_label(),
-                            ip_is_blacklisted: true,
-                        },
-                    )
-                    .await;
+                    let event = SecurityAlertEvent {
+                        username: username.trim().to_string(),
+                        ip: blocked_ip.clone(),
+                        user_failures: user_fails,
+                        ip_failures: ip_fails,
+                        timestamp: security_now_label(),
+                        account_id: owner_account_id,
+                        ip_is_blacklisted: true,
+                        allow_owner_unblock: true,
+                    };
+                    notify_admins_security_alert(state, event.clone()).await;
+                    // The account holder receives the same Discord component,
+                    // but the handler only permits removal of this account's
+                    // own automatic block.
+                    if let (Some(messenger), Some(discord_id)) =
+                        (state.messenger.as_ref(), target_discord.as_deref())
+                    {
+                        let _ = messenger
+                            .push(discord_id, &OutboundMessage::SecurityAlert(event))
+                            .await;
+                    }
                 }
                 Ok(false) => {}
                 Err(error) => warn!(ip = %blocked_ip, error = %error, "automatic IP blacklist write failed"),
@@ -515,6 +530,8 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                     ip_failures: ip_fails,
                     timestamp: security_now_label(),
                     ip_is_blacklisted: false,
+                    account_id: username.trim().to_string(),
+                    allow_owner_unblock: false,
                 },
             )
             .await;
@@ -544,6 +561,8 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                     ip_failures: ip_fails,
                     timestamp: security_now_label(),
                     ip_is_blacklisted: false,
+                    account_id: username.trim().to_string(),
+                    allow_owner_unblock: false,
                 },
             )
             .await;

@@ -363,7 +363,8 @@ impl AccountsDb {
                 blocked_time TEXT NOT NULL DEFAULT '',
                 blocked_by TEXT NOT NULL DEFAULT '',
                 reason TEXT NOT NULL DEFAULT '',
-                failure_count INTEGER NOT NULL DEFAULT 0
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                blocked_account_id TEXT NOT NULL DEFAULT ''
             )",
         )
         .execute(&pool)
@@ -377,6 +378,13 @@ impl AccountsDb {
             "ip_blacklist",
             "failure_count",
             "INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
+        ensure_table_column(
+            &pool,
+            "ip_blacklist",
+            "blocked_account_id",
+            "TEXT NOT NULL DEFAULT ''",
         )
         .await?;
 
@@ -993,6 +1001,39 @@ impl AccountsDb {
         .await
         .into_diagnostic()
         .wrap_err("寫入 IP 黑名單失敗")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Mark a newly-created automatic block as belonging to the Dashboard
+    /// account that triggered it. This is used to authorize a self-service
+    /// Discord unblock without granting general blacklist access.
+    pub async fn set_auto_block_owner(&self, ip: &str, account_id: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE ip_blacklist SET blocked_account_id = ?
+             WHERE ip = ? AND blocked_by = 'system:auto-login-failure'",
+        )
+        .bind(account_id.trim())
+        .bind(ip.trim())
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("寫入自動封鎖帳號識別失敗")?;
+        Ok(())
+    }
+
+    /// Removes only an automatic block owned by the supplied account.
+    pub async fn unblock_own_automatic_ip(&self, ip: &str, account_id: &str) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM ip_blacklist
+             WHERE ip = ? AND blocked_by = 'system:auto-login-failure'
+               AND blocked_account_id = ?",
+        )
+        .bind(ip.trim())
+        .bind(account_id.trim())
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("解除自己的自動 IP 封鎖失敗")?;
         Ok(result.rows_affected() > 0)
     }
 
