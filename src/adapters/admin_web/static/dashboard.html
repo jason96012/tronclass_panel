@@ -5068,5 +5068,27 @@ html.dash-role-user a[href^="/admin/blacklist?"]{
   retry&&retry.addEventListener('click',openFiles);close&&close.addEventListener('click',hide);modal.addEventListener('click',function(ev){if(ev.target===modal)hide();});
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a309e8f76f63a9b3',t:'MTc4NzY1MzcwNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<style id="detectionScheduleDesktopNavStyle">
+.detection-schedule-desktop-link{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border:1px solid var(--line,#dbe3ef);border-radius:12px;background:var(--panel,#fff);color:inherit;text-decoration:none;font-weight:750;white-space:nowrap;transition:border-color .18s ease,color .18s ease,background .18s ease}.detection-schedule-desktop-link:hover{border-color:#38bdf8;color:#0284c7;background:rgba(56,189,248,.10)}@media(max-width:760px){.detection-schedule-desktop-link{display:none!important}}
+</style>
+<script id="detectionScheduleDesktopNavScript">
+(function(){'use strict';
+  if(window.DETECTION_SCHEDULE_DESKTOP_NAV_V1)return;window.DETECTION_SCHEDULE_DESKTOP_NAV_V1=true;
+  function ensure(){
+    if(document.getElementById('detectionScheduleDesktopLink'))return;
+    var notify=document.querySelector('.tabs .tab[data-view="notifications"]');
+    if(!notify)return;
+    var link=document.createElement('a');
+    link.id='detectionScheduleDesktopLink';
+    link.className='detection-schedule-desktop-link';
+    link.href='/admin/detection-schedule';
+    link.textContent='點名偵測排程';
+    link.setAttribute('aria-label','前往點名偵測排程');
+    notify.insertAdjacentElement('afterend',link);
+  }
+  function start(){ensure();try{new MutationObserver(ensure).observe(document.documentElement,{childList:true,subtree:true});}catch(_){}var count=0,timer=setInterval(function(){ensure();if(++count>=20)clearInterval(timer);},500);}
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
+})();
+</script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
