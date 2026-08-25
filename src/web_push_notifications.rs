@@ -4,15 +4,20 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use aes_gcm::{aead::Aead, Aes128Gcm, KeyInit, Nonce};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use hkdf::Hkdf;
 use miette::Result;
 use once_cell::sync::{Lazy, OnceCell};
-use serde_json::json;
-use tracing::{debug, warn};
-use web_push::{
-    request_builder, ContentEncoding, SubscriptionInfo, VapidSignatureBuilder,
-    WebPushMessageBuilder,
+use p256::{
+    ecdh::diffie_hellman,
+    ecdsa::{signature::Signer, Signature, SigningKey},
+    elliptic_curve::sec1::ToEncodedPoint,
+    PublicKey, SecretKey,
 };
+use serde_json::json;
+use sha2::Sha256;
+use tracing::{debug, warn};
 
 use crate::db::{AccountsDb, WebPushSubscriptionRow};
 
@@ -43,9 +48,13 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
             value
         }
     };
-    let partial = VapidSignatureBuilder::from_base64_no_sub(&private_key)
-        .map_err(|error| miette::miette!("建立 VAPID key 失敗：{error}"))?;
-    let public_key = URL_SAFE_NO_PAD.encode(partial.get_public_key());
+    let signing_key = decode_signing_key(&private_key)?;
+    let public_key = URL_SAFE_NO_PAD.encode(
+        signing_key
+            .verifying_key()
+            .to_encoded_point(false)
+            .as_bytes(),
+    );
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(20))
         .use_rustls_tls()
@@ -151,38 +160,22 @@ impl WebPushService {
     }
 
     async fn send_one(&self, subscription: &WebPushSubscriptionRow, payload: &[u8]) -> Result<()> {
-        let info = SubscriptionInfo::new(
-            subscription.endpoint.clone(),
-            subscription.p256dh.clone(),
-            subscription.auth.clone(),
-        );
-        let mut signature = VapidSignatureBuilder::from_base64(&self.private_key, &info)
-            .map_err(|error| miette::miette!("建立 VAPID signature 失敗：{error}"))?;
-        signature.add_claim("sub", "https://tronclass.local");
-        let signature = signature
-            .build()
-            .map_err(|error| miette::miette!("簽署 VAPID 失敗：{error}"))?;
-        let mut builder = WebPushMessageBuilder::new(&info);
-        builder.set_payload(ContentEncoding::Aes128Gcm, payload);
-        builder.set_vapid_signature(signature);
-        let message = builder
-            .build()
-            .map_err(|error| miette::miette!("建立 Web Push 訊息失敗：{error}"))?;
-        let request = request_builder::build_request::<Vec<u8>>(message);
-        let mut outgoing = self
+        let endpoint = reqwest::Url::parse(&subscription.endpoint)
+            .map_err(|error| miette::miette!("Web Push endpoint 無效：{error}"))?;
+        let encrypted = encrypt_payload(
+            payload,
+            &subscription.p256dh,
+            &subscription.auth,
+        )?;
+        let authorization = vapid_authorization(&self.private_key, &self.public_key, &endpoint)?;
+        let response = self
             .http
-            .request(
-                reqwest::Method::from_bytes(request.method().as_str().as_bytes())
-                    .map_err(|error| miette::miette!("Web Push HTTP method 無效：{error}"))?,
-                request.uri().to_string(),
-            )
-            .body(request.body().clone());
-        for (name, value) in request.headers() {
-            if let Ok(value) = value.to_str() {
-                outgoing = outgoing.header(name.as_str(), value);
-            }
-        }
-        let response = outgoing
+            .post(endpoint)
+            .header("TTL", "300")
+            .header("Content-Encoding", "aes128gcm")
+            .header("Content-Type", "application/octet-stream")
+            .header("Authorization", authorization)
+            .body(encrypted)
             .send()
             .await
             .map_err(|error| miette::miette!("Web Push HTTP 發送失敗：{error}"))?;
@@ -203,17 +196,112 @@ impl WebPushService {
     }
 }
 
+fn decode_signing_key(value: &str) -> Result<SigningKey> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(value.trim())
+        .map_err(|error| miette::miette!("VAPID private key Base64 無效：{error}"))?;
+    SigningKey::from_slice(&bytes)
+        .map_err(|error| miette::miette!("VAPID private key 無效：{error}"))
+}
+
 fn valid_private_key(value: &str) -> bool {
-    VapidSignatureBuilder::from_base64_no_sub(value).is_ok()
+    decode_signing_key(value).is_ok()
 }
 
 fn generate_private_key() -> Result<String> {
-    for _ in 0..16 {
-        let bytes = rand::random::<[u8; 32]>();
-        let encoded = URL_SAFE_NO_PAD.encode(bytes);
+    for _ in 0..32 {
+        let encoded = URL_SAFE_NO_PAD.encode(rand::random::<[u8; 32]>());
         if valid_private_key(&encoded) {
             return Ok(encoded);
         }
     }
     Err(miette::miette!("無法產生有效的 VAPID private key"))
+}
+
+fn vapid_authorization(
+    private_key: &str,
+    public_key: &str,
+    endpoint: &reqwest::Url,
+) -> Result<String> {
+    let host = endpoint
+        .host_str()
+        .ok_or_else(|| miette::miette!("Web Push endpoint 缺少 host"))?;
+    let audience = match endpoint.port() {
+        Some(port) => format!("{}://{host}:{port}", endpoint.scheme()),
+        None => format!("{}://{host}", endpoint.scheme()),
+    };
+    let header = URL_SAFE_NO_PAD.encode(br#"{"typ":"JWT","alg":"ES256"}"#);
+    let claims = URL_SAFE_NO_PAD.encode(
+        serde_json::to_vec(&json!({
+            "aud": audience,
+            "exp": chrono::Utc::now().timestamp() + 12 * 60 * 60,
+            "sub": "mailto:admin@tronclass.local"
+        }))
+        .map_err(|error| miette::miette!("序列化 VAPID claims 失敗：{error}"))?,
+    );
+    let input = format!("{header}.{claims}");
+    let signing_key = decode_signing_key(private_key)?;
+    let signature: Signature = signing_key.sign(input.as_bytes());
+    let token = format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()));
+    Ok(format!("vapid t={token}, k={public_key}"))
+}
+
+fn encrypt_payload(payload: &[u8], p256dh: &str, auth: &str) -> Result<Vec<u8>> {
+    let receiver_public_bytes = URL_SAFE_NO_PAD
+        .decode(p256dh.trim())
+        .map_err(|error| miette::miette!("訂閱 p256dh 無效：{error}"))?;
+    let receiver_public = PublicKey::from_sec1_bytes(&receiver_public_bytes)
+        .map_err(|error| miette::miette!("訂閱 P-256 public key 無效：{error}"))?;
+    let auth_secret = URL_SAFE_NO_PAD
+        .decode(auth.trim())
+        .map_err(|error| miette::miette!("訂閱 auth secret 無效：{error}"))?;
+
+    let sender_secret = loop {
+        let candidate = rand::random::<[u8; 32]>();
+        if let Ok(secret) = SecretKey::from_slice(&candidate) {
+            break secret;
+        }
+    };
+    let sender_public = sender_secret.public_key().to_encoded_point(false);
+    let shared = diffie_hellman(
+        sender_secret.to_nonzero_scalar(),
+        receiver_public.as_affine(),
+    );
+
+    let mut key_info = b"WebPush: info\0".to_vec();
+    key_info.extend_from_slice(&receiver_public_bytes);
+    key_info.extend_from_slice(sender_public.as_bytes());
+    let auth_hkdf = Hkdf::<Sha256>::new(Some(&auth_secret), shared.raw_secret_bytes().as_slice());
+    let mut ikm = [0u8; 32];
+    auth_hkdf
+        .expand(&key_info, &mut ikm)
+        .map_err(|_| miette::miette!("Web Push IKM HKDF 失敗"))?;
+
+    let salt = rand::random::<[u8; 16]>();
+    let content_hkdf = Hkdf::<Sha256>::new(Some(&salt), &ikm);
+    let mut content_key = [0u8; 16];
+    let mut nonce_bytes = [0u8; 12];
+    content_hkdf
+        .expand(b"Content-Encoding: aes128gcm\0", &mut content_key)
+        .map_err(|_| miette::miette!("Web Push content key HKDF 失敗"))?;
+    content_hkdf
+        .expand(b"Content-Encoding: nonce\0", &mut nonce_bytes)
+        .map_err(|_| miette::miette!("Web Push nonce HKDF 失敗"))?;
+
+    let mut record = payload.to_vec();
+    record.push(2); // RFC 8188 final-record delimiter.
+    let cipher = Aes128Gcm::new_from_slice(&content_key)
+        .map_err(|error| miette::miette!("建立 Web Push AES-GCM cipher 失敗：{error}"))?;
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce_bytes), record.as_ref())
+        .map_err(|error| miette::miette!("加密 Web Push payload 失敗：{error}"))?;
+
+    // RFC 8188 aes128gcm body: salt, record size, key-id length, key-id, record.
+    let mut body = Vec::with_capacity(16 + 4 + 1 + sender_public.as_bytes().len() + ciphertext.len());
+    body.extend_from_slice(&salt);
+    body.extend_from_slice(&4096u32.to_be_bytes());
+    body.push(sender_public.as_bytes().len() as u8);
+    body.extend_from_slice(sender_public.as_bytes());
+    body.extend_from_slice(&ciphertext);
+    Ok(body)
 }

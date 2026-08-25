@@ -64,12 +64,11 @@ ddddocr = { git = "https://github.com/86maid/ddddocr.git", branch = "master", op
 futures = "0.3"
 async-trait = "0.1"
 
-# Standards-based Web Push (payload encryption + VAPID signing). `web-push`
-# currently routes payload encryption through `ece`, whose Linux backend uses
-# OpenSSL. Build it from vendored source so Pterodactyl does not need libssl-dev
-# or openssl.pc installed on the host. HTTP delivery still uses reqwest/rustls.
-web-push = { version = "0.11", default-features = false }
-openssl = { version = "0.10", features = ["vendored"] }
+# Standards-based Web Push crypto implemented with pure-Rust primitives. This
+# avoids libssl-dev, openssl.pc and make in minimal Pterodactyl containers.
+p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
 
 # Discord Bot adapter
 serenity = { version = "0.12", default-features = false, features = ["builder", "client", "gateway", "http", "model", "rustls_backend", "utils"] }
