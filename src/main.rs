@@ -35,6 +35,7 @@ mod class_reminders;
 mod config;
 mod dashboard_auth;
 mod db;
+mod detection_schedule;
 mod logs;
 mod monitor;
 mod rollcalls;

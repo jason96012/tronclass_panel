@@ -45,6 +45,7 @@ use crate::db::{AccountsDb, MaterialEventInput};
 use crate::runtime_settings::{RuntimeRestPeriod, RuntimeSettings};
 
 mod class_reminder;
+mod detection_schedule;
 mod pages;
 mod timetable;
 use self::pages::{
@@ -915,6 +916,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // already narrows itself to the session's own account for non-admins,
         // so it is the correct destination.
         .route("/admin/me", get(admin_dashboard_page_handler))
+        .route(
+            "/admin/detection-schedule",
+            get(detection_schedule::page_handler),
+        )
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
         .route("/admin/files", get(files::admin_files_page_handler))
@@ -1048,6 +1053,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/class_reminder",
             get(class_reminder::admin_class_reminder_get_handler)
                 .post(class_reminder::admin_class_reminder_update_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/detection-schedule",
+            get(detection_schedule::get_handler)
+                .post(detection_schedule::update_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(

@@ -215,6 +215,18 @@ pub struct ClassReminderPreferenceRow {
     pub updated_time: String,
 }
 
+/// Per-account timetable-driven rollcall detection settings.
+#[derive(Debug, Clone, FromRow, serde::Serialize)]
+pub struct DetectionSchedulePreferenceRow {
+    pub account_id: String,
+    pub enabled: bool,
+    pub minutes_before: i64,
+    pub minutes_after: i64,
+    pub outside_interval_secs: i64,
+    pub updated_at: i64,
+    pub updated_time: String,
+}
+
 #[derive(Debug, Clone, FromRow)]
 pub struct ClassReminderDueRow {
     pub timetable_id: i64,
@@ -559,6 +571,22 @@ impl AccountsDb {
         .await
         .into_diagnostic()
         .wrap_err("初始化 class_reminder_preferences 資料表失敗")?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS detection_schedule_preferences (
+                account_id TEXT PRIMARY KEY NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                minutes_before INTEGER NOT NULL DEFAULT 10,
+                minutes_after INTEGER NOT NULL DEFAULT 10,
+                outside_interval_secs INTEGER NOT NULL DEFAULT 300,
+                updated_at INTEGER NOT NULL DEFAULT 0,
+                updated_time TEXT NOT NULL DEFAULT ''
+            )",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 detection_schedule_preferences 資料表失敗")?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS class_reminder_sent (
@@ -1560,6 +1588,76 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err_with(|| format!("讀取 `{account_id}` 通知設定失敗"))?;
         Ok(row.map(|(enabled,)| enabled).unwrap_or(true))
+    }
+
+    pub async fn get_detection_schedule_preference(
+        &self,
+        account_id: &str,
+    ) -> Result<DetectionSchedulePreferenceRow> {
+        let account_id = account_id.trim();
+        let row = sqlx::query_as::<_, DetectionSchedulePreferenceRow>(
+            "SELECT account_id, enabled, minutes_before, minutes_after,
+                    outside_interval_secs, updated_at, updated_time
+             FROM detection_schedule_preferences
+             WHERE account_id = ?",
+        )
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err_with(|| format!("讀取 `{account_id}` 點名偵測排程失敗"))?;
+
+        Ok(row.unwrap_or_else(|| DetectionSchedulePreferenceRow {
+            account_id: account_id.to_string(),
+            enabled: true,
+            minutes_before: 10,
+            minutes_after: 10,
+            outside_interval_secs: 300,
+            updated_at: 0,
+            updated_time: String::new(),
+        }))
+    }
+
+    pub async fn set_detection_schedule_preference(
+        &self,
+        account_id: &str,
+        enabled: bool,
+        minutes_before: i64,
+        minutes_after: i64,
+        outside_interval_secs: i64,
+    ) -> Result<()> {
+        let account_id = account_id.trim();
+        let minutes_before = minutes_before.clamp(0, 180);
+        let minutes_after = minutes_after.clamp(0, 180);
+        let outside_interval_secs = outside_interval_secs.clamp(60, 3600);
+        let now = chrono::Local::now();
+        let timestamp = now.timestamp();
+        let time_label = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        sqlx::query(
+            "INSERT INTO detection_schedule_preferences
+                (account_id, enabled, minutes_before, minutes_after,
+                 outside_interval_secs, updated_at, updated_time)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id) DO UPDATE SET
+                enabled = excluded.enabled,
+                minutes_before = excluded.minutes_before,
+                minutes_after = excluded.minutes_after,
+                outside_interval_secs = excluded.outside_interval_secs,
+                updated_at = excluded.updated_at,
+                updated_time = excluded.updated_time",
+        )
+        .bind(account_id)
+        .bind(enabled)
+        .bind(minutes_before)
+        .bind(minutes_after)
+        .bind(outside_interval_secs)
+        .bind(timestamp)
+        .bind(&time_label)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err_with(|| format!("更新 `{account_id}` 點名偵測排程失敗"))?;
+        Ok(())
     }
 
     pub async fn get_class_reminder_preference(
