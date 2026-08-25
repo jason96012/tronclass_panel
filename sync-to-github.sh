@@ -38,19 +38,31 @@ REPO="${REPO%/}"
 do_push() {
   git remote remove github-sync 2>/dev/null || true
   git remote add github-sync "https://x-access-token:${TOKEN}@github.com/${REPO}.git"
-  if git -c http.extraHeader="AUTHORIZATION: bearer ${TOKEN}" push -u github-sync "HEAD:${BRANCH}"; then
-    echo "已推到 github.com/${REPO} ${BRANCH}"
+
+  # The remote may have commits made from GitHub/the other deployment. Fetch
+  # and rebase first; never use force-push for automatic sync.
+  if ! git fetch github-sync "$BRANCH"; then
+    echo "無法讀取 GitHub 分支：請確認 token 仍有效、可讀取 ${REPO}，且分支 ${BRANCH} 存在"
     git remote remove github-sync 2>/dev/null || true
-    return 0
+    return 1
   fi
-  echo "bearer 失敗，改試 x-access-token URL"
+  local remote_ref="github-sync/${BRANCH}"
+  if ! git merge-base --is-ancestor "$remote_ref" HEAD; then
+    echo "遠端已有新 commit，嘗試 rebase 本機自動同步 commit"
+    if ! git rebase "$remote_ref"; then
+      echo "rebase 發生衝突；已中止，不會覆蓋遠端或遺失本機 commit"
+      git rebase --abort 2>/dev/null || true
+      git remote remove github-sync 2>/dev/null || true
+      return 1
+    fi
+  fi
+
   if git push -u github-sync "HEAD:${BRANCH}"; then
     echo "已推到 github.com/${REPO} ${BRANCH}"
     git remote remove github-sync 2>/dev/null || true
     return 0
   fi
-  echo "push 失敗：token 無效或沒有 ${REPO} 的寫入權限"
-  echo "請用 jason96012 開 Fine-grained token，Contents = Read and write，只選 tronclass_panel"
+  echo "push 失敗：請檢查 GitHub token 的 Contents Read and write 權限，或查看是否有新的遠端 commit"
   git remote remove github-sync 2>/dev/null || true
   return 1
 }
