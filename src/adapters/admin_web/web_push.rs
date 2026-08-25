@@ -151,17 +151,19 @@ pub(super) async fn test_handler(
         Err(response) => return response,
     };
     match crate::web_push_notifications::send_test(&account_id).await {
-        Ok(0) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "這個帳號尚未啟用手機推播"})),
-        )
-            .into_response(),
+        Ok(0) => Json(json!({
+            "ok": false,
+            "sent": 0,
+            "error": "這個帳號尚未啟用手機推播"
+        }))
+        .into_response(),
         Ok(sent) => Json(json!({"ok": true, "sent": sent})).into_response(),
-        Err(error) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({"error": format!("測試推播失敗：{error}")})),
-        )
-            .into_response(),
+        Err(error) => Json(json!({
+            "ok": false,
+            "sent": 0,
+            "error": format!("測試推播失敗：{error}")
+        }))
+        .into_response(),
     }
 }
 

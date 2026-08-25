@@ -64,8 +64,16 @@
       });
     }
     await saveSubscription(subscription);
-    var result = await jsonFetch(api + '/test', { method: 'POST' });
-    return { accountId: config.account_id, sent: result.sent || 0 };
+    var testError = '';
+    var sent = 0;
+    try {
+      var result = await jsonFetch(api + '/test', { method: 'POST' });
+      sent = result.sent || 0;
+      if (result.ok === false) testError = result.error || 'Apple 測試推播未送達';
+    } catch (error) {
+      testError = error && error.message ? error.message : '測試推播請求失敗';
+    }
+    return { accountId: config.account_id, sent: sent, testError: testError };
   }
   async function unsubscribe() {
     assertSupported();
@@ -92,8 +100,13 @@
     if (button) { button.disabled = true; button.textContent = '啟用中…'; }
     try {
       var result = await subscribe();
-      alert('已為帳號「' + result.accountId + '」啟用 iPhone 背景推播，測試通知已送出。\n\n通知聲音由 iOS「設定 → 通知」中的聲音開關控制。');
-      if (button) button.textContent = '手機推播已啟用';
+      if (result.testError) {
+        alert('已為帳號「' + result.accountId + '」儲存 iPhone 推播訂閱。\n\n但測試通知未送達：\n' + result.testError + '\n\n請截圖這段詳細訊息以便檢查。');
+        if (button) button.textContent = '推播已啟用（測試失敗）';
+      } else {
+        alert('已為帳號「' + result.accountId + '」啟用 iPhone 背景推播，測試通知已送出。\n\n通知聲音由 iOS「設定 → 通知」中的聲音開關控制。');
+        if (button) button.textContent = '手機推播已啟用';
+      }
     } catch (error) {
       alert(error && error.message ? error.message : '手機推播啟用失敗。');
       if (button) button.textContent = original;

@@ -56,7 +56,9 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
             .as_bytes(),
     );
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(20))
+        // Keep synchronous test requests below common panel/proxy timeouts so
+        // the UI receives a useful JSON error instead of a generic HTTP 502.
+        .timeout(Duration::from_secs(8))
         .use_rustls_tls()
         .build()
         .map_err(|error| miette::miette!("建立 Web Push HTTP client 失敗：{error}"))?;
@@ -179,20 +181,33 @@ impl WebPushService {
             .send()
             .await
             .map_err(|error| miette::miette!("Web Push HTTP 發送失敗：{error}"))?;
-        if response.status().is_success() {
+        let status = response.status();
+        if status.is_success() {
             debug!(account = %subscription.account_id, "Web Push 已送達推播服務");
             return Ok(());
         }
-        if matches!(response.status().as_u16(), 404 | 410) {
+        if matches!(status.as_u16(), 404 | 410) {
             let _ = self
                 .db
                 .delete_web_push_subscription(&subscription.account_id, &subscription.endpoint)
                 .await;
         }
-        Err(miette::miette!(
-            "推播服務回應 HTTP {}",
-            response.status().as_u16()
-        ))
+        let detail = response
+            .text()
+            .await
+            .unwrap_or_default()
+            .chars()
+            .take(300)
+            .collect::<String>();
+        if detail.trim().is_empty() {
+            Err(miette::miette!("Apple 推播服務回應 HTTP {}", status.as_u16()))
+        } else {
+            Err(miette::miette!(
+                "Apple 推播服務回應 HTTP {}：{}",
+                status.as_u16(),
+                detail.trim()
+            ))
+        }
     }
 }
 
@@ -235,7 +250,7 @@ fn vapid_authorization(
         serde_json::to_vec(&json!({
             "aud": audience,
             "exp": chrono::Utc::now().timestamp() + 12 * 60 * 60,
-            "sub": "mailto:admin@tronclass.local"
+            "sub": "mailto:admin@example.com"
         }))
         .map_err(|error| miette::miette!("序列化 VAPID claims 失敗：{error}"))?,
     );
