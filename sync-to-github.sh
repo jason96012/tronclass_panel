@@ -46,14 +46,29 @@ do_push() {
     git remote remove github-sync 2>/dev/null || true
     return 1
   fi
+  
   local remote_ref="github-sync/${BRANCH}"
   if ! git merge-base --is-ancestor "$remote_ref" HEAD; then
     echo "遠端已有新 commit，嘗試 rebase 本機自動同步 commit"
+    
+    # 關鍵修正：先把工作區殘留的 unstaged 變更暫存，避免 rebase 拒絕執行
+    local stashed=0
+    if [[ -n "$(git status --porcelain)" ]]; then
+      echo "工作區有未暫存變更，先進行 stash..."
+      git stash --include-untracked >/dev/null 2>&1 && stashed=1
+    fi
+
     if ! git rebase "$remote_ref"; then
       echo "rebase 發生衝突；已中止，不會覆蓋遠端或遺失本機 commit"
       git rebase --abort 2>/dev/null || true
+      [[ $stashed -eq 1 ]] && git stash pop >/dev/null 2>&1 || true
       git remote remove github-sync 2>/dev/null || true
       return 1
+    fi
+
+    # rebase 成功後還原 stash
+    if [[ $stashed -eq 1 ]]; then
+      git stash pop >/dev/null 2>&1 || true
     fi
   fi
 
@@ -87,6 +102,10 @@ do_push() {
   git config user.email "ptero-sync@local"
   git config user.name "ptero-sync"
 
+  # 1. 抓取被刪除/修改的檔案變更
+  git add -u 2>/dev/null || true
+
+  # 2. 加入指定目錄與副檔名
   git add -- .gitignore Cargo.toml Cargo.lock src 2>/dev/null || true
   [[ -d tools ]] && git add -- tools || true
   [[ -f config/config.toml.example ]] && git add -- config/config.toml.example || true
@@ -95,6 +114,7 @@ do_push() {
   ((${#extra[@]})) && git add -- "${extra[@]}"
   shopt -u nullglob
 
+  # 3. 確保排除敏感檔案
   git rm -r --cached --ignore-unmatch -- .cargo .cache target logs tailscale-state materials \
     config/config.toml config/accounts.db config/cf.token config/tailscale.authkey \
     config/github.env config/github.token .env >/dev/null 2>&1 || true
