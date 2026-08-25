@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IP 黑名單｜Tronclass Dashboard</title>
+  <style>
+    :root{
+      color-scheme:light dark;
+      --bg:#f6f8fc;--card:#fff;--soft:#f1f5f9;--text:#172033;
+      --muted:#64748b;--line:#d8dee8;--line2:#e7ebf1;
+      --primary:#2563eb;--primary-text:#fff;--bad:#b42318;
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",system-ui,sans-serif;
+    }
+    @media(prefers-color-scheme:dark){
+      :root{--bg:#0f141d;--card:#161d29;--soft:#111827;--text:#eef2ff;--muted:#9aa4b5;--line:#303948;--line2:#252e3c;--primary:#60a5fa;--primary-text:#07111f;--bad:#f87171}
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text)}
+    body{-webkit-tap-highlight-color:transparent}
+    .top{
+      position:sticky;top:0;z-index:30;
+      display:flex;align-items:center;justify-content:space-between;gap:24px;
+      min-height:76px;padding:14px 36px;
+      background:rgba(246,248,252,.94);backdrop-filter:blur(16px);
+      border-bottom:1px solid var(--line2);
+    }
+    @media(prefers-color-scheme:dark){.top{background:rgba(15,20,29,.94)}}
+    .brand{display:flex;align-items:center;gap:14px;min-width:0}
+    .logo{width:42px;height:42px;flex:0 0 auto;display:grid;place-items:center;border-radius:14px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;font-size:19px;font-weight:950;box-shadow:0 0 20px rgba(59,130,246,.25)}
+    .brand-title{font-size:18px;font-weight:850;letter-spacing:-.025em;line-height:1.1;white-space:nowrap}
+    .brand-sub{margin-top:4px;color:var(--muted);font-size:12px;line-height:1.2}
+    .actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-left:auto}
+    a,button{font:inherit;min-height:40px;display:inline-flex;align-items:center;justify-content:center;line-height:1;border:1px solid var(--line);border-radius:999px;padding:0 15px;background:var(--card);color:var(--muted);text-decoration:none;cursor:pointer;white-space:nowrap;font-weight:700;transition:filter .15s ease,transform .15s ease}
+    .actions a,.actions a:hover,.actions button,.actions button:hover{text-decoration:none!important}
+    .actions a:not(.primary),.actions button:not(.primary){color:var(--muted)!important}
+    a:hover,button:hover{filter:brightness(.97);transform:translateY(-1px);color:var(--text)}
+    a.primary,button.primary{background:var(--primary);color:var(--primary-text)!important;border-color:var(--primary)}
+    a.danger,button.danger{background:rgba(248,113,113,.14);color:var(--bad)!important;border-color:rgba(248,113,113,.28)}
+    main{max-width:1200px;margin:24px auto;padding:0 18px 40px}
+    .card{background:var(--card);border:1px solid var(--line2);border-radius:18px;box-shadow:0 12px 34px rgba(15,23,42,.07);overflow:hidden}
+    .card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:16px 18px;border-bottom:1px solid var(--line2)}
+    .card-head strong{font-size:16px;font-weight:850}.summary{color:var(--muted);font-size:13px}
+    table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--line2);font-size:14px;vertical-align:middle}th{background:var(--soft);color:var(--muted);font-size:12px}tr:last-child td{border-bottom:0}.ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;color:var(--text)}.empty,.error{padding:34px 18px;text-align:center;color:var(--muted)}.error{color:var(--bad)}
+    .recent-card{margin-top:18px}.card-head-copy{display:grid;gap:3px}.card-note{color:var(--muted);font-size:12px;line-height:1.4}.recent-table-wrap{overflow:auto}.recent-table{min-width:900px}.recent-table .account{font-weight:750}.recent-table .muted{color:var(--muted)}.recent-table .failure{color:var(--bad);font-weight:800}.recent-table .location{color:var(--muted);font-size:13px}.recent-table .action-cell{white-space:nowrap}.recent-table .action-cell button{min-height:34px;padding:0 11px;font-size:12px}
+    .blacklist-mobile-nav,.blacklist-mobile-more{display:none}
+    @media(max-width:700px){
+      .top{align-items:flex-start;flex-direction:column;gap:12px;padding:14px 16px}
+      .brand{width:100%}.brand-title{font-size:17px}.brand-sub{font-size:11px}
+      .actions{display:none!important}
+      main{margin:15px auto;padding:0 10px 32px}.card{overflow:hidden}.card-head{align-items:flex-start;flex-direction:column;gap:5px;padding:14px}
+      #content,#recentContent{overflow:visible}
+      #content table,.recent-table{display:block;width:100%;min-width:0!important;border:0}
+      #content table thead,.recent-table thead{display:none}
+      #content table tbody,.recent-table tbody{display:grid;gap:10px;width:100%}
+      #content table tr,.recent-table tr{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:13px 12px;border:1px solid var(--line2);border-radius:15px;background:var(--card);box-shadow:0 4px 14px rgba(15,23,42,.05)}
+      #content table td,.recent-table td{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:3px 0;border:0;min-width:0;line-height:1.35;overflow-wrap:anywhere}
+      #content table td::before,.recent-table td::before{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em}
+      #content table td:nth-child(1)::before{content:'IP 位址'}
+      #content table td:nth-child(2)::before{content:'封鎖時間'}
+      #content table td:nth-child(3)::before{content:'操作者'}
+      #content table td:nth-child(4)::before{content:'原因'}
+      #content table td:nth-child(5)::before{content:'操作'}
+      .recent-table td:nth-child(1)::before{content:'時間'}
+      .recent-table td:nth-child(2)::before{content:'帳號'}
+      .recent-table td:nth-child(3)::before{content:'IP 位址'}
+      .recent-table td:nth-child(4)::before{content:'MAC 位址'}
+      .recent-table td:nth-child(5)::before{content:'位置'}
+      .recent-table td:nth-child(6)::before{content:'結果'}
+      .recent-table td:nth-child(7)::before{content:'操作'}
+      #content table td:last-child,.recent-table td:last-child{grid-column:1/-1;padding-top:8px;border-top:1px solid var(--line2)}
+      #content table td:last-child button,.recent-table .action-cell button{width:100%;min-height:44px;padding:0 12px;font-size:13px}
+      .recent-table .account,.recent-table .ip{font-size:14px}
+      main{padding-bottom:124px}
+      .blacklist-mobile-nav{position:fixed;left:10px;right:10px;bottom:calc(10px + env(safe-area-inset-bottom,0px));z-index:90;display:grid!important;grid-template-columns:repeat(5,1fr);gap:4px;padding:7px;border:1px solid var(--line);border-radius:24px;background:rgba(255,255,255,.94);box-shadow:0 18px 45px rgba(15,23,42,.22);backdrop-filter:blur(18px)}
+      @media(prefers-color-scheme:dark){.blacklist-mobile-nav{background:rgba(15,23,42,.94)}}
+      .blacklist-mobile-nav a,.blacklist-mobile-nav button{min-height:54px;border:0;border-radius:17px;padding:0 2px;background:transparent;color:var(--muted);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;font-size:11px;font-weight:900;text-decoration:none;line-height:1;cursor:pointer}
+      .blacklist-mobile-nav a.active,.blacklist-mobile-nav button.active{background:rgba(37,99,235,.12);color:var(--primary)}
+      .blacklist-mobile-nav svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+      .blacklist-mobile-more{position:fixed;inset:0;z-index:95;display:none;align-items:flex-end;padding:10px 10px calc(88px + env(safe-area-inset-bottom,0px));background:rgba(15,23,42,.38)}
+      .blacklist-mobile-more.visible{display:flex}
+      .blacklist-mobile-more .sheet{width:100%;padding:12px;border:1px solid var(--line);border-radius:24px;background:var(--card);box-shadow:0 28px 70px rgba(0,0,0,.3)}
+      .blacklist-mobile-more h3{margin:3px 4px 12px;font-size:18px}
+      .blacklist-mobile-more .more-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+      .blacklist-mobile-more a{min-height:48px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line2);border-radius:15px;background:var(--soft);color:var(--text);font-weight:850;text-decoration:none}
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">D</div>
+      <div><div class="brand-title">Tronclass Dashboard</div><div class="brand-sub">IP 黑名單管理</div></div>
+    </div>
+    <div class="actions">
+      <a id="dashboardPasswordButtonV1" href="/admin/password">變更密碼</a>
+      <a href="/admin/passkey">設定通行密鑰</a>
+      <a href="/admin">回 Dashboard</a>
+      <button id="logoutBtn" class="danger" type="button">登出</button>
+      <button class="primary" id="reload" type="button">重新整理</button>
+    </div>
+  </header>
+  <main>
+    <section class="card">
+      <div class="card-head"><strong>已封鎖的 IP</strong><span class="summary" id="summary">載入中...</span></div>
+      <div id="content"><div class="empty">載入中...</div></div>
+    </section>
+    <section class="card recent-card">
+      <div class="card-head">
+        <div class="card-head-copy"><strong>最近登入失敗</strong><span class="card-note">顯示最近的失敗帳號、來源 IP 與可辨識的裝置資訊。</span></div>
+        <span class="summary" id="recentSummary">載入中...</span>
+      </div>
+      <div id="recentContent"><div class="empty">載入中...</div></div>
+    </section>
+  </main>
+  <nav class="blacklist-mobile-nav" aria-label="Dashboard 導覽">
+    <a href="/admin" aria-label="總覽"><svg viewBox="0 0 24 24"><path d="M4 13h6V4H4z"></path><path d="M14 20h6V4h-6z"></path><path d="M4 20h6v-3H4z"></path></svg><span>總覽</span></a>
+    <a href="/admin#accounts" aria-label="帳號"><svg viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle></svg><span>帳號</span></a>
+    <a href="/admin#rollcall" aria-label="點名"><svg viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"></path><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path></svg><span>點名</span></a>
+    <a href="/admin/timetable" aria-label="課表"><svg viewBox="0 0 24 24"><path d="M4 5h16v15H4z"></path><path d="M8 3v4"></path><path d="M16 3v4"></path><path d="M4 10h16"></path></svg><span>課表</span></a>
+    <button id="blacklistMoreBtn" type="button" aria-label="更多"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"></circle><circle cx="12" cy="12" r="1.5"></circle><circle cx="19" cy="12" r="1.5"></circle></svg><span>更多</span></button>
+  </nav>
+  <div id="blacklistMore" class="blacklist-mobile-more" aria-hidden="true">
+    <div class="sheet"><h3>更多功能</h3><div class="more-grid"><a href="/admin/blacklist">黑名單</a><a href="/admin/files">雲端硬碟</a><a href="/admin/activity">登入／檔案紀錄</a><a href="/admin">回 Dashboard</a></div></div>
+  </div>
+  <script>
+  (function(){
+    'use strict';
+    function q(id){return document.getElementById(id)}
+    function esc(value){return String(value==null?'':value).replace(/[&<>"']/g,function(ch){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]})}
+    function token(){return''}
+    function api(path,options){
+      var u=new URL(path,location.origin); // F-03: token removed
+      return fetch(u.pathname+u.search,Object.assign({credentials:'same-origin',cache:'no-store'},options||{})).then(function(res){return res.json().catch(function(){return {}}).then(function(body){if(res.status===401||res.status===403){location.replace('/admin');throw new Error('未授權')}if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body})})
+    }
+    function render(rows){
+      q('summary').textContent=rows.length+' 筆';
+      if(!rows.length){q('content').innerHTML='<div class="empty">目前沒有黑名單 IP。</div>';return}
+      q('content').innerHTML='<table><thead><tr><th>IP</th><th>封鎖時間</th><th>操作者</th><th>封鎖原因</th><th>失敗次數</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){var failures=Number(row.failure_count||0);var failureLabel=failures>0?failures+' 次':'-';return '<tr><td class="ip">'+esc(row.ip)+'</td><td>'+esc(row.blocked_time)+'</td><td>'+esc(row.blocked_by)+'</td><td>'+esc(row.reason||'未提供')+'</td><td>'+esc(failureLabel)+'</td><td><button class="danger" type="button" data-unblock="'+esc(row.ip)+'">解除封鎖</button></td></tr>'}).join('')+'</tbody></table>';
+    }
+    function load(){q('content').innerHTML='<div class="empty">載入中...</div>';api('/admin/api/blacklist').then(function(body){render(body.items||[])}).catch(function(error){q('summary').textContent='';q('content').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'})}
+    function isFailure(row){var result=String(row.result||'').toLowerCase(),action=String(row.action||'').toLowerCase();return action==='login_failed'||result==='fail'||result==='failed'||result==='error'||result==='false'||(action==='login'&&result!=='success')}
+    function fmtTime(value){if(!value)return'-';if(typeof value==='string'&&!/^\\d+(?:\\.\\d+)?$/.test(value))return value;var n=Number(value),d=new Date(n<1e11?n*1000:n);return isNaN(d.getTime())?String(value):d.toLocaleString('zh-TW',{hour12:false})}
+    function renderRecent(events){var rows=(events||[]).filter(isFailure).slice(0,100);q('recentSummary').textContent=rows.length+' 筆';if(!rows.length){q('recentContent').innerHTML='<div class="empty">目前沒有登入失敗紀錄。</div>';return}q('recentContent').innerHTML='<div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>時間</th><th>帳號</th><th>IP 位址</th><th>MAC 位址</th><th>位置</th><th>結果</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){var account=row.account_id||row.actor||'未知帳號',ip=row.ip||'-',mac=row.mac||row.mac_address||'無法取得',location=row.location||'未提供';var action=ip==='-'?'<span class="muted">無 IP</span>':'<button class="danger" type="button" data-block-ip="'+esc(ip)+'">加入黑名單</button>';return '<tr><td>'+esc(row.time||fmtTime(row.timestamp))+'</td><td class="account">'+esc(account)+'</td><td class="ip">'+esc(ip)+'</td><td class="muted">'+esc(mac)+'</td><td class="location">'+esc(location)+'</td><td class="failure">登入失敗</td><td class="action-cell">'+action+'</td></tr>'}).join('')+'</tbody></table></div>'}
+    function loadRecent(){q('recentContent').innerHTML='<div class="empty">載入中...</div>';api('/admin/api/activity/login?limit=200').then(function(body){renderRecent(body.events||[])}).catch(function(error){q('recentSummary').textContent='';q('recentContent').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'})}
+    function loadAll(){load();loadRecent()}
+    q('reload').addEventListener('click',loadAll);
+    q('content').addEventListener('click',function(event){var button=event.target.closest('[data-unblock]');if(!button)return;var ip=button.getAttribute('data-unblock');if(!confirm('確定解除 '+ip+' 的封鎖？'))return;button.disabled=true;api('/admin/api/blacklist/unblock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})}).then(loadAll).catch(function(error){button.disabled=false;alert(error.message||error)})});
+    q('recentContent').addEventListener('click',function(event){var button=event.target.closest('[data-block-ip]');if(!button)return;var ip=button.getAttribute('data-block-ip');if(!confirm('確定將 IP '+ip+' 加入黑名單？'))return;button.disabled=true;api('/admin/api/blacklist/block',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})}).then(function(){alert('已將 '+ip+' 加入黑名單');loadAll()}).catch(function(error){button.disabled=false;alert(error.message||error)})});
+    var moreButton=q('blacklistMoreBtn'),moreSheet=q('blacklistMore');
+    function closeMore(){if(moreSheet){moreSheet.classList.remove('visible');moreSheet.setAttribute('aria-hidden','true')}}
+    if(moreButton&&moreSheet){moreButton.addEventListener('click',function(){moreSheet.classList.add('visible');moreSheet.setAttribute('aria-hidden','false')});moreSheet.addEventListener('click',function(event){if(event.target===moreSheet)closeMore()});document.addEventListener('keydown',function(event){if(event.key==='Escape')closeMore()})}
+    loadAll();
+  })();
+  </script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fa5157ad84f023',t:'MTc4NzQ5MDIxMA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb42f44b904a45',t:'MTc4NzUwMDEwNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a301a753894549f7',t:'MTc4NzU2NzEzMg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>

@@ -1,0 +1,2199 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<!-- TT_STATUS_FETCH_DEDUPE_V1_START -->
+<script id="ttStatusFetchDedupeV1">
+(function () {
+  'use strict';
+  if (window.TT_STATUS_FETCH_DEDUPE_V1) return;
+  window.TT_STATUS_FETCH_DEDUPE_V1 = true;
+
+  // This page defines loadStatus() twice and calls it from four places, with
+  // no coordination, so /admin/api/status was firing 10+ times per load.
+  // The dashboard already solves this by wrapping fetch; the same guard is
+  // applied here so none of the existing callers need to change.
+  var nativeFetch = window.fetch.bind(window);
+  var cacheByKey = Object.create(null);
+  var inflightByKey = Object.create(null);
+  var ACTIVE_TTL = 20000;
+  var HIDDEN_TTL = 60000;
+
+  function urlOf(input) {
+    try {
+      if (typeof input === 'string') return new URL(input, location.origin);
+      if (input && input.url) return new URL(input.url, location.origin);
+    } catch (_) {}
+    return null;
+  }
+  function methodOf(input, init) {
+    return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  }
+  function coalescable(url) {
+    return url.pathname === '/admin/api/status'
+        || url.pathname === '/admin/api/timetable';
+  }
+  function keyOf(url) {
+    var c = new URL(url.href);
+    c.searchParams.delete('token');
+    if (c.pathname === '/admin/api/status') {
+      // history_limit is meaningless once include_history=false.
+      var noHist = c.searchParams.get('include_history') === 'false'
+        || c.searchParams.get('history_limit') === '0';
+      c.searchParams.delete('history_limit');
+      c.searchParams.delete('include_history');
+      if (noHist) c.searchParams.set('include_history', 'false');
+    }
+    try { c.searchParams.sort(); } catch (_) {}
+    return c.pathname + c.search;
+  }
+  function clearAll() {
+    cacheByKey = Object.create(null);
+    inflightByKey = Object.create(null);
+  }
+  function writes(url, method) {
+    return method !== 'GET' && (
+      url.pathname.indexOf('/admin/api/timetable') === 0 ||
+      url.pathname === '/admin/api/action'
+    );
+  }
+
+  window.fetch = function (input, init) {
+    var url = urlOf(input);
+    if (!url) return nativeFetch(input, init);
+    var method = methodOf(input, init);
+    if (writes(url, method)) clearAll();
+    if (method !== 'GET' || !coalescable(url)) return nativeFetch(input, init);
+
+    var key = keyOf(url);
+    var hit = cacheByKey[key];
+    var ttl = document.hidden ? HIDDEN_TTL : ACTIVE_TTL;
+    if (hit && (Date.now() - hit.at) < ttl) return Promise.resolve(hit.res.clone());
+    if (inflightByKey[key]) {
+      return inflightByKey[key].then(function (r) { return r.clone(); });
+    }
+
+    inflightByKey[key] = nativeFetch(input, init).then(function (res) {
+      delete inflightByKey[key];
+      if (res && res.ok) cacheByKey[key] = { res: res, at: Date.now() };
+      return res;
+    }, function (err) {
+      delete inflightByKey[key];
+      throw err;
+    });
+    return inflightByKey[key].then(function (r) { return r.clone(); });
+  };
+
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) clearAll();
+  }, { passive: true });
+})();
+</script>
+<!-- TT_STATUS_FETCH_DEDUPE_V1_END -->
+
+<script id="SUBPAGE_TOKEN_BOOT_V1">
+(function(){
+  if(window.SUBPAGE_TOKEN_BOOT_V1) return;
+  window.SUBPAGE_TOKEN_BOOT_V1 = true;
+  try{
+    var u=new URL(location.href);
+    var tok=(u.searchParams.get('token')||window.__tronBootToken||'').trim();
+    if(tok) window.__tronBootToken=tok;
+  }catch(_){}
+  var native=window.fetch;
+  window.fetch=function(input, init){
+    try{
+      var tok=window.__tronBootToken||'';
+      var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
+      if(tok && url.origin===location.origin && url.pathname.indexOf('/admin/api/')===0 &&
+         url.pathname!=='/admin/api/login' && !url.searchParams.get('token')){
+        url.searchParams.set('token', tok);
+        input=url.pathname+url.search+url.hash;
+      }
+    }catch(_){}
+    init = init || {};
+    if(!init.credentials) init.credentials='same-origin';
+    return native.call(this, input, init);
+  };
+})();
+</script>
+
+<style id="REMOVE_UGLY_LOGIN_V1">
+  html{visibility:hidden!important}
+  html.tron-auth-ok,html.dash-auth-ok,body.logged-in,body.auth-ok,body.dash-auth-ok{visibility:visible!important}
+  html.tron-auth-logged-out{visibility:visible!important}
+  #loginCard .login-grid,
+  #loginCard > div[style*="font-weight"],
+  #loginCard > .small,
+  #loginCard > .remember,
+  .login-card > .login-grid,
+  .login-card > div[style*="font-weight"]{display:none!important;visibility:hidden!important;height:0!important;overflow:hidden!important}
+  #loginCard:not(:has(.animated-login-card-inner)),
+  .login-card:not(:has(.animated-login-card-inner)){display:none!important}
+  html.tron-auth-ok #loginCard,
+  html.tron-auth-pending #loginCard,
+  html:not(.tron-auth-logged-out) #loginCard{display:none!important}
+  html.tron-auth-logged-out #loginCard:has(.animated-login-card-inner){display:block!important}
+</style>
+<script id="BAN_CRUDE_LOGIN_V1">
+(function(){
+  if(window.BAN_CRUDE_LOGIN_V1) return;
+  window.BAN_CRUDE_LOGIN_V1 = true;
+  function isCrude(card){
+    if(!card) return false;
+    if(card.querySelector('.animated-login-card-inner')) return false;
+    var tx=(card.textContent||'').replace(/\s+/g,'');
+    return !!(card.querySelector('.login-grid') || tx.indexOf('需要登入')>=0 || tx.indexOf('帳號 / account')>=0);
+  }
+  function kill(root){
+    var scope=root&&root.querySelectorAll?root:document;
+    var cards=[];
+    if(root&&root.id==='loginCard') cards.push(root);
+    try{ cards=cards.concat(Array.prototype.slice.call(scope.querySelectorAll('#loginCard,.login-card,#loginPanel'))); }catch(_){}
+    cards.forEach(function(card){
+      if(!isCrude(card)) return;
+      card.innerHTML='';
+      card.hidden=true;
+      card.setAttribute('aria-hidden','true');
+      card.style.display='none';
+    });
+  }
+  kill(document);
+  try{ new MutationObserver(function(ms){ ms.forEach(function(m){ Array.prototype.forEach.call(m.addedNodes||[], function(n){ if(n.nodeType===1) kill(n); }); }); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){}
+})();
+</script>
+
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex,nofollow">
+  <meta http-equiv="cache-control" content="no-store">
+  <meta name="theme-color" content="#2563eb">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <title>課表｜Tronclass Dashboard</title>
+
+<!-- HIDE_ADMIN_TOKEN_FROM_URL_V1_START -->
+<script id="hideAdminTokenFromUrlEarlyV1">
+(function(){
+  'use strict';
+  if (window.HIDE_ADMIN_TOKEN_FROM_URL_EARLY_V1) return;
+  window.HIDE_ADMIN_TOKEN_FROM_URL_EARLY_V1 = true;
+  var LS_SESSION = 'tronclass_admin_session';
+  var LS_LOGOUT = 'tronclass_dashboard_manual_logout';
+  function sanitizeCurrentUrl(){
+    try {
+      var u = new URL(location.href);
+      var changed = false;
+      var token = u.searchParams.get('token') || '';
+      if (u.searchParams.get('logout') === '1') {
+        localStorage.removeItem(LS_SESSION);
+        localStorage.setItem(LS_LOGOUT, '1');
+      } else if (token) {
+        localStorage.setItem(LS_SESSION, token);
+        localStorage.removeItem(LS_LOGOUT);
+      }
+      if (u.searchParams.has('token')) { u.searchParams.delete('token'); changed = true; }
+      if (changed) history.replaceState(null, document.title, u.pathname + (u.search ? u.search : '') + u.hash);
+    } catch(_) {}
+  }
+  sanitizeCurrentUrl();
+  window.tronAdminToken = function(){ try { return (localStorage.getItem(LS_SESSION) || '').trim(); } catch(_) { return ''; } };
+})();
+</script>
+<!-- HIDE_ADMIN_TOKEN_FROM_URL_V1_END -->
+
+<!-- CONSOLIDATED_ADMIN_AUTH_V1_HEAD_START -->
+<style id="consolidatedAdminAuthCriticalV1">
+  html.tron-auth-pending body main > :not(#loginCard):not(#authCard),
+  html.tron-auth-logged-out body main > :not(#loginCard):not(#authCard),
+  html.tron-auth-pending body .protected,
+  html.tron-auth-logged-out body .protected,
+  html.tron-auth-pending body .tabs,
+  html.tron-auth-logged-out body .tabs,
+  html.tron-auth-pending body .view,
+  html.tron-auth-logged-out body .view,
+  html.tron-auth-pending body .hero,
+  html.tron-auth-logged-out body .hero {
+    display:none !important;
+  }
+  html.tron-auth-ok body #loginCard,
+  html.tron-auth-ok body #authCard,
+  html.tron-auth-ok body #loginPanel {
+    display:none !important;
+  }
+  html.tron-auth-logged-out body #brandSub,
+  html.tron-auth-pending body #brandSub {
+    color:transparent !important;
+    position:relative;
+  }
+  html.tron-auth-logged-out body #brandSub::after,
+  html.tron-auth-pending body #brandSub::after {
+    content:'請先登入';
+    color:var(--muted,#64748b);
+    position:absolute;
+    left:0;
+    top:0;
+    white-space:nowrap;
+  }
+</style>
+<script id="consolidatedAdminAuthEarlyV1">
+(function(){
+  'use strict';
+  if (window.COOKIE_SUBPAGE_AUTH_V1) return;
+  window.COOKIE_SUBPAGE_AUTH_V1 = true;
+  var LO = 'tronclass_dashboard_manual_logout';
+  try {
+    var p = new URLSearchParams(location.search);
+    if (p.get('logout') === '1' || localStorage.getItem(LO) === '1') {
+      location.replace('/admin?logout=1');
+      return;
+    }
+    document.documentElement.classList.add('tron-auth-pending');
+    fetch('/admin/api/status?include_history=false'+(window.__tronBootToken?('&token='+encodeURIComponent(window.__tronBootToken)):''), {credentials:'same-origin', cache:'no-store'}).then(function(r){
+      if (r.ok) {
+        document.documentElement.classList.remove('tron-auth-pending','tron-auth-logged-out');
+        document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','auth-ok');
+        if (document.body) document.body.classList.add('logged-in','auth-ok','dash-auth-ok');
+        return;
+      }
+      var next = encodeURIComponent(location.pathname + location.search + location.hash);
+      location.replace('/admin?next=' + next);
+    }).catch(function(){
+      var next = encodeURIComponent(location.pathname + location.search + location.hash);
+      location.replace('/admin?next=' + next);
+    });
+  } catch(_) {
+    location.replace('/admin');
+  }
+})();
+</script>
+<!-- CONSOLIDATED_ADMIN_AUTH_V1_HEAD_END -->
+
+  <style>
+    :root{color-scheme:light dark;--bg:#f6f8fc;--card:#fff;--soft:#eef3fb;--soft2:#f8fafc;--text:#0f172a;--muted:#64748b;--line:#dbe3ef;--primary:#2563eb;--ok:#15803d;--bad:#b91c1c;--shadow:0 18px 42px rgba(15,23,42,.08)}
+    @media(prefers-color-scheme:dark){:root{--bg:#0b0f19;--card:#182232;--soft:#111827;--soft2:#1e293b;--text:#f1f5f9;--muted:#94a3b8;--line:#334155;--primary:#3b82f6}}
+    *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);overflow-anchor:none;-webkit-text-size-adjust:100%}
+    html.tron-auth-ok,html.dash-auth-ok,html.tron-auth-pending,body.auth-ok,body.dash-auth-ok,body.logged-in{visibility:visible!important}
+    button,.button{min-height:44px;border:1px solid var(--line);border-radius:16px;background:var(--soft);color:var(--text);font-weight:950;padding:0 16px;display:inline-flex;align-items:center;justify-content:center;text-decoration:none;cursor:pointer;white-space:nowrap}button.primary,.button.primary{background:var(--primary);border-color:var(--primary);color:#fff}button.danger{background:#fff;color:#dc2626;border-color:#fecaca}button:disabled{opacity:.62;cursor:not-allowed}input,select{min-height:44px;border:1px solid var(--line);border-radius:16px;background:var(--card)!important;color:var(--text)!important;font:inherit;padding:0 14px;min-width:0}.small{font-size:13px;color:var(--muted);line-height:1.45}.ok{color:var(--ok)!important;font-weight:950}.bad{color:var(--bad)!important;font-weight:950}
+    header{position:sticky;top:0;z-index:30;background:rgba(246,248,252,.94);backdrop-filter:blur(14px);border-bottom:1px solid var(--line)}@media(prefers-color-scheme:dark){header{background:rgba(11,15,25,.94)}}.top{max-width:1240px;margin:0 auto;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px}.brand{display:flex;align-items:center;gap:12px;min-width:0}.logo{width:44px;height:44px;border-radius:16px;background:#dfe8ff;color:#2563eb;display:grid;place-items:center;font-size:20px;font-weight:950}.brand-title{font-size:20px;font-weight:950;line-height:1.1;letter-spacing:-.03em}.brand-sub{font-size:13px;color:var(--muted);margin-top:3px}.top-actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}.page{max-width:1240px;margin:0 auto;padding:22px 18px 80px}.panel{border:1px solid var(--line);border-radius:24px;background:var(--card);box-shadow:var(--shadow);padding:18px;min-height:70vh}.head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px}.title h1{margin:0;font-size:30px;font-weight:950;letter-spacing:-.04em}.actions,.template-bar,.edit-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.actions{justify-content:flex-end}.actions select{min-width:250px;max-width:420px}.template-bar{background:var(--soft);border:1px solid var(--line);border-radius:18px;padding:10px;margin:12px 0}.template-bar select{flex:1 1 260px}.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:18px;min-height:240px;background:var(--card)}.view-table{width:100%;min-width:860px;border-collapse:separate;border-spacing:0}.view-table th{position:sticky;top:0;background:var(--soft);color:var(--muted);font-size:13px;text-align:left;font-weight:950;padding:13px;z-index:1}.view-table td{padding:13px;border-top:1px solid var(--line);background:var(--card)}.view-table b{font-weight:950}.empty{border:1px dashed var(--line);border-radius:18px;background:var(--soft2);min-height:220px;display:grid;place-items:center;text-align:center;color:var(--muted);padding:20px}.editor{display:none}.mode-edit .viewer{display:none}.mode-edit .editor{display:block}.edit-actions{margin:12px 0}.row{display:grid;grid-template-columns:112px 88px 88px minmax(180px,1.35fr) minmax(150px,1fr) minmax(150px,1fr) 140px 78px;gap:10px;align-items:center;margin-bottom:10px;padding:10px;border:1px solid var(--line);border-radius:18px;background:var(--soft)}.row input,.row select{width:100%;min-height:42px;border-radius:14px}.time{font-weight:950;color:var(--muted);text-align:center;white-space:nowrap;font-size:14px}.msg{min-height:22px;margin-top:10px;font-size:13px;color:var(--muted);font-weight:800}.toast{position:fixed;left:50%;bottom:calc(22px + env(safe-area-inset-bottom,0));transform:translateX(-50%) translateY(20px);opacity:0;pointer-events:none;z-index:999;background:#172033;color:#fff;border-radius:999px;padding:12px 16px;font-weight:950;box-shadow:0 18px 42px rgba(15,23,42,.25);transition:.18s}.toast.visible{opacity:1;transform:translateX(-50%)}.toast:empty,.toast.visible:empty{display:none!important}
+    
+    /* 隱藏課表頁面的點名彈出視窗與懸浮提醒按鈕 */
+    #rollcallAlertV2, #rollcallAlertV2Fab, .rollcall-alert-v2-backdrop, .rollcall-alert-v2-fab, #rollcallAlert {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+
+    @media(max-width:820px){.top{padding:12px 10px}.brand-title{font-size:17px}.logo{width:42px;height:42px;border-radius:14px}.top-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.top-actions>*{width:100%}.page{padding:14px 10px 80px}.panel{padding:12px;border-radius:20px}.head{display:grid;gap:10px}.title h1{font-size:28px}.actions,.template-bar,.edit-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}.actions select,.template-bar select{grid-column:1/-1;width:100%;min-width:0;max-width:none}.actions button,.template-bar button,.edit-actions button{width:100%;min-width:0;padding:0 10px}.row{grid-template-columns:1fr 1fr;gap:8px;padding:10px}.course,.room,.teacher,.time,.del{grid-column:1/-1}.del{width:100%}.view-table{min-width:720px}}
+  </style>
+
+  <script id="optimizeV47Theme">
+  (function(){
+    'use strict';
+    var mq=window.matchMedia('(prefers-color-scheme:dark)');
+    function apply(t){document.documentElement.setAttribute('data-theme',t.matches?'dark':'light')}
+    apply(mq);
+    try{mq.addEventListener('change',apply)}catch(e){mq.addListener(apply)}
+    window.__setTheme=function(t){document.documentElement.setAttribute('data-theme',t||'dark')};
+    document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','mobile-nav-final-auth');
+    if(document.body) document.body.classList.add('auth-ok','dash-auth-ok','logged-in');
+  })();
+  </script>
+
+  <script id="optimizeV47TTAuth">
+  (function(){
+    'use strict';
+    var K='tronclass_admin_session';
+    var _fetch=window.fetch.bind(window);
+    window.fetch=function(u,o){
+      return _fetch(u,o).then(function(r){
+        if(r.status===401){
+          try{localStorage.removeItem(K);sessionStorage.removeItem(K)}catch(_){}
+          location.replace('/admin?v=auth&t='+Date.now());
+        }
+        return r;
+      });
+    };
+  })();
+  </script>
+
+<style id="cleanMobileTimetableCardsStyleV1">
+  /* 手機版課表卡片美化：徹底移除課程名稱下方深藍色線條與左側厚藍條 */
+  @media(max-width: 820px) {
+    .view-table tbody tr,
+    .tt-stable-table tbody tr,
+    .tt-table tbody tr,
+    table.view-table tbody tr {
+      border: 1px solid var(--line, #e2e8f0) !important;
+      border-left: 1px solid var(--line, #e2e8f0) !important;
+      border-radius: 16px !important;
+      background: var(--card, #ffffff) !important;
+      box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04) !important;
+      padding: 14px 16px !important;
+    }
+    @media (prefers-color-scheme: dark) {
+      .view-table tbody tr,
+      .tt-stable-table tbody tr,
+      .tt-table tbody tr,
+      table.view-table tbody tr {
+        border-color: var(--line, #334155) !important;
+        background: var(--card, #182232) !important;
+      }
+    }
+    /* 課程名稱標題：移除下方深色/深藍色底線與分隔線 */
+    .view-table td:last-child,
+    .tt-stable-table td:nth-child(6),
+    .tt-table td:nth-child(6),
+    .view-table td.course,
+    .tt-table td b {
+      border: none !important;
+      border-bottom: none !important;
+      border-top: none !important;
+      box-shadow: none !important;
+      padding-bottom: 2px !important;
+      margin-bottom: 2px !important;
+      font-size: 17px !important;
+      font-weight: 850 !important;
+      color: var(--text, #0f172a) !important;
+    }
+    .view-table td,
+    .tt-stable-table td,
+    .tt-table td {
+      border-bottom: none !important;
+      border-top: none !important;
+    }
+  }
+</style>
+<style id="restoreDesktopHeaderAndStrictMobileNavStyleV1">
+  /* 電腦版課表 Header 正常顯示 */
+  @media (min-width: 821px) {
+    header,
+    .topbar,
+    .app-header {
+      display: block !important;
+      visibility: visible !important;
+      height: auto !important;
+      position: sticky !important;
+      top: 0 !important;
+      z-index: 50 !important;
+      background: rgba(246, 248, 252, 0.92) !important;
+      backdrop-filter: blur(16px) !important;
+      -webkit-backdrop-filter: blur(16px) !important;
+      border-bottom: 1px solid var(--line, #dbe3ef) !important;
+    }
+    @media (prefers-color-scheme: dark) {
+      header,
+      .topbar,
+      .app-header {
+        background: rgba(11, 15, 25, 0.94) !important;
+        border-bottom-color: var(--line, #334155) !important;
+      }
+    }
+    /* 電腦版嚴格隱藏所有手機版底部導覽列 */
+    #ttMobileNavV2,
+    #mobileNav,
+    .mobile-nav,
+    .mobilebar,
+    #mobileSheet,
+    .mobile-sheet {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+      height: 0 !important;
+      overflow: hidden !important;
+    }
+    .page {
+      max-width: 1280px !important;
+      padding: 22px 18px 80px !important;
+      margin: 0 auto !important;
+    }
+  }
+
+  /* 手機版 (≤ 820px) 顯示底部導覽列，隱藏多餘頂部區塊 */
+  @media (max-width: 820px) {
+    #ttMobileNavV2 {
+      display: grid !important;
+      position: fixed !important;
+      left: 12px !important;
+      right: 12px !important;
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
+      z-index: 100 !important;
+    }
+  }
+</style>
+
+
+<style id="TT_MOBILE_HEADER_BACK_CSS_V1">
+  @media (max-width:820px){
+    .top-actions{display:flex!important;grid-template-columns:none!important;justify-content:flex-end!important;flex-wrap:nowrap!important}
+    .top-actions > *:not(#backDashboard){display:none!important}
+    #backDashboard{display:inline-flex!important;width:auto!important;min-height:36px!important;padding:0 14px!important;font-size:13px!important;font-weight:800!important}
+    #ttPanelBackDashboard,#changePasswordBtn,#passkeyRegisterBtn,#logoutBtn,#meLink{display:none!important}
+    .actions a[href="/admin"],
+    .actions a[href^="/admin?"]{display:none!important}
+  }
+  #ttPanelBackDashboard{display:none!important}
+</style>
+
+<style id="TT_POSTER_VIEW_V1">
+/* Weekly timetable grid — matches dashboard tokens, readable type. */
+.tt-poster-wrap{
+  background:var(--soft,#eef3fb);
+  border:1px solid var(--line,#dbe3ef);
+  border-radius:28px;
+  padding:26px 20px 28px;
+  overflow:auto;
+}
+.tt-poster-title{
+  margin:0 0 16px;
+  text-align:center;
+  font-size:32px;
+  font-weight:850;
+  letter-spacing:.04em;
+  color:var(--text,#172033);
+}
+.tt-poster{
+  display:grid;
+  min-width:680px;
+  min-height:680px;
+  gap:10px;
+  grid-template-rows:48px repeat(10,minmax(68px,1fr));
+}
+.tt-poster-corner{min-height:1px}
+.tt-poster-day{
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+  padding-bottom:6px;
+  font-size:16px;
+  font-weight:850;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--text,#172033);
+}
+.tt-poster-period{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  background:var(--muted,#64748b);
+  color:#fff;
+  border-radius:16px;
+  padding:8px 6px;
+  min-height:68px;
+}
+.tt-poster-period .n{
+  font-size:22px;
+  font-weight:900;
+  line-height:1;
+  color:#fff;
+}
+.tt-poster-period .t{
+  font-size:12px;
+  font-weight:750;
+  letter-spacing:0;
+  opacity:1;
+  white-space:nowrap;
+  color:#fff;
+}
+.tt-poster-empty,
+.tt-poster-course{
+  background:var(--card,#fff);
+  border-radius:16px;
+  min-height:68px;
+  box-shadow:0 1px 2px rgba(15,23,42,.04);
+  border:1px solid var(--line2,#e7ebf1);
+}
+.tt-poster-course{
+  appearance:none;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:10px 12px;
+  width:100%;
+  min-width:0;
+  box-sizing:border-box;
+  cursor:pointer;
+  color:var(--text,#172033);
+  text-align:center;
+  overflow:hidden;
+}
+.tt-poster-course:hover{
+  border-color:var(--primary,#2563eb);
+  box-shadow:0 0 0 3px rgba(37,99,235,.12);
+}
+.tt-poster-name{
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  font-family:inherit;
+  font-size:17px;
+  font-weight:850;
+  letter-spacing:.01em;
+  line-height:1.35;
+  color:var(--text,#172033);
+}
+.tt-poster .tt-poster-name{
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:3;
+  overflow:hidden;
+  overflow-wrap:anywhere;
+  word-break:break-word;
+  max-width:100%;
+}
+.tt-poster-meta{
+  position:static;
+  right:auto;
+  top:auto;
+  transform:none;
+  writing-mode:horizontal-tb;
+  max-height:none;
+  overflow:hidden;
+  font-size:13px;
+  font-weight:750;
+  letter-spacing:0;
+  line-height:1.3;
+  color:var(--muted,#64748b);
+  pointer-events:none;
+}
+.tt-poster .tt-poster-meta{
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  max-width:100%;
+}
+.tt-poster-empty-msg{
+  border:1px dashed var(--line,#dbe3ef);
+  border-radius:18px;
+  min-height:220px;
+  display:grid;
+  place-items:center;
+  text-align:center;
+  color:var(--muted,#64748b);
+  background:var(--soft2,#f8fafc);
+  padding:20px;
+  font-size:16px;
+}
+.tt-mobile-week{display:none}
+
+@media(max-width:820px){
+  #pageSub,
+  .tt-stable-sub,
+  .tt-poster-title{display:none!important}
+  #pageTitle,
+  .tt-stable-title h2{font-size:22px!important;letter-spacing:-.02em}
+  .tt-poster-wrap{
+    background:transparent;
+    border:0;
+    border-radius:0;
+    padding:0;
+    overflow:visible;
+  }
+  .tt-poster{display:none!important}
+  .tt-mobile-week{display:block}
+  .tt-mobile-days{
+    display:grid;
+    gap:8px;
+    margin:0 0 14px;
+    position:sticky;
+    top:0;
+    z-index:8;
+    padding:4px 0 12px;
+    background:var(--card,#fff);
+  }
+  .tt-mobile-day{
+    appearance:none;
+    min-height:46px;
+    border-radius:14px;
+    border:1.5px solid rgba(148,163,184,.38);
+    background:transparent;
+    color:var(--muted,#64748b);
+    font-size:16px;
+    font-weight:750;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:4px;
+    padding:0 6px;
+    cursor:pointer;
+  }
+  .tt-mobile-day .now{
+    font-size:10px;
+    font-weight:900;
+    letter-spacing:.04em;
+    padding:2px 5px;
+    border-radius:999px;
+    background:rgba(37,99,235,.14);
+    color:var(--primary,#2563eb);
+  }
+  .tt-mobile-day.is-today:not(.is-active){
+    color:var(--text,#172033);
+    border-color:rgba(37,99,235,.4);
+  }
+  .tt-mobile-day.is-active{
+    background:var(--primary,#2563eb);
+    border-color:var(--primary,#2563eb);
+    color:#fff;
+    font-weight:900;
+    box-shadow:0 8px 18px rgba(37,99,235,.38);
+  }
+  .tt-mobile-day.is-active .now{
+    background:rgba(255,255,255,.22);
+    color:#fff;
+  }
+  .tt-mobile-panel{display:none}
+  .tt-mobile-panel.is-active{display:block}
+  .tt-mobile-slot{
+    display:grid;
+    grid-template-columns:78px minmax(0,1fr);
+    gap:10px;
+    margin:0 0 10px;
+    align-items:stretch;
+  }
+  .tt-mobile-period{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:4px;
+    background:#64748b;
+    color:#fff;
+    border-radius:16px;
+    padding:10px 4px;
+    min-height:76px;
+    text-align:center;
+  }
+  .tt-mobile-period .n{
+    font-size:20px;
+    font-weight:900;
+    line-height:1.1;
+    color:#fff;
+  }
+  .tt-mobile-period .t{
+    font-size:11px;
+    font-weight:750;
+    line-height:1.25;
+    letter-spacing:0;
+    white-space:normal;
+    color:#fff;
+    opacity:.95;
+  }
+  .tt-mobile-course.tt-poster-course{
+    align-items:flex-start;
+    justify-content:center;
+    text-align:left;
+    gap:6px;
+    padding:14px 16px;
+    min-height:76px;
+    border-radius:18px;
+    overflow:visible;
+    box-shadow:0 8px 22px rgba(15,23,42,.08);
+  }
+  .tt-mobile-course .tt-poster-name{
+    display:block;
+    -webkit-line-clamp:unset;
+    overflow:visible;
+    font-size:18px;
+    font-weight:850;
+    line-height:1.45;
+    letter-spacing:.01em;
+    word-break:break-word;
+    overflow-wrap:anywhere;
+    max-width:100%;
+  }
+  .tt-mobile-course .tt-poster-meta{
+    display:block;
+    font-size:14px;
+    font-weight:750;
+    line-height:1.35;
+    white-space:normal;
+    overflow:visible;
+    color:var(--muted,#64748b);
+  }
+  .tt-mobile-empty{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:48px;
+    border-radius:16px;
+    border:1px dashed var(--line,#dbe3ef);
+    background:transparent;
+    color:var(--muted,#64748b);
+    font-size:13px;
+    font-weight:750;
+  }
+  .tt-mobile-slot.is-empty{
+    opacity:.72;
+  }
+  .tt-mobile-slot.is-empty .tt-mobile-period{
+    min-height:48px;
+    padding:8px 4px;
+  }
+  .tt-mobile-slot.is-empty .tt-mobile-period .n{font-size:16px}
+  .tt-mobile-empty-day{
+    border:1px dashed var(--line,#dbe3ef);
+    border-radius:18px;
+    min-height:140px;
+    display:grid;
+    place-items:center;
+    color:var(--muted,#64748b);
+    font-size:16px;
+    font-weight:750;
+    padding:20px;
+  }
+  @media(prefers-color-scheme:dark){
+    .tt-mobile-days{background:var(--card,#182232)}
+    .tt-mobile-day:not(.is-active){background:transparent;border-color:#3d4d63;color:#94a3b8}
+    .tt-mobile-day.is-active{background:#3b82f6;border-color:#60a5fa;color:#fff}
+    .tt-mobile-period{background:#334155}
+    .tt-mobile-course.tt-poster-course{box-shadow:0 10px 24px rgba(0,0,0,.28)}
+  }
+  html[data-theme="dark"] .tt-mobile-days{background:var(--card,#182232)}
+  html[data-theme="dark"] .tt-mobile-day:not(.is-active){background:transparent;border-color:#3d4d63;color:#94a3b8}
+  html[data-theme="dark"] .tt-mobile-day.is-active{background:#3b82f6;border-color:#60a5fa;color:#fff}
+  html[data-theme="dark"] .tt-mobile-period{background:#334155}
+}
+
+@media(prefers-color-scheme:dark){
+  .tt-poster-period{background:#334155;color:#f1f5f9}
+  .tt-poster-period .n,.tt-poster-period .t{color:#f1f5f9}
+  .tt-poster-empty,.tt-poster-course{
+    background:var(--card,#182232);
+    border-color:var(--line,#334155);
+  }
+}
+html[data-theme="dark"] .tt-poster-period{background:#334155}
+html[data-theme="dark"] .tt-poster-period .n,
+html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
+
+</style>
+
+<style id="TT_MOBILE_CHROME_V1">
+/* TT_MOBILE_CHROME_V1 */
+@media (max-width:820px){
+  .panel > .head,
+  .tt-stable-head{
+    display:grid !important;
+    grid-template-columns:minmax(0,1fr) minmax(0,1fr) !important;
+    align-items:center !important;
+    justify-content:stretch !important;
+    text-align:left !important;
+    gap:10px 8px !important;
+  }
+  .panel > .head .title,
+  .tt-stable-title{
+    grid-column:1;
+    grid-row:1;
+    width:auto !important;
+    text-align:left !important;
+    min-width:0;
+  }
+  .panel > .head .title h1,
+  .tt-stable-title h2,
+  #pageTitle{
+    text-align:left !important;
+    margin:0 !important;
+    font-size:24px !important;
+    font-weight:900 !important;
+    letter-spacing:-.03em;
+  }
+  .panel > .head .actions,
+  .tt-stable-actions{
+    display:contents !important;
+  }
+  .panel > .head .actions select,
+  .tt-stable-actions select{
+    grid-column:2;
+    grid-row:1;
+    width:100% !important;
+    min-width:0 !important;
+    max-width:none !important;
+    margin:0 !important;
+    justify-self:stretch;
+    text-align:center;
+    font-weight:800;
+  }
+  .panel > .head .actions #reloadBtn,
+  .tt-stable-actions #ttStableReload{
+    grid-column:1;
+    grid-row:2;
+    width:100% !important;
+    min-width:0 !important;
+  }
+  .panel > .head .actions #editBtn,
+  .tt-stable-actions #ttStableEdit{
+    grid-column:2;
+    grid-row:2;
+    width:100% !important;
+    min-width:0 !important;
+  }
+  .panel > .head .actions button,
+  .tt-stable-actions button{
+    width:100% !important;
+    min-width:0 !important;
+    flex:none !important;
+  }
+
+  button.tt-mobile-day,
+  .tt-mobile-day{
+    -webkit-appearance:none !important;
+    appearance:none !important;
+    background:#6b7280 !important;
+    border:0 !important;
+    color:#f3f4f6 !important;
+    box-shadow:none !important;
+    font-weight:800 !important;
+    opacity:1 !important;
+  }
+  button.tt-mobile-day.is-today:not(.is-active),
+  .tt-mobile-day.is-today:not(.is-active){
+    background:#6b7280 !important;
+    color:#f3f4f6 !important;
+  }
+  button.tt-mobile-day.is-active,
+  .tt-mobile-day.is-active{
+    background:#2563eb !important;
+    border:0 !important;
+    color:#fff !important;
+    font-weight:900 !important;
+    box-shadow:0 8px 18px rgba(37,99,235,.42) !important;
+  }
+  button.tt-mobile-day.is-active .now,
+  .tt-mobile-day.is-active .now{
+    background:rgba(255,255,255,.22) !important;
+    color:#fff !important;
+  }
+  html[data-theme="dark"] button.tt-mobile-day:not(.is-active),
+  html[data-theme="dark"] .tt-mobile-day:not(.is-active){
+    background:#4b5563 !important;
+    color:#e5e7eb !important;
+    border:0 !important;
+  }
+  html[data-theme="dark"] button.tt-mobile-day.is-active,
+  html[data-theme="dark"] .tt-mobile-day.is-active{
+    background:#2563eb !important;
+    color:#fff !important;
+    border:0 !important;
+  }
+  html[data-theme="light"] button.tt-mobile-day:not(.is-active),
+  html[data-theme="light"] .tt-mobile-day:not(.is-active){
+    background:#d1d5db !important;
+    color:#374151 !important;
+  }
+  html[data-theme="light"] button.tt-mobile-day.is-active,
+  html[data-theme="light"] .tt-mobile-day.is-active{
+    background:#2563eb !important;
+    color:#fff !important;
+  }
+}
+
+</style>
+<!-- TT_FULL_WIDTH_HEADER_V1_START -->
+<style id="ttFullWidthHeaderV1">
+  /* 頁首原本 max-width:1240px 置中，寬螢幕下左右留白過多。
+     改為貼齊視窗兩側，只保留舒適的內距。內容區 .page 維持置中，
+     因為表格若拉到超寬反而不易閱讀。 */
+  header .top{
+    max-width:none;
+    width:100%;
+    padding-left:clamp(16px, 3vw, 40px);
+    padding-right:clamp(16px, 3vw, 40px);
+  }
+  @media(max-width:820px){
+    header .top{
+      padding-left:12px;
+      padding-right:12px;
+    }
+  }
+</style>
+<!-- TT_FULL_WIDTH_HEADER_V1_END -->
+</head>
+<body>
+<header><div class="top"><div class="brand"><div class="logo">D</div><div><div class="brand-title">Tronclass<br>課表管理</div><div id="brandSub" class="brand-sub">載入中</div></div></div><div class="top-actions"><a id="backDashboard" class="button primary" href="/admin">回控制台</a><a id="meLink" class="button" href="/admin/me">我的頁面</a><button id="logoutBtn" class="danger" type="button">登出</button></div></div></header>
+<main class="page"><section id="panel" class="panel"><div class="head"><div class="title"><h1 id="pageTitle">課表</h1><div id="pageSub" class="small">查看課表，按「編輯課表」後可手動輸入；也可匯入 CSV 或套用模板。</div></div><div class="actions"><select id="accountSelect"></select><button id="reloadBtn" type="button">重新讀取</button><button id="wallpaperBtn" type="button">匯出桌布</button><button id="editBtn" class="primary" type="button">編輯課表</button></div></div><div id="viewer" class="viewer"></div><div id="editor" class="editor"><div class="template-bar"><select id="templateSelect"><option value="">模板課表</option></select><button id="applyTemplateBtn" type="button">套用模板</button><button id="saveTemplateBtn" type="button">另存模板</button><button id="deleteTemplateBtn" type="button">刪除模板</button><button id="importCsvBtn" type="button">匯入 CSV</button><button id="downloadCsvBtn" type="button">下載 CSV 範本</button></div><div class="edit-actions"><button id="addRowBtn" type="button">新增一堂課</button><button id="saveBtn" class="primary" type="button">儲存課表</button><button id="reloadEditBtn" type="button">重新讀取</button><button id="backViewBtn" type="button">返回查看</button></div><div id="rows"></div></div><div id="msg" class="msg"></div><input id="csvFile" type="file" accept=".csv,text/csv" style="display:none"></section></main><div id="toast" class="toast"></div>
+
+<!-- CONSOLIDATED_ADMIN_AUTH_V1_BODY_START -->
+<script id="consolidatedAdminAuthBodyV1">
+(function(){
+  'use strict';
+  if (window.CONSOLIDATED_ADMIN_AUTH_V1) return;
+  window.CONSOLIDATED_ADMIN_AUTH_V1 = true;
+
+  var LS_SESSION = 'tronclass_admin_session';
+  var LS_SAVED = 'tronclass_admin_saved_login';
+  var LS_LOGOUT = 'tronclass_dashboard_manual_logout';
+  var nativeFetch = window.fetch.bind(window);
+
+  function q(id){ return document.getElementById(id); }
+  function params(){ try { return new URLSearchParams(location.search); } catch(_) { return new URLSearchParams(); } }
+  function token(){try{if(window.__tronBootToken)return String(window.__tronBootToken).trim();
+      var u = params().get('token');
+      if (u) return String(u).trim();
+      var keys = ['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];
+      for(var i=0;i<keys.length;i++){
+        var v = localStorage.getItem(keys[i]) || sessionStorage.getItem(keys[i]);
+        if(v && String(v).trim()) return String(v).trim();
+      }
+    }catch(_){}
+    return '';
+  }
+  function isLoginPage(){ return location.pathname === '/admin' || location.pathname === '/admin/' || location.pathname === '/admin/dashboard'; }
+  function isAdminPath(){ return location.pathname === '/admin' || location.pathname.startsWith('/admin/'); }
+  function currentPath(){ return location.pathname + location.search + location.hash; }
+  function loginUrl(){ var u = new URL('/admin', location.origin); var cur = currentPath(); if (cur && cur !== '/admin' && cur.indexOf('/admin?logout=1') !== 0) u.searchParams.set('next', cur); u.searchParams.set('v','auth'+Date.now()); return u.pathname + u.search; }
+  function withToken(path){ var t = token(); if (!t) return path; var u = new URL(path, location.origin); u.searchParams.set('token', t); u.searchParams.delete('logout'); return u.pathname + u.search + u.hash; }
+  function setClass(state){
+    document.documentElement.classList.remove('tron-auth-pending','tron-auth-ok','tron-auth-logged-out');
+    if (document.body) document.body.classList.remove('auth-ok','dash-auth-ok','logged-in');
+    if (state === 'ok') {
+      document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','mobile-nav-final-auth');
+      if (document.body) document.body.classList.add('auth-ok','dash-auth-ok','logged-in');
+    } else if (state === 'pending') {
+      document.documentElement.classList.add('tron-auth-pending');
+    } else {
+      document.documentElement.classList.add('tron-auth-logged-out');
+    }
+  }
+  function setBrand(text){ var el=q('brandSub'); if(el) el.textContent = text || '請先登入'; }
+  function setMsg(text, ok){ var el=q('msg'); if(!el)return; el.textContent=text||''; el.className='msg '+(ok?'ok':(text?'bad':'')); }
+  function showLogin(reason){ setClass('out'); setBrand('請先登入'); setMsg(reason||'請先登入。', false); if(!isLoginPage() && isAdminPath()) location.replace(loginUrl()); }
+  function showAuthed(data){ setClass('ok'); setBrand((data&&data.current_account_id)||(data&&data.account_id)||'已登入'); setMsg('', true); syncLinks(); }
+  function logout(){ localStorage.removeItem(LS_SESSION); localStorage.setItem(LS_LOGOUT,'1'); showLogin('已登出，請重新登入。'); setTimeout(function(){location.replace('/admin?logout=1&v=logout'+Date.now())},30); }
+
+  async function parseResponse(res){ var body=await res.json().catch(function(){return{}}); if(!res.ok){var e=new Error(body.error||('HTTP '+res.status));e.status=res.status;e.body=body;throw e;} return body; }
+  async function statusApi(){ var res=await fetch('/admin/api/status',{cache:'no-store',credentials:'same-origin'}); return parseResponse(res); }
+
+  async function verify(){
+    if(params().get('logout')==='1'||localStorage.getItem(LS_LOGOUT)==='1'){showLogin(params().get('logout')==='1'?'已登出，請重新登入。':'請先登入。');return;}
+    /* cookie session */
+    try{var data=await statusApi();showAuthed(data);}catch(e){if(e.status===401){localStorage.removeItem(LS_SESSION);showLogin('登入狀態失效，請重新登入。');}else{setClass('ok');}}
+  }
+  function syncLinks(){
+    var t=token(); if(!t)return;
+    document.querySelectorAll('a[href^="/admin"]').forEach(function(a){
+      var href=a.getAttribute('href')||'';
+      if(href.indexOf('/admin/api/')===0)return;
+      try{a.href=withToken(href);}catch(_){}
+    });
+  }
+  window.tronAuth={token:token,verify:verify,logout:logout,syncLinks:syncLinks};
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',verify); else verify();
+})();
+</script>
+<!-- CONSOLIDATED_ADMIN_AUTH_V1_BODY_END -->
+
+<script>
+(function(){
+  'use strict';
+  var PERIOD={1:['08:10','09:00'],2:['09:10','10:00'],3:['10:10','11:00'],4:['11:10','12:00'],5:['12:10','13:00'],6:['13:10','14:00'],7:['14:10','15:00'],8:['15:10','16:00'],9:['16:10','17:00'],10:['17:10','18:00']};
+  var DAYS=[['mon','星期一'],['tue','星期二'],['wed','星期三'],['thu','星期四'],['fri','星期五'],['sat','星期六'],['sun','星期日']];
+  var DAY_LABEL={mon:'星期一',tue:'星期二',wed:'星期三',thu:'星期四',fri:'星期五',sat:'星期六',sun:'星期日'};
+  var TEMPLATE_KEY='tronclass_timetable_templates_mobilefix_v1';
+  var SELECTED_KEY='tronclass_timetable_selected_account_mobilefix_v1';
+  var entries=[],status=null,mode='view',loading=false;
+
+  function q(id){return document.getElementById(id)}
+  function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+  function token(){try{if(window.__tronBootToken)return String(window.__tronBootToken).trim();
+      var u=new URLSearchParams(location.search).get('token');
+      if(u){storeToken(u);return u.trim()}
+      var keys=['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];
+      for(var i=0;i<keys.length;i++){
+        var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);
+        if(v&&String(v).trim())return String(v).trim()
+      }
+    }catch(_){}
+    return ''
+  }
+  function storeToken(t){
+    if(!t)return;
+    ['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'].forEach(function(k){
+      try{localStorage.setItem(k,t);sessionStorage.setItem(k,t)}catch(_){}
+    });
+    try{
+      var u=new URL(location.href);
+      if(u.searchParams.has('token')){
+        u.searchParams.delete('token');
+        history.replaceState(null,'',u.pathname+u.search+u.hash)
+      }
+    }catch(_){}
+  }
+  function withToken(path){
+    var t=token();
+    if(!t)return path;
+    var u=new URL(path,location.origin);
+    u.searchParams.set('token',t);
+    return u.pathname+u.search+u.hash
+  }
+  async function parse(res){
+    var b=await res.json().catch(function(){return{}});
+    if(!res.ok){
+      var e=new Error(b.error||b.message||('HTTP '+res.status));
+      e.status=res.status;
+      throw e
+    }
+    return b
+  }
+  async function api(path,opts){
+    opts=opts||{};opts.credentials=opts.credentials||'same-origin';return fetch(withToken(path),opts).then(parse)
+  }
+  function toast(m,ok){
+    if(!String(m||'').trim())return;
+    var el=q('toast');
+    if(!el)return;
+    el.textContent=m;
+    el.style.background=ok===false?'#991b1b':'#172033';
+    el.classList.add('visible');
+    clearTimeout(el._t);
+    el._t=setTimeout(function(){el.classList.remove('visible')},2600)
+  }
+  function msg(m,ok){
+    var el=q('msg');
+    if(!el)return;
+    el.textContent=m||'';
+    el.className='msg '+(ok===true?'ok':ok===false?'bad':'')
+  }
+  function pStart(p){return PERIOD[Number(p||0)]?PERIOD[Number(p||0)][0]:''}
+  function pEnd(p){return PERIOD[Number(p||0)]?PERIOD[Number(p||0)][1]:''}
+  function normDay(v){
+    v=String(v||'').trim().toLowerCase();
+    var map={'星期一':'mon','週一':'mon','一':'mon','1':'mon','mon':'mon','monday':'mon','星期二':'tue','週二':'tue','二':'tue','2':'tue','tue':'tue','tuesday':'tue','星期三':'wed','週三':'wed','三':'wed','3':'wed','wed':'wed','wednesday':'wed','星期四':'thu','週四':'thu','四':'thu','4':'thu','thu':'thu','thursday':'thu','星期五':'fri','週五':'fri','五':'fri','5':'fri','fri':'fri','friday':'fri','星期六':'sat','週六':'sat','六':'sat','6':'sat','sat':'sat','saturday':'sat','星期日':'sun','星期天':'sun','週日':'sun','日':'sun','天':'sun','7':'sun','sun':'sun','sunday':'sun'};
+    return map[v]||v||'mon'
+  }
+  function norm(e){
+    var ps=Number(e.period_start||e.period||1)||1,pe=Number(e.period_end||ps)||ps;
+    if(pe<ps)pe=ps;
+    return{
+      weekday:normDay(e.weekday||'mon'),
+      period_start:ps,
+      period_end:pe,
+      start_time:e.start_time||pStart(ps),
+      end_time:e.end_time||pEnd(pe),
+      course_name:e.course_name||e.course||'',
+      classroom:e.classroom||e.room||'',
+      teacher:e.teacher||'',
+      course_code:e.course_code||'',
+      source:'manual'
+    }
+  }
+  async function loadStatus(){
+    try{
+    status=await api('/admin/api/status',{cache:'no-store'});
+    document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','mobile-nav-final-auth');
+    if(document.body) document.body.classList.add('auth-ok','dash-auth-ok','logged-in');
+    q('brandSub').textContent=status.current_account_id||'已登入';
+    if(q('backDashboard')) q('backDashboard').href=withToken('/admin');
+    if(q('ttPanelBackDashboard')) q('ttPanelBackDashboard').href=withToken('/admin');
+    q('meLink').href=withToken('/admin/me');
+    fillAccounts();
+    return status
+    }catch(e){
+      msg('讀取帳號／權限失敗：'+(e.message||e),false);
+      return null
+    }
+  }
+  function selected(){
+    var saved=localStorage.getItem(SELECTED_KEY)||'';
+    if(saved)return saved;
+    if(status&&status.current_account_id&&status.current_account_id!=='<token-admin>')return status.current_account_id;
+    if(status&&status.accounts&&status.accounts[0])return status.accounts[0].account_id;
+    return ''
+  }
+  function fillAccounts(){
+    var sel=q('accountSelect'),old=sel.value||selected();
+    sel.innerHTML='';
+    if(status&&status.is_admin&&Array.isArray(status.accounts)&&status.accounts.length){
+      status.accounts.forEach(function(a){
+        if(a.account_id)sel.appendChild(new Option(accountLabel(a),a.account_id))
+      });
+      if(old&&Array.prototype.some.call(sel.options,function(o){return o.value===old}))sel.value=old;
+      else if(sel.options.length)sel.selectedIndex=0;
+      sel.disabled=false;
+    }else{
+      var me=(status&&status.current_account_id)||selected();
+      sel.appendChild(new Option(accountLabel({account_id:me,user_name:status&&status.user_name}),me||''));
+      sel.value=me||'';
+      sel.disabled=false;
+    }
+    return sel.value;
+  }
+  async function loadEntries(){
+    if(loading)return;
+    loading=true;
+    msg('讀取課表中...');
+    try{
+      var acct=fillAccounts();
+      localStorage.setItem(SELECTED_KEY,acct||'');
+      var b=await api('/admin/api/timetable'+(acct?'?account_id='+encodeURIComponent(acct):''),{cache:'no-store'});
+      entries=(b.entries||[]).map(norm);
+      msg('已顯示：'+(acct||'目前帳號')+' 的課表',true)
+    }catch(e){
+      entries=[];
+      msg('讀取課表失敗：'+(e.message||e),false)
+    }finally{
+      loading=false
+    }
+  }
+  function posterDays(real){
+    var days=[['mon','MON.'],['tue','TUE.'],['wed','WED.'],['thu','THU.'],['fri','FRI.']];
+    if(real.some(function(e){return e.weekday==='sat'})) days.push(['sat','SAT.']);
+    if(real.some(function(e){return e.weekday==='sun'})) days.push(['sun','SUN.']);
+    return days;
+  }
+      function accountLabel(a){
+    var id=String((a&&a.account_id)||'').trim();
+    var name=String((a&&(a.user_name||a.username))||'').trim();
+    if(name && id && name!==id) return name;
+    return name||id||'我的課表';
+  }
+  function paintMobileDay(btn, on){
+    if(!btn) return;
+    btn.classList.toggle('is-active', !!on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    if(on){
+      btn.style.setProperty('background', '#2563eb', 'important');
+      btn.style.setProperty('color', '#fff', 'important');
+      btn.style.setProperty('border', '0', 'important');
+      btn.style.setProperty('box-shadow', '0 8px 18px rgba(37,99,235,.4)', 'important');
+    }else{
+      btn.style.setProperty('background', '#4b5563', 'important');
+      btn.style.setProperty('color', '#e5e7eb', 'important');
+      btn.style.setProperty('border', '0', 'important');
+      btn.style.setProperty('box-shadow', 'none', 'important');
+    }
+  }
+  function bindMobileWeek(){
+    if(window.TT_MOBILE_WEEK_BOUND) return;
+    window.TT_MOBILE_WEEK_BOUND = true;
+    document.addEventListener('click', function(ev){
+      var btn = ev.target.closest && ev.target.closest('.tt-mobile-day');
+      if(!btn) return;
+      var wrap = btn.closest('.tt-mobile-week');
+      if(!wrap) return;
+      var day = btn.getAttribute('data-day');
+      wrap.querySelectorAll('.tt-mobile-day').forEach(function(b){ paintMobileDay(b, b===btn); });
+      wrap.querySelectorAll('.tt-mobile-panel').forEach(function(p){
+        p.classList.toggle('is-active', p.getAttribute('data-day')===day);
+      });
+    }, true);
+  }
+  function shortZhDay(key){
+    return {mon:'一',tue:'二',wed:'三',thu:'四',fri:'五',sat:'六',sun:'日'}[key]||key;
+  }
+  function todayWeekday(){
+    return ['sun','mon','tue','wed','thu','fri','sat'][new Date().getDay()];
+  }
+  function renderPoster(real){
+    var days=posterDays(real);
+    var occupied=Object.create(null);
+    var blocks=[];
+    real.slice().sort(function(a,b){
+      var order=['mon','tue','wed','thu','fri','sat','sun'];
+      var da=order.indexOf(a.weekday)-order.indexOf(b.weekday);
+      if(da) return da;
+      return Number(a.period_start||0)-Number(b.period_start||0);
+    }).forEach(function(e){
+      var ps=Math.max(1,Math.min(10,Number(e.period_start||1)||1));
+      var pe=Math.max(ps,Math.min(10,Number(e.period_end||ps)||ps));
+      var clash=false;
+      for(var p=ps;p<=pe;p++) if(occupied[e.weekday+':'+p]) clash=true;
+      if(clash) return;
+      for(var p=ps;p<=pe;p++) occupied[e.weekday+':'+p]=true;
+      blocks.push({day:e.weekday,ps:ps,pe:pe,e:e});
+    });
+    var html='<div class="tt-poster-wrap"><div class="tt-poster-title">課表</div><div class="tt-poster" style="grid-template-columns:92px repeat('+days.length+',minmax(0,1fr))">';
+    html+='<div class="tt-poster-corner" style="grid-column:1;grid-row:1"></div>';
+    days.forEach(function(d,i){ html+='<div class="tt-poster-day" style="grid-column:'+(i+2)+';grid-row:1">'+d[1]+'</div>'; });
+    for(var p=1;p<=10;p++){
+      var tm=PERIOD[p]||['',''];
+      html+='<div class="tt-poster-period" style="grid-column:1;grid-row:'+(p+1)+'"><span class="n">'+p+'</span><span class="t">'+esc(tm[0]+'–'+tm[1])+'</span></div>';
+      days.forEach(function(d,i){
+        var start=null;
+        for(var b=0;b<blocks.length;b++) if(blocks[b].day===d[0] && blocks[b].ps===p){ start=blocks[b]; break; }
+        if(start){
+          var place=String(start.e.classroom||'').trim();
+          var teacher=String(start.e.teacher||'').trim();
+          var meta=place||teacher;
+          html+='<button type="button" class="tt-poster-course" data-course="'+esc(start.e.course_name)+'" title="'+esc((start.e.course_name||'')+(place?' ｜ '+place:'')+(teacher?' ｜ '+teacher:''))+'" style="grid-column:'+(i+2)+';grid-row:'+(p+1)+' / span '+(start.pe-start.ps+1)+'"><span class="tt-poster-name">'+esc(start.e.course_name)+'</span>'+(meta?'<span class="tt-poster-meta">'+esc(meta)+'</span>':'')+'</button>';
+        }else if(!occupied[d[0]+':'+p]){
+          html+='<div class="tt-poster-empty" style="grid-column:'+(i+2)+';grid-row:'+(p+1)+'"></div>';
+        }
+      });
+    }
+    html+='</div>';
+    var today=todayWeekday();
+    var defaultDay=days.some(function(d){return d[0]===today}) ? today : days[0][0];
+    html+='<div class="tt-mobile-week"><div class="tt-mobile-days" role="tablist" style="grid-template-columns:repeat('+days.length+',minmax(0,1fr))">';
+    days.forEach(function(d){
+      var on=d[0]===defaultDay;
+      html+='<button type="button" class="tt-mobile-day'+(on?' is-active':'')+(d[0]===today?' is-today':'')+'" data-day="'+d[0]+'" role="tab" aria-selected="'+(on?'true':'false')+'" style="'+(on?'background:#2563eb;color:#fff;border:0;box-shadow:0 8px 18px rgba(37,99,235,.4)':'background:#4b5563;color:#e5e7eb;border:0;box-shadow:none')+'">'+shortZhDay(d[0])+(d[0]===today?'<span class="now">今</span>':'')+'</button>';
+    });
+    html+='</div>';
+    days.forEach(function(d){
+      html+='<div class="tt-mobile-panel'+(d[0]===defaultDay?' is-active':'')+'" data-day="'+d[0]+'" role="tabpanel">';
+      var slots=[];
+      for(var p=1;p<=10;p++){
+        var start=null;
+        for(var b=0;b<blocks.length;b++) if(blocks[b].day===d[0] && blocks[b].ps===p){ start=blocks[b]; break; }
+        if(start) slots.push({kind:'course',start:start});
+        else if(!occupied[d[0]+':'+p]) slots.push({kind:'empty',p:p});
+      }
+      while(slots.length && slots[0].kind==='empty') slots.shift();
+      while(slots.length && slots[slots.length-1].kind==='empty') slots.pop();
+      if(!slots.length){
+        html+='<div class="tt-mobile-empty-day">這天沒有課程</div>';
+      }else{
+        slots.forEach(function(slot){
+          if(slot.kind==='course'){
+            var start=slot.start;
+            var place=String(start.e.classroom||'').trim();
+            var teacher=String(start.e.teacher||'').trim();
+            var meta=place||teacher;
+            var nLab=start.ps===start.pe?String(start.ps):(start.ps+'–'+start.pe);
+            var t0=(PERIOD[start.ps]||['',''])[0];
+            var t1=(PERIOD[start.pe]||['',''])[1];
+            html+='<div class="tt-mobile-slot"><div class="tt-mobile-period"><span class="n">'+esc(nLab)+'</span><span class="t">'+esc(t0)+'<br>'+esc(t1)+'</span></div><button type="button" class="tt-poster-course tt-mobile-course" data-course="'+esc(start.e.course_name)+'" title="'+esc((start.e.course_name||'')+(place?' ｜ '+place:'')+(teacher?' ｜ '+teacher:''))+'"><span class="tt-poster-name">'+esc(start.e.course_name)+'</span>'+(meta?'<span class="tt-poster-meta">'+esc(meta)+'</span>':'')+'</button></div>';
+          }else{
+            var tm=PERIOD[slot.p]||['',''];
+            html+='<div class="tt-mobile-slot is-empty"><div class="tt-mobile-period"><span class="n">'+slot.p+'</span><span class="t">'+esc(tm[0])+'<br>'+esc(tm[1])+'</span></div><div class="tt-mobile-empty">空堂</div></div>';
+          }
+        });
+      }
+      html+='</div>';
+    });
+    html+='</div></div>';
+    bindMobileWeek();
+    return html;
+  }
+  function renderView(){
+    mode='view';
+    q('panel').classList.remove('mode-edit');
+    q('pageTitle').textContent='課表';
+    q('pageSub').textContent='查看課表，按「編輯課表」後可手動輸入；也可匯入 CSV 或套用模板。';
+    var real=entries.filter(function(e){return String(e.course_name||'').trim()});
+    q('viewer').innerHTML=real.length?renderPoster(real):'<div class="tt-poster-empty-msg">目前沒有課表資料，請按「編輯課表」新增。</div>';
+    bindMobileWeek();
+    if(window.enhanceCourses) setTimeout(window.enhanceCourses, 60);
+  }
+  function rowHtml(e,i){
+    var ps=Math.max(1, Math.min(14, Number(e.period_start||1))), pe=Math.max(ps, Math.min(14, Number(e.period_end||ps)));
+    return'<div class="row" data-i="'+i+'"><select class="day">'+DAYS.map(function(d){return'<option value="'+d[0]+'" '+(e.weekday===d[0]?'selected':'')+'>'+d[1]+'</option>'}).join('')+'</select><input class="ps" type="number" min="1" max="14" placeholder="起節" value="'+esc(ps)+'"><input class="pe" type="number" min="1" max="14" placeholder="訖節" value="'+esc(pe)+'"><input class="course" placeholder="課程名稱" value="'+esc(e.course_name||'')+'"><input class="room" placeholder="教室" value="'+esc(e.classroom||'')+'"><input class="teacher" placeholder="授課老師" value="'+esc(e.teacher||'')+'"><div class="time">'+esc((e.start_time||pStart(ps)||'-')+' - '+(e.end_time||pEnd(pe)||'-'))+'</div><button class="del danger" type="button">刪除</button></div>'
+  }
+  function syncRow(row){
+    var i=Number(row.dataset.i),ps=Math.max(1,Math.min(14,Number(row.querySelector('.ps').value||1))),pe=Math.max(ps,Math.min(14,Number(row.querySelector('.pe').value||ps)));
+    row.querySelector('.ps').value=ps;
+    row.querySelector('.pe').value=pe;
+    entries[i]=norm({
+      weekday:row.querySelector('.day').value,
+      period_start:ps,
+      period_end:pe,
+      start_time:pStart(ps),
+      end_time:pEnd(pe),
+      course_name:row.querySelector('.course').value,
+      classroom:row.querySelector('.room').value,
+      teacher:row.querySelector('.teacher').value
+    });
+    row.querySelector('.time').textContent=(pStart(ps)||'-')+' - '+(pEnd(pe)||'-')
+  }
+  function bindRows(){
+    document.querySelectorAll('#rows .row').forEach(function(row){
+      row.querySelectorAll('input,select').forEach(function(el){
+        el.oninput=function(){syncRow(row)};
+        el.onchange=function(){syncRow(row)}
+      });
+      row.querySelector('.del').onclick=function(){
+        entries.splice(Number(row.dataset.i),1);
+        renderEdit()
+      }
+    })
+  }
+  function templates(){try{return JSON.parse(localStorage.getItem(TEMPLATE_KEY)||'{}')}catch(_){return{}}}
+  function saveTemplates(t){localStorage.setItem(TEMPLATE_KEY,JSON.stringify(t||{}))}
+  function renderTemplates(){
+    var t=templates(),names=Object.keys(t).sort();
+    q('templateSelect').innerHTML='<option value="">模板課表</option>'+names.map(function(n){return'<option value="'+esc(n)+'">'+esc(n)+'</option>'}).join('')
+  }
+  function renderEdit(){
+    mode='edit';
+    if(!entries.length)entries=[norm({weekday:'mon',period_start:1,period_end:1})];
+    q('panel').classList.add('mode-edit');
+    q('pageTitle').textContent='編輯課表';
+    q('pageSub').textContent='只要填第幾節，時間會自動帶入。可匯入 CSV、套用模板或自己新增課程。';
+    renderTemplates();
+    q('rows').innerHTML=entries.map(rowHtml).join('');
+    bindRows()
+  }
+  async function saveEntries(){
+    document.querySelectorAll('#rows .row').forEach(syncRow);
+    var valid=entries.filter(function(e){return String(e.course_name||'').trim()});
+    if(!valid.length){msg('請至少輸入一堂課的課程名稱。',false);return}
+    msg('儲存中...');
+    try{
+      await api('/admin/api/timetable/import',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({account_id:q('accountSelect').value||undefined,entries:valid})});
+      entries=valid;
+      msg('課表已儲存。',true);
+      toast('課表已儲存');
+      renderView()
+    }catch(e){
+      msg(e.message||'儲存課表失敗',false);
+      toast(e.message||'儲存課表失敗',false)
+    }
+  }
+  function parseCsv(text){
+    var rows=[],row=[],cur='',quote=false;
+    for(var i=0;i<text.length;i++){
+      var ch=text[i],nx=text[i+1];
+      if(ch==='"'){
+        if(quote&&nx==='"'){cur+='"';i++}else quote=!quote
+      }else if(ch===','&&!quote){
+        row.push(cur);cur=''
+      }else if((ch==='\n'||ch==='\r')&&!quote){
+        if(ch==='\r'&&nx==='\n')i++;
+        row.push(cur);
+        if(row.some(function(x){return String(x).trim()}))rows.push(row);
+        row=[];cur=''
+      }else cur+=ch
+    }
+    row.push(cur);
+    if(row.some(function(x){return String(x).trim()}))rows.push(row);
+    return rows
+  }
+  function parsePeriodNum(s){
+    s = String(s || '').trim();
+    if(!s) return null;
+    var n = parseInt(s, 10);
+    if(!isNaN(n)) return n;
+    var zhMap = {
+      '一':1,'二':2,'三':3,'四':4,'五':5,'六':6,'七':7,'八':8,'九':9,'十':10,
+      '十一':11,'十二':12,'十三':13,'十四':14,'十五':15,
+      '壹':1,'貳':2,'參':3,'肆':4,'伍':5,'陸':6,'柒':7,'捌':8,'玖':9,'拾':10,
+      'A':1,'B':2,'C':3,'D':4,'E':5,'F':6,'G':7,'H':8,'I':9,'J':10,'N':11
+    };
+    var upper = s.toUpperCase();
+    if(zhMap[upper] !== undefined) return zhMap[upper];
+    if(upper.startsWith('第') && upper.endsWith('節')){
+      var mid = upper.slice(1, -1).trim();
+      if(zhMap[mid] !== undefined) return zhMap[mid];
+      var midNum = parseInt(mid, 10);
+      if(!isNaN(midNum)) return midNum;
+    }
+    return null;
+  }
+
+  function parsePeriod(v){
+    if(v == null) return [1, 1];
+    var s = String(v).trim();
+    if(!s) return [1, 1];
+
+    var parts = s.split(/[-~至到,、\s+]+/).filter(Boolean);
+    if(parts.length > 0){
+      var p1 = parsePeriodNum(parts[0]);
+      var p2 = parts.length > 1 ? parsePeriodNum(parts[parts.length - 1]) : p1;
+      if(p1 != null){
+        var ps = Math.max(1, Math.min(14, p1));
+        var pe = p2 != null ? Math.max(ps, Math.min(14, p2)) : ps;
+        return [ps, pe];
+      }
+    }
+
+    var nums = s.match(/\d+/g);
+    if(nums && nums.length > 0){
+      var ps = Math.max(1, Math.min(14, Number(nums[0])));
+      var pe = nums.length > 1 ? Math.max(ps, Math.min(14, Number(nums[nums.length - 1]))) : ps;
+      return [ps, pe];
+    }
+
+    return [1, 1];
+  }
+  function csvEntries(text){
+    var rows=parseCsv(text);
+    if(!rows.length)return[];
+    
+    var headerIdx = -1;
+    for(var r=0; r<Math.min(5, rows.length); r++){
+      var rowStr = rows[r].join(' ').toLowerCase();
+      if(/星期|weekday|day|課程|course|節次|節數|period|教室|room|classroom|老師|教師|teacher/.test(rowStr)){
+        headerIdx = r;
+        break;
+      }
+    }
+
+    var hasHeader = headerIdx >= 0;
+    var header = hasHeader ? rows[headerIdx].map(function(x){ return String(x||'').trim().toLowerCase(); }) : [];
+    var dataRows = hasHeader ? rows.slice(headerIdx + 1) : rows;
+
+    function getCol(row, aliases, defaultIdx){
+      if(hasHeader){
+        for(var a=0; a<aliases.length; a++){
+          var idx = header.indexOf(aliases[a]);
+          if(idx >= 0 && row[idx] !== undefined) return String(row[idx]).trim();
+        }
+        for(var a=0; a<aliases.length; a++){
+          for(var h=0; h<header.length; h++){
+            if(header[h].indexOf(aliases[a]) >= 0 && row[h] !== undefined) return String(row[h]).trim();
+          }
+        }
+      }
+      return defaultIdx >= 0 && defaultIdx < row.length ? String(row[defaultIdx]).trim() : '';
+    }
+
+    return dataRows.map(function(r){
+      if(!r || !r.some(function(x){ return String(x||'').trim(); })) return null;
+
+      var day = getCol(r, ['星期','星期幾','weekday','day','週次','禮拜','week'], 0);
+      var startPeriod = getCol(r, ['開始節次','起始節次','start_period','period_start','起節'], -1);
+      var endPeriod = getCol(r, ['結束節次','訖節','end_period','period_end','止節'], -1);
+      var periodStr = getCol(r, ['節次','節數','課堂節次','period','節','堂次'], 1);
+      var timeRange = getCol(r, ['時間','上課時間','time','time_range'], -1);
+      var course = getCol(r, ['課程名稱','課程','科目','course_name','course','subject'], 2);
+      var room = getCol(r, ['教室','上課教室','地點','classroom','room','location'], 3);
+      var teacher = getCol(r, ['授課教師','授課老師','教師','老師','teacher','instructor'], 4);
+
+      var ps = 1, pe = 1;
+      if(startPeriod){
+        var prS = parsePeriod(startPeriod);
+        ps = prS[0];
+        pe = endPeriod ? parsePeriod(endPeriod)[0] : (prS[1] || ps);
+      } else if(periodStr){
+        var pr = parsePeriod(periodStr);
+        ps = pr[0];
+        pe = pr[1];
+      }
+
+      if(pe < ps) pe = ps;
+      ps = Math.max(1, Math.min(14, ps));
+      pe = Math.max(ps, Math.min(14, pe));
+
+      var st = pStart(ps), et = pEnd(pe);
+      if(timeRange){
+        var tMatch = timeRange.match(/(\d{1,2}:\d{2})\s*[-~至到]\s*(\d{1,2}:\d{2})/);
+        if(tMatch){ st = tMatch[1]; et = tMatch[2]; }
+      }
+
+      return norm({
+        weekday: normDay(day),
+        period_start: ps,
+        period_end: pe,
+        start_time: st,
+        end_time: et,
+        course_name: course,
+        classroom: room,
+        teacher: teacher
+      });
+    }).filter(function(e){ return e && (e.course_name || e.classroom || e.teacher); });
+  }
+  function handleCsvFile(ev){
+    var f=ev.target.files&&ev.target.files[0];
+    if(!f)return;
+    var rd=new FileReader();
+    rd.onload=function(){
+      var im=csvEntries(String(rd.result||''));
+      if(!im.length)return toast('CSV 沒有可匯入的課程',false);
+      entries=entries.filter(function(e){return String(e.course_name||'').trim()}).concat(im);
+      renderEdit();
+      toast('已匯入 '+im.length+' 堂課')
+    };
+    rd.readAsText(f,'utf-8');
+    ev.target.value=''
+  }
+  function downloadCsv(){
+    var csv='星期,節次,課程名稱,教室,授課教師\n星期一,1-2,微積分,E304,王老師\n星期二,3-4,計算機概論,B101,李老師\n星期三,5-6,普通物理,S201,陳老師\n';
+    var blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+    var a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='timetable_template.csv';
+    a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href)},1000)
+  }
+  function saveTemplate(){
+    document.querySelectorAll('#rows .row').forEach(syncRow);
+    var name=prompt('模板名稱：');
+    if(!name)return;
+    var t=templates();
+    t[name]=entries.filter(function(e){return String(e.course_name||'').trim()});
+    saveTemplates(t);
+    renderTemplates();
+    toast('模板已儲存')
+  }
+  function applyTemplate(){
+    var n=q('templateSelect').value;
+    if(!n)return toast('請先選擇模板',false);
+    entries=(templates()[n]||[]).map(norm);
+    renderEdit();
+    toast('已套用模板')
+  }
+  function delTemplate(){
+    var n=q('templateSelect').value;
+    if(!n)return toast('請先選擇模板',false);
+    if(!confirm('刪除模板：'+n+'？'))return;
+    var t=templates();
+    delete t[n];
+    saveTemplates(t);
+    renderTemplates();
+    toast('模板已刪除')
+  }
+
+  q('reloadBtn').onclick=function(){loadEntries().then(renderView)};
+  q('editBtn').onclick=renderEdit;
+  if(q('wallpaperBtn')) q('wallpaperBtn').onclick=function(){ window.exportTimetableWallpaper && window.exportTimetableWallpaper(entries, PERIOD); };
+  q('addRowBtn').onclick=function(){entries.push(norm({weekday:'mon',period_start:1,period_end:1}));renderEdit()};
+  q('saveBtn').onclick=saveEntries;
+  q('reloadEditBtn').onclick=function(){loadEntries().then(renderEdit)};
+  q('backViewBtn').onclick=renderView;
+  q('importCsvBtn').onclick=function(){q('csvFile').click()};
+  q('downloadCsvBtn').onclick=downloadCsv;
+  q('saveTemplateBtn').onclick=saveTemplate;
+  q('applyTemplateBtn').onclick=applyTemplate;
+  q('deleteTemplateBtn').onclick=delTemplate;
+  q('csvFile').onchange=handleCsvFile;
+  q('accountSelect').onchange=function(){
+    localStorage.setItem(SELECTED_KEY,q('accountSelect').value);
+    loadEntries().then(function(){
+      if(mode==='edit') renderEdit();
+      else renderView();
+    });
+  };
+  q('logoutBtn').onclick=function(){
+    localStorage.removeItem('tronclass_admin_session');
+    sessionStorage.removeItem('tronclass_admin_session');
+    location.href='/admin?v=logout'
+  };
+
+  loadStatus().then(function(st){
+    if(st) return loadEntries();
+  }).then(function(){
+    if(new URLSearchParams(location.search).get('edit')==='1') renderEdit();
+    else renderView();
+  }).catch(function(e){
+    msg(e.message||'初始化失敗',false);
+  });
+})();
+</script>
+
+<!-- TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1_START -->
+<style id="timetableCourseRollcallHistoryLinkStyleV1">
+  .tt-course-history-link{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    border:0;
+    background:transparent;
+    color:var(--primary,#2563eb);
+    font:inherit;
+    font-weight:950;
+    padding:0;
+    min-height:0;
+    border-radius:0;
+    cursor:pointer;
+    text-decoration:underline;
+    text-underline-offset:3px;
+  }
+  .tt-course-history-link:hover{filter:brightness(.9)}
+  .tt-course-history-link::after{content:'點名紀錄';font-size:11px;font-weight:900;color:var(--muted,#64748b);text-decoration:none;border:1px solid var(--line,#dbe3ef);border-radius:999px;padding:2px 6px;background:var(--soft,#eef3fb)}
+  .tt-history-modal-backdrop{position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.42);padding:18px;backdrop-filter:blur(4px)}
+  .tt-history-modal-backdrop.visible{display:flex}
+  .tt-history-modal{width:min(720px,100%);max-height:min(82vh,720px);overflow:auto;background:var(--card,#fff);border:1px solid var(--line,#dbe3ef);border-radius:24px;box-shadow:0 24px 80px rgba(15,23,42,.28);padding:18px;color:var(--text,#0f172a)}
+  .tt-history-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .tt-history-modal h2{margin:0;font-size:22px;font-weight:950;letter-spacing:-.02em}
+  .tt-history-close{min-height:38px;border-radius:999px;border:1px solid var(--line,#dbe3ef);background:var(--soft,#eef3fb);color:var(--text,#0f172a);font-weight:950;padding:0 12px;cursor:pointer}
+  .tt-history-meta{font-size:13px;color:var(--muted,#64748b);line-height:1.5;margin-top:4px}
+  .tt-history-list{display:grid;gap:10px;margin-top:12px}
+  .tt-history-item{border:1px solid var(--line,#dbe3ef);border-radius:16px;background:var(--soft2,#f8fafc);padding:12px}
+  .tt-history-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;font-weight:950}
+  .tt-history-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 9px;font-size:12px;font-weight:950;background:var(--soft,#eef3fb);color:var(--muted,#64748b);white-space:nowrap}
+  .tt-history-pill.ok{background:#dcfce7;color:#166534}.tt-history-pill.bad{background:#fee2e2;color:#991b1b}
+  .tt-history-detail{font-size:13px;color:var(--muted,#64748b);line-height:1.55;margin-top:6px;white-space:pre-wrap;word-break:break-word}
+  .tt-history-empty{border:1px dashed var(--line,#dbe3ef);border-radius:16px;background:var(--soft2,#f8fafc);padding:16px;text-align:center;color:var(--muted,#64748b);line-height:1.55}
+  .tt-history-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .tt-history-actions a,.tt-history-actions button{min-height:40px;border-radius:14px;border:1px solid var(--line,#dbe3ef);background:var(--soft,#eef3fb);color:var(--text,#0f172a);font-weight:950;padding:0 12px;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+  @media(max-width:760px){
+    .tt-course-history-link{display:inline;line-height:1.45}
+    .tt-course-history-link::after{display:inline-flex;margin-left:6px}
+    .tt-history-modal-backdrop{align-items:flex-end;padding:10px}
+    .tt-history-modal{border-radius:24px 24px 18px 18px;max-height:86vh;padding:16px}
+    .tt-history-modal h2{font-size:20px}
+    .tt-history-actions{display:grid;grid-template-columns:1fr}.tt-history-actions a,.tt-history-actions button{width:100%}
+  }
+</style>
+<script id="timetableCourseRollcallHistoryLinkScriptV1">
+(function(){
+  'use strict';
+  if(window.TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1) return;
+  window.TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1 = true;
+
+  var FILTER_KEY = 'tronclass_rollcall_history_course_filter_v1';
+  var TOKEN_KEYS = ['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];
+  var lastStatus = null;
+
+  function q(id){ return document.getElementById(id); }
+  function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+  function textOf(el){ return (el && (el.textContent || el.value || '') || '').replace(/\s+/g,' ').trim(); }
+  function norm(v){ return String(v || '').replace(/\s+/g,'').toLowerCase(); }
+  function token(){try{if(window.__tronBootToken)return String(window.__tronBootToken).trim();
+      var u = new URLSearchParams(location.search).get('token');
+      if(u) return String(u).trim();
+      for(var i=0;i<TOKEN_KEYS.length;i++){
+        var v = localStorage.getItem(TOKEN_KEYS[i]) || sessionStorage.getItem(TOKEN_KEYS[i]);
+        if(v && String(v).trim()) return String(v).trim();
+      }
+    }catch(_){ }
+    return '';
+  }
+  function withToken(path){
+    var t = token();
+    if(!t) return path;
+    var u = new URL(path, location.origin);
+    u.searchParams.set('token', t);
+    return u.pathname + u.search + u.hash;
+  }
+  async function parse(res){
+    var b = await res.json().catch(function(){ return {}; });
+    if(!res.ok){
+      var e = new Error(b.error || b.message || ('HTTP ' + res.status));
+      e.status = res.status;
+      throw e;
+    }
+    return b;
+  }
+  async function api(path){
+    return fetch(withToken(path), {cache:'no-store'}).then(parse);
+  }
+  function ensureModal(){
+    var modal = q('ttCourseHistoryModal');
+    if(modal) return modal;
+    modal = document.createElement('div');
+    modal.id = 'ttCourseHistoryModal';
+    modal.className = 'tt-history-modal-backdrop';
+    modal.innerHTML = '<div class="tt-history-modal"><div class="tt-history-modal-head"><div><h2 id="ttHistoryTitle">課程點名紀錄</h2><div id="ttHistoryMeta" class="tt-history-meta"></div></div><button id="ttHistoryClose" class="tt-history-close" type="button">關閉</button></div><div id="ttHistoryBody" class="tt-history-list"></div><div class="tt-history-actions"><a id="ttHistoryOpenRollcall" href="/admin#rollcall">前往點名分頁</a><button id="ttHistoryReload" type="button">重新整理紀錄</button></div></div>';
+    document.body.appendChild(modal);
+    q('ttHistoryClose').onclick = function(){ modal.classList.remove('visible'); };
+    modal.addEventListener('click', function(ev){ if(ev.target === modal) modal.classList.remove('visible'); });
+    document.addEventListener('keydown', function(ev){ if(ev.key === 'Escape') modal.classList.remove('visible'); });
+    return modal;
+  }
+  async function loadStatus(){
+    if(window.status && typeof window.status === 'object' && Array.isArray(window.status.accounts)){
+      lastStatus = window.status;
+      return lastStatus;
+    }
+    if(lastStatus) return lastStatus;
+    lastStatus = await api('/admin/api/status');
+    return lastStatus;
+  }
+  function selectedAccount(status){
+    var ids = ['accountSelect','ttStableAccount','ttClean5Account','ttCleanAccount','ttFullAccount','ttRestoredAccount','ttAccount','timetableAccount'];
+    for(var i=0;i<ids.length;i++){
+      var sel = q(ids[i]);
+      if(sel && sel.value) return sel.value;
+    }
+    try{
+      var saved = localStorage.getItem('tronclass_timetable_selected_account_standalone_v2') || localStorage.getItem('tronclass_timetable_selected_account_clean_v5') || localStorage.getItem('tronclass_timetable_selected_account_v1') || '';
+      if(saved) return saved;
+    }catch(_){ }
+    if(status && status.current_account_id && status.current_account_id !== '<token-admin>') return status.current_account_id;
+    if(status && Array.isArray(status.accounts) && status.accounts[0]) return status.accounts[0].account_id;
+    return '';
+  }
+  function accountById(status, accountId){
+    var list = status && status.accounts || [];
+    if(accountId){
+      for(var i=0;i<list.length;i++) if(list[i].account_id === accountId) return list[i];
+    }
+    return list[0] || null;
+  }
+  function fmt(ts){
+    if(!ts) return '尚未';
+    try{ return new Date(Number(ts)*1000).toLocaleString(); }catch(_){ return String(ts); }
+  }
+  function historyHtml(list){
+    if(!list || !list.length) return '<div class="tt-history-empty">這門課目前在系統內沒有點名紀錄。</div>';
+    return list.map(function(h){
+      var ok = !!h.success;
+      var label = ok ? '成功' : '未成功';
+      var pillClass = ok ? 'tt-history-pill ok' : 'tt-history-pill bad';
+      return '<div class="tt-history-item"><div class="tt-history-item-top"><span>'+esc(h.course_name || '課程')+'</span><span class="'+pillClass+'">'+esc(label)+'</span></div><div class="tt-history-meta">'+esc(fmt(h.timestamp))+'｜'+esc(h.attendance_type || '簽到')+'｜#'+esc(h.rollcall_id || '-')+'</div>'+(h.result ? '<div class="tt-history-detail">'+esc(h.result)+'</div>' : '')+'</div>';
+    }).join('');
+  }
+  function courseMatches(rawCourse, targetCourse){
+    var a = norm(rawCourse), b = norm(targetCourse);
+    if(!a || !b) return false;
+    return a === b || a.indexOf(b) >= 0 || b.indexOf(a) >= 0;
+  }
+  async function showCourseHistory(course, explicitAccountId){
+    if(!course) return;
+    var modal = ensureModal();
+    modal.classList.add('visible');
+    q('ttHistoryTitle').textContent = '點名紀錄：' + course;
+    q('ttHistoryMeta').textContent = '讀取紀錄中...';
+    q('ttHistoryBody').innerHTML = '<div class="tt-history-empty">正在搜尋這門課的點名紀錄...</div>';
+    try{
+      var status = await loadStatus();
+      var acctId = explicitAccountId || selectedAccount(status);
+      var account = accountById(status, acctId);
+      var list = (account && account.rollcall_history || []).filter(function(h){ return courseMatches(h.course_name, course); }).sort(function(a,b){ return Number(b.timestamp||0)-Number(a.timestamp||0); });
+      q('ttHistoryMeta').textContent = '帳號：' + (account ? account.account_id : (acctId || '-')) + '｜課程：' + course + '｜共 ' + list.length + ' 筆';
+      q('ttHistoryBody').innerHTML = historyHtml(list);
+      var payload = {course:course, account_id:acctId || '', ts:Date.now()};
+      try{ localStorage.setItem(FILTER_KEY, JSON.stringify(payload)); }catch(_){ }
+      q('ttHistoryOpenRollcall').href = withToken('/admin#rollcall');
+      q('ttHistoryReload').onclick = function(){ lastStatus = null; showCourseHistory(course, acctId); };
+    }catch(e){
+      q('ttHistoryMeta').textContent = '讀取失敗';
+      q('ttHistoryBody').innerHTML = '<div class="tt-history-empty">無法讀取歷史點名紀錄：'+esc(e.message || e)+'</div>';
+    }
+  }
+  function isLikelyTimetableTable(table){
+    if(!table) return false;
+    var txt = textOf(table.querySelector('thead') || table).toLowerCase();
+    return txt.indexOf('課程') >= 0 && (txt.indexOf('節次') >= 0 || txt.indexOf('時間') >= 0 || txt.indexOf('星期') >= 0);
+  }
+  function enhanceTable(table){
+    if(!isLikelyTimetableTable(table)) return;
+    var rows = table.querySelectorAll('tbody tr');
+    Array.prototype.forEach.call(rows, function(row){
+      if(row.querySelector('input,select,textarea')) return;
+      var cells = row.children || [];
+      if(cells.length < 4) return;
+      var cell = cells[cells.length - 1];
+      var course = textOf(cell);
+      if(!course || course === '-' || cell.dataset.ttHistoryLinked === '1') return;
+      cell.dataset.ttHistoryLinked = '1';
+      cell.innerHTML = '<button type="button" class="tt-course-history-link" data-course="'+esc(course)+'">'+esc(course)+'</button>';
+      var btn = cell.querySelector('button');
+      if(btn){
+        btn.onclick = function(ev){
+          ev.preventDefault();
+          ev.stopPropagation();
+          if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+          showCourseHistory(course);
+        };
+      }
+    });
+  }
+  function enhanceCourses(){
+    var scopes = [];
+    var tv = q('view-timetable') || q('viewer');
+    if(tv) scopes.push(tv);
+    if(location.pathname.indexOf('/admin/timetable') === 0) scopes.push(document);
+    if(!scopes.length) return;
+    scopes.forEach(function(scope){
+      Array.prototype.forEach.call(scope.querySelectorAll('table'), enhanceTable);
+    });
+  }
+  window.enhanceCourses = enhanceCourses;
+
+  function start(){
+    enhanceCourses();
+    var timer = null;
+    try{
+      new MutationObserver(function(){
+        clearTimeout(timer);
+        timer = setTimeout(enhanceCourses, 120);
+      }).observe(document.documentElement, {childList:true, subtree:true});
+    }catch(_){ }
+    document.addEventListener('visibilitychange', function(){ if(!document.hidden) setTimeout(enhanceCourses, 100); });
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+</script>
+<!-- TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1_END -->
+
+<!-- COURSE_HISTORY_MODAL_CLOSE_ON_JUMP_V1_START -->
+<script id="courseHistoryModalCloseOnJumpV1">
+(function(){
+  'use strict';
+  if(window.COURSE_HISTORY_MODAL_CLOSE_ON_JUMP_V1) return;
+  window.COURSE_HISTORY_MODAL_CLOSE_ON_JUMP_V1 = true;
+
+  var FILTER_KEY = 'tronclass_rollcall_history_course_filter_v1';
+
+  function q(id){ return document.getElementById(id); }
+  function textOf(el){ return (el && (el.textContent || el.value || '') || '').replace(/\s+/g,' ').trim(); }
+  function closeHistoryModal(){
+    var modal = q('ttCourseHistoryModal');
+    if(modal){
+      modal.classList.remove('visible','open','show','active');
+      modal.style.display = 'none';
+    }
+    document.querySelectorAll('.tt-history-modal-backdrop.visible,.tt-history-modal-backdrop.open,.tt-history-modal-backdrop.show').forEach(function(el){
+      el.classList.remove('visible','open','show','active');
+      el.style.display = 'none';
+    });
+    try{ localStorage.removeItem(FILTER_KEY); }catch(_){ }
+  }
+  function isJumpToRollcall(el){
+    if(!el) return false;
+    if(el.id === 'ttHistoryOpenRollcall') return true;
+    var href = '';
+    try{ href = el.getAttribute && (el.getAttribute('href') || ''); }catch(_){ }
+    if(href.indexOf('#rollcall') >= 0) return true;
+    return textOf(el).indexOf('前往點名分頁') >= 0 || textOf(el).indexOf('點名分頁') >= 0;
+  }
+  function targetFrom(ev){
+    if(!ev || !ev.target || !ev.target.closest) return null;
+    return ev.target.closest('#ttHistoryOpenRollcall,a,button,[role="button"]');
+  }
+
+  document.addEventListener('click', function(ev){
+    var el = targetFrom(ev);
+    if(!isJumpToRollcall(el)) return;
+
+    var href = '';
+    try{ href = el.getAttribute && el.getAttribute('href'); }catch(_){ }
+    if(!href || href === '#') href = '/admin#rollcall';
+
+    ev.preventDefault();
+    ev.stopPropagation();
+    if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+
+    closeHistoryModal();
+
+    setTimeout(function(){
+      try{
+        location.href = href;
+      }catch(_){
+        location.hash = '#rollcall';
+      }
+    }, 40);
+  }, true);
+
+  window.addEventListener('hashchange', function(){
+    if(location.hash === '#rollcall') closeHistoryModal();
+  });
+})();
+</script>
+<!-- COURSE_HISTORY_MODAL_CLOSE_ON_JUMP_V1_END -->
+
+<!-- mobile navigation bar matching dashboard style -->
+<nav id="ttMobileNavV2" style="position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));z-index:100;display:grid;grid-template-columns:repeat(3,1fr);padding:8px 6px;gap:0;background:rgba(15,20,30,.96);backdrop-filter:blur(40px);-webkit-backdrop-filter:blur(40px);border:1px solid rgba(255,255,255,.06);border-radius:28px;box-shadow:0 -8px 40px rgba(0,0,0,.55)">
+<a href="/admin" style="min-height:54px;border-radius:20px;padding:4px 2px;border:none;background:transparent;color:#94A3B8;font-size:10px;font-weight:800;letter-spacing:.02em;display:flex;flex-direction:column;align-items:center;justify-content:center;text-decoration:none;gap:3px;transition:all .22s ease">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+總覽
+</a>
+<span style="min-height:54px;border-radius:20px;padding:4px 2px;border:none;background:rgba(59,130,246,.15);color:#3B82F6;font-size:10px;font-weight:900;letter-spacing:.02em;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;transition:all .22s ease">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+課表
+</span>
+<a href="/admin/files" style="min-height:54px;border-radius:20px;padding:4px 2px;border:none;background:transparent;color:#94A3B8;font-size:10px;font-weight:800;letter-spacing:.02em;display:flex;flex-direction:column;align-items:center;justify-content:center;text-decoration:none;gap:3px;transition:all .22s ease">
+<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+教材
+</a>
+</nav>
+<style>
+#ttMobileNavV2{display:none}
+@media(max-width:820px){#ttMobileNavV2{display:grid}}
+@media(min-width:821px){#ttMobileNavV2{display:none}}
+@media(prefers-color-scheme:light){
+  #ttMobileNavV2{background:rgba(255,255,255,.94)!important;border-color:rgba(219,227,239,.45)!important;box-shadow:0 -8px 40px rgba(15,23,42,.14)!important}
+  #ttMobileNavV2 a,#ttMobileNavV2 span{color:#64748B!important}
+}
+</style>
+<script id="RETURN_DASHBOARD_HREF_V1">
+(function(){
+  function tok(){
+    try{ return (window.__tronBootToken||new URLSearchParams(location.search).get('token')||'').trim(); }catch(_){ return ''; }
+  }
+  function patch(){
+    var t=tok();
+    document.querySelectorAll('a[href="/admin"],a[href="/admin/"],a[href="/admin#overview"],a[href^="/admin?"]').forEach(function(a){
+      try{
+        var u=new URL(a.getAttribute('href'), location.origin);
+        if(!(u.pathname==='/admin'||u.pathname==='/admin/'||u.pathname==='/admin/dashboard')) return;
+        if(t && !u.searchParams.get('token')) u.searchParams.set('token', t);
+        if(!u.hash) u.hash='overview';
+        a.setAttribute('href', u.pathname+u.search+u.hash);
+      }catch(_){}
+    });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', patch);
+  else patch();
+  setTimeout(patch, 200);
+})();
+</script>
+
+
+<script id="TT_MOBILE_HEADER_BACK_V1">
+(function(){
+  if(window.TT_MOBILE_HEADER_BACK_V1) return;
+  window.TT_MOBILE_HEADER_BACK_V1 = true;
+  function tok(){
+    try{ return (window.__tronBootToken||new URLSearchParams(location.search).get('token')||'').trim(); }catch(_){ return ''; }
+  }
+  function href(){
+    var t=tok();
+    return t ? '/admin?token='+encodeURIComponent(t)+'#overview' : '/admin#overview';
+  }
+  function tidy(){
+    var top=document.querySelector('.top-actions');
+    if(top){
+      Array.prototype.slice.call(top.children).forEach(function(n){
+        if(n.id==='backDashboard') return;
+        n.style.display='none';
+        n.hidden=true;
+      });
+      var a=document.getElementById('backDashboard');
+      if(!a){
+        a=document.createElement('a');
+        a.id='backDashboard';
+        a.className='button primary';
+        top.appendChild(a);
+      }
+      a.textContent='回控制台';
+      a.href=href();
+      a.style.display='inline-flex';
+      a.hidden=false;
+    }
+    document.querySelectorAll('#ttPanelBackDashboard,.actions a[href="/admin"],.actions a[href^="/admin?"]').forEach(function(el){
+      if(el.id==='backDashboard') return;
+      if(el.closest && el.closest('.top-actions')) return;
+      el.style.display='none';
+      el.hidden=true;
+    });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', tidy);
+  else tidy();
+  setTimeout(tidy, 80);
+  setTimeout(tidy, 400);
+  try{ new MutationObserver(tidy).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){}
+})();
+</script>
+<script id="TT_WALLPAPER_V1">
+/* TT_WALLPAPER_V1 — iPhone 直式課表桌布 */
+(function (global) {
+  'use strict';
+  var W = 1290;
+  var H = 2796;
+
+  function wallpaperName() {
+    var el = document.getElementById('brandSub');
+    var n = el && String(el.textContent || '').trim();
+    if (n && n !== '載入中' && n !== '已登入') return n;
+    var sel = document.getElementById('accountSelect') || document.getElementById('ttStableAccount');
+    if (sel && sel.options && sel.selectedIndex >= 0) {
+      n = String(sel.options[sel.selectedIndex].text || '').trim();
+      if (n) return n;
+    }
+    return '我的課表';
+  }
+
+  function isDark() {
+    var t = document.documentElement.getAttribute('data-theme');
+    if (t === 'dark') return true;
+    if (t === 'light') return false;
+    return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme:dark)').matches);
+  }
+
+  function rr(ctx, x, y, w, h, r) {
+    var rad = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+  }
+
+  function wrapText(ctx, text, maxW, maxLines) {
+    var chars = Array.from(String(text || ''));
+    var lines = [];
+    var cur = '';
+    for (var i = 0; i < chars.length; i++) {
+      var t = cur + chars[i];
+      if (cur && ctx.measureText(t).width > maxW) {
+        lines.push(cur);
+        cur = chars[i];
+        if (lines.length >= maxLines) return lines;
+      } else cur = t;
+    }
+    if (cur && lines.length < maxLines) lines.push(cur);
+    return lines;
+  }
+
+  function collectBlocks(list) {
+    var occupied = Object.create(null);
+    var blocks = [];
+    (list || []).forEach(function (e) {
+      var name = String(e.course_name || '').trim();
+      if (!name) return;
+      var ps = Math.max(1, Math.min(10, Number(e.period_start || 1) || 1));
+      var pe = Math.max(ps, Math.min(10, Number(e.period_end || ps) || ps));
+      var clash = false;
+      for (var p = ps; p <= pe; p++) if (occupied[e.weekday + ':' + p]) clash = true;
+      if (clash) return;
+      for (var q = ps; q <= pe; q++) occupied[e.weekday + ':' + q] = true;
+      blocks.push({ day: e.weekday, ps: ps, pe: pe, name: name, room: String(e.classroom || e.teacher || '').trim() });
+    });
+    return { occupied: occupied, blocks: blocks };
+  }
+
+  function drawWallpaper(entries, periodMap) {
+    var PERIOD = periodMap || {};
+    var dark = isDark();
+    var bg = dark ? '#0b1220' : '#eef3fb';
+    var card = dark ? '#182232' : '#ffffff';
+    var soft = dark ? '#121a28' : '#f8fafc';
+    var text = dark ? '#f1f5f9' : '#172033';
+    var muted = dark ? '#94a3b8' : '#64748b';
+    var line = dark ? '#2a3a52' : '#dbe3ef';
+    var periodBg = dark ? '#334155' : '#64748b';
+    var accent = '#3b82f6';
+    var courseBg = dark ? '#243656' : '#e8eef9';
+
+    var data = collectBlocks(entries);
+    var days = [['mon', '一'], ['tue', '二'], ['wed', '三'], ['thu', '四'], ['fri', '五']];
+    if (data.blocks.some(function (b) { return b.day === 'sat'; })) days.push(['sat', '六']);
+    if (data.blocks.some(function (b) { return b.day === 'sun'; })) days.push(['sun', '日']);
+
+    var canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    var ctx = canvas.getContext('2d');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+    var g = ctx.createLinearGradient(0, 0, W, H);
+    if (dark) {
+      g.addColorStop(0, 'rgba(37,99,235,.18)');
+      g.addColorStop(1, 'rgba(15,23,42,0)');
+    } else {
+      g.addColorStop(0, 'rgba(37,99,235,.08)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+    }
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    var padX = 72;
+    var topSafe = 260;
+    var bottomSafe = 480;
+    ctx.fillStyle = text;
+    ctx.font = '800 42px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('WEEKLY', W / 2, topSafe - 70);
+    ctx.font = '900 86px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+    ctx.fillText('課表', W / 2, topSafe + 20);
+    ctx.fillStyle = muted;
+    ctx.font = '700 36px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+    ctx.fillText(wallpaperName(), W / 2, topSafe + 78);
+
+    var gridX = padX;
+    var gridY = topSafe + 130;
+    var gridW = W - padX * 2;
+    var gridH = H - gridY - bottomSafe;
+    rr(ctx, gridX - 16, gridY - 24, gridW + 32, gridH + 48, 48);
+    ctx.fillStyle = soft;
+    ctx.fill();
+
+    var leftW = 150;
+    var colW = (gridW - leftW) / days.length;
+    var rowH = gridH / 11;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    days.forEach(function (d, i) {
+      var x = gridX + leftW + i * colW;
+      ctx.fillStyle = muted;
+      ctx.font = '800 32px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+      ctx.fillText(d[1], x + colW / 2, gridY + rowH / 2);
+    });
+
+    for (var p = 1; p <= 10; p++) {
+      var y = gridY + p * rowH;
+      rr(ctx, gridX + 8, y + 8, leftW - 20, rowH - 16, 22);
+      ctx.fillStyle = periodBg;
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = '900 34px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+      ctx.fillText(String(p), gridX + leftW / 2 - 2, y + rowH / 2 - 14);
+      var tm = PERIOD[p] || ['', ''];
+      ctx.font = '700 18px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,.88)';
+      ctx.fillText(String(tm[0] || ''), gridX + leftW / 2 - 2, y + rowH / 2 + 16);
+    }
+
+    days.forEach(function (d, i) {
+      for (var p = 1; p <= 10; p++) {
+        var x = gridX + leftW + i * colW;
+        var y = gridY + p * rowH;
+        var start = null;
+        for (var b = 0; b < data.blocks.length; b++) {
+          if (data.blocks[b].day === d[0] && data.blocks[b].ps === p) { start = data.blocks[b]; break; }
+        }
+        if (start) {
+          var span = start.pe - start.ps + 1;
+          rr(ctx, x + 8, y + 8, colW - 16, rowH * span - 16, 24);
+          ctx.fillStyle = courseBg;
+          ctx.fill();
+          ctx.strokeStyle = line;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+          ctx.fillStyle = text;
+          ctx.font = '800 28px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+          var lines = wrapText(ctx, start.name, colW - 36, span >= 2 ? 3 : 2);
+          var startY = y + (rowH * span) / 2 - ((lines.length + (start.room ? 1 : 0) - 1) * 18);
+          lines.forEach(function (ln, li) {
+            ctx.fillText(ln, x + colW / 2, startY + li * 36);
+          });
+          if (start.room) {
+            ctx.fillStyle = muted;
+            ctx.font = '700 22px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+            ctx.fillText(start.room, x + colW / 2, startY + lines.length * 36);
+          }
+        } else if (!data.occupied[d[0] + ':' + p]) {
+          rr(ctx, x + 8, y + 8, colW - 16, rowH - 16, 22);
+          ctx.fillStyle = card;
+          ctx.fill();
+        }
+      }
+    });
+
+    ctx.fillStyle = muted;
+    ctx.font = '600 24px -apple-system,BlinkMacSystemFont,system-ui,sans-serif';
+    ctx.fillText('長按圖片 → 加入照片 → 設為桌布', W / 2, H - 200);
+    return canvas;
+  }
+
+  function exportTimetableWallpaper(entries, periodMap) {
+    var real = (entries || []).filter(function (e) { return String(e.course_name || '').trim(); });
+    if (!real.length) {
+      alert('目前沒有課表可以匯出');
+      return;
+    }
+    var canvas = drawWallpaper(real, periodMap);
+    var name = '課表桌布-' + wallpaperName() + '.png';
+    canvas.toBlob(function (blob) {
+      if (!blob) return;
+      var file = new File([blob], name, { type: 'image/png' });
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: '課表桌布' }).catch(function () { saveBlob(blob, name); });
+        return;
+      }
+      saveBlob(blob, name);
+    }, 'image/png');
+  }
+
+  function saveBlob(blob, name) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  global.exportTimetableWallpaper = exportTimetableWallpaper;
+})(window);
+
+</script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2eee79b88cfae64',t:'MTc4NzM3MDUzNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f21371182d7db2',t:'MTc4NzQwMzc4OA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
+
+
+
+
+
+
+
+
