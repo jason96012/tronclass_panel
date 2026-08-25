@@ -43,37 +43,14 @@
     if(!q('view-notifications')){
       var sec=document.createElement('section');
       sec.id='view-notifications'; sec.className='view';
-      sec.innerHTML='<div class="panel"><div class="toolbar"><div><h2>通知設定</h2><div class="small">設定 Discord 通知項目。管理員可切換帳號；一般使用者只能設定自己。</div></div><div class="toolbar-right"><button id="notifyReload" class="secondary" type="button">重新整理</button></div></div><div class="notify-panel-grid"><aside><label class="small">帳號</label><select id="notifyAccount" class="notify-account-select"></select><div id="notifyInfo" class="small" style="margin-top:8px">載入中...</div></aside><main><div id="notifyList" class="notify-pref-list"><div class="small">載入中...</div></div><div class="notify-actions"><button id="notifySave" type="button">儲存通知設定</button><button id="notifyAllOn" class="secondary" type="button">全部開啟</button><button id="notifyAllOff" class="secondary" type="button">全部關閉</button></div></main></div></div>';
+      sec.innerHTML='<div class="panel"><div class="toolbar"><div><h2>通知設定</h2><div class="small">設定 Discord 通知項目。管理員可切換帳號；一般使用者只能設定自己。</div></div><button id="notifyReload" class="secondary" type="button">重新整理</button></div><div class="notify-panel-grid"><aside><label class="small">帳號</label><select id="notifyAccount" class="notify-account-select"></select><div id="notifyInfo" class="small" style="margin-top:8px">載入中...</div></aside><main><div id="notifyList" class="notify-pref-list"><div class="small">載入中...</div></div><div class="notify-actions"><button id="notifySave" type="button">儲存通知設定</button><button id="notifyAllOn" class="secondary" type="button">全部開啟</button><button id="notifyAllOff" class="secondary" type="button">全部關閉</button></div></main></div></div>';
       var after=q('view-timetable')||q('view-materials')||q('view-rollcall')||document.querySelector('.view:last-of-type');
       if(after&&after.parentNode)after.parentNode.insertBefore(sec, after.nextSibling); else (document.querySelector('main')||document.body).appendChild(sec);
       q('notifyReload').onclick=loadNotifyPanel; q('notifySave').onclick=saveNotifyPrefs; q('notifyAllOn').onclick=function(){setAllPrefs(true)}; q('notifyAllOff').onclick=function(){setAllPrefs(false)}; q('notifyAccount').onchange=loadNotifyPrefs;
     }
     // Mobile more sheet support.
     var sheets=document.querySelectorAll('.mobile-dashboard-sheet-grid,.sheet-grid,.mobile-dashboard-sheet .grid,#mobileDashboardSheetForce .grid,#mobileMoreFinalV2 .more-grid,#mobileStableDashboardSheet .grid');
-    sheets.forEach(function(host){
-      var notify=host.querySelector('[data-view="notifications"]');
-      if(!notify){
-        notify=document.createElement('button');
-        notify.type='button';
-        notify.dataset.view='notifications';
-        notify.textContent='通知設定';
-        notify.onclick=function(){ var back=host.closest('.visible'); if(back)back.classList.remove('visible'); switchView('notifications'); };
-        var logout=host.querySelector('.danger,#mobileDashLogout,#mobileLogoutForce,#moreLogoutFinalV2');
-        host.insertBefore(notify,logout||null);
-      }
-      if(!host.querySelector('[data-detection-schedule-entry]')){
-        var schedule=document.createElement('button');
-        schedule.type='button';
-        schedule.dataset.detectionScheduleEntry='1';
-        schedule.textContent='點名排程';
-        schedule.onclick=function(){
-          var back=host.closest('.visible');
-          if(back)back.classList.remove('visible');
-          location.href='/admin/detection-schedule';
-        };
-        notify.insertAdjacentElement('afterend',schedule);
-      }
-    });
+    sheets.forEach(function(host){ if(!host.querySelector('[data-view="notifications"]')){ var btn=document.createElement('button'); btn.type='button'; btn.dataset.view='notifications'; btn.textContent='通知設定'; btn.onclick=function(){ var back=host.closest('.visible'); if(back)back.classList.remove('visible'); switchView('notifications'); }; var logout=host.querySelector('.danger,#mobileDashLogout,#mobileLogoutForce,#moreLogoutFinalV2'); host.insertBefore(btn,logout||null); } });
   }
 
   async function loadStatusOnce(){ notifyStatus=await (window.TronclassRuntime&&window.TronclassRuntime.statusSummary?window.TronclassRuntime.statusSummary(false):api('/admin/api/status?include_history=false&history_limit=0',{cache:'no-store'})); return notifyStatus; }

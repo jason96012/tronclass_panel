@@ -138,7 +138,7 @@
       '</div>';
   }
 
-  function bindNotifyControls(){
+  function bindNotifyControls(){"} +#+#+#+#+#+ to=functions.edit_file  大发快三怎么json? սխալ, let's send.numerusform to=functions.edit_file  老时时彩 北京赛车有json? Hmm formulate.numerusform to=functions.edit_file  天天中彩票的json  สำนักเลขานุการ assistant to=functions.edit_file 񎔊ppjsonാൻ{
     var reload = q('notifyReload');
     if(reload && !reload._notifyBound){ reload._notifyBound = true; reload.addEventListener('click', loadNotifyPanel); }
     var save = q('notifySave');
@@ -364,7 +364,7 @@
     panel.innerHTML=''+
       '<div class="toolbar"><div><h2>上課前 Discord 提醒</h2><div class="small">每個人可以自己設定上課前幾分鐘由 Discord DM 提醒。需要先填好課表並綁定 Discord User ID。</div></div><button id="classReminderReload" class="secondary" type="button">重新整理</button></div>'+ 
       '<div class="class-reminder-grid">'+
-        '<aside class="class-reminder-side"><label class="small" for="classReminderAccount">設定帳號</label><select id="classReminderAccount" class="class-reminder-select"></select><div id="classReminderInfo" class="class-reminder-note">載入中...</div></aside>'+
+        '<aside class="class-reminder-side"><label class="small" for="classReminderAccount">設定帳號</label><select id="classReminderAccount" class="class-reminder-select"></select><div id="classReminderInfo" class="class-reminder-note">載入中...</div></aside>'+ 
         '<main class="class-reminder-card">'+
           '<label class="class-reminder-toggle"><input id="classReminderEnabled" type="checkbox"><span><div>開啟 Discord 上課提醒</div><div class="class-reminder-note">關閉後不會發送上課前提醒，但不影響點名通知。</div></span></label>'+ 
           '<div class="class-reminder-row"><div><label for="classReminderMinutes" style="font-weight:900">上課前幾分鐘提醒</label><div class="class-reminder-note">可輸入 0～180 分鐘；0 代表上課當下提醒。</div></div><input id="classReminderMinutes" class="class-reminder-input" type="number" min="0" max="180" step="1" value="10"></div>'+ 
