@@ -153,18 +153,6 @@ impl AdapterMessenger for LineBotClient {
     }
 }
 
-fn twin_rollcall_url(url: &str) -> String {
-    const CF: &str = "dashboard.jasoncloudserver.me";
-    const TS: &str = "tronclassv3.tail31b530.ts.net";
-    if url.contains(CF) {
-        url.replace(CF, TS)
-    } else if url.contains(TS) {
-        url.replace(TS, CF)
-    } else {
-        String::new()
-    }
-}
-
 fn render_line_messages(message: &OutboundMessage) -> Vec<SendMessage> {
     match message {
         OutboundMessage::SystemStarted(event) => vec![flex_bubble(
@@ -277,12 +265,7 @@ fn render_message(message: &OutboundMessage) -> String {
             let page = if request.input_url.trim().is_empty() {
                 "".to_string()
             } else {
-                let alt = twin_rollcall_url(&request.input_url);
-                if alt.is_empty() {
-                    format!("\n數字點名頁：{}", request.input_url)
-                } else {
-                    format!("\n數字點名頁：{}\nTailscale：{}", request.input_url, alt)
-                }
+                format!("\n數字點名頁：{}", request.input_url)
             };
             format!(
                 "🔢 需要數字點名碼\n\

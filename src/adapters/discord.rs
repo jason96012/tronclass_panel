@@ -39,6 +39,8 @@ const COMPONENT_REAUTH: &str = "trc:reauth";
 const COMPONENT_HELP: &str = "trc:help";
 const COMPONENT_NUMBER_AUTO_PREFIX: &str = "trc:number-auto:";
 const COMPONENT_ACCOUNT_APPROVE_PREFIX: &str = "trc:account-approve:";
+const COMPONENT_BLOCK_IP_PREFIX: &str = "trc:block-ip:";
+const COMPONENT_UNBLOCK_IP_PREFIX: &str = "trc:unblock-ip:";
 const DISCORD_SEND_INTERVAL_MS: u64 = 350;
 const DISCORD_DASHBOARD_DEDUPE_TTL_SECS: u64 = 10 * 60;
 const MAX_DISCORD_DM_CHANNEL_CACHE: usize = 2048;
@@ -92,7 +94,6 @@ static DISCORD_HTTP_THROTTLE: Lazy<Mutex<Instant>> = Lazy::new(|| Mutex::new(Ins
 static DISCORD_DASHBOARD_DEDUPE: Lazy<Mutex<HashMap<String, Instant>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 const COMPONENT_ACCOUNT_REJECT_PREFIX: &str = "trc:account-reject:";
-const COMPONENT_BLOCK_IP_PREFIX: &str = "trc:block-ip:";
 
 #[derive(Clone)]
 pub struct DiscordBotClient {
@@ -654,6 +655,20 @@ impl DiscordRuntime {
                 Ok(true) => OutboundMessage::Text(format!("✅ 已封鎖 IP `{ip}`。黑名單頁面可查看與解除封鎖。")),
                 Ok(false) => OutboundMessage::Text(format!("ℹ️ IP `{ip}` 已經在黑名單中。")),
                 Err(error) => OutboundMessage::Text(format!("❌ 封鎖 IP 失敗：{error}")),
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        if let Some(ip) = parse_unblock_ip_custom_id(&component.data.custom_id) {
+            if user_id != self.bot.admin_user_id {
+                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
+                return Ok(());
+            }
+            let message = match self.accounts_db.unblock_ip(&ip).await {
+                Ok(true) => OutboundMessage::Text(format!("✅ 已將 IP `{ip}` 從黑名單移除。")),
+                Ok(false) => OutboundMessage::Text(format!("ℹ️ IP `{ip}` 目前不在黑名單中。")),
+                Err(error) => OutboundMessage::Text(format!("❌ 移除黑名單失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -1346,18 +1361,6 @@ async fn reply_component(
         .wrap_err("回覆 Discord component 失敗")
 }
 
-fn twin_rollcall_url(url: &str) -> String {
-    const CF: &str = "dashboard.jasoncloudserver.me";
-    const TS: &str = "tronclassv3.tail31b530.ts.net";
-    if url.contains(CF) {
-        url.replace(CF, TS)
-    } else if url.contains(TS) {
-        url.replace(TS, CF)
-    } else {
-        String::new()
-    }
-}
-
 fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
     match message {
         OutboundMessage::SystemStarted(_)
@@ -1393,13 +1396,6 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                     0,
                     CreateButton::new_link(&request.input_url).label("開啟數字點名頁"),
                 );
-                let alt = twin_rollcall_url(&request.input_url);
-                if !alt.is_empty() {
-                    buttons.insert(
-                        1.min(buttons.len()),
-                        CreateButton::new_link(&alt).label("Tailscale 數字點名頁"),
-                    );
-                }
             }
             vec![CreateActionRow::Buttons(buttons)]
         }
@@ -1413,10 +1409,17 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
         ],
         OutboundMessage::SecurityAlert(event) => {
             if parse_discord_ip(&event.ip).is_some() {
-                vec![CreateActionRow::Buttons(vec![
+                let action = if event.ip_is_blacklisted {
+                    CreateButton::new(format!("{COMPONENT_UNBLOCK_IP_PREFIX}{}", event.ip))
+                        .label("移除黑名單")
+                        .style(ButtonStyle::Success)
+                } else {
                     CreateButton::new(format!("{COMPONENT_BLOCK_IP_PREFIX}{}", event.ip))
-                        .label("封鎖此 IP")
-                        .style(ButtonStyle::Danger),
+                        .label("加入黑名單")
+                        .style(ButtonStyle::Danger)
+                };
+                vec![CreateActionRow::Buttons(vec![
+                    action,
                     CreateButton::new_link(
                         "https://dashboard.jasoncloudserver.me/admin/blacklist",
                     )
@@ -1531,14 +1534,22 @@ fn render_pending_account_request(request: &PendingAccountRequest) -> String {
 fn render_discord_message(message: &OutboundMessage) -> String {
     match message {
         OutboundMessage::Text(text) => text.clone(),
-        OutboundMessage::SecurityAlert(event) => format!(
-            "⚠️ Dashboard 安全警示\n\n連續密碼錯誤\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n\n請確認後按下「封鎖此 IP」。\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
-            event.username,
-            event.ip,
-            event.user_failures,
-            event.ip_failures,
-            event.timestamp,
-        ),
+        OutboundMessage::SecurityAlert(event) => {
+            let action = if event.ip_is_blacklisted {
+                "此 IP 已因登入失敗超過五次自動加入黑名單；如需恢復，請按「移除黑名單」。"
+            } else {
+                "請確認後按下「加入黑名單」。"
+            };
+            format!(
+                "⚠️ Dashboard 安全警示\n\n連續密碼錯誤\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n\n{}\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+                event.username,
+                event.ip,
+                event.user_failures,
+                event.ip_failures,
+                event.timestamp,
+                action,
+            )
+        },
         OutboundMessage::SystemStarted(event) => format!(
             "Tronclass Rollcall 已啟動\n帳號：{} / {}\n輪詢間隔：{} 秒\nAdapter：{}",
             event.account, event.user_name, event.poll_interval_secs, event.adapter_name
@@ -1555,12 +1566,7 @@ fn render_discord_message(message: &OutboundMessage) -> String {
             let page = if request.input_url.trim().is_empty() {
                 "".to_string()
             } else {
-                let alt = twin_rollcall_url(&request.input_url);
-                if alt.is_empty() {
-                    format!("\n數字點名頁：{}", request.input_url)
-                } else {
-                    format!("\n數字點名頁：{}\nTailscale：{}", request.input_url, alt)
-                }
+                format!("\n數字點名頁：{}", request.input_url)
             };
             format!(
                 "需要數字點名碼\n課程：{}\n帳號：{}\n教師：{}\n點名 ID：{}\n預設不會自動讀取代碼。請在 {} 秒內手動輸入 `/num code:1234`，或開啟數字點名頁 / 按下方「自動讀取代碼」。{}",
@@ -1733,6 +1739,11 @@ fn parse_discord_ip(value: &str) -> Option<String> {
 
 fn parse_block_ip_custom_id(value: &str) -> Option<String> {
     let ip = value.strip_prefix(COMPONENT_BLOCK_IP_PREFIX)?;
+    parse_discord_ip(ip)
+}
+
+fn parse_unblock_ip_custom_id(value: &str) -> Option<String> {
+    let ip = value.strip_prefix(COMPONENT_UNBLOCK_IP_PREFIX)?;
     parse_discord_ip(ip)
 }
 

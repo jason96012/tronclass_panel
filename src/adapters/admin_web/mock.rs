@@ -74,10 +74,6 @@ pub(super) async fn admin_mock_start_handler(
     let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
-
     let req: AdminMockStartRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(_) => {
@@ -88,9 +84,6 @@ pub(super) async fn admin_mock_start_handler(
                 .into_response();
         }
     };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
     if let Err(response) = validate_admin_text(&req.kind, ADMIN_MAX_ACTION_BYTES, "kind") {
         return response;
     }
@@ -116,6 +109,19 @@ pub(super) async fn admin_mock_start_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "請至少選擇一個測試帳號" })),
+        )
+            .into_response();
+    }
+
+    // Administrators may exercise a batch of accounts. A regular Dashboard
+    // user may use Mock 點名 too, but only for the account tied to their own
+    // session; never trust the checkbox values supplied by the browser.
+    if !session.is_admin
+        && (selected.len() != 1 || selected.first() != Some(&session.account_id))
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "一般使用者只能操作自己的帳號" })),
         )
             .into_response();
     }
@@ -412,12 +418,12 @@ pub(super) async fn admin_mock_qr_svg_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminMockQrQuery>,
 ) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
+    let Some(_session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
+    // Any authenticated user can render the QR preview for a Mock 點名 they
+    // started. The start endpoint separately restricts regular users to their
+    // own account, and rendering arbitrary QR text has no account side effect.
     if query.data.len() > 2048 {
         return (
             StatusCode::BAD_REQUEST,

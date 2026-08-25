@@ -15,7 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{
+        sse::{Event as SseEvent, KeepAlive, Sse},
+        Html, IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
@@ -46,7 +49,7 @@ mod pages;
 mod timetable;
 use self::pages::{
     inject_theme, load_runtime_theme, ADMIN_ACTIVITY_HTML, ADMIN_BLACKLIST_HTML,
-    ADMIN_DASHBOARD_HTML, ADMIN_FILES_HTML, ADMIN_HEALTH_HTML, ADMIN_PASSKEY_HTML,
+    ADMIN_BLOCKED_HTML, ADMIN_DASHBOARD_HTML, ADMIN_HEALTH_HTML, ADMIN_PASSKEY_HTML,
     ADMIN_PASSWORD_HTML,
 };
 mod actions;
@@ -89,6 +92,9 @@ const IP_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
 const MAX_RATE_LIMIT_KEYS: usize = 4096;
 const MAX_SECURITY_WATCH_KEYS: usize = 4096;
 const SECURITY_FAIL_ALERT_THRESHOLD: u32 = 5;
+/// A source IP is automatically blocked on its sixth failed password login
+/// within the existing 60-second security window ("more than five" failures).
+const SECURITY_AUTO_BLOCK_THRESHOLD: u32 = SECURITY_FAIL_ALERT_THRESHOLD + 1;
 const SECURITY_ALERT_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 const SESSION_COOKIE_MARKER: &str = "cookie";
 const SECURE_SESSION_COOKIE: &str = "__Host-tronclass_admin_session";
@@ -219,6 +225,24 @@ fn blocked_ip_response() -> Response {
         .into_response()
 }
 
+/// Browser navigations receive an explanation page, while API callers retain
+/// the compact JSON error contract expected by the dashboard frontend.
+fn blacklisted_browser_response() -> Response {
+    let mut response = (StatusCode::FORBIDDEN, Html(ADMIN_BLOCKED_HTML)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn request_prefers_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(',').any(|part| part.trim().starts_with("text/html")))
+        .unwrap_or(false)
+}
+
 async fn ip_is_blacklisted(state: &AdminWebState, ip: &str) -> bool {
     if ip == "unknown" {
         return false;
@@ -251,6 +275,12 @@ async fn reject_blacklisted_ip_middleware(
     }
     let ip = client_ip_from_headers(&headers);
     if ip_is_blacklisted(&state, &ip).await {
+        // Do not turn JSON API failures into HTML: frontend fetch handlers
+        // depend on `{ "error": "access_denied" }`. Normal document
+        // navigations, such as `/admin?next=...`, get the explanatory page.
+        if !path.starts_with("/admin/api/") && request_prefers_html(&headers) {
+            return blacklisted_browser_response();
+        }
         return blocked_ip_response();
     }
     next.run(request).await
@@ -413,6 +443,66 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
     // 解析被嘗試登入的帳號持有人綁定（可能為空：隨機 username 或未綁定）。
     let (target_discord, target_line) = resolve_login_target_contacts(state, username).await;
 
+    // The blacklist is IP-based, so only the source-IP counter can trigger an
+    // automatic block. The counter is scoped to RATE_LIMIT_WINDOW (60 seconds)
+    // by record_auth_failure; a sixth failure is therefore "超過五次".
+    if ip_fails >= SECURITY_AUTO_BLOCK_THRESHOLD {
+        let normalized_ip = normalize_admin_ip(ip);
+        if let Some(ref blocked_ip) = normalized_ip {
+            match state
+                .accounts_db
+                .block_ip_with_failure_count(
+                    blocked_ip,
+                    "system:auto-login-failure",
+                    "Automatic block: more than five failed Dashboard logins within 60 seconds",
+                    ip_fails,
+                )
+                .await
+            {
+                Ok(true) => {
+                    warn!(ip = %blocked_ip, ip_fails, "IP automatically blacklisted after repeated Dashboard login failures");
+                    crate::logs::record_audit(
+                        "web",
+                        "system:auto-login-failure",
+                        "ip_blacklist_auto_block",
+                        None,
+                        Some(blocked_ip),
+                        "Automatic block after more than five failed Dashboard logins within 60 seconds",
+                    );
+                    let _ = state
+                        .accounts_db
+                        .record_activity_event(crate::db::ActivityEventInput {
+                            kind: "security".to_string(),
+                            actor: "system:auto-login-failure".to_string(),
+                            action: "ip_blacklist_auto_block".to_string(),
+                            account_id: username.trim().to_string(),
+                            path: blocked_ip.clone(),
+                            result: "success".to_string(),
+                            details: format!("Auto-blocked after {ip_fails} failed Dashboard logins within 60 seconds"),
+                            ip: blocked_ip.clone(),
+                        })
+                        .await;
+                    // This notification deliberately has no alert cooldown:
+                    // block_ip returning true makes it a one-time state change.
+                    notify_admins_security_alert(
+                        state,
+                        SecurityAlertEvent {
+                            username: username.trim().to_string(),
+                            ip: blocked_ip.clone(),
+                            user_failures: user_fails,
+                            ip_failures: ip_fails,
+                            timestamp: security_now_label(),
+                            ip_is_blacklisted: true,
+                        },
+                    )
+                    .await;
+                }
+                Ok(false) => {}
+                Err(error) => warn!(ip = %blocked_ip, error = %error, "automatic IP blacklist write failed"),
+            }
+        }
+    }
+
     if user_fails >= SECURITY_FAIL_ALERT_THRESHOLD {
         let key = format!("fail-user:{}", username.trim().to_lowercase());
         if security_should_alert(&key).await {
@@ -424,6 +514,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                     user_failures: user_fails,
                     ip_failures: ip_fails,
                     timestamp: security_now_label(),
+                    ip_is_blacklisted: false,
                 },
             )
             .await;
@@ -452,6 +543,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                     user_failures: user_fails,
                     ip_failures: ip_fails,
                     timestamp: security_now_label(),
+                    ip_is_blacklisted: false,
                 },
             )
             .await;
@@ -846,6 +938,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(files::admin_filebrowser_shell_handler),
         )
         .route(
+            "/admin/api/filebrowser/ready",
+            get(files::admin_filebrowser_ready_handler),
+        )
+        .route(
             "/share/{*path}",
             get(files::admin_filebrowser_share_shell_handler),
         )
@@ -925,6 +1021,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(admin_login_activity_handler),
         )
         .route("/admin/api/status", get(admin_status_handler))
+        .route(
+            "/admin/api/rollcall/events",
+            get(admin_rollcall_events_handler),
+        )
         .route(
             "/admin/api/class_reminder",
             get(class_reminder::admin_class_reminder_get_handler)
@@ -1993,11 +2093,104 @@ async fn admin_status_admin_flags_cached(
     Ok(flags)
 }
 
+/// Adds non-sensitive timing information to `/admin/api/status` responses.
+///
+/// These metrics are intentionally exposed through the standard `Server-Timing`
+/// response header so they can be inspected in the browser Network panel without
+/// logging a session token, account name, or any upstream credential.
+fn with_admin_status_timing(
+    mut response: Response,
+    total: Duration,
+    phases: &[(&str, Duration)],
+) -> Response {
+    let mut value = format!("app;dur={:.1}", total.as_secs_f64() * 1000.0);
+    for (name, duration) in phases {
+        value.push_str(&format!("; {name};dur={:.1}", duration.as_secs_f64() * 1000.0));
+    }
+    if let Ok(value) = HeaderValue::try_from(value.as_str()) {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("server-timing"), value);
+    }
+    response
+}
+
+/// Server-Sent Events stream for immediate Dashboard rollcall alerts.
+///
+/// The stream reads only the accounts visible to this session. It emits a
+/// rollcall event as soon as the monitor exposes a direct input URL, avoiding
+/// the dashboard's normal refresh interval for time-sensitive attendance.
+async fn admin_rollcall_events_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if session.must_change_password {
+        return unauthorized_response();
+    }
+
+    let accounts = Arc::clone(&state.accounts);
+    let account_id = session.account_id;
+    let is_admin = session.is_admin;
+    let stream = futures::stream::unfold(
+        (accounts, account_id, is_admin, HashMap::<String, String>::new()),
+        |(accounts, account_id, is_admin, mut last_seen)| async move {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            let mut detected = Vec::new();
+            for account in accounts.iter() {
+                if !is_admin && account.account_id != account_id {
+                    continue;
+                }
+                let status = account.monitor_status.lock().await;
+                let (timestamp, course, rollcall_id, url) = (
+                    status.last_detected_timestamp,
+                    status.last_detected_course.clone(),
+                    status.last_detected_rollcall_id,
+                    status.last_detected_url.clone(),
+                );
+                drop(status);
+                let Some(timestamp) = timestamp else { continue };
+                let Some(url) = url.filter(|value| !value.trim().is_empty()) else { continue };
+                let event_key = format!("{}:{}:{}", account.account_id, rollcall_id.unwrap_or(0), timestamp);
+                if last_seen.get(&account.account_id) == Some(&event_key) {
+                    continue;
+                }
+                last_seen.insert(account.account_id.clone(), event_key.clone());
+                detected.push(json!({
+                    "key": event_key,
+                    "account": account.account_id,
+                    "course": course.unwrap_or_else(|| "新點名".to_string()),
+                    "rollcall_id": rollcall_id,
+                    "timestamp": timestamp,
+                    "url": url,
+                }));
+            }
+            let event = if detected.is_empty() {
+                SseEvent::default().event("ping").data("{}")
+            } else {
+                SseEvent::default()
+                    .event("rollcall")
+                    .data(serde_json::to_string(&detected).unwrap_or_else(|_| "[]".to_string()))
+            };
+            Some((Ok::<_, std::convert::Infallible>(event), (accounts, account_id, is_admin, last_seen)))
+        },
+    );
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive"))
+        .into_response()
+}
+
 async fn admin_status_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
+    // Temporary production profiling for first-paint diagnosis. Keep the
+    // measurements around lock acquisition and SQLite, rather than around
+    // individual accounts, to avoid leaking account-specific timing.
+    let request_started = Instant::now();
     // PERFORMANCE_STATUS_AUTH_V1:
     // The session_cookie_to_query_middleware already injected the HttpOnly
     // cookie into query.token, so we can skip redundant header parsing.
@@ -2019,6 +2212,7 @@ async fn admin_status_handler(
         );
         return append_expired_session_cookies(unauthorized_response());
     };
+    let auth_elapsed = request_started.elapsed();
 
     let include_history = query.include_history.unwrap_or(true);
     let history_limit = if include_history {
@@ -2032,7 +2226,19 @@ async fn admin_status_handler(
 
     let cache_key = admin_status_short_cache_key(&session, include_history, history_limit);
     if let Some(cached) = admin_status_short_cache_get(&cache_key).await {
-        return (StatusCode::OK, Json(cached)).into_response();
+        let total = request_started.elapsed();
+        info!(
+            total_ms = total.as_millis(),
+            auth_ms = auth_elapsed.as_millis(),
+            include_history,
+            history_limit,
+            "admin status profile: cache hit"
+        );
+        return with_admin_status_timing(
+            (StatusCode::OK, Json(cached)).into_response(),
+            total,
+            &[("auth", auth_elapsed), ("cache", total.saturating_sub(auth_elapsed))],
+        );
     }
 
     // A first-login session may use this endpoint only to learn that it must
@@ -2051,6 +2257,7 @@ async fn admin_status_handler(
         return (StatusCode::OK, Json(response_json)).into_response();
     }
 
+    let admin_flags_started = Instant::now();
     let admin_by_id = if session.is_admin {
         match admin_status_admin_flags_cached(&state).await {
             Ok(flags) => flags,
@@ -2059,6 +2266,7 @@ async fn admin_status_handler(
     } else {
         std::collections::HashMap::new()
     };
+    let admin_flags_elapsed = admin_flags_started.elapsed();
 
     let visible_accounts = resolve_visible_accounts(&state, &session);
     // PERFORMANCE_STATUS_PAYLOAD_V1:
@@ -2123,10 +2331,15 @@ async fn admin_status_handler(
             }
         })
         .collect();
+    let account_locks_started = Instant::now();
     let mut accounts = futures::future::join_all(status_futures).await;
+    let account_locks_elapsed = account_locks_started.elapsed();
     accounts.sort_by(|a, b| a.account_id.cmp(&b.account_id));
 
+    let settings_started = Instant::now();
     let settings = crate::runtime_settings::snapshot().await;
+    let settings_elapsed = settings_started.elapsed();
+    let account_count = accounts.len();
     let response_json = json!(AdminStatusResponse {
         current_account_id: session.account_id.clone(),
         is_admin: session.is_admin,
@@ -2138,7 +2351,28 @@ async fn admin_status_handler(
 
     admin_status_short_cache_put(cache_key, response_json.clone()).await;
 
-    (StatusCode::OK, Json(response_json)).into_response()
+    let total = request_started.elapsed();
+    info!(
+        total_ms = total.as_millis(),
+        auth_ms = auth_elapsed.as_millis(),
+        admin_flags_ms = admin_flags_elapsed.as_millis(),
+        account_locks_ms = account_locks_elapsed.as_millis(),
+        settings_ms = settings_elapsed.as_millis(),
+        account_count,
+        include_history,
+        history_limit,
+        "admin status profile: cache miss"
+    );
+    with_admin_status_timing(
+        (StatusCode::OK, Json(response_json)).into_response(),
+        total,
+        &[
+            ("auth", auth_elapsed),
+            ("admin_flags", admin_flags_elapsed),
+            ("account_locks", account_locks_elapsed),
+            ("settings", settings_elapsed),
+        ],
+    )
 }
 
 const DISCORD_NOTIFICATION_KEYS: &[(&str, &str, &str)] = &[
@@ -3252,6 +3486,29 @@ async fn admin_login_handler(
     let rate_key = format!("login:{}:{client}", username.to_lowercase());
     if !state.rate_limiter.check(&rate_key).await {
         warn!(username = %username, client = %client, "admin web login rate limited");
+        // The sixth request is rejected by the five-attempt login rate limiter
+        // before password verification. It must still count as a failed login;
+        // otherwise the auto-blacklist threshold (>5 failures) is impossible
+        // to reach. Run this off the response path just like a normal failed
+        // password verification.
+        {
+            let state = state.clone();
+            let user = username.to_string();
+            let ip = ip.clone();
+            tokio::spawn(async move {
+                record_persistent_login_event(
+                    &state,
+                    &user,
+                    None,
+                    "login_rate_limited",
+                    "failed",
+                    "Dashboard login rejected by rate limit",
+                    &ip,
+                )
+                .await;
+                alert_password_failures(&state, &user, &ip).await;
+            });
+        }
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({ "error": "too many attempts; please wait" })),

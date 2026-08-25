@@ -456,7 +456,7 @@
   min-width:680px;
   min-height:680px;
   gap:10px;
-  grid-template-rows:48px repeat(10,minmax(68px,1fr));
+  grid-template-rows:48px repeat(10,minmax(0,1fr));
 }
 .tt-poster-corner{min-height:1px}
 .tt-poster-day{
@@ -480,7 +480,8 @@
   color:#fff;
   border-radius:16px;
   padding:8px 6px;
-  min-height:68px;
+  min-height:0;
+  overflow:hidden;
 }
 .tt-poster-period .n{
   font-size:22px;
@@ -500,7 +501,7 @@
 .tt-poster-course{
   background:var(--card,#fff);
   border-radius:16px;
-  min-height:68px;
+  min-height:0;
   box-shadow:0 1px 2px rgba(15,23,42,.04);
   border:1px solid var(--line2,#e7ebf1);
 }
@@ -513,7 +514,9 @@
   gap:6px;
   padding:10px 12px;
   width:100%;
+  height:100%;
   min-width:0;
+  min-height:0;
   box-sizing:border-box;
   cursor:pointer;
   color:var(--text,#172033);
@@ -533,11 +536,13 @@
   letter-spacing:.01em;
   line-height:1.35;
   color:var(--text,#172033);
+  min-width:0;
+  min-height:0;
 }
 .tt-poster .tt-poster-name{
   display:-webkit-box;
   -webkit-box-orient:vertical;
-  -webkit-line-clamp:3;
+  -webkit-line-clamp:2;
   overflow:hidden;
   overflow-wrap:anywhere;
   word-break:break-word;

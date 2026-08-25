@@ -12,6 +12,43 @@ export CARGO_INCREMENTAL=1
 
 mkdir -p config logs run
 
+# Keep a consistent, local recovery copy of the Dashboard credential database.
+# A missing accounts.db would otherwise be silently recreated by SQLite and
+# make every existing Dashboard password look incorrect after a restart.
+backup_accounts_database() {
+  local db="config/accounts.db"
+  local backup_dir="config/backups"
+  local backup="$backup_dir/accounts.latest.db"
+  mkdir -p "$backup_dir"
+  chmod 700 "$backup_dir" 2>/dev/null || true
+
+  if [[ ! -s "$db" && -s "$backup" ]]; then
+    echo "[ptero-start] accounts.db 遺失，從本機備份還原 Dashboard 帳號資料庫"
+    cp -f "$backup" "$db"
+    chmod 600 "$db" 2>/dev/null || true
+  fi
+
+  if [[ -s "$db" && -x "$(command -v python3 2>/dev/null || true)" ]]; then
+    # sqlite3.Connection.backup creates a consistent snapshot even when WAL is
+    # enabled; do not use a raw cp of accounts.db while it is being written.
+    if python3 - "$db" "$backup" <<'PY'
+import sqlite3, sys
+source, target = sys.argv[1], sys.argv[2]
+with sqlite3.connect(source) as src, sqlite3.connect(target) as dst:
+    src.backup(dst)
+PY
+    then
+      chmod 600 "$backup" 2>/dev/null || true
+      echo "[ptero-start] Dashboard 帳號資料庫備份已確認"
+    else
+      echo "[ptero-start] 警告：accounts.db 備份失敗，將繼續使用原資料庫"
+    fi
+  elif [[ ! -s "$db" ]]; then
+    echo "[ptero-start] 警告：找不到 accounts.db，首次初始化前既有 Dashboard 密碼無法驗證"
+  fi
+}
+backup_accounts_database
+
 # Atomic lock: only one copy of the Pterodactyl startup/supervisor may run.
 if ! mkdir run/ptero-start.lock 2>/dev/null; then
   old="$(cat run/ptero-start.lock/pid 2>/dev/null || true)"
@@ -661,8 +698,6 @@ watchdog_pid_alive() {
   # A reused PID must not be mistaken for our service.
   case "$file" in
     *cloudflared.pid) expected='cloudflared' ;;
-    *tailscaled.pid) expected='tailscaled' ;;
-    *ts-https-proxy.pid) expected='ts-https-proxy.py' ;;
     *filebrowser-caddy.pid) expected='filebrowser|caddy' ;;
     *filebrowser-*.pid) expected='filebrowser' ;;
     *dashboard.pid) expected='tronclass_rollcall' ;;

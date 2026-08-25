@@ -625,25 +625,12 @@ impl QrScannerRegistry {
         self
     }
 
-    pub fn alternate_urls_for(&self, primary_url: &str) -> Vec<String> {
-        let mut urls = Vec::new();
-        if let Some(twin) = alternate_public_url(primary_url) {
-            urls.push(twin);
-        }
-        urls
-    }
 }
 
-pub fn alternate_public_url(url: &str) -> Option<String> {
-    const CF: &str = "dashboard.jasoncloudserver.me";
-    const TS: &str = "tronclassv3.tail31b530.ts.net";
-    if url.contains(CF) {
-        Some(url.replace(CF, TS))
-    } else if url.contains(TS) {
-        Some(url.replace(TS, CF))
-    } else {
-        None
-    }
+/// Tailscale fallback URLs are intentionally disabled. Callers retain this
+/// helper for compatibility and receive no alternate route.
+pub fn alternate_public_url(_url: &str) -> Option<String> {
+    None
 }
 
 pub fn build_scanner_router(scanner: Arc<QrScannerRegistry>) -> Router {

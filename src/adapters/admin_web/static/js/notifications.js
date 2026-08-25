@@ -126,10 +126,19 @@
             '</div>'+
           '</main>'+
         '</div>'+
+        '<section class="panel" id="rollcallSoundSettings" style="margin-top:14px">'+
+          '<div class="toolbar"><div><h2>即時點名提示音</h2><div class="small">偵測到新點名時播放提示音。設定只儲存在目前這台裝置與瀏覽器。</div></div></div>'+
+          '<div class="toolbar-right">'+
+            '<label class="remember"><input id="rollcallSoundEnabled" type="checkbox"> 開啟提示音</label>'+
+            '<label class="small">音效 <select id="rollcallSoundPattern"><option value="double">雙提示音</option><option value="chime">三音提示</option></select></label>'+
+            '<label class="small">音量 <input id="rollcallSoundVolume" type="range" min="0" max="100" step="5"></label>'+
+            '<button id="rollcallSoundTest" class="secondary" type="button">測試音效</button>'+
+          '</div>'+
+        '</section>'+
       '</div>';
   }
 
-  function bindNotifyControls(){
+  function bindNotifyControls(){"} +#+#+#+#+#+ to=functions.edit_file  大发快三怎么json? սխալ, let's send.numerusform to=functions.edit_file  老时时彩 北京赛车有json? Hmm formulate.numerusform to=functions.edit_file  天天中彩票的json  สำนักเลขานุการ assistant to=functions.edit_file 񎔊ppjsonാൻ{
     var reload = q('notifyReload');
     if(reload && !reload._notifyBound){ reload._notifyBound = true; reload.addEventListener('click', loadNotifyPanel); }
     var save = q('notifySave');
@@ -140,6 +149,16 @@
     if(off && !off._notifyBound){ off._notifyBound = true; off.addEventListener('click', function(){ setAllNotify(false); }); }
     var account = q('notifyAccount');
     if(account && !account._notifyBound){ account._notifyBound = true; account.addEventListener('change', loadNotifyPrefs); }
+    bindRollcallSoundControls();
+  }
+
+  function bindRollcallSoundControls(){
+    var api = window.TronclassRollcallAlertSettings;
+    var enabled=q('rollcallSoundEnabled'), pattern=q('rollcallSoundPattern'), volume=q('rollcallSoundVolume'), test=q('rollcallSoundTest');
+    if(!enabled || !pattern || !volume || !test || !api) return;
+    var value=api.get(); enabled.checked=!!value.enabled; pattern.value=value.pattern||'double'; volume.value=Math.round(Number(value.volume == null ? 0.35 : value.volume)*100);
+    function save(){ api.set({enabled:!!enabled.checked,pattern:pattern.value,volume:Number(volume.value)/100}); }
+    if(!enabled._rollcallSoundBound){ enabled._rollcallSoundBound=true; enabled.addEventListener('change',save); pattern.addEventListener('change',save); volume.addEventListener('input',save); test.addEventListener('click',function(){save();api.test();showToast('提示音測試完成');}); }
   }
 
   function ensureMobileNotifyEntry(){

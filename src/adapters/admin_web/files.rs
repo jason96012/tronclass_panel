@@ -1,6 +1,7 @@
 //! Materials file-manager page/API handlers for Admin Web.
 
 use super::*;
+use axum::response::Redirect;
 use std::process::Stdio;
 use std::sync::Weak;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -44,6 +45,27 @@ const OFFICE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(90);
 const MATERIAL_UPLOAD_CONCURRENCY: usize = 1;
 const FILEBROWSER_USER_PORT: u16 = 26102;
 const FILEBROWSER_ADMIN_PORT: u16 = 26103;
+
+// Reuse Filebrowser's loopback HTTP connection between page loads. Creating a
+// fresh reqwest client for every shell navigation adds a TCP handshake and can
+// make Dashboard → 雲端硬碟 feel intermittently slow on constrained hosts.
+static FILEBROWSER_SHELL_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
+    once_cell::sync::Lazy::new(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(5))
+            .timeout(Duration::from_secs(12))
+            .build()
+            .expect("Filebrowser shell HTTP client configuration is valid")
+    });
+
+static FILEBROWSER_HEALTH_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
+    once_cell::sync::Lazy::new(|| {
+        reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("Filebrowser health HTTP client configuration is valid")
+    });
 
 static MATERIAL_UPLOAD_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
     once_cell::sync::Lazy::new(|| Semaphore::new(MATERIAL_UPLOAD_CONCURRENCY));
@@ -241,8 +263,62 @@ fn secure_existing_material_path_response(
     secure_existing_material_path(root, rel).map_err(|error| material_path_error(&error, missing_message))
 }
 
-pub(super) async fn admin_files_page_handler(headers: HeaderMap) -> Response {
-    super::html_page_response(&headers, super::pages::inject_theme(ADMIN_FILES_HTML))
+fn filebrowser_frontend_url() -> String {
+    std::env::var("TRONCLASS_MATERIALS_FRONTEND_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| value.starts_with("https://") || value.starts_with("http://"))
+        .unwrap_or_else(|| "https://files.jasoncloudserver.me/files".to_string())
+}
+
+pub(super) async fn admin_files_page_handler(_headers: HeaderMap) -> Response {
+    // `/admin/files` used to render a 65 KiB transitional dashboard page whose
+    // first inline script immediately redirected to Filebrowser. Redirect at
+    // the HTTP layer instead, saving a full HTML parse and a navigation round
+    // trip whenever the user opens 雲端硬碟 from Dashboard.
+    let mut response = Redirect::temporary(&filebrowser_frontend_url()).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Check the local Filebrowser process before the Dashboard navigates a user
+/// to the external files host. This avoids sending a browser into a blank or
+/// gateway-error page while Filebrowser is cold-starting.
+pub(super) async fn admin_filebrowser_ready_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminFilesQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    let port = if session.is_admin {
+        FILEBROWSER_ADMIN_PORT
+    } else {
+        FILEBROWSER_USER_PORT
+    };
+    let upstream = format!("http://127.0.0.1:{port}/files");
+    match FILEBROWSER_HEALTH_CLIENT.get(&upstream).send().await {
+        Ok(response) if response.status().is_success() || response.status().is_redirection() => (
+            StatusCode::OK,
+            Json(json!({ "ready": true, "url": filebrowser_frontend_url() })),
+        )
+            .into_response(),
+        Ok(response) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "ready": false, "state": "unavailable", "status": response.status().as_u16() })),
+        )
+            .into_response(),
+        Err(error) => {
+            tracing::debug!(error = %error, port, "Filebrowser readiness check failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "ready": false, "state": "starting" })),
+            )
+                .into_response()
+        }
+    }
 }
 
 /// Serve Filebrowser's HTML shell with a same-origin link back to Dashboard.
@@ -297,22 +373,8 @@ pub(super) async fn admin_filebrowser_shell_handler(
     };
 
     let upstream_url = format!("http://127.0.0.1:{port}/files");
-    let client = match reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(5))
-        .timeout(Duration::from_secs(30))
-        .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("建立 Filebrowser shell client 失敗：{error}") })),
-            )
-                .into_response();
-        }
-    };
 
-    let upstream = match client
+    let upstream = match FILEBROWSER_SHELL_CLIENT
         .get(&upstream_url)
         .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml")
         .send()
@@ -635,7 +697,7 @@ fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
   var link = document.createElement('a');
   link.id = 'tronclass-dashboard-back';
   link.href = {dashboard_url};
-  link.textContent = '回到 Dashboard';
+  link.textContent = '← 回到 Dashboard';
   link.title = '回到 Tronclass Dashboard';
   link.setAttribute('aria-label', '回到 Tronclass Dashboard');
   link.setAttribute('rel', 'noopener');
@@ -643,39 +705,77 @@ fn inject_dashboard_link(body: &[u8]) -> Vec<u8> {
   // style-src-attr policy does not block this trusted UI control.
   link.style.position = 'fixed';
   link.style.zIndex = '2147483647';
-  link.style.top = '10px';
-  link.style.left = '500px';
+  // Place the navigation control at the far right of the workspace, below
+  // Filebrowser's own toolbar. This avoids both the search field and the
+  // action icons, while making the Dashboard return path easy to find.
+  link.style.top = '82px';
+  link.style.right = '24px';
   link.style.display = 'flex';
   link.style.alignItems = 'center';
   link.style.justifyContent = 'center';
-  link.style.minHeight = '40px';
+  link.style.minHeight = '38px';
   link.style.boxSizing = 'border-box';
-  link.style.padding = '0 16px';
-  link.style.borderRadius = '8px';
-  link.style.border = '1px solid rgba(55,71,79,.22)';
-  link.style.background = '#ffffff';
-  link.style.color = '#37474f';
+  link.style.padding = '0 14px';
+  link.style.borderRadius = '10px';
+  link.style.border = '1px solid rgba(37,99,235,.20)';
+  link.style.background = '#f8fbff';
+  link.style.color = '#1d4ed8';
   link.style.cursor = 'pointer';
   link.style.font = '600 14px/1.2 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif';
   link.style.textDecoration = 'none';
-  link.style.boxShadow = '0 2px 8px rgba(0,0,0,.14)';
+  link.style.boxShadow = '0 2px 10px rgba(30,64,175,.10)';
   link.style.whiteSpace = 'nowrap';
-  link.style.transition = 'background .15s,color .15s,transform .15s';
+  link.style.transition = 'background .15s,color .15s,transform .15s,box-shadow .15s';
   link.addEventListener('mouseenter', function () {{
-    link.style.background = '#e8f4ff';
-    link.style.color = '#1565c0';
+    link.style.background = '#e8f1ff';
+    link.style.color = '#1e40af';
+    link.style.boxShadow = '0 4px 14px rgba(30,64,175,.18)';
   }});
   link.addEventListener('mouseleave', function () {{
-    link.style.background = '#ffffff';
-    link.style.color = '#37474f';
+    link.style.background = '#f8fbff';
+    link.style.color = '#1d4ed8';
+    link.style.boxShadow = '0 2px 10px rgba(30,64,175,.10)';
   }});
   link.addEventListener('mousedown', function () {{ link.style.transform = 'translateY(1px)'; }});
   link.addEventListener('mouseup', function () {{ link.style.transform = 'none'; }});
   document.body.appendChild(link);
   var style = document.createElement('style');
   if (document.currentScript && document.currentScript.nonce) style.setAttribute('nonce', document.currentScript.nonce);
-  style.textContent = '@media (max-width: 720px) {{ #tronclass-dashboard-back {{ left:64px !important; top:8px !important; min-height:36px !important; padding:0 10px !important; font-size:12px !important; }} }}';
+  style.textContent = '@media (min-width:721px) and (max-width:1180px) {{ #tronclass-dashboard-back {{ left:500px !important; right:auto !important; top:12px !important; }} }} @media (max-width:720px) {{ #tronclass-dashboard-back {{ display:none !important; }} #tronclass-dashboard-back.tronclass-dashboard-back-in-sidebar {{ position:static !important; display:flex !important; width:calc(100% - 28px) !important; min-height:40px !important; margin:10px 14px 6px !important; padding:0 12px !important; border-radius:10px !important; }} }}';
   document.head.appendChild(style);
+
+  // On phones, a fixed control overlaps Filebrowser's slide-out drawer. Move
+  // the link into that drawer instead, immediately below its "我的檔案" entry.
+  // Until the drawer DOM is available the mobile rule above keeps it hidden;
+  // showing no button is preferable to covering Filebrowser controls.
+  function mountMobileDashboardLink() {{
+    if (!window.matchMedia || !window.matchMedia('(max-width: 720px)').matches) {{
+      if (link.parentNode !== document.body) document.body.appendChild(link);
+      link.classList.remove('tronclass-dashboard-back-in-sidebar');
+      return;
+    }}
+    var nodes = document.querySelectorAll('a,button,li,div,span');
+    var row = null;
+    for (var i = 0; i < nodes.length; i++) {{
+      var node = nodes[i];
+      if ((node.textContent || '').trim() !== '我的檔案') continue;
+      row = node.closest && node.closest('a,button,li,[role="menuitem"]');
+      if (!row) row = node.parentElement;
+      if (row && row.parentElement) break;
+      row = null;
+    }}
+    if (!row || !row.parentElement) return;
+    var host = row.parentElement;
+    if (link.parentNode !== host || link.previousSibling !== row) {{
+      host.insertBefore(link, row.nextSibling);
+    }}
+    link.classList.add('tronclass-dashboard-back-in-sidebar');
+  }}
+  mountMobileDashboardLink();
+  window.addEventListener('resize', mountMobileDashboardLink, {{ passive: true }});
+  var mountObserver = new MutationObserver(mountMobileDashboardLink);
+  mountObserver.observe(document.body, {{ childList: true, subtree: true }});
+  window.setTimeout(function () {{ mountObserver.disconnect(); }}, 8000);
 }})();
 </script>
 "#

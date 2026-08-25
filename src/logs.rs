@@ -1,4 +1,4 @@
-//! Persistent system/audit log storage for the Tailscale admin panel.
+//! Persistent system/audit log storage for the Tronclass admin panel.
 //!
 //! Logs are kept in SQLite table `web_logs` inside the accounts database and
 //! pruned to the latest 100 rows. An in-memory mirror is kept as a fallback.

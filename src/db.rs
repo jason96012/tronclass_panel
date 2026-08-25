@@ -148,6 +148,9 @@ pub struct IpBlacklistRow {
     pub blocked_time: String,
     pub blocked_by: String,
     pub reason: String,
+    /// Number of failed Dashboard logins that caused an automatic block.
+    /// Manual and legacy blocks use zero.
+    pub failure_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -359,13 +362,23 @@ impl AccountsDb {
                 blocked_at INTEGER NOT NULL DEFAULT 0,
                 blocked_time TEXT NOT NULL DEFAULT '',
                 blocked_by TEXT NOT NULL DEFAULT '',
-                reason TEXT NOT NULL DEFAULT ''
+                reason TEXT NOT NULL DEFAULT '',
+                failure_count INTEGER NOT NULL DEFAULT 0
             )",
         )
         .execute(&pool)
         .await
         .into_diagnostic()
         .wrap_err("初始化 ip_blacklist 資料表失敗")?;
+        // Migration for installations that created ip_blacklist before failed
+        // login counts were recorded with each automatic block.
+        ensure_table_column(
+            &pool,
+            "ip_blacklist",
+            "failure_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ip_blacklist_blocked_at ON ip_blacklist(blocked_at DESC)")
             .execute(&pool)
@@ -943,7 +956,7 @@ impl AccountsDb {
     pub async fn list_ip_blacklist(&self, limit: i64) -> Result<Vec<IpBlacklistRow>> {
         let limit = limit.clamp(1, 4096);
         sqlx::query_as::<_, IpBlacklistRow>(
-            "SELECT ip, blocked_at, blocked_time, blocked_by, reason
+            "SELECT ip, blocked_at, blocked_time, blocked_by, reason, failure_count
              FROM ip_blacklist ORDER BY blocked_at DESC, ip ASC LIMIT ?",
         )
         .bind(limit)
@@ -954,17 +967,28 @@ impl AccountsDb {
     }
 
     pub async fn block_ip(&self, ip: &str, blocked_by: &str, reason: &str) -> Result<bool> {
+        self.block_ip_with_failure_count(ip, blocked_by, reason, 0).await
+    }
+
+    pub async fn block_ip_with_failure_count(
+        &self,
+        ip: &str,
+        blocked_by: &str,
+        reason: &str,
+        failure_count: u32,
+    ) -> Result<bool> {
         let now = Local::now();
         let result = sqlx::query(
             "INSERT OR IGNORE INTO ip_blacklist
-                (ip, blocked_at, blocked_time, blocked_by, reason)
-             VALUES (?, ?, ?, ?, ?)",
+                (ip, blocked_at, blocked_time, blocked_by, reason, failure_count)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(ip.trim())
         .bind(now.timestamp())
         .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
         .bind(truncate_event_text(blocked_by.to_string(), EVENT_IDENTITY_MAX_BYTES))
         .bind(truncate_event_text(reason.to_string(), EVENT_DETAILS_MAX_BYTES))
+        .bind(i64::from(failure_count))
         .execute(&self.pool)
         .await
         .into_diagnostic()

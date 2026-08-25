@@ -1,4 +1,4 @@
-//! HTML templates — Tailscale Admin Web UI.
+//! HTML templates — Tronclass Admin Web UI.
 
 use std::sync::RwLock;
 
@@ -63,6 +63,7 @@ pub(super) const ADMIN_ACTIVITY_HTML: &str = include_str!("static/activity.html"
 pub(super) const ADMIN_PASSWORD_HTML: &str = include_str!("static/password.html");
 pub(super) const ADMIN_PASSKEY_HTML: &str = include_str!("static/passkey.html");
 pub(super) const ADMIN_BLACKLIST_HTML: &str = include_str!("static/blacklist.html");
+pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
 
 /// Add shared frontend assets without copying about 50 KiB of CSS/JavaScript
 /// into every HTML response. The security script intentionally remains

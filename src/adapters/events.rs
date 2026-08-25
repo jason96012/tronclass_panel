@@ -167,6 +167,10 @@ pub struct SecurityAlertEvent {
     pub user_failures: u32,
     pub ip_failures: u32,
     pub timestamp: String,
+    /// True when this alert is emitted after the server has already blocked
+    /// the IP automatically. Adapters can then offer an unblock action rather
+    /// than a redundant block action.
+    pub ip_is_blacklisted: bool,
 }
 
 /// Outbound event emitted when a monitored account starts.
