@@ -5069,7 +5069,7 @@ html.dash-role-user a[href^="/admin/blacklist?"]{
 })();
 </script>
 <style id="detectionScheduleDesktopNavStyle">
-.detection-schedule-desktop-link{display:inline-flex;align-items:center;justify-content:center;padding:10px 14px;border:1px solid var(--line,#dbe3ef);border-radius:12px;background:var(--panel,#fff);color:inherit;text-decoration:none;font-weight:750;white-space:nowrap;transition:border-color .18s ease,color .18s ease,background .18s ease}.detection-schedule-desktop-link:hover{border-color:#38bdf8;color:#0284c7;background:rgba(56,189,248,.10)}@media(max-width:760px){.detection-schedule-desktop-link{display:none!important}}
+.detection-schedule-desktop-link{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:40px;padding:0 14px;border:1px solid var(--line,#d8dee8);border-radius:999px;background:var(--card,#fff);color:var(--text,#172033);text-decoration:none;font:inherit;font-weight:760;white-space:nowrap;cursor:pointer}@media(max-width:760px){.detection-schedule-desktop-link{display:none!important}}
 </style>
 <script id="detectionScheduleDesktopNavScript">
 (function(){'use strict';
@@ -5080,10 +5080,11 @@ html.dash-role-user a[href^="/admin/blacklist?"]{
     if(!notify)return;
     var link=document.createElement('a');
     link.id='detectionScheduleDesktopLink';
-    link.className='detection-schedule-desktop-link';
+    link.className='tab detection-schedule-desktop-link';
     link.href='/admin/detection-schedule';
-    link.textContent='點名偵測排程';
+    link.textContent='排程';
     link.setAttribute('aria-label','前往點名偵測排程');
+    link.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();location.assign('/admin/detection-schedule');});
     notify.insertAdjacentElement('afterend',link);
   }
   function start(){ensure();try{new MutationObserver(ensure).observe(document.documentElement,{childList:true,subtree:true});}catch(_){}var count=0,timer=setInterval(function(){ensure();if(++count>=20)clearInterval(timer);},500);}
