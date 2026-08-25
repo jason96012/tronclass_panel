@@ -114,16 +114,6 @@ read_token() {
   fi
 }
 
-cloudflare_validate_config() {
-  local token="$1"
-  [[ "$token" == eyJ* ]] || {
-    echo "[watchdog] Cloudflare token 格式異常" >> logs/cloudflared-watchdog.log
-    return 1
-  }
-  [[ "${#token}" -ge 40 ]] || return 1
-  return 0
-}
-
 dl() {
   local url="$1" out="$2"
   if command -v curl >/dev/null 2>&1; then
@@ -173,32 +163,16 @@ start_tunnel() {
     return 0
   fi
 
-  local protocol pid cmdline
-  protocol="${CLOUDFLARE_PROTOCOL:-http2}"
-  echo "[ptero-start] 啟動 Cloudflare Tunnel（protocol=${protocol}）"
-  # Append instead of truncating so an immediate crash remains diagnosable.
-  printf '
-===== cloudflared start %s =====
-' "$(date -Iseconds)" >> logs/cloudflared.log
-  nohup ./cloudflared tunnel --no-autoupdate --protocol "$protocol" run --token "$token" >> logs/cloudflared.log 2>&1 &
-  pid=$!
-  printf '%s
-' "$pid" > logs/cloudflared.pid
+  echo "[ptero-start] 啟動 Cloudflare Tunnel"
+  nohup ./cloudflared tunnel --no-autoupdate run --token "$token" > logs/cloudflared.log 2>&1 &
+  echo $! > logs/cloudflared.pid
   disown || true
-  sleep 3
-  cmdline="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
-  if ! kill -0 "$pid" 2>/dev/null || [[ "$cmdline" != *cloudflared* ]]; then
-    echo "[ptero-start] cloudflared 啟動後立即停止，最近 log："
-    tail -n 30 logs/cloudflared.log 2>/dev/null || true
-    rm -f logs/cloudflared.pid
-    return 1
-  fi
-  echo "[ptero-start] cloudflared 運行中（PID ${pid}），最近 log："
+  sleep 2
+  echo "[ptero-start] cloudflared 最近 log："
   tail -n 15 logs/cloudflared.log 2>/dev/null || true
-  return 0
 }
 
-start_tunnel || echo "[ptero-start] Cloudflare Tunnel 初次啟動失敗，watchdog 將稍後重試"
+start_tunnel
 
 
 
@@ -686,6 +660,13 @@ watchdog_http_ok() {
   [[ "$code" =~ ^(2[0-9][0-9]|3[0-9][0-9]|401|403)$ ]]
 }
 
+cloudflare_validate_config() {
+  local token="$1"
+  [[ "$token" == eyJ* ]] || { echo "[watchdog] Cloudflare token 格式異常" >> logs/cloudflared-watchdog.log; return 1; }
+  [[ "${#token}" -ge 40 ]] || return 1
+  return 0
+}
+
 watchdog_check_filebrowser_http() {
   [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]] || return 0
   [[ -x ./caddy ]] || return 0
@@ -760,8 +741,8 @@ watchdog_check_tunnel_connector() {
 
 watchdog_start_tunnel() {
   if ! watchdog_pid_alive logs/cloudflared.pid; then
-    echo "[watchdog] Cloudflare Tunnel 不存在，依退避規則重新啟動"
-    watchdog_restart_tunnel
+    echo "[watchdog] Cloudflare Tunnel 不存在，重新啟動"
+    start_tunnel
   fi
 }
 
