@@ -1053,6 +1053,43 @@ impl AccountsDb {
         .wrap_err("讀取自動 IP 封鎖帳號識別失敗")
     }
 
+    /// Removes an automatic block only when the Discord user is bound to the
+    /// account that triggered it. The activity-event fallback safely supports
+    /// blocks created before blocked_account_id was introduced.
+    pub async fn unblock_automatic_ip_for_discord_user(
+        &self,
+        ip: &str,
+        discord_user_id: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM ip_blacklist
+             WHERE ip = ? AND blocked_by = 'system:auto-login-failure'
+               AND (
+                 EXISTS (
+                   SELECT 1 FROM accounts a
+                   WHERE a.discord_user_id = ?
+                     AND (a.id = ip_blacklist.blocked_account_id
+                          OR a.username = ip_blacklist.blocked_account_id)
+                 )
+                 OR EXISTS (
+                   SELECT 1 FROM activity_events e
+                   JOIN accounts a ON (a.id = e.account_id OR a.username = e.account_id)
+                   WHERE e.action = 'ip_blacklist_auto_block'
+                     AND e.path = ip_blacklist.ip
+                     AND a.discord_user_id = ?
+                 )
+               )",
+        )
+        .bind(ip.trim())
+        .bind(discord_user_id.trim())
+        .bind(discord_user_id.trim())
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("依 Discord 帳號解除自己的自動 IP 封鎖失敗")?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Removes only an automatic block owned by the supplied account.
     pub async fn unblock_own_automatic_ip(&self, ip: &str, account_id: &str) -> Result<bool> {
         let result = sqlx::query(

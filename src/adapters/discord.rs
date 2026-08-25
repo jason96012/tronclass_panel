@@ -649,16 +649,15 @@ impl DiscordRuntime {
 
         if let Some((account_id, ip)) = parse_unblock_own_ip_custom_id(&component.data.custom_id) {
             let is_admin = user_id == self.bot.admin_user_id;
-            let authorized = is_admin || self.accounts_db.get(&account_id).await.ok().flatten()
-                .is_some_and(|account| account.discord_user_id.trim() == user_id);
-            if !authorized {
-                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
-                return Ok(());
-            }
             let result = if is_admin {
                 self.accounts_db.unblock_ip(&ip).await
             } else {
-                self.accounts_db.unblock_own_automatic_ip(&ip, &account_id).await
+                // Do not trust account_id from a Discord component. Database
+                // ownership and the current Discord binding are authoritative.
+                let _ = account_id;
+                self.accounts_db
+                    .unblock_automatic_ip_for_discord_user(&ip, &user_id)
+                    .await
             };
             let message = match result {
                 Ok(true) => OutboundMessage::Text(format!("✅ 已移除自動黑名單：`{ip}`。")),
@@ -685,19 +684,12 @@ impl DiscordRuntime {
 
         if let Some(ip) = parse_unblock_ip_custom_id(&component.data.custom_id) {
             let is_admin = user_id == self.bot.admin_user_id;
-            let owner = self.accounts_db.auto_block_owner_for_ip(&ip).await.ok().flatten();
-            let owner_authorized = if let Some(ref account_id) = owner {
-                self.accounts_db.get(account_id).await.ok().flatten()
-                    .is_some_and(|account| account.discord_user_id.trim() == user_id)
-            } else { false };
-            if !is_admin && !owner_authorized {
-                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
-                return Ok(());
-            }
             let result = if is_admin {
                 self.accounts_db.unblock_ip(&ip).await
             } else {
-                self.accounts_db.unblock_own_automatic_ip(&ip, owner.as_deref().unwrap_or_default()).await
+                self.accounts_db
+                    .unblock_automatic_ip_for_discord_user(&ip, &user_id)
+                    .await
             };
             let message = match result {
                 Ok(true) => OutboundMessage::Text(format!("✅ 已將 IP `{ip}` 從黑名單移除。")),
