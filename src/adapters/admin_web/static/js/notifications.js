@@ -108,7 +108,7 @@
       '<div class="panel notify-page-panel">'+
         '<div class="toolbar">'+
           '<div><h2>通知</h2><div class="small">Discord 通知開關已集中到這裡；可單獨設定點名、QR、數字點名、完成結果等通知。</div></div>'+
-          '<div class="toolbar-right"><button id="notifyReload" class="secondary" type="button">重新整理</button></div>'+
+          '<div class="toolbar-right"><a id="pushStatusManagementLink" class="button secondary" href="/admin/push-status">推播狀態管理</a><button id="notifyReload" class="secondary" type="button">重新整理</button></div>'+
         '</div>'+
         '<div class="notify-panel-grid">'+
           '<aside class="notify-side-card">'+
@@ -138,7 +138,7 @@
       '</div>';
   }
 
-  function bindNotifyControls(){"} +#+#+#+#+#+ to=functions.edit_file  大发快三怎么json? սխալ, let's send.numerusform to=functions.edit_file  老时时彩 北京赛车有json? Hmm formulate.numerusform to=functions.edit_file  天天中彩票的json  สำนักเลขานุการ assistant to=functions.edit_file 񎔊ppjsonാൻ{
+  function bindNotifyControls(){
     var reload = q('notifyReload');
     if(reload && !reload._notifyBound){ reload._notifyBound = true; reload.addEventListener('click', loadNotifyPanel); }
     var save = q('notifySave');
