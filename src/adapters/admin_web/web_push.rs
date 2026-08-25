@@ -151,32 +151,47 @@ pub(super) async fn test_handler(
         Err(response) => return response,
     };
     const TEST_DELAY_SECS: u64 = 10;
-    match crate::web_push_notifications::schedule_test(
-        &account_id,
-        std::time::Duration::from_secs(TEST_DELAY_SECS),
-    )
-    .await
+    let subscription_count = match state
+        .accounts_db
+        .count_web_push_subscriptions(&account_id)
+        .await
     {
-        Ok(0) => Json(json!({
+        Ok(value) => value.max(0) as usize,
+        Err(error) => {
+            return Json(json!({
+                "ok": false,
+                "sent": 0,
+                "error": format!("讀取推播訂閱失敗：{error}")
+            }))
+            .into_response()
+        }
+    };
+    if subscription_count == 0 {
+        return Json(json!({
             "ok": false,
             "sent": 0,
             "error": "這個帳號尚未啟用手機推播"
         }))
-        .into_response(),
-        Ok(sent) => Json(json!({
-            "ok": true,
-            "sent": sent,
-            "scheduled": true,
-            "delay_secs": TEST_DELAY_SECS
-        }))
-        .into_response(),
-        Err(error) => Json(json!({
-            "ok": false,
-            "sent": 0,
-            "error": format!("安排背景測試推播失敗：{error}")
-        }))
-        .into_response(),
+        .into_response();
     }
+    let delayed_account = account_id.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(TEST_DELAY_SECS)).await;
+        if let Err(error) = crate::web_push_notifications::send_test(&delayed_account).await {
+            tracing::warn!(
+                account = %delayed_account,
+                error = %error,
+                "延遲背景推播測試失敗"
+            );
+        }
+    });
+    Json(json!({
+        "ok": true,
+        "sent": subscription_count,
+        "scheduled": true,
+        "delay_secs": TEST_DELAY_SECS
+    }))
+    .into_response()
 }
 
 fn validate_subscription(request: &PushSubscriptionRequest) -> Result<(), &'static str> {

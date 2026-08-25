@@ -286,7 +286,7 @@ fn encrypt_payload(payload: &[u8], p256dh: &str, auth: &str) -> Result<Vec<u8>> 
     let mut key_info = b"WebPush: info\0".to_vec();
     key_info.extend_from_slice(&receiver_public_bytes);
     key_info.extend_from_slice(sender_public.as_bytes());
-    let auth_hkdf = Hkdf::<Sha256>::new(Some(&auth_secret), shared.raw_secret_bytes().as_slice());
+    let auth_hkdf = Hkdf::<Sha256>::new(Some(&auth_secret), shared.raw_secret_bytes());
     let mut ikm = [0u8; 32];
     auth_hkdf
         .expand(&key_info, &mut ikm)
@@ -308,7 +308,7 @@ fn encrypt_payload(payload: &[u8], p256dh: &str, auth: &str) -> Result<Vec<u8>> 
     let cipher = Aes128Gcm::new_from_slice(&content_key)
         .map_err(|error| miette::miette!("建立 Web Push AES-GCM cipher 失敗：{error}"))?;
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), record.as_ref())
+        .encrypt(&Nonce::from(nonce_bytes), record.as_ref())
         .map_err(|error| miette::miette!("加密 Web Push payload 失敗：{error}"))?;
 
     // RFC 8188 aes128gcm body: salt, record size, key-id length, key-id, record.
