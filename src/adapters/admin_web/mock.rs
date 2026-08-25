@@ -198,6 +198,12 @@ pub(super) async fn admin_mock_start_handler(
                     &link.input_url,
                 )
                 .await;
+                crate::web_push_notifications::notify_rollcall(
+                    &account.account_id,
+                    rollcall_id,
+                    "Mock 數字點名",
+                    "數字簽到",
+                );
                 number_receivers.push((
                     account.account_id.clone(),
                     Arc::clone(&account.monitor_status),
@@ -344,6 +350,12 @@ pub(super) async fn admin_mock_start_handler(
                     &link.scan_url,
                 )
                 .await;
+                crate::web_push_notifications::notify_rollcall(
+                    &account.account_id,
+                    rollcall_id,
+                    "Mock QR Code 點名",
+                    "QR Code 簽到",
+                );
                 qr_receivers.push((
                     account.account_id.clone(),
                     Arc::clone(&account.monitor_status),
@@ -529,6 +541,12 @@ pub(super) async fn handle_mock_rollcall_action(
             };
 
             set_mock_detected_status(&status, rollcall_id, "Mock 數字點名", &link.input_url).await;
+            crate::web_push_notifications::notify_rollcall(
+                &account.account_id,
+                rollcall_id,
+                "Mock 數字點名",
+                "數字簽到",
+            );
             if let Some(messenger) = state.messenger.as_ref() {
                 let _ = messenger
                     .push_to_account_or_admin(
@@ -642,6 +660,12 @@ pub(super) async fn handle_mock_rollcall_action(
 
             set_mock_detected_status(&status, rollcall_id, "Mock QR Code 點名", &link.scan_url)
                 .await;
+            crate::web_push_notifications::notify_rollcall(
+                &account.account_id,
+                rollcall_id,
+                "Mock QR Code 點名",
+                "QR Code 簽到",
+            );
             if let Some(messenger) = state.messenger.as_ref() {
                 let _ = messenger
                     .push_to_account_or_admin(
@@ -703,7 +727,10 @@ pub(super) fn mock_rollcall_id() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
-    900_000 + (millis % 100_000)
+    // Keep every Mock trigger unique for practical purposes. The previous
+    // modulo-100000 value repeated every 100 seconds and was then suppressed by
+    // the two-hour Web Push duplicate guard.
+    1_000_000_000_000 + millis
 }
 
 pub(super) async fn set_mock_detected_status(

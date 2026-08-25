@@ -45,8 +45,10 @@ use crate::db::{AccountsDb, MaterialEventInput};
 use crate::runtime_settings::{RuntimeRestPeriod, RuntimeSettings};
 
 mod class_reminder;
+mod detection_schedule;
 mod pages;
 mod timetable;
+mod web_push;
 use self::pages::{
     inject_theme, load_runtime_theme, ADMIN_ACTIVITY_HTML, ADMIN_BLACKLIST_HTML,
     ADMIN_BLOCKED_HTML, ADMIN_DASHBOARD_HTML, ADMIN_HEALTH_HTML, ADMIN_PASSKEY_HTML,
@@ -845,6 +847,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(admin_timetable_ux_js_handler),
         )
         .route("/admin/static/core-api.js", get(admin_core_api_js_handler))
+        .route("/admin/static/web-push.js", get(admin_web_push_js_handler))
         .route(
             "/admin/static/js/dompurify.min.js",
             get(admin_dompurify_js_handler),
@@ -915,6 +918,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // already narrows itself to the session's own account for non-admins,
         // so it is the correct destination.
         .route("/admin/me", get(admin_dashboard_page_handler))
+        .route(
+            "/admin/detection-schedule",
+            get(detection_schedule::page_handler),
+        )
+        .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
         .route("/admin/files", get(files::admin_files_page_handler))
@@ -1039,6 +1047,16 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/activity/login",
             get(admin_login_activity_handler),
         )
+        .route("/admin/api/push/config", get(web_push::config_handler))
+        .route(
+            "/admin/api/push/subscribe",
+            post(web_push::subscribe_handler).layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/push/unsubscribe",
+            post(web_push::unsubscribe_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route("/admin/api/push/test", post(web_push::test_handler))
         .route("/admin/api/status", get(admin_status_handler))
         .route(
             "/admin/api/rollcall/events",
@@ -1048,6 +1066,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/class_reminder",
             get(class_reminder::admin_class_reminder_get_handler)
                 .post(class_reminder::admin_class_reminder_update_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/detection-schedule",
+            get(detection_schedule::get_handler)
+                .post(detection_schedule::update_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
@@ -1625,6 +1649,10 @@ fn html_page_response(headers: &HeaderMap, html: String) -> Response {
                 .headers_mut()
                 .insert(header::CONTENT_SECURITY_POLICY, value);
         }
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-store, max-age=0"),
+        );
         return response;
     }
 
@@ -1637,6 +1665,12 @@ fn html_page_response(headers: &HeaderMap, html: String) -> Response {
             .headers_mut()
             .insert(header::CONTENT_SECURITY_POLICY, value);
     }
+    // Admin HTML contains account/session-specific state. Never let Safari,
+    // the installed PWA, or an intermediary reuse it after a server restart.
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
     response
 }
 
@@ -2710,6 +2744,10 @@ async fn admin_accounts_module_js_handler() -> Response {
 
 async fn admin_core_api_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::CORE_API_JS)
+}
+
+async fn admin_web_push_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::WEB_PUSH_JS)
 }
 
 async fn admin_dompurify_js_handler() -> Response {

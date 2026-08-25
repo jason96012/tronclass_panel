@@ -205,6 +205,15 @@ pub async fn process_rollcall(
         "開始處理簽到"
     );
 
+    // Web Push 綁定當前 account_label，伺服器不接受前端指定其他帳號，
+    // 所以只會通知這次偵測所屬帳號的擁有者。
+    crate::web_push_notifications::notify_rollcall(
+        account_label,
+        rollcall.rollcall_id,
+        &rollcall.course_title,
+        &attendance_type.to_string(),
+    );
+
     // ── 發送開始通知 ──────────────────────────────────────────────────────────
     // 數字 / QR Code 會在對應 handler 先註冊到網頁狀態，再發出專用通知。
     // 這裡略過通用 RollcallDetected，避免 15 人時 Discord 通知節流卡住，導致網頁很久才看到所有人。

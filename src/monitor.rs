@@ -385,19 +385,41 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
     // Cache adapter_target at the start of each iteration to avoid 5+ lock
     // acquisitions per loop cycle. The target rarely changes (only on
     // Discord/LINE rebind), so one read per iteration is sufficient.
-    let mut cached_target = ctx.adapter_target.lock().await.clone();
+    let mut cached_target;
+    let mut last_timetable_window_state: Option<bool> = None;
 
     loop {
         // ── 等待觸發（定時、強制 or 重新認證）──────────────────────────────────
-        let poll_interval =
+        let normal_poll_interval =
             crate::runtime_settings::poll_interval(provider_poll_interval_secs).await;
-        let trigger = wait_for_trigger(
-            poll_interval,
-            force_poll_notify.as_deref(),
-            reauth_notify.as_deref(),
-            &schedule,
-        )
-        .await;
+        let timetable_policy = timetable_poll_policy(&ctx, normal_poll_interval).await;
+        if timetable_policy.controls_schedule
+            && last_timetable_window_state != Some(timetable_policy.inside_window)
+        {
+            info!(
+                account = %ctx.account.id,
+                inside_window = timetable_policy.inside_window,
+                wait_secs = timetable_policy.interval.as_secs(),
+                "課表偵測排程狀態已切換"
+            );
+            last_timetable_window_state = Some(timetable_policy.inside_window);
+        }
+        let trigger = if timetable_policy.controls_schedule {
+            wait_for_duration(
+                timetable_policy.interval,
+                force_poll_notify.as_deref(),
+                reauth_notify.as_deref(),
+            )
+            .await
+        } else {
+            wait_for_trigger(
+                timetable_policy.interval,
+                force_poll_notify.as_deref(),
+                reauth_notify.as_deref(),
+                &schedule,
+            )
+            .await
+        };
 
         // Refresh cached target once per iteration
         cached_target = ctx.adapter_target.lock().await.clone();
@@ -435,8 +457,14 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
 
         if trigger == MonitorTrigger::Timer {
             let now = Local::now();
-            if !is_within_poll_window(&schedule, now.weekday(), now.time()) {
-                debug!("目前不在課堂輪詢時段內，略過本次定時觸發");
+            // When timetable scheduling is enabled, timer polls continue at the
+            // configured slow interval outside class windows. The provider's
+            // broad schedule is only the fallback when timetable scheduling is
+            // explicitly disabled or its settings cannot be read.
+            if !timetable_policy.controls_schedule
+                && !is_within_poll_window(&schedule, now.weekday(), now.time())
+            {
+                debug!("目前不在 provider 課堂輪詢時段內，略過本次定時觸發");
                 continue;
             }
             if crate::runtime_settings::is_rest_time(now).await {
@@ -814,6 +842,88 @@ enum MonitorTrigger {
     Timer,
     ForcePoll,
     Reauth,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TimetablePollPolicy {
+    interval: Duration,
+    controls_schedule: bool,
+    inside_window: bool,
+}
+
+/// Resolve the interval for one monitor iteration. Inside a class window the
+/// normal provider/runtime interval is used. Outside it, polling slows down but
+/// never stops; the wait is shortened when the next window starts sooner.
+async fn timetable_poll_policy(
+    ctx: &MonitorContext,
+    normal_interval: Duration,
+) -> TimetablePollPolicy {
+    let preference = match ctx
+        .accounts_db
+        .get_detection_schedule_preference(&ctx.account.id)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            warn!(account = %ctx.account.id, error = %error, "讀取課表偵測設定失敗，沿用 provider 排程");
+            return TimetablePollPolicy {
+                interval: normal_interval,
+                controls_schedule: false,
+                inside_window: false,
+            };
+        }
+    };
+    if !preference.enabled {
+        return TimetablePollPolicy {
+            interval: normal_interval,
+            controls_schedule: false,
+            inside_window: false,
+        };
+    }
+
+    let entries = match ctx
+        .accounts_db
+        .list_timetable_entries_for_account(&ctx.account.id)
+        .await
+    {
+        Ok(value) => value,
+        Err(error) => {
+            warn!(account = %ctx.account.id, error = %error, "讀取課表失敗，沿用 provider 排程");
+            return TimetablePollPolicy {
+                interval: normal_interval,
+                controls_schedule: false,
+                inside_window: false,
+            };
+        }
+    };
+    let now = Local::now();
+    let evaluation = crate::detection_schedule::evaluate(
+        &entries,
+        now.weekday(),
+        now.time(),
+        &preference,
+    );
+    if evaluation.active {
+        return TimetablePollPolicy {
+            interval: normal_interval,
+            controls_schedule: true,
+            inside_window: true,
+        };
+    }
+
+    let slow_interval = Duration::from_secs(
+        u64::try_from(preference.outside_interval_secs.clamp(60, 3600)).unwrap_or(300),
+    );
+    let interval = evaluation
+        .next_window_in_secs
+        .map(Duration::from_secs)
+        .map(|until_window| slow_interval.min(until_window.max(Duration::from_secs(1))))
+        .unwrap_or(slow_interval);
+    TimetablePollPolicy {
+        interval,
+        controls_schedule: true,
+        inside_window: false,
+    }
 }
 
 async fn wait_for_trigger(
