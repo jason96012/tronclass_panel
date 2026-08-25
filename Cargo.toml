@@ -64,6 +64,11 @@ ddddocr = { git = "https://github.com/86maid/ddddocr.git", branch = "master", op
 futures = "0.3"
 async-trait = "0.1"
 
+# Standards-based Web Push (payload encryption + VAPID signing). HTTP sending
+# reuses the existing rustls reqwest client, so no native OpenSSL/cURL runtime
+# is required by this dependency.
+web-push = { version = "0.11", default-features = false }
+
 # Discord Bot adapter
 serenity = { version = "0.12", default-features = false, features = ["builder", "client", "gateway", "http", "model", "rustls_backend", "utils"] }
 

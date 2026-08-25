@@ -53,8 +53,8 @@ pub(super) async fn service_worker_handler() -> Response {
     const SW: &str = r#"
 // Tronclass PWA service worker FAST_PAGE_LOAD_V1.
 // Only /admin/static/* is cached. HTML and /admin/api/* always hit the network.
-const STATIC_CACHE = 'tron-static-v20260822m';
-const HTML_CACHE = 'tron-html-v20260822m';
+const STATIC_CACHE = 'tron-static-v20260825push';
+const HTML_CACHE = 'tron-html-v20260825push';
 self.addEventListener('install', event => {
   self.skipWaiting();
 });
@@ -64,6 +64,44 @@ self.addEventListener('activate', event => {
     const keys = await caches.keys();
     await Promise.all(keys.filter(k => keep.indexOf(k) < 0).map(k => caches.delete(k)));
     await self.clients.claim();
+  })());
+});
+self.addEventListener('push', event => {
+  event.waitUntil((async () => {
+    let payload = {};
+    try { payload = event.data ? event.data.json() : {}; } catch (_) {
+      payload = { body: event.data ? event.data.text() : '偵測到新的點名' };
+    }
+    const title = String(payload.title || 'Tronclass 點名通知');
+    const target = typeof payload.url === 'string' && payload.url.indexOf('/') === 0
+      ? payload.url : '/admin/dashboard#rollcall';
+    await self.registration.showNotification(title, {
+      body: String(payload.body || '偵測到新的點名，請立即查看。'),
+      icon: '/admin/pwa/icon.svg',
+      badge: '/admin/pwa/icon.svg',
+      tag: String(payload.tag || 'tronclass-rollcall'),
+      renotify: true,
+      requireInteraction: true,
+      silent: false,
+      vibrate: [220, 100, 220],
+      data: { url: target }
+    });
+  })());
+});
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const target = event.notification && event.notification.data && event.notification.data.url
+    ? event.notification.data.url : '/admin/dashboard#rollcall';
+  event.waitUntil((async () => {
+    const absolute = new URL(target, self.location.origin).href;
+    const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of windows) {
+      try {
+        if ('navigate' in client) await client.navigate(absolute);
+        return client.focus();
+      } catch (_) {}
+    }
+    return self.clients.openWindow(absolute);
   })());
 });
 self.addEventListener('fetch', event => {

@@ -33,6 +33,7 @@ pub(super) const DOMPURIFY_JS: &str = include_str!("static/js/dompurify.min.js")
 pub(super) const TRUSTED_TYPES_INIT_JS: &str = include_str!("static/js/trusted-types-init.js");
 pub(super) const SESSION_SECURITY_JS: &str = include_str!("static/js/session-security.js");
 pub(super) const CORE_API_JS: &str = include_str!("static/js/core-api.js");
+pub(super) const WEB_PUSH_JS: &str = include_str!("static/js/web-push.js");
 pub(super) const ACCOUNTS_MODULE_JS: &str = include_str!("static/js/accounts.js");
 pub(super) const MOCK_ROLLCALL_MODULE_JS: &str = include_str!("static/js/mock-rollcall.js");
 pub(super) const NOTIFICATIONS_MODULE_JS: &str = include_str!("static/js/notifications.js");
@@ -119,7 +120,8 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
         r#"<link rel="preload" href="/admin/static/session-security.js?v=20260821fast" as="script">"#,
         r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260821fast"></script>"#,
-        r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#
+        r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
+        r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#
     );
     const TIMETABLE_UX_ASSET: &str =
         r#"<script defer src="/admin/static/timetable-ux.js?v=20260821fast"></script>"#;

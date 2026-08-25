@@ -50,7 +50,30 @@
     }
     // Mobile more sheet support.
     var sheets=document.querySelectorAll('.mobile-dashboard-sheet-grid,.sheet-grid,.mobile-dashboard-sheet .grid,#mobileDashboardSheetForce .grid,#mobileMoreFinalV2 .more-grid,#mobileStableDashboardSheet .grid');
-    sheets.forEach(function(host){ if(!host.querySelector('[data-view="notifications"]')){ var btn=document.createElement('button'); btn.type='button'; btn.dataset.view='notifications'; btn.textContent='通知設定'; btn.onclick=function(){ var back=host.closest('.visible'); if(back)back.classList.remove('visible'); switchView('notifications'); }; var logout=host.querySelector('.danger,#mobileDashLogout,#mobileLogoutForce,#moreLogoutFinalV2'); host.insertBefore(btn,logout||null); } });
+    sheets.forEach(function(host){
+      var notify=host.querySelector('[data-view="notifications"]');
+      if(!notify){
+        notify=document.createElement('button');
+        notify.type='button';
+        notify.dataset.view='notifications';
+        notify.textContent='通知設定';
+        notify.onclick=function(){ var back=host.closest('.visible'); if(back)back.classList.remove('visible'); switchView('notifications'); };
+        var logout=host.querySelector('.danger,#mobileDashLogout,#mobileLogoutForce,#moreLogoutFinalV2');
+        host.insertBefore(notify,logout||null);
+      }
+      if(!host.querySelector('[data-detection-schedule-entry]')){
+        var schedule=document.createElement('button');
+        schedule.type='button';
+        schedule.dataset.detectionScheduleEntry='1';
+        schedule.textContent='點名排程';
+        schedule.onclick=function(){
+          var back=host.closest('.visible');
+          if(back)back.classList.remove('visible');
+          location.href='/admin/detection-schedule';
+        };
+        notify.insertAdjacentElement('afterend',schedule);
+      }
+    });
   }
 
   async function loadStatusOnce(){ notifyStatus=await (window.TronclassRuntime&&window.TronclassRuntime.statusSummary?window.TronclassRuntime.statusSummary(false):api('/admin/api/status?include_history=false&history_limit=0',{cache:'no-store'})); return notifyStatus; }

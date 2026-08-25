@@ -40,6 +40,7 @@ mod logs;
 mod monitor;
 mod rollcalls;
 mod runtime_settings;
+mod web_push_notifications;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -909,6 +910,9 @@ async fn main() -> Result<()> {
     );
 
     adapters::discord::set_notification_preferences_db(accounts_db.clone());
+    if let Err(error) = web_push_notifications::initialize(accounts_db.clone()).await {
+        warn!(error = %error, "Web Push 初始化失敗；背景手機通知暫停使用");
+    }
 
     let config = Arc::new(config);
     let line_bot = if config.adapters.line_bot.enabled {

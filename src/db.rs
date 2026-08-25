@@ -228,6 +228,14 @@ pub struct DetectionSchedulePreferenceRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
+pub struct WebPushSubscriptionRow {
+    pub account_id: String,
+    pub endpoint: String,
+    pub p256dh: String,
+    pub auth: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
 pub struct ClassReminderDueRow {
     pub timetable_id: i64,
     pub account_id: String,
@@ -587,6 +595,41 @@ impl AccountsDb {
         .await
         .into_diagnostic()
         .wrap_err("初始化 detection_schedule_preferences 資料表失敗")?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS web_push_settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL DEFAULT ''
+            )",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 web_push_settings 資料表失敗")?;
+
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS web_push_subscriptions (
+                endpoint TEXT PRIMARY KEY NOT NULL,
+                account_id TEXT NOT NULL DEFAULT '',
+                p256dh TEXT NOT NULL DEFAULT '',
+                auth TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            )",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 web_push_subscriptions 資料表失敗")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_web_push_subscriptions_account
+             ON web_push_subscriptions(account_id)",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 web_push_subscriptions index 失敗")?;
 
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS class_reminder_sent (
@@ -1588,6 +1631,108 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err_with(|| format!("讀取 `{account_id}` 通知設定失敗"))?;
         Ok(row.map(|(enabled,)| enabled).unwrap_or(true))
+    }
+
+    pub async fn get_web_push_setting(&self, key: &str) -> Result<Option<String>> {
+        let row = sqlx::query_as::<_, (String,)>(
+            "SELECT value FROM web_push_settings WHERE key = ?",
+        )
+        .bind(key.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("讀取 Web Push 設定失敗")?;
+        Ok(row.map(|(value,)| value))
+    }
+
+    pub async fn set_web_push_setting(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO web_push_settings (key, value) VALUES (?, ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key.trim())
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("儲存 Web Push 設定失敗")?;
+        Ok(())
+    }
+
+    pub async fn upsert_web_push_subscription(
+        &self,
+        account_id: &str,
+        endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+    ) -> Result<()> {
+        let now = chrono::Local::now().timestamp();
+        sqlx::query(
+            "INSERT INTO web_push_subscriptions
+                (endpoint, account_id, p256dh, auth, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(endpoint) DO UPDATE SET
+                account_id = excluded.account_id,
+                p256dh = excluded.p256dh,
+                auth = excluded.auth,
+                updated_at = excluded.updated_at",
+        )
+        .bind(endpoint.trim())
+        .bind(account_id.trim())
+        .bind(p256dh.trim())
+        .bind(auth.trim())
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err_with(|| format!("儲存 `{account_id}` Web Push 訂閱失敗"))?;
+        Ok(())
+    }
+
+    pub async fn list_web_push_subscriptions(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<WebPushSubscriptionRow>> {
+        sqlx::query_as::<_, WebPushSubscriptionRow>(
+            "SELECT account_id, endpoint, p256dh, auth
+             FROM web_push_subscriptions WHERE account_id = ?
+             ORDER BY updated_at DESC LIMIT 16",
+        )
+        .bind(account_id.trim())
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err_with(|| format!("讀取 `{account_id}` Web Push 訂閱失敗"))
+    }
+
+    pub async fn count_web_push_subscriptions(&self, account_id: &str) -> Result<i64> {
+        let (count,) = sqlx::query_as::<_, (i64,)>(
+            "SELECT COUNT(*) FROM web_push_subscriptions WHERE account_id = ?",
+        )
+        .bind(account_id.trim())
+        .fetch_one(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("統計 Web Push 訂閱失敗")?;
+        Ok(count)
+    }
+
+    pub async fn delete_web_push_subscription(
+        &self,
+        account_id: &str,
+        endpoint: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM web_push_subscriptions WHERE account_id = ? AND endpoint = ?",
+        )
+        .bind(account_id.trim())
+        .bind(endpoint.trim())
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("刪除 Web Push 訂閱失敗")?;
+        Ok(result.rows_affected() > 0)
     }
 
     pub async fn get_detection_schedule_preference(
