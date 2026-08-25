@@ -73,7 +73,7 @@
     } catch (error) {
       testError = error && error.message ? error.message : '測試推播請求失敗';
     }
-    return { accountId: config.account_id, sent: sent, testError: testError };
+    return { accountId: config.account_id, sent: sent, testError: testError, delaySecs: (result && result.delay_secs) || 10 };
   }
   async function unsubscribe() {
     assertSupported();
@@ -104,8 +104,8 @@
         alert('已為帳號「' + result.accountId + '」儲存 iPhone 推播訂閱。\n\n但測試通知未送達：\n' + result.testError + '\n\n請截圖這段詳細訊息以便檢查。');
         if (button) button.textContent = '推播已啟用（測試失敗）';
       } else {
-        alert('已為帳號「' + result.accountId + '」啟用 iPhone 背景推播，測試通知已送出。\n\n通知聲音由 iOS「設定 → 通知」中的聲音開關控制。');
-        if (button) button.textContent = '手機推播已啟用';
+        alert('已為帳號「' + result.accountId + '」啟用 iPhone 背景推播。\n\n請關閉這個訊息後，立刻把 Tronclass App 往上滑掉；約 ' + result.delaySecs + ' 秒後會收到背景測試通知。\n\n通知聲音由 iOS「設定 → 通知」中的聲音開關控制。');
+        if (button) button.textContent = '背景測試已安排';
       }
     } catch (error) {
       alert(error && error.message ? error.message : '手機推播啟用失敗。');

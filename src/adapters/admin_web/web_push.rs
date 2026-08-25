@@ -150,18 +150,30 @@ pub(super) async fn test_handler(
         Ok(value) => value,
         Err(response) => return response,
     };
-    match crate::web_push_notifications::send_test(&account_id).await {
+    const TEST_DELAY_SECS: u64 = 10;
+    match crate::web_push_notifications::schedule_test(
+        &account_id,
+        std::time::Duration::from_secs(TEST_DELAY_SECS),
+    )
+    .await
+    {
         Ok(0) => Json(json!({
             "ok": false,
             "sent": 0,
             "error": "這個帳號尚未啟用手機推播"
         }))
         .into_response(),
-        Ok(sent) => Json(json!({"ok": true, "sent": sent})).into_response(),
+        Ok(sent) => Json(json!({
+            "ok": true,
+            "sent": sent,
+            "scheduled": true,
+            "delay_secs": TEST_DELAY_SECS
+        }))
+        .into_response(),
         Err(error) => Json(json!({
             "ok": false,
             "sent": 0,
-            "error": format!("測試推播失敗：{error}")
+            "error": format!("安排背景測試推播失敗：{error}")
         }))
         .into_response(),
     }
