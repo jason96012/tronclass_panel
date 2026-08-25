@@ -72,9 +72,11 @@
         var config=await api('/admin/api/push/config');
         var local=await localSubscription();
         var permission=('Notification'in window)?Notification.permission:'unsupported';
-        var active=!!(config.subscribed&&local&&permission==='granted');
+        var boundAccount=(window.TronclassWebPush&&window.TronclassWebPush.explicitlyBoundAccount)?window.TronclassWebPush.explicitlyBoundAccount():'';
+        var localMatches=!!(local&&boundAccount&&boundAccount===String(config.account_id||''));
+        var active=!!(config.subscribed&&localMatches&&permission==='granted');
         q('accountId').textContent=config.account_id||'—';q('serverCount').textContent=String(config.subscription_count||0)+' 台';q('vapidStatus').textContent=config.public_key?'正常':'未初始化';
-        q('standaloneStatus').textContent=standalone()?'是':'否';q('permissionStatus').textContent=permission==='granted'?'已允許':permission==='denied'?'已拒絕':'尚未允許';q('localStatus').textContent=local?'已建立':'不存在';
+        q('standaloneStatus').textContent=standalone()?'是':'否';q('permissionStatus').textContent=permission==='granted'?'已允許':permission==='denied'?'已拒絕':'尚未允許';q('localStatus').textContent=(localMatches&&config.subscribed)?'已綁定此帳號':localMatches?'需要重新啟用':local?(boundAccount?'已綁定其他帳號':'尚未明確綁定'):'不存在';
         q('statusDot').className='dot '+(active?'good':'bad');q('statusTitle').textContent=active?'背景推播已啟用':'背景推播需要處理';q('statusDescription').textContent=active?'此帳號與目前 iPhone 的訂閱均正常':'請使用下方按鈕啟用或修復此手機';
       }catch(error){q('statusDot').className='dot bad';q('statusTitle').textContent='狀態讀取失敗';q('statusDescription').textContent=error.message||'請重新登入';message(error.message||'讀取失敗',false)}
     }
@@ -88,5 +90,5 @@
     });
   }());
   </script>
-</body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a30be38489650f9a',t:'MTc4NzY3NDQ1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

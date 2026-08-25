@@ -2,6 +2,7 @@
   'use strict';
 
   var api = '/admin/api/push';
+  var bindingAccountKey = 'tronclass_web_push_explicit_account_v2';
 
   function isIos() {
     return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
@@ -66,6 +67,7 @@
       });
     }
     await saveSubscription(subscription);
+    try { localStorage.setItem(bindingAccountKey, String(config.account_id || '')); } catch (_) {}
     var testError = '';
     var sent = 0;
     try {
@@ -81,21 +83,26 @@
     assertSupported();
     var reg = await registration();
     var subscription = await reg.pushManager.getSubscription();
-    if (!subscription) return false;
+    if (!subscription) {
+      try { localStorage.removeItem(bindingAccountKey); } catch (_) {}
+      return false;
+    }
     await jsonFetch(api + '/unsubscribe', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ endpoint: subscription.endpoint })
     });
     await subscription.unsubscribe();
+    try { localStorage.removeItem(bindingAccountKey); } catch (_) {}
     return true;
   }
   async function syncExisting() {
-    if (!isIos() || !isStandalone() || Notification.permission !== 'granted') return;
-    try {
-      var reg = await registration();
-      var subscription = await reg.pushManager.getSubscription();
-      if (subscription) await saveSubscription(subscription);
-    } catch (_) {}
+    // Deliberately do not POST the existing endpoint here. A browser has one
+    // subscription per PWA origin; auto-saving it after another account logs in
+    // silently transfers ownership. Binding is allowed only from subscribe().
+    return;
+  }
+  function explicitlyBoundAccount() {
+    try { return localStorage.getItem(bindingAccountKey) || ''; } catch (_) { return ''; }
   }
   async function enableFromButton(button) {
     var original = button && button.textContent;
@@ -118,12 +125,8 @@
   }
 
   function ensureStatusManagementLink() {
-    var view = document.getElementById('view-notifications');
-    if (!view) return false;
-    // Keep this account-specific action beside the account selector rather
-    // than scattering it across the desktop title toolbar.
-    var host = view.querySelector('.class-reminder-side') || view.querySelector('.notify-side-card');
-    if (!host) return false;
+    var passkey = document.getElementById('passkeyRegisterBtn');
+    if (!passkey || !passkey.parentNode) return false;
     var link = document.getElementById('pushStatusManagementLink');
     if (!link) {
       link = document.createElement('a');
@@ -131,12 +134,14 @@
       link.href = '/admin/push-status';
       link.textContent = '推播狀態管理';
     }
-    link.className = 'button secondary push-status-side-link';
-    link.style.display = 'flex';
-    link.style.justifyContent = 'center';
-    link.style.width = '100%';
-    link.style.marginTop = '14px';
-    if (link.parentNode !== host) host.appendChild(link);
+    link.className = 'button secondary push-status-desktop-link';
+    if (passkey.nextElementSibling !== link) passkey.insertAdjacentElement('afterend', link);
+    if (!document.getElementById('pushStatusDesktopLinkStyle')) {
+      var style = document.createElement('style');
+      style.id = 'pushStatusDesktopLinkStyle';
+      style.textContent = '#pushStatusManagementLink{display:inline-flex;align-items:center;justify-content:center;min-height:36px;height:36px;padding:0 12px;border-radius:999px;white-space:nowrap;text-decoration:none;font-size:13px;font-weight:760}@media(max-width:820px){#pushStatusManagementLink{display:none!important}}';
+      document.head.appendChild(style);
+    }
     return true;
   }
 
@@ -152,7 +157,8 @@
   window.TronclassWebPush = {
     subscribe: subscribe,
     unsubscribe: unsubscribe,
-    syncExisting: syncExisting
+    syncExisting: syncExisting,
+    explicitlyBoundAccount: explicitlyBoundAccount
   };
   function boot() {
     syncExisting();
@@ -160,8 +166,7 @@
     var attempts = 0;
     var timer = setInterval(function () {
       attempts += 1;
-      // Keep checking while notification sub-panels finish loading; the link
-      // may need to move from the fallback account card to the reminder card.
+      // The passkey button is injected asynchronously by the Dashboard.
       ensureStatusManagementLink();
       if (attempts >= 30) clearInterval(timer);
     }, 400);

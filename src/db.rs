@@ -1718,6 +1718,15 @@ impl AccountsDb {
         Ok(count)
     }
 
+    pub async fn clear_all_web_push_subscriptions(&self) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM web_push_subscriptions")
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("清除舊版 Web Push 自動綁定資料失敗")?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn delete_web_push_subscription(
         &self,
         account_id: &str,
