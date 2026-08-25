@@ -8,7 +8,27 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{session_token, unauthorized_response, AdminQuery, AdminWebState};
+use super::{
+    admin_login_redirect, html_page_response, must_change_password_redirect, session_token,
+    unauthorized_response, AdminQuery, AdminWebState,
+};
+
+const PAGE_HTML: &str = include_str!("static/push_status.html");
+
+pub(super) async fn page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return admin_login_redirect("/admin/push-status");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    html_page_response(&headers, super::inject_theme(PAGE_HTML))
+}
 
 #[derive(Debug, Deserialize)]
 pub(super) struct PushSubscriptionRequest {

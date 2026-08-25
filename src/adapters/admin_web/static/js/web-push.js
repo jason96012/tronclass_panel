@@ -51,10 +51,12 @@
   }
   async function subscribe() {
     assertSupported();
-    var config = await jsonFetch(api + '/config');
+    // iOS requires the permission prompt to stay directly associated with the
+    // user's tap. Ask before awaiting a network request.
     var permission = Notification.permission;
     if (permission !== 'granted') permission = await Notification.requestPermission();
     if (permission !== 'granted') throw new Error('通知權限未允許；請到 iPhone「設定」→「通知」開啟此 App 的通知與聲音。');
+    var config = await jsonFetch(api + '/config');
     var reg = await registration();
     var subscription = await reg.pushManager.getSubscription();
     if (!subscription) {
@@ -115,6 +117,21 @@
     }
   }
 
+  function ensureStatusManagementLink() {
+    if (document.getElementById('pushStatusManagementLink')) return true;
+    var view = document.getElementById('view-notifications');
+    if (!view) return false;
+    var host = view.querySelector('.toolbar-right') || view.querySelector('.toolbar');
+    if (!host) return false;
+    var link = document.createElement('a');
+    link.id = 'pushStatusManagementLink';
+    link.className = 'button secondary';
+    link.href = '/admin/push-status';
+    link.textContent = '推播狀態管理';
+    host.appendChild(link);
+    return true;
+  }
+
   document.addEventListener('click', function (event) {
     var button = event.target && event.target.closest &&
       event.target.closest('#morePushFinalV2,#rollcallQuickAlertNotify,[data-enable-web-push]');
@@ -129,9 +146,18 @@
     unsubscribe: unsubscribe,
     syncExisting: syncExisting
   };
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', syncExisting, { once: true });
-  } else {
+  function boot() {
     syncExisting();
+    ensureStatusManagementLink();
+    var attempts = 0;
+    var timer = setInterval(function () {
+      attempts += 1;
+      if (ensureStatusManagementLink() || attempts >= 30) clearInterval(timer);
+    }, 400);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot, { once: true });
+  } else {
+    boot();
   }
 }());

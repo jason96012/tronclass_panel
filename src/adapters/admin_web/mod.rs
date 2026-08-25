@@ -922,6 +922,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/detection-schedule",
             get(detection_schedule::page_handler),
         )
+        .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
         .route("/admin/files", get(files::admin_files_page_handler))
