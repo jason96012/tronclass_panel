@@ -387,6 +387,22 @@ impl AccountsDb {
             "TEXT NOT NULL DEFAULT ''",
         )
         .await?;
+        // Backfill automatic blocks created before blocked_account_id existed,
+        // using the matching security activity record when available.
+        let _ = sqlx::query(
+            "UPDATE ip_blacklist
+             SET blocked_account_id = COALESCE((
+               SELECT account_id FROM activity_events
+               WHERE action = 'ip_blacklist_auto_block'
+                 AND path = ip_blacklist.ip
+                 AND account_id <> ''
+               ORDER BY id DESC LIMIT 1
+             ), '')
+             WHERE blocked_by = 'system:auto-login-failure'
+               AND blocked_account_id = ''",
+        )
+        .execute(&pool)
+        .await;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_ip_blacklist_blocked_at ON ip_blacklist(blocked_at DESC)")
             .execute(&pool)
@@ -1019,6 +1035,22 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err("寫入自動封鎖帳號識別失敗")?;
         Ok(())
+    }
+
+    /// Returns the owning account for an automatic IP block, if one was
+    /// recorded. This allows legacy Discord buttons to enforce the same
+    /// self-service ownership rule without trusting their component payload.
+    pub async fn auto_block_owner_for_ip(&self, ip: &str) -> Result<Option<String>> {
+        sqlx::query_scalar(
+            "SELECT blocked_account_id FROM ip_blacklist
+             WHERE ip = ? AND blocked_by = 'system:auto-login-failure'
+               AND blocked_account_id <> ''",
+        )
+        .bind(ip.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("讀取自動 IP 封鎖帳號識別失敗")
     }
 
     /// Removes only an automatic block owned by the supplied account.

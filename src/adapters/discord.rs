@@ -684,13 +684,24 @@ impl DiscordRuntime {
         }
 
         if let Some(ip) = parse_unblock_ip_custom_id(&component.data.custom_id) {
-            if user_id != self.bot.admin_user_id {
+            let is_admin = user_id == self.bot.admin_user_id;
+            let owner = self.accounts_db.auto_block_owner_for_ip(&ip).await.ok().flatten();
+            let owner_authorized = if let Some(ref account_id) = owner {
+                self.accounts_db.get(account_id).await.ok().flatten()
+                    .is_some_and(|account| account.discord_user_id.trim() == user_id)
+            } else { false };
+            if !is_admin && !owner_authorized {
                 reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
                 return Ok(());
             }
-            let message = match self.accounts_db.unblock_ip(&ip).await {
+            let result = if is_admin {
+                self.accounts_db.unblock_ip(&ip).await
+            } else {
+                self.accounts_db.unblock_own_automatic_ip(&ip, owner.as_deref().unwrap_or_default()).await
+            };
+            let message = match result {
                 Ok(true) => OutboundMessage::Text(format!("✅ 已將 IP `{ip}` 從黑名單移除。")),
-                Ok(false) => OutboundMessage::Text(format!("ℹ️ IP `{ip}` 目前不在黑名單中。")),
+                Ok(false) => OutboundMessage::Text("ℹ️ 找不到可由你解除的自動黑名單。".to_string()),
                 Err(error) => OutboundMessage::Text(format!("❌ 移除黑名單失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
