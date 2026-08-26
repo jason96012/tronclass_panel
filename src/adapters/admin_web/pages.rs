@@ -28,7 +28,6 @@ pub(super) fn theme_css() -> String {
     include_str!("static/theme.css").to_string()
 }
 
-pub(super) const TIMETABLE_UX_JS: &str = include_str!("static/timetable_ux.js");
 pub(super) const DOMPURIFY_JS: &str = include_str!("static/js/dompurify.min.js");
 pub(super) const TRUSTED_TYPES_INIT_JS: &str = include_str!("static/js/trusted-types-init.js");
 pub(super) const SESSION_SECURITY_JS: &str = include_str!("static/js/session-security.js");
@@ -123,14 +122,7 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
         r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#
     );
-    const TIMETABLE_UX_ASSET: &str =
-        r#"<script defer src="/admin/static/timetable-ux.js?v=20260821fast"></script>"#;
-
-    let assets = if html.contains("tron-auth") || html.contains("dash-auth-ok") {
-        SHARED_ASSETS.to_string()
-    } else {
-        String::from(SHARED_ASSETS) + TIMETABLE_UX_ASSET
-    };
+    let assets = SHARED_ASSETS.to_string();
     if let Some(head_at) = html.find("<head") {
         if let Some(rel) = html[head_at..].find('>') {
             let at = head_at + rel + 1;

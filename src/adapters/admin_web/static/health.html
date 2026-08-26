@@ -946,7 +946,7 @@ hr, .divider{
   window.CONSOLIDATED_ADMIN_AUTH_V1 = true;
 
   var LS_SESSION = 'tronclass_admin_session';
-  var LS_SAVED = 'tronclass_admin_saved_login';
+  var LS_SAVED_USER = 'tronclass_admin_saved_username_v1';
   var LS_LOGOUT = 'tronclass_dashboard_manual_logout';
   var nativeFetch = window.fetch.bind(window);
 
@@ -955,7 +955,7 @@ hr, .divider{
   function token(){ try { return (params().get('token') || localStorage.getItem(LS_SESSION) || '').trim(); } catch(_) { return ''; } }
   function isLoginPage(){ return location.pathname === '/admin' || location.pathname === '/admin/' || location.pathname === '/admin/dashboard'; }
   function isAdminPath(){ return location.pathname === '/admin' || location.pathname.startsWith('/admin/'); }
-  function savedLogin(){ try { return JSON.parse(localStorage.getItem(LS_SAVED) || '{}') || {}; } catch(_) { return {}; } }
+  function savedUsername(){ try { return localStorage.getItem(LS_SAVED_USER) || ''; } catch(_) { return ''; } }
   function sameOriginAdminPath(path){ try { var u = new URL(path, location.origin); if (u.origin !== location.origin || !u.pathname.startsWith('/admin')) return '/admin'; return u.pathname + u.search + u.hash; } catch(_) { return '/admin'; } }
   function currentPath(){ return location.pathname + location.search + location.hash; }
   function nextTarget(){ var n = params().get('next') || ''; return n ? sameOriginAdminPath(n) : ''; }
@@ -968,7 +968,7 @@ hr, .divider{
   function usernameInput(){ return q('loginUsername')||q('loginUser')||document.querySelector('input[autocomplete="username"],input[placeholder*="帳號"],input[type="text"]'); }
   function passwordInput(){ return q('loginPassword')||q('loginPass')||document.querySelector('input[type="password"]'); }
   function rememberInput(){ return q('rememberPassword')||q('rememberLogin')||document.querySelector('input[type="checkbox"]'); }
-  function fillSaved(){ var s=savedLogin(); var u=usernameInput(), p=passwordInput(); if(u&&s.username&&!u.value)u.value=s.username; if(p&&s.password&&!p.value)p.value=s.password; var r=rememberInput(); if(r)r.checked=true; }
+  function fillSaved(){ var saved=savedUsername(); var u=usernameInput(); if(u&&saved&&!u.value)u.value=saved; var r=rememberInput(); if(r&&saved)r.checked=true; }
 
   // Keep API token current for all Admin pages.
   window.fetch = function(input, init){
@@ -991,7 +991,7 @@ hr, .divider{
   function showAuthed(data){ setClass('ok'); setBrand((data&&data.current_account_id)||(data&&data.account_id)||'管理中心'); setMsg('', true); syncLinks(); var nt=nextTarget(); if (nt && isLoginPage()) location.replace(withToken(nt)); }
   function dashboardUrl(tok){ var target=nextTarget()||'/admin#overview'; var u=new URL(target, location.origin); u.searchParams.set('v','login'+Date.now()); if(!u.hash)u.hash='overview'; return u.pathname+u.search+u.hash; }
   function logout(){ localStorage.removeItem(LS_SESSION); localStorage.setItem(LS_LOGOUT,'1'); showLogin('已登出，請重新登入。'); setTimeout(function(){location.replace('/admin?logout=1&v=logout'+Date.now())},30); }
-  async function doLogin(ev){ if(ev){ev.preventDefault();ev.stopPropagation();ev.stopImmediatePropagation&&ev.stopImmediatePropagation();} try{ setMsg('登入中...', true); var u=usernameInput(), p=passwordInput(); var body=await loginApi(u&&u.value,p&&p.value); localStorage.setItem(LS_SESSION,body.token); localStorage.removeItem(LS_LOGOUT); var r=rememberInput(); if(!r||r.checked)localStorage.setItem(LS_SAVED,JSON.stringify({username:String((u&&u.value)||'').trim(),password:String((p&&p.value)||'')})); showAuthed({current_account_id:body.account_id}); location.replace(dashboardUrl(body.token)); }catch(e){ showLogin(e.message||'登入失敗'); toast(e.message||'登入失敗', false); } }
+  async function doLogin(ev){ if(ev){ev.preventDefault();ev.stopPropagation();ev.stopImmediatePropagation&&ev.stopImmediatePropagation();} try{ setMsg('登入中...', true); var u=usernameInput(), p=passwordInput(); var body=await loginApi(u&&u.value,p&&p.value); localStorage.setItem(LS_SESSION,body.token); localStorage.removeItem(LS_LOGOUT); var r=rememberInput(); if(!r||r.checked)localStorage.setItem(LS_SAVED_USER,String((u&&u.value)||'').trim());else localStorage.removeItem(LS_SAVED_USER); showAuthed({current_account_id:body.account_id}); location.replace(dashboardUrl(body.token)); }catch(e){ showLogin(e.message||'登入失敗'); toast(e.message||'登入失敗', false); } }
   function isPasskey(el){ return /通行密鑰|passkey/i.test(String((el&&(el.textContent||el.value||el.id))||'')); }
   function isLoginButton(el){ var b=el&&el.closest&&el.closest('button,input[type="submit"],a'); if(!b||isPasskey(b))return false; var id=b.id||'', text=String(b.textContent||b.value||'').trim(); return id==='loginBtn'||id==='login'||id==='loginButton'||text==='登入'||text==='登入我的頁面'; }
   function bind(){ fillSaved(); document.addEventListener('click',function(ev){ if(isLoginButton(ev.target)) doLogin(ev); },true); document.addEventListener('submit',function(ev){ var f=ev.target; if(f&&f.querySelector&&f.querySelector('input[type="password"]'))doLogin(ev); },true); document.addEventListener('keydown',function(ev){ if(ev.key==='Enter'&&ev.target&&ev.target.matches&&ev.target.matches('input[type="password"],#loginPassword,#loginPass'))doLogin(ev); },true); document.addEventListener('click',function(ev){ var b=ev.target&&ev.target.closest&&ev.target.closest('button,a'); if(b&&(b.id==='logoutBtn'||b.id==='dashboardLogout'||(b.textContent||'').trim()==='登出')){ev.preventDefault();ev.stopImmediatePropagation();logout();}},true); verify(); }

@@ -1,9 +1,9 @@
 /* SESSION_SECURITY_HARDENING_V1
  *
- * Transitional browser hardening for the legacy static Admin Web. The backend
+ * Browser migration and defense-in-depth for the static Admin Web. The backend
  * returns the non-secret marker "cookie" while the real random session stays in
- * an HttpOnly cookie. This script prevents legacy patches from saving either a
- * password or an actual session token in Web Storage.
+ * an HttpOnly cookie. Historical Web Storage secrets are removed on startup, and
+ * regressions that try to persist credentials or real session tokens are blocked.
  */
 (function () {
   'use strict';
@@ -36,9 +36,9 @@
 
   clearLegacySecrets();
 
-  // Legacy inline scripts still try to save `tronclass_admin_saved_login` and,
-  // after a login, `tronclass_admin_session`. Block those writes at their common
-  // storage API rather than relying on every historical patch being removed.
+  // Source login handlers persist usernames only. Keep this interceptor as a
+  // defense-in-depth regression guard and to prevent stale/third-party code from
+  // restoring historical credential or real-session-token storage behavior.
   try {
     var originalSetItem = Storage.prototype.setItem;
     Storage.prototype.setItem = function (key, value) {

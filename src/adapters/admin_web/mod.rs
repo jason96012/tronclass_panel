@@ -842,10 +842,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/session-security.js",
             get(admin_session_security_js_handler),
         )
-        .route(
-            "/admin/static/timetable-ux.js",
-            get(admin_timetable_ux_js_handler),
-        )
         .route("/admin/static/core-api.js", get(admin_core_api_js_handler))
         .route("/admin/static/web-push.js", get(admin_web_push_js_handler))
         .route(
@@ -2656,13 +2652,6 @@ async fn admin_session_security_js_handler() -> Response {
     admin_static_asset(
         "application/javascript; charset=utf-8",
         pages::SESSION_SECURITY_JS,
-    )
-}
-
-async fn admin_timetable_ux_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::TIMETABLE_UX_JS,
     )
 }
 
