@@ -83,8 +83,9 @@ self.addEventListener('push', event => {
       tag: String(payload.tag || 'tronclass-rollcall'),
       renotify: true,
       requireInteraction: true,
-      silent: false,
-      vibrate: [220, 100, 220],
+      // Let iOS apply the PWA's system notification sound setting. Explicit
+      // silent/vibrate options have had inconsistent WebKit behavior, while
+      // the platform default follows 設定 → 通知 → Tronclass → 聲音.
       data: { url: target }
     });
   })());
