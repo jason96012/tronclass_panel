@@ -5034,23 +5034,6 @@ html.dash-role-user a[href^="/admin/blacklist?"]{
 }
 </style>
 
-<!-- FILEBROWSER_READY_REDIRECT_V1 -->
-<style id="filebrowserReadyStyleV1">
-#filebrowserReady{position:fixed;inset:0;z-index:10060;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(15,23,42,.38);backdrop-filter:blur(5px)}#filebrowserReady.visible{display:flex}#filebrowserReady .fbr-card{width:min(100%,410px);padding:24px;border:1px solid var(--line,#dbe3ef);border-radius:22px;background:var(--card,#fff);box-shadow:0 24px 65px rgba(15,23,42,.3)}#filebrowserReady .fbr-row{display:flex;align-items:center;gap:13px}#filebrowserReady .fbr-spin{width:28px;height:28px;border:3px solid rgba(37,99,235,.18);border-top-color:#2563eb;border-radius:50%;animation:fbrSpin .8s linear infinite}#filebrowserReady h2{margin:0;font-size:19px}#filebrowserReady p{margin:12px 0 0;color:var(--muted,#64748b);font-size:14px;line-height:1.6}#filebrowserReady .fbr-actions{display:none;gap:8px;margin-top:18px}#filebrowserReady.failed .fbr-actions{display:flex}#filebrowserReady .fbr-actions button{min-height:40px;border-radius:11px;padding:0 13px;font-weight:800}@keyframes fbrSpin{to{transform:rotate(360deg)}}
-</style>
-<div id="filebrowserReady" role="dialog" aria-modal="true" aria-labelledby="filebrowserReadyTitle"><div class="fbr-card"><div class="fbr-row"><span class="fbr-spin" aria-hidden="true"></span><h2 id="filebrowserReadyTitle">正在開啟雲端硬碟</h2></div><p id="filebrowserReadyText">正在確認檔案服務與安全登入狀態…</p><div class="fbr-actions"><button id="filebrowserReadyRetry" type="button">重新檢查</button><button id="filebrowserReadyClose" class="secondary" type="button">取消</button></div></div></div>
-<script id="filebrowserReadyScriptV1">
-(function(){'use strict';
-  if(window.FILEBROWSER_READY_REDIRECT_V1)return;window.FILEBROWSER_READY_REDIRECT_V1=true;
-  var modal=document.getElementById('filebrowserReady'),text=document.getElementById('filebrowserReadyText'),retry=document.getElementById('filebrowserReadyRetry'),close=document.getElementById('filebrowserReadyClose'),running=false,timer=null;
-  if(!modal||!text)return;
-  function show(message,failed){modal.classList.add('visible');modal.classList.toggle('failed',!!failed);text.textContent=message;}
-  function hide(){running=false;if(timer)clearTimeout(timer);timer=null;modal.classList.remove('visible','failed');}
-  function openFiles(){if(running)return;running=true;var attempt=0,maxAttempts=8;show('正在確認檔案服務與安全登入狀態…',false);function check(){attempt++;fetch('/admin/api/filebrowser/ready',{credentials:'same-origin',cache:'no-store'}).then(function(r){return r.json().catch(function(){return {}}).then(function(body){if(!r.ok)throw body;return body;});}).then(function(body){if(body&&body.ready&&body.url){location.assign(body.url);return;}throw body||{};}).catch(function(){if(!running)return;if(attempt<maxAttempts){show('雲端硬碟正在啟動，將自動重新檢查（'+attempt+'/'+maxAttempts+'）…',false);timer=setTimeout(check,1000);}else{running=false;show('目前無法連線到雲端硬碟。請稍候後重新檢查。',true);}});}check();}
-  document.addEventListener('click',function(ev){var target=ev.target&&ev.target.closest&&ev.target.closest('#filesLink,#mFiles,#moreDriveFinalV2,a[href="/admin/files"]');if(!target)return;ev.preventDefault();ev.stopPropagation();if(ev.stopImmediatePropagation)ev.stopImmediatePropagation();openFiles();},true);
-  retry&&retry.addEventListener('click',openFiles);close&&close.addEventListener('click',hide);modal.addEventListener('click',function(ev){if(ev.target===modal)hide();});
-})();
-</script>
 <style id="detectionScheduleDesktopNavStyle">
 .detection-schedule-desktop-link{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:40px;padding:0 14px;border:1px solid var(--line,#d8dee8);border-radius:999px;background:var(--card,#fff);color:var(--text,#172033);text-decoration:none;font:inherit;font-weight:760;white-space:nowrap;cursor:pointer}@media(max-width:760px){.detection-schedule-desktop-link{display:none!important}}
 </style>
@@ -5074,5 +5057,58 @@ html.dash-role-user a[href^="/admin/blacklist?"]{
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<!-- LOGIN_FORM_VISUAL_RECOVERY_V1 -->
+<style id="loginFormVisualRecoveryV1">
+html.tron-auth-logged-out body #loginCard,
+html.tron-auth-logged-out body #loginPanel,
+html.tron-auth-logged-out body .login-card,
+body.animated-login-active #loginCard,
+body.animated-login-active #loginPanel,
+body.animated-login-active .login-card{opacity:1!important;filter:none!important;pointer-events:auto!important}
+/* iOS autofill can update values without firing input, so labels must never
+   overlap restored account/password text. */
+html.tron-auth-logged-out .animated-login-field label,
+body.animated-login-active .animated-login-field label{top:7px!important;font-size:11px!important;font-weight:900!important;color:#2563eb!important}
+html.tron-auth-logged-out .animated-login-field input,
+body.animated-login-active .animated-login-field input{opacity:1!important;filter:none!important;pointer-events:auto!important}
+@media(prefers-color-scheme:dark){
+  html.tron-auth-logged-out body #loginCard,
+  html.tron-auth-logged-out body #loginPanel,
+  html.tron-auth-logged-out body .login-card,
+  body.animated-login-active #loginCard,
+  body.animated-login-active #loginPanel,
+  body.animated-login-active .login-card{background:rgba(15,23,42,.92)!important;color:#e5eefb!important;box-shadow:0 30px 90px rgba(0,0,0,.42)!important}
+  .animated-login-card-inner{color:#e5eefb!important}
+  .animated-login-logo{background:rgba(96,165,250,.16)!important;color:#93c5fd!important}
+  .animated-login-header p,.animated-login-options label,.animated-secure-note{color:#94a3b8!important}
+  html.tron-auth-logged-out .animated-login-field label,
+  body.animated-login-active .animated-login-field label{color:#93c5fd!important}
+  html.tron-auth-logged-out .animated-login-field input,
+  body.animated-login-active .animated-login-field input{background:#172238!important;border-color:rgba(148,163,184,.30)!important;color:#f1f5f9!important;-webkit-text-fill-color:#f1f5f9!important}
+  html.tron-auth-logged-out .animated-login-field input:-webkit-autofill,
+  body.animated-login-active .animated-login-field input:-webkit-autofill{-webkit-box-shadow:0 0 0 1000px #172238 inset!important;-webkit-text-fill-color:#f1f5f9!important;caret-color:#f1f5f9!important}
+  .animated-passkey-btn{background:#172238!important;color:#e5eefb!important;border-color:rgba(148,163,184,.28)!important}
+  .animated-login-chip{background:rgba(15,23,42,.64)!important;border-color:rgba(148,163,184,.22)!important;color:#cbd5e1!important}
+}
+</style>
+<script id="loginFormVisualRecoveryScriptV1">
+(function(){
+  'use strict';
+  if(window.LOGIN_FORM_VISUAL_RECOVERY_V1)return;
+  window.LOGIN_FORM_VISUAL_RECOVERY_V1=true;
+  function recover(){
+    var loggedOut=document.documentElement.classList.contains('tron-auth-logged-out')||window.__tronAuthState==='out';
+    if(!loggedOut)return;
+    if(document.body)document.body.classList.add('animated-login-active');
+    ['loginUsername','loginPassword','loginBtn','passkeyLoginBtn','toggleLoginPassword'].forEach(function(id){var el=document.getElementById(id);if(el)el.disabled=false});
+    var login=document.getElementById('loginBtn');if(login)login.textContent='登入';
+    document.querySelectorAll('.animated-login-field').forEach(function(field){field.classList.add('active')});
+  }
+  window.addEventListener('tronclass:auth-state',function(event){if(event&&event.detail==='out')recover()});
+  window.addEventListener('pageshow',recover,{passive:true});
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)recover()},{passive:true});
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',recover);else recover();
+}());
+</script>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a31277654bab4a52',t:'MTc4Nzc0MzQyNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
