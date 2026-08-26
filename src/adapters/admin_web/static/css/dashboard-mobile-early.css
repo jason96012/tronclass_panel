@@ -1,0 +1,90 @@
+/* DASHBOARD_CSS_CLEANUP_PHASE3A
+ * Low-risk layout/mobile extraction. Authentication, login, and first-paint
+ * rules intentionally remain inline in dashboard.html.
+ */
+
+/* MORE_DEAD_BUTTONS_CSS_V1 */
+@media (max-width:820px){
+    #mobileMoreFinalV2.visible{
+      display:flex!important;
+      visibility:visible!important;
+      pointer-events:auto!important;
+    }
+    #mobileMoreFinalV2.visible,
+    #mobileMoreFinalV2.visible *{
+      pointer-events:auto!important;
+    }
+    #dashPwOverlay.visible,#passkeyTapOverlay.visible,
+    #changePasswordModal.visible,#changePasswordModal.cp-modal.visible{
+      display:flex!important;
+      visibility:visible!important;
+      pointer-events:auto!important;
+      z-index:2147483646!important;
+    }
+  }
+
+/* PASSKEY_MORE_TAP_CSS_V2 */
+#passkeyTapOverlay{
+    display:none;position:fixed;inset:0;z-index:2147483646;
+    align-items:flex-end;justify-content:center;
+    padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px));
+    background:rgba(15,23,42,.45);
+  }
+  #passkeyTapOverlay.visible{display:flex!important}
+  #passkeyTapOverlay .pk-card{
+    width:min(440px,100%);background:#fff;color:#172033;
+    border-radius:22px;padding:20px 18px 16px;
+    box-shadow:0 24px 70px rgba(15,23,42,.32);
+  }
+  #passkeyTapOverlay h3{margin:0 0 8px;font-size:18px;font-weight:900}
+  #passkeyTapOverlay p{margin:0 0 14px;font-size:14px;line-height:1.55;color:#475569;font-weight:650}
+  #passkeyTapOverlay .pk-actions{display:flex;gap:8px}
+  #passkeyTapOverlay button{
+    flex:1;min-height:46px;border:0;border-radius:14px;font-size:15px;font-weight:850;cursor:pointer
+  }
+  #passkeyTapOverlay #pkTapGo{background:#2563eb;color:#fff}
+  #passkeyTapOverlay #pkTapClose{background:#e2e8f0;color:#0f172a}
+  #toast{z-index:2147483647!important}
+  @media(prefers-color-scheme:dark){
+    #passkeyTapOverlay .pk-card{background:#131b2a;color:#f1f5f9}
+    #passkeyTapOverlay p{color:#94a3b8}
+    #passkeyTapOverlay #pkTapClose{background:#24324a;color:#f1f5f9}
+  }
+
+/* PASSWORD_MORE_TAP_CSS_V2 */
+#dashPwOverlay{
+    display:none;position:fixed;inset:0;z-index:2147483646;
+    align-items:flex-end;justify-content:center;
+    padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px));
+    background:rgba(15,23,42,.5);
+  }
+  #dashPwOverlay.visible{display:flex!important}
+  #dashPwOverlay .pw-card{
+    width:min(440px,100%);background:#fff;color:#172033;
+    border-radius:22px;padding:20px 18px 16px;
+    box-shadow:0 24px 70px rgba(15,23,42,.32);
+    max-height:min(86dvh,640px);overflow:auto;
+  }
+  #dashPwOverlay h3{margin:0 0 6px;font-size:18px;font-weight:900}
+  #dashPwOverlay .pw-hint{margin:0 0 10px;font-size:12px;color:#64748b;font-weight:700}
+  #dashPwOverlay label{display:block;font-size:12px;font-weight:800;color:#64748b;margin:10px 0 6px}
+  #dashPwOverlay input{
+    width:100%;min-height:46px;border-radius:14px;border:1px solid #dbe3ef;
+    background:#f8fafc;color:#172033;padding:0 12px;font-size:16px;box-sizing:border-box;
+  }
+  #dashPwOverlay .pw-msg{min-height:18px;margin-top:10px;font-size:13px;font-weight:800;color:#64748b}
+  #dashPwOverlay .pw-msg.bad{color:#b91c1c}
+  #dashPwOverlay .pw-msg.ok{color:#15803d}
+  #dashPwOverlay .pw-actions{display:flex;gap:8px;margin-top:14px}
+  #dashPwOverlay .pw-actions button{
+    flex:1;min-height:46px;border:0;border-radius:14px;font-size:15px;font-weight:850;cursor:pointer
+  }
+  #dashPwOverlay #dashPwCancel{background:#e2e8f0;color:#0f172a}
+  #dashPwOverlay #dashPwSave{background:#2563eb;color:#fff}
+  @media(min-width:821px){#dashPwOverlay{align-items:center}}
+  @media(prefers-color-scheme:dark){
+    #dashPwOverlay .pw-card{background:#131b2a;color:#f1f5f9}
+    #dashPwOverlay .pw-hint,#dashPwOverlay label{color:#94a3b8}
+    #dashPwOverlay input{background:#1c2638;border-color:#334155;color:#f1f5f9}
+    #dashPwOverlay #dashPwCancel{background:#24324a;color:#f1f5f9}
+  }

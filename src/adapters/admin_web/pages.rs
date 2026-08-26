@@ -59,6 +59,12 @@ pub(super) const DASHBOARD_MOBILE_CSS: &str = include_str!("static/css/dashboard
 pub(super) const DASHBOARD_COMPONENTS_CSS: &str =
     include_str!("static/css/dashboard-components.css");
 pub(super) const DASHBOARD_ACCESS_CSS: &str = include_str!("static/css/dashboard-access.css");
+// DASHBOARD_CSS_CLEANUP_PHASE3A
+pub(super) const DASHBOARD_MOBILE_EARLY_CSS: &str =
+    include_str!("static/css/dashboard-mobile-early.css");
+pub(super) const DASHBOARD_LAYOUT_CSS: &str = include_str!("static/css/dashboard-layout.css");
+// DASHBOARD_GLASS_COMPONENTS_PHASE3B
+pub(super) const DASHBOARD_GLASS_CSS: &str = include_str!("static/css/dashboard-glass.css");
 pub(super) const DASHBOARD_RUNTIME_JS: &str = include_str!("static/js/dashboard-runtime.js");
 pub(super) const DASHBOARD_FEATURES_JS: &str = include_str!("static/js/dashboard-modules.js");
 
