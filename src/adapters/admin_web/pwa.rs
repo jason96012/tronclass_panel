@@ -53,7 +53,7 @@ pub(super) async fn service_worker_handler() -> Response {
     const SW: &str = r#"
 // Tronclass PWA service worker FAST_PAGE_LOAD_V1.
 // Only /admin/static/* is cached. HTML and /admin/api/* always hit the network.
-const STATIC_CACHE = 'tron-static-v20260825authfix';
+const STATIC_CACHE = 'tron-static-v20260826resumeauth';
 self.addEventListener('install', event => {
   self.skipWaiting();
 });

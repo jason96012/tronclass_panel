@@ -14,6 +14,11 @@
   var LEGACY_PASSWORD_KEY = 'tronclass_admin_saved_login';
   var SESSION_MARKER = 'cookie';
   var forcedPasswordChange = false;
+  // Capture the original fetch before Dashboard patches install status caches.
+  // Resume validation must always reach the restarted server.
+  var nativeFetch = window.fetch.bind(window);
+  var resumeValidation = null;
+  var lastResumeValidationAt = 0;
 
   function storageItems() {
     var out = [];
@@ -277,8 +282,73 @@
     }
   }
 
+  function showExpiredLogin() {
+    clearSessionMarker();
+    try { sessionStorage.removeItem('tron_fast_ok'); } catch (_) {}
+    if (typeof window.__tronAuthSetState === 'function') {
+      window.__tronAuthSetState('out');
+    } else {
+      document.documentElement.classList.remove('tron-auth-ok', 'dash-auth-ok', 'tron-auth-pending');
+      document.documentElement.classList.add('tron-auth-logged-out');
+      if (document.body) document.body.classList.remove('logged-in', 'auth-ok', 'dash-auth-ok');
+    }
+    var message = document.getElementById('loginMsg') || document.getElementById('msg');
+    if (message) message.textContent = '伺服器已重新啟動，請重新登入。';
+    // Pages without an embedded login card must return to the login page.
+    if (!document.getElementById('loginCard') && !document.getElementById('animatedLoginForm')) {
+      var next = location.pathname + location.search + location.hash;
+      var target = new URL('/admin', location.origin);
+      if (next !== '/admin' && next !== '/admin/') target.searchParams.set('next', next);
+      target.searchParams.set('v', 'sessionexpired' + Date.now());
+      location.replace(target.pathname + target.search);
+    }
+  }
+
+  function validateSessionAfterResume() {
+    if (document.hidden) return Promise.resolve();
+    var authenticated = window.__tronAuthState === 'ok' ||
+      !!(document.body && document.body.classList.contains('logged-in'));
+    if (!authenticated) return Promise.resolve();
+    var now = Date.now();
+    if (resumeValidation) return resumeValidation;
+    if (now - lastResumeValidationAt < 1000) return Promise.resolve();
+    lastResumeValidationAt = now;
+    var previousState = window.__tronAuthState || 'ok';
+    if (typeof window.__tronAuthSetState === 'function') window.__tronAuthSetState('pending');
+    resumeValidation = nativeFetch('/admin/api/status?include_history=false&resume=' + now, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Accept': 'application/json' }
+    }).then(function (response) {
+      if (response.status === 401 || response.status === 403) {
+        showExpiredLogin();
+        return;
+      }
+      if (response.ok && typeof window.__tronAuthSetState === 'function') {
+        window.__tronAuthSetState('ok');
+      } else if (!response.ok && typeof window.__tronAuthSetState === 'function') {
+        window.__tronAuthSetState(previousState);
+      }
+    }).catch(function () {
+      // A temporary network outage is not proof that the session expired.
+      if (typeof window.__tronAuthSetState === 'function') window.__tronAuthSetState(previousState);
+    }).finally(function () {
+      resumeValidation = null;
+    });
+    return resumeValidation;
+  }
+
+  function installResumeSessionValidation() {
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) validateSessionAfterResume();
+    }, { passive: true });
+    window.addEventListener('pageshow', validateSessionAfterResume, { passive: true });
+    window.addEventListener('focus', validateSessionAfterResume, { passive: true });
+  }
+
   function boot() {
     clearLegacySecrets();
+    installResumeSessionValidation();
     relabelLegacyRememberCheckbox();
     ensurePasswordButton();
     enforceFirstLoginPasswordChange();

@@ -117,8 +117,8 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
         r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
-        r#"<link rel="preload" href="/admin/static/session-security.js?v=20260821fast" as="script">"#,
-        r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260821fast"></script>"#,
+        r#"<link rel="preload" href="/admin/static/session-security.js?v=20260826resumeauth" as="script">"#,
+        r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260826resumeauth"></script>"#,
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
         r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#
     );
