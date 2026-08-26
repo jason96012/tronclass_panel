@@ -3496,7 +3496,7 @@ window.setTimeout(function(){
 
 <!-- DASHBOARD_DESKTOP_NAV_MAINTENANCE_FIX_V1_START -->
 <!-- MAINTENANCE_COMPONENTS_CSS_PHASE3B4: dashboardDesktopNavMaintenanceFixStyleV1 -->
-<link rel="stylesheet" href="/admin/static/maintenance-components.css?v=20260822b" data-dashboard-style="maintenance-phase3b4">
+<link rel="stylesheet" href="/admin/static/maintenance-components.css?v=20260826c" data-dashboard-style="maintenance-phase3b4">
 <!-- MAINTENANCE_IMPLEMENTATION_PHASE4A5 -->
 <script async fetchpriority="low" src="/admin/static/maintenance-implementation.js?v=20260822b" data-dashboard-module="maintenance-implementation"></script>
 <!-- DASHBOARD_DESKTOP_NAV_MAINTENANCE_FIX_V1_END -->
@@ -3686,7 +3686,7 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 <!-- MOVE_DISCORD_NOTIFY_TO_TAB_V2_START -->
 <!-- MAINTENANCE_COMPONENTS_CSS_PHASE3B4: moveDiscordNotifyToTabStyleV2 -->
 <!-- NOTIFICATIONS_MODULE_AFTER_READY_PHASE4C2 -->
-<script async fetchpriority="low" src="/admin/static/notifications.js?v=20260822b" data-dashboard-module="notifications-phase4c2"></script>
+<script async fetchpriority="low" src="/admin/static/notifications.js?v=20260826c" data-dashboard-module="notifications-phase4c2"></script>
 <!-- MOVE_DISCORD_NOTIFY_TO_TAB_V2_END -->
 
 
@@ -5080,31 +5080,41 @@ html.dash-role-user a[href^="/admin/blacklist?"]{
 /* The shared glass-card override used a light surface in dark mode, while this
    asynchronously inserted panel inherited dark-mode muted text. Keep the
    account label and current-account status readable on iPhone and desktop. */
-#classReminderPanel .class-reminder-side{
+#classReminderPanel .class-reminder-side,
+#view-notifications .notify-side-card{
   color:var(--text,#172033)!important;
 }
-#classReminderPanel .class-reminder-side > label{
+#classReminderPanel .class-reminder-side > label,
+#view-notifications .notify-side-card > label{
   color:var(--text,#172033)!important;
   opacity:1!important;
 }
 @media(prefers-color-scheme:dark){
-  #classReminderPanel .class-reminder-side{
+  #classReminderPanel .class-reminder-side,
+  #view-notifications .notify-side-card{
     background:rgba(30,41,59,.92)!important;
     border-color:rgba(148,163,184,.24)!important;
     color:#f1f5f9!important;
   }
-  #classReminderPanel .class-reminder-side > label{
+  #classReminderPanel .class-reminder-side > label,
+  #view-notifications .notify-side-card > label{
     color:#e2e8f0!important;
   }
-  #classReminderPanel #classReminderInfo{
+  #classReminderPanel #classReminderInfo,
+  #view-notifications #notifyInfo{
     color:#cbd5e1!important;
     opacity:1!important;
   }
-  #classReminderPanel #classReminderAccount{
+  #classReminderPanel #classReminderAccount,
+  #view-notifications #notifyAccount{
     background:#172238!important;
     border-color:rgba(148,163,184,.32)!important;
     color:#f8fafc!important;
     -webkit-text-fill-color:#f8fafc!important;
+  }
+  #view-notifications .notify-badge{
+    color:#cbd5e1!important;
+    border-color:rgba(148,163,184,.28)!important;
   }
 }
 </style>
@@ -5177,5 +5187,5 @@ html body .animated-login-card-inner .animated-login-field > input{
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',recover);else recover();
 }());
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a312e4327b33840f',t:'MTc4Nzc0Nzg4Mw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a312ef1f5da7a9cb',t:'MTc4Nzc0ODMzMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>

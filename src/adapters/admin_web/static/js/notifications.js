@@ -117,14 +117,14 @@
             '<div id="notifyInfo" class="small" style="margin-top:8px">載入中...</div>'+
             '<div class="notify-badge" style="margin-top:10px">Discord 通知</div>'+
           '</aside>'+
-          '<main>'+
+          '<div class="notify-main-card">'+
             '<div id="notifyList" class="notify-pref-list"><div class="small">載入中...</div></div>'+
             '<div class="notify-actions">'+
               '<button id="notifySave" type="button">儲存通知設定</button>'+
               '<button id="notifyAllOn" class="secondary" type="button">全部開啟</button>'+
               '<button id="notifyAllOff" class="secondary" type="button">全部關閉</button>'+
             '</div>'+
-          '</main>'+
+          '</div>'+
         '</div>'+
         '<section class="panel" id="rollcallSoundSettings" style="margin-top:14px">'+
           '<div class="toolbar"><div><h2>即時點名提示音</h2><div class="small">偵測到新點名時播放提示音。設定只儲存在目前這台裝置與瀏覽器。</div></div></div>'+

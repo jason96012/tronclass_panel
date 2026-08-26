@@ -68,6 +68,7 @@
 /* 只讓 Discord 通知設定出現在 Dashboard 的「通知」分頁，不再散落在總覽/設定。 */
   #view-notifications .notify-page-panel{overflow:hidden}
   .notify-panel-grid{display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start}
+  .notify-main-card{min-width:0;align-self:start}
   .notify-side-card{border:1px solid var(--line2,var(--line,#d8dee8));border-radius:16px;background:var(--soft,var(--surface2,#f8fafc));padding:12px}
   .notify-account-select{width:100%;min-height:42px;border:1px solid var(--line,#d8dee8);border-radius:12px;padding:0 10px;background:var(--card,var(--surface,#fff));color:var(--text,#172033);font-weight:760}
   .notify-pref-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
