@@ -2,6 +2,9 @@
 <html lang="zh-Hant" class="tron-auth-pending">
 <head>
 <link rel="preload" href="/admin/static/dashboard-late-fixes.css?v=20260826a" as="style">
+<link rel="preload" href="/admin/static/dashboard-mobile.css?v=20260826b" as="style">
+<link rel="preload" href="/admin/static/dashboard-components.css?v=20260826b" as="style">
+<link rel="preload" href="/admin/static/dashboard-access.css?v=20260826b" as="style">
 <script id="MOBILE_FAST_RETURN_V1">
 (function(){
   try{
@@ -2881,50 +2884,8 @@ hr, .divider{
 <!-- MOBILE_HEADER_TO_MORE_V1_END -->
 
 <!-- MOBILE_ACCOUNT_ACTIONS_V1_START -->
-<style id="MOBILE_ACCOUNT_ACTIONS_V1">
-  @media (max-width:820px){
-    #view-accounts .table-wrap,
-    #view-accounts table{
-      min-width:0!important;width:100%!important;max-width:100%!important;
-      display:block!important;overflow:visible!important;
-    }
-    #view-accounts thead{display:none!important}
-    #view-accounts tbody,#accountsBody{
-      display:flex!important;flex-direction:column!important;
-      gap:14px!important;width:100%!important;
-    }
-    #accountsBody tr{
-      display:flex!important;flex-direction:column!important;
-      width:100%!important;max-width:100%!important;
-      box-sizing:border-box!important;overflow:hidden!important;
-      padding:16px 14px 16px!important;gap:8px!important;border-radius:18px!important;
-    }
-    #accountsBody td{
-      display:flex!important;width:100%!important;max-width:100%!important;
-      box-sizing:border-box!important;min-width:0!important;
-    }
-    #accountsBody td:last-child{
-      display:block!important;width:100%!important;max-width:100%!important;
-      margin:0!important;padding:10px 0 0!important;
-      border-top:1px solid var(--line2,#e2e8f0)!important;
-    }
-    #accountsBody .actions-cell{
-      display:grid!important;
-      grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
-      gap:10px!important;width:100%!important;max-width:100%!important;
-      box-sizing:border-box!important;margin:0!important;padding:0!important;
-    }
-    #accountsBody .actions-cell button,
-    #accountsBody td:last-child button{
-      width:100%!important;max-width:100%!important;min-width:0!important;
-      min-height:46px!important;height:46px!important;padding:0 8px!important;
-      font-size:14px!important;font-weight:800!important;white-space:nowrap!important;
-      border-radius:14px!important;justify-content:center!important;
-      box-sizing:border-box!important;grid-column:auto!important;
-    }
-    #accountsBody .actions-cell button[data-action="force"]{grid-column:1/-1!important}
-  }
-</style>
+<!-- DASHBOARD_CSS_PHASE2: dashboard-mobile.css -->
+<link rel="stylesheet" href="/admin/static/dashboard-mobile.css?v=20260826b" data-dashboard-style="css-phase2-dashboard-mobile">
 <!-- MOBILE_ACCOUNT_ACTIONS_V1_END -->
 
 
@@ -2996,32 +2957,7 @@ hr, .divider{
 <!-- MORE_PASSKEY_PASSWORD_FORCE_V1_END -->
 
 <!-- MORE_ACTIONS_CLICK_V1_START -->
-<style id="MORE_ACTIONS_CLICK_CSS_V1">
-  #changePasswordModal.cp-modal,#changePasswordModal{
-    position:fixed!important;inset:0!important;z-index:2147483646!important;
-    display:none;align-items:flex-end;justify-content:center;
-    padding:12px 12px calc(20px + env(safe-area-inset-bottom,0px));
-    background:rgba(15,23,42,.5)!important;
-  }
-  #changePasswordModal.cp-modal.visible,#changePasswordModal.visible{display:flex!important}
-  #changePasswordModal .cp-card{
-    width:min(440px,100%);background:var(--card,#fff);color:var(--text,#172033);
-    border:1px solid var(--line,#dbe3ef);border-radius:22px;padding:18px 16px 14px;
-    box-shadow:0 24px 70px rgba(15,23,42,.32);
-  }
-  #changePasswordModal h3{margin:0 0 12px;font-size:18px;font-weight:900}
-  #changePasswordModal label{display:block;font-size:12px;font-weight:800;color:var(--muted,#64748b);margin:10px 0 6px}
-  #changePasswordModal input{
-    width:100%;min-height:46px;border-radius:14px;border:1px solid var(--line,#dbe3ef);
-    background:var(--soft,#f8fafc);color:var(--text,#172033);padding:0 12px;font-size:16px;box-sizing:border-box;
-  }
-  #changePasswordModal .cp-actions{display:flex;gap:8px;margin-top:16px}
-  #changePasswordModal .cp-actions button{flex:1;min-height:44px;border-radius:14px}
-  #changePasswordModal #cpMsg{min-height:18px;margin-top:8px;font-size:13px;font-weight:800;color:var(--muted,#64748b)}
-  #changePasswordModal #cpMsg.bad{color:#b91c1c}
-  #changePasswordModal #cpMsg.ok{color:#15803d}
-  @media(min-width:821px){#changePasswordModal.cp-modal,#changePasswordModal{align-items:center}}
-</style>
+<!-- MORE_ACTIONS_CLICK_CSS_V1 moved to static/css/dashboard-mobile.css -->
 <script id="MORE_ACTIONS_CLICK_V1">
 (function(){
   if(window.MORE_ACTIONS_CLICK_V1) return;
@@ -4382,50 +4318,8 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 
 
 <!-- TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1_START -->
-<style id="timetableCourseRollcallHistoryLinkStyleV1">
-  .tt-course-history-link{
-    display:inline-flex;
-    align-items:center;
-    gap:6px;
-    border:0;
-    background:transparent;
-    color:var(--primary,#2563eb);
-    font:inherit;
-    font-weight:950;
-    padding:0;
-    min-height:0;
-    border-radius:0;
-    cursor:pointer;
-    text-decoration:underline;
-    text-underline-offset:3px;
-  }
-  .tt-course-history-link:hover{filter:brightness(.9)}
-  .tt-course-history-link::after{content:'點名紀錄';font-size:11px;font-weight:900;color:var(--muted,#667085);text-decoration:none;border:1px solid var(--line,#dbe3ef);border-radius:999px;padding:2px 6px;background:var(--soft,#eef3fb)}
-  .tt-history-modal-backdrop{position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.42);padding:18px;backdrop-filter:blur(4px)}
-  .tt-history-modal-backdrop.visible{display:flex}
-  .tt-history-modal{width:min(720px,100%);max-height:min(82vh,720px);overflow:auto;background:var(--card,#fff);border:1px solid var(--line,#dbe3ef);border-radius:24px;box-shadow:0 24px 80px rgba(15,23,42,.28);padding:18px;color:var(--text,#172033)}
-  .tt-history-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
-  .tt-history-modal h2{margin:0;font-size:22px;font-weight:950;letter-spacing:-.02em}
-  .tt-history-close{min-height:38px;border-radius:999px;border:1px solid var(--line,#dbe3ef);background:var(--soft,#eef3fb);color:var(--text,#172033);font-weight:950;padding:0 12px;cursor:pointer}
-  .tt-history-meta{font-size:13px;color:var(--muted,#667085);line-height:1.5;margin-top:4px}
-  .tt-history-list{display:grid;gap:10px;margin-top:12px}
-  .tt-history-item{border:1px solid var(--line,#dbe3ef);border-radius:16px;background:var(--soft2,#f8fafc);padding:12px}
-  .tt-history-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;font-weight:950}
-  .tt-history-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 9px;font-size:12px;font-weight:950;background:var(--soft,#eef3fb);color:var(--muted,#667085);white-space:nowrap}
-  .tt-history-pill.ok{background:#dcfce7;color:#166534}.tt-history-pill.bad{background:#fee2e2;color:#991b1b}
-  .tt-history-detail{font-size:13px;color:var(--muted,#667085);line-height:1.55;margin-top:6px;white-space:pre-wrap;word-break:break-word}
-  .tt-history-empty{border:1px dashed var(--line,#dbe3ef);border-radius:16px;background:var(--soft2,#f8fafc);padding:16px;text-align:center;color:var(--muted,#667085);line-height:1.55}
-  .tt-history-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-  .tt-history-actions a,.tt-history-actions button{min-height:40px;border-radius:14px;border:1px solid var(--line,#dbe3ef);background:var(--soft,#eef3fb);color:var(--text,#172033);font-weight:950;padding:0 12px;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
-  @media(max-width:760px){
-    .tt-course-history-link{display:inline;line-height:1.45}
-    .tt-course-history-link::after{display:inline-flex;margin-left:6px}
-    .tt-history-modal-backdrop{align-items:flex-end;padding:10px}
-    .tt-history-modal{border-radius:24px 24px 18px 18px;max-height:86vh;padding:16px}
-    .tt-history-modal h2{font-size:20px}
-    .tt-history-actions{display:grid;grid-template-columns:1fr}.tt-history-actions a,.tt-history-actions button{width:100%}
-  }
-</style>
+<!-- DASHBOARD_CSS_PHASE2: dashboard-components.css -->
+<link rel="stylesheet" href="/admin/static/dashboard-components.css?v=20260826b" data-dashboard-style="css-phase2-dashboard-components">
 <!-- TIMETABLE_UI_MODULE_PHASE4B: timetableCourseRollcallHistoryLinkScriptV1 moved to timetable.js -->
 <!-- TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1_END -->
 
@@ -4477,21 +4371,7 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 
 
 
-<style id="MORE_BUTTONS_NOW_CSS_V1">
-  html body #mobileMoreFinalV2.visible,
-  html body #mobileMoreFinalV2.visible *{
-    pointer-events:auto!important;
-    visibility:visible!important;
-  }
-  html body #mobileMoreFinalV2.visible{display:flex!important;z-index:2147483000!important}
-  html body #tronMorePwNow{
-    display:none;position:fixed;inset:0;z-index:2147483647;
-    align-items:flex-end;justify-content:center;
-    padding:16px 16px calc(22px + env(safe-area-inset-bottom,0px));
-    background:rgba(15,23,42,.55);
-  }
-  html body #tronMorePwNow.on{display:flex!important}
-</style>
+<!-- MORE_BUTTONS_NOW_CSS_V1 moved to static/css/dashboard-mobile.css -->
 <script id="MORE_BUTTONS_NOW_V1">
 (function(){
   if(window.MORE_BUTTONS_NOW_V1) return;
@@ -4623,17 +4503,7 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 })();
 </script>
 
-<style id="MORE_MOBILE_LINKS_CSS_V1">
-  @media (max-width:820px){
-    #morePasskeyFinalV2,#moreChangePasswordFinalV2,#mPasskey,#mChangePassword{
-      display:flex!important;
-      visibility:visible!important;
-      pointer-events:auto!important;
-      touch-action:manipulation!important;
-      -webkit-tap-highlight-color:rgba(37,99,235,.18);
-    }
-  }
-</style>
+<!-- MORE_MOBILE_LINKS_CSS_V1 moved to static/css/dashboard-mobile.css -->
 
 <script id="MORE_MOBILE_LINKS_V1">
 (function(){
@@ -4939,13 +4809,7 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 </script>
 <script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f2298f1c598457',t:'MTc4NzQwNDY5NA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fa48ab8f308464',t:'MTc4NzQ4OTg1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2ff61fbddb28288',t:'MTc4NzU0MzMyMA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script>
 <!-- ROLLCALL_QUICK_ALERT_V1 -->
-<style id="rollcallQuickAlertStyleV1">
-#rollcallQuickAlert{position:fixed;inset:0;z-index:10050;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(15,23,42,.42);backdrop-filter:blur(5px)}
-#rollcallQuickAlert.visible{display:flex}#rollcallQuickAlert .rcqa-card{width:min(100%,460px);border:1px solid rgba(96,165,250,.48);border-radius:24px;padding:24px;background:var(--card,#fff);box-shadow:0 26px 70px rgba(15,23,42,.32)}
-#rollcallQuickAlert .rcqa-badge{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;background:rgba(37,99,235,.11);color:#1d4ed8;font-size:12px;font-weight:850}#rollcallQuickAlert .rcqa-dot{width:8px;height:8px;border-radius:50%;background:#2563eb;box-shadow:0 0 0 5px rgba(37,99,235,.13)}
-#rollcallQuickAlert h2{margin:14px 0 7px;font-size:22px;letter-spacing:-.025em}#rollcallQuickAlert .rcqa-meta{color:var(--muted,#64748b);font-size:14px;line-height:1.65}#rollcallQuickAlert .rcqa-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:20px}#rollcallQuickAlert .rcqa-actions a,#rollcallQuickAlert .rcqa-actions button{min-height:42px;border-radius:12px;padding:0 14px;font-weight:800;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}#rollcallQuickAlert .rcqa-go{background:#2563eb;color:#fff;border:1px solid #2563eb}#rollcallQuickAlert .rcqa-secondary{background:transparent;color:var(--text,#172033);border:1px solid var(--line,#dbe3ef);cursor:pointer}
-#rollcallLiveStatus{display:inline-flex;align-items:center;gap:6px;min-height:27px;margin-top:10px;padding:0 10px;border:1px solid var(--line,#dbe3ef);border-radius:999px;background:var(--card,#fff);color:var(--muted,#64748b);font-size:12px;font-weight:800;white-space:nowrap}#rollcallLiveStatus .dot{width:7px;height:7px;border-radius:50%;background:#94a3b8}#rollcallLiveStatus.connected{color:#15803d;border-color:rgba(22,163,74,.24);background:rgba(22,163,74,.07)}#rollcallLiveStatus.connected .dot{background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.12)}#rollcallLiveStatus.connecting .dot{background:#f59e0b;animation:rollcallLivePulse 1.25s ease-in-out infinite}#rollcallLiveStatus.reconnecting{color:#b45309;border-color:rgba(245,158,11,.3);background:rgba(245,158,11,.08)}#rollcallLiveStatus.reconnecting .dot{background:#f59e0b}@keyframes rollcallLivePulse{50%{opacity:.3;transform:scale(.75)}}@media(max-width:720px){#rollcallLiveStatus{font-size:11px;min-height:25px;padding:0 8px}}
-</style>
+<!-- rollcallQuickAlertStyleV1 moved to static/css/dashboard-components.css -->
 <div id="rollcallQuickAlert" role="dialog" aria-modal="true" aria-labelledby="rollcallQuickAlertTitle"><div class="rcqa-card"><div class="rcqa-badge"><span class="rcqa-dot"></span>偵測到可處理的點名</div><h2 id="rollcallQuickAlertTitle">新點名</h2><div id="rollcallQuickAlertMeta" class="rcqa-meta"></div><div class="rcqa-actions"><a id="rollcallQuickAlertGo" class="rcqa-go" target="_blank" rel="noopener">立即前往點名</a><button id="rollcallQuickAlertNotify" class="rcqa-secondary" type="button" data-enable-web-push="1">啟用 iPhone 推播</button><button id="rollcallQuickAlertClose" class="rcqa-secondary" type="button">稍後處理</button></div></div></div>
 <script id="rollcallQuickAlertScriptV1">
 (function(){'use strict';
@@ -5019,25 +4883,10 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 </script>
 
 <!-- NON_ADMIN_MORE_MENU_HARD_HIDE_V1 -->
-<style id="nonAdminMoreMenuHardHideV1">
-/* The More sheet is rebuilt dynamically by several legacy scripts.  Keep
-   these privileged links hidden even during a rebuild between JS callbacks. */
-html.dash-role-user #mActivity,
-html.dash-role-user #moreActivityFinalV2,
-html.dash-role-user #moreBlacklistFinalV2,
-html.dash-role-user #moreBlacklist,
-html.dash-role-user #activityLink,
-html.dash-role-user a[href="/admin/activity"],
-html.dash-role-user a[href^="/admin/activity?"],
-html.dash-role-user a[href="/admin/blacklist"],
-html.dash-role-user a[href^="/admin/blacklist?"]{
-  display:none !important;
-}
-</style>
+<!-- DASHBOARD_CSS_PHASE2: dashboard-access.css -->
+<link rel="stylesheet" href="/admin/static/dashboard-access.css?v=20260826b" data-dashboard-style="css-phase2-dashboard-access">
 
-<style id="detectionScheduleDesktopNavStyle">
-.detection-schedule-desktop-link{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:40px;padding:0 14px;border:1px solid var(--line,#d8dee8);border-radius:999px;background:var(--card,#fff);color:var(--text,#172033);text-decoration:none;font:inherit;font-weight:760;white-space:nowrap;cursor:pointer}@media(max-width:760px){.detection-schedule-desktop-link{display:none!important}}
-</style>
+<!-- detectionScheduleDesktopNavStyle moved to static/css/dashboard-components.css -->
 <script id="detectionScheduleDesktopNavScript">
 (function(){'use strict';
   if(window.DETECTION_SCHEDULE_DESKTOP_NAV_V1)return;window.DETECTION_SCHEDULE_DESKTOP_NAV_V1=true;

@@ -1,0 +1,58 @@
+/* DASHBOARD_CSS_CLEANUP_PHASE2
+ * Extracted from late inline Dashboard component rules without selector changes.
+ * Authentication and first-paint CSS intentionally remain inline.
+ */
+
+/* timetableCourseRollcallHistoryLinkStyleV1 */
+.tt-course-history-link{
+    display:inline-flex;
+    align-items:center;
+    gap:6px;
+    border:0;
+    background:transparent;
+    color:var(--primary,#2563eb);
+    font:inherit;
+    font-weight:950;
+    padding:0;
+    min-height:0;
+    border-radius:0;
+    cursor:pointer;
+    text-decoration:underline;
+    text-underline-offset:3px;
+  }
+  .tt-course-history-link:hover{filter:brightness(.9)}
+  .tt-course-history-link::after{content:'點名紀錄';font-size:11px;font-weight:900;color:var(--muted,#667085);text-decoration:none;border:1px solid var(--line,#dbe3ef);border-radius:999px;padding:2px 6px;background:var(--soft,#eef3fb)}
+  .tt-history-modal-backdrop{position:fixed;inset:0;z-index:1000;display:none;align-items:center;justify-content:center;background:rgba(15,23,42,.42);padding:18px;backdrop-filter:blur(4px)}
+  .tt-history-modal-backdrop.visible{display:flex}
+  .tt-history-modal{width:min(720px,100%);max-height:min(82vh,720px);overflow:auto;background:var(--card,#fff);border:1px solid var(--line,#dbe3ef);border-radius:24px;box-shadow:0 24px 80px rgba(15,23,42,.28);padding:18px;color:var(--text,#172033)}
+  .tt-history-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+  .tt-history-modal h2{margin:0;font-size:22px;font-weight:950;letter-spacing:-.02em}
+  .tt-history-close{min-height:38px;border-radius:999px;border:1px solid var(--line,#dbe3ef);background:var(--soft,#eef3fb);color:var(--text,#172033);font-weight:950;padding:0 12px;cursor:pointer}
+  .tt-history-meta{font-size:13px;color:var(--muted,#667085);line-height:1.5;margin-top:4px}
+  .tt-history-list{display:grid;gap:10px;margin-top:12px}
+  .tt-history-item{border:1px solid var(--line,#dbe3ef);border-radius:16px;background:var(--soft2,#f8fafc);padding:12px}
+  .tt-history-item-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;font-weight:950}
+  .tt-history-pill{display:inline-flex;align-items:center;border-radius:999px;padding:4px 9px;font-size:12px;font-weight:950;background:var(--soft,#eef3fb);color:var(--muted,#667085);white-space:nowrap}
+  .tt-history-pill.ok{background:#dcfce7;color:#166534}.tt-history-pill.bad{background:#fee2e2;color:#991b1b}
+  .tt-history-detail{font-size:13px;color:var(--muted,#667085);line-height:1.55;margin-top:6px;white-space:pre-wrap;word-break:break-word}
+  .tt-history-empty{border:1px dashed var(--line,#dbe3ef);border-radius:16px;background:var(--soft2,#f8fafc);padding:16px;text-align:center;color:var(--muted,#667085);line-height:1.55}
+  .tt-history-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .tt-history-actions a,.tt-history-actions button{min-height:40px;border-radius:14px;border:1px solid var(--line,#dbe3ef);background:var(--soft,#eef3fb);color:var(--text,#172033);font-weight:950;padding:0 12px;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
+  @media(max-width:760px){
+    .tt-course-history-link{display:inline;line-height:1.45}
+    .tt-course-history-link::after{display:inline-flex;margin-left:6px}
+    .tt-history-modal-backdrop{align-items:flex-end;padding:10px}
+    .tt-history-modal{border-radius:24px 24px 18px 18px;max-height:86vh;padding:16px}
+    .tt-history-modal h2{font-size:20px}
+    .tt-history-actions{display:grid;grid-template-columns:1fr}.tt-history-actions a,.tt-history-actions button{width:100%}
+  }
+
+/* rollcallQuickAlertStyleV1 */
+#rollcallQuickAlert{position:fixed;inset:0;z-index:10050;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(15,23,42,.42);backdrop-filter:blur(5px)}
+#rollcallQuickAlert.visible{display:flex}#rollcallQuickAlert .rcqa-card{width:min(100%,460px);border:1px solid rgba(96,165,250,.48);border-radius:24px;padding:24px;background:var(--card,#fff);box-shadow:0 26px 70px rgba(15,23,42,.32)}
+#rollcallQuickAlert .rcqa-badge{display:inline-flex;align-items:center;gap:7px;padding:6px 10px;border-radius:999px;background:rgba(37,99,235,.11);color:#1d4ed8;font-size:12px;font-weight:850}#rollcallQuickAlert .rcqa-dot{width:8px;height:8px;border-radius:50%;background:#2563eb;box-shadow:0 0 0 5px rgba(37,99,235,.13)}
+#rollcallQuickAlert h2{margin:14px 0 7px;font-size:22px;letter-spacing:-.025em}#rollcallQuickAlert .rcqa-meta{color:var(--muted,#64748b);font-size:14px;line-height:1.65}#rollcallQuickAlert .rcqa-actions{display:flex;gap:9px;flex-wrap:wrap;margin-top:20px}#rollcallQuickAlert .rcqa-actions a,#rollcallQuickAlert .rcqa-actions button{min-height:42px;border-radius:12px;padding:0 14px;font-weight:800;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}#rollcallQuickAlert .rcqa-go{background:#2563eb;color:#fff;border:1px solid #2563eb}#rollcallQuickAlert .rcqa-secondary{background:transparent;color:var(--text,#172033);border:1px solid var(--line,#dbe3ef);cursor:pointer}
+#rollcallLiveStatus{display:inline-flex;align-items:center;gap:6px;min-height:27px;margin-top:10px;padding:0 10px;border:1px solid var(--line,#dbe3ef);border-radius:999px;background:var(--card,#fff);color:var(--muted,#64748b);font-size:12px;font-weight:800;white-space:nowrap}#rollcallLiveStatus .dot{width:7px;height:7px;border-radius:50%;background:#94a3b8}#rollcallLiveStatus.connected{color:#15803d;border-color:rgba(22,163,74,.24);background:rgba(22,163,74,.07)}#rollcallLiveStatus.connected .dot{background:#22c55e;box-shadow:0 0 0 4px rgba(34,197,94,.12)}#rollcallLiveStatus.connecting .dot{background:#f59e0b;animation:rollcallLivePulse 1.25s ease-in-out infinite}#rollcallLiveStatus.reconnecting{color:#b45309;border-color:rgba(245,158,11,.3);background:rgba(245,158,11,.08)}#rollcallLiveStatus.reconnecting .dot{background:#f59e0b}@keyframes rollcallLivePulse{50%{opacity:.3;transform:scale(.75)}}@media(max-width:720px){#rollcallLiveStatus{font-size:11px;min-height:25px;padding:0 8px}}
+
+/* detectionScheduleDesktopNavStyle */
+.detection-schedule-desktop-link{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:40px;padding:0 14px;border:1px solid var(--line,#d8dee8);border-radius:999px;background:var(--card,#fff);color:var(--text,#172033);text-decoration:none;font:inherit;font-weight:760;white-space:nowrap;cursor:pointer}@media(max-width:760px){.detection-schedule-desktop-link{display:none!important}}

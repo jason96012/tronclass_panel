@@ -1,0 +1,19 @@
+/* DASHBOARD_CSS_CLEANUP_PHASE2
+ * Extracted from late inline Dashboard component rules without selector changes.
+ * Authentication and first-paint CSS intentionally remain inline.
+ */
+
+/* nonAdminMoreMenuHardHideV1 */
+/* The More sheet is rebuilt dynamically by several legacy scripts.  Keep
+   these privileged links hidden even during a rebuild between JS callbacks. */
+html.dash-role-user #mActivity,
+html.dash-role-user #moreActivityFinalV2,
+html.dash-role-user #moreBlacklistFinalV2,
+html.dash-role-user #moreBlacklist,
+html.dash-role-user #activityLink,
+html.dash-role-user a[href="/admin/activity"],
+html.dash-role-user a[href^="/admin/activity?"],
+html.dash-role-user a[href="/admin/blacklist"],
+html.dash-role-user a[href^="/admin/blacklist?"]{
+  display:none !important;
+}
