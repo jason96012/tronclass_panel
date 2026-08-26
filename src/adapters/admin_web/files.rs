@@ -1,7 +1,6 @@
 //! Materials file-manager page/API handlers for Admin Web.
 
 use super::*;
-use axum::response::Redirect;
 use std::process::Stdio;
 use std::sync::Weak;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -271,16 +270,24 @@ fn filebrowser_frontend_url() -> String {
         .unwrap_or_else(|| "https://files.jasoncloudserver.me/files".to_string())
 }
 
-pub(super) async fn admin_files_page_handler(_headers: HeaderMap) -> Response {
-    // `/admin/files` used to render a 65 KiB transitional dashboard page whose
-    // first inline script immediately redirected to Filebrowser. Redirect at
-    // the HTTP layer instead, saving a full HTML parse and a navigation round
-    // trip whenever the user opens 雲端硬碟 from Dashboard.
-    let mut response = Redirect::temporary(&filebrowser_frontend_url()).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+pub(super) async fn admin_files_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminFilesQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return admin_login_redirect("/admin/files");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    // Keep materials navigation on the Dashboard origin. iOS leaves standalone
+    // PWA mode for the separate files.* origin and adds Safari browser chrome.
+    html_page_response(
+        &headers,
+        super::inject_theme(super::pages::ADMIN_FILES_HTML),
+    )
 }
 
 /// Check the local Filebrowser process before the Dashboard navigates a user

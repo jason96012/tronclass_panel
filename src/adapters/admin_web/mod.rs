@@ -898,6 +898,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(admin_dashboard_css_handler),
         )
         .route(
+            "/admin/static/dashboard-late-fixes.css",
+            get(admin_dashboard_late_fixes_css_handler),
+        )
+        .route(
             "/admin/static/dashboard-runtime.js",
             get(admin_dashboard_runtime_handler),
         )
@@ -2657,6 +2661,13 @@ async fn admin_session_security_js_handler() -> Response {
 
 async fn admin_dashboard_css_handler() -> Response {
     admin_static_asset("text/css; charset=utf-8", pages::DASHBOARD_MODULE_CSS)
+}
+
+async fn admin_dashboard_late_fixes_css_handler() -> Response {
+    admin_static_asset(
+        "text/css; charset=utf-8",
+        pages::DASHBOARD_LATE_FIXES_CSS,
+    )
 }
 
 async fn admin_dashboard_runtime_handler() -> Response {

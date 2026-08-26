@@ -51,6 +51,9 @@ pub(super) const MOBILE_TIMETABLE_CSS: &str = include_str!("static/css/mobile-ti
 pub(super) const MOBILE_NAVIGATION_CSS: &str = include_str!("static/css/mobile-navigation.css");
 // DASHBOARD_MODULE_LOADER_PHASE1
 pub(super) const DASHBOARD_MODULE_CSS: &str = include_str!("static/css/dashboard.css");
+// DASHBOARD_LATE_FIXES_CSS_PHASE1_V1
+pub(super) const DASHBOARD_LATE_FIXES_CSS: &str =
+    include_str!("static/css/dashboard-late-fixes.css");
 pub(super) const DASHBOARD_RUNTIME_JS: &str = include_str!("static/js/dashboard-runtime.js");
 pub(super) const DASHBOARD_FEATURES_JS: &str = include_str!("static/js/dashboard-modules.js");
 
