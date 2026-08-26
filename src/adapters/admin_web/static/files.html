@@ -816,26 +816,8 @@
 
 </head>
 <body>
-<div id="ncPortal" hidden>
-  <style>
-    #ncPortal{position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:18px;
-      background:radial-gradient(circle at 20% 20%,rgba(0,130,201,.35),transparent 42%),#0082c9;color:#fff;
-      font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;text-align:center;padding:24px}
-    #ncPortal.owncloud{background:radial-gradient(circle at 20% 20%,rgba(27,79,114,.4),transparent 42%),#1d2d44}
-    #ncPortal svg{width:72px;height:72px}
-    #ncPortal h1{margin:0;font-size:28px;font-weight:850}
-    #ncPortal p{margin:0;opacity:.9;font-size:15px}
-    #ncPortal a,#ncPortal button{appearance:none;border:0;border-radius:14px;padding:12px 22px;font-weight:800;font-size:15px;cursor:pointer;text-decoration:none}
-    #ncOpen{background:#fff;color:#0082c9}
-    #ncStay{background:transparent;color:#fff;border:1px solid rgba(255,255,255,.45)}
-  </style>
-  <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 18a5 5 0 0 1-.6-9.96A7 7 0 0 1 19.5 11 4.5 4.5 0 0 1 19 20H7Z" fill="#fff"/></svg>
-  <h1 id="ncTitle">Nextcloud</h1>
-  <p id="ncHint">正在開啟教材雲端硬碟…</p>
-  <a id="ncOpen" href="#">立即前往</a>
-  <button id="ncStay" type="button">使用內建教材頁</button>
-</div>
-
+<!-- NATIVE_MATERIALS_PAGE_ONLY_V1: the obsolete Nextcloud redirect overlay was
+     removed. /admin/files now always opens this authenticated same-origin UI. -->
 <header class="topbar">
   <div class="brand-wrap">
     <div class="brand-mark">D</div>
@@ -1223,28 +1205,6 @@
     try {
       const body = await api('/admin/api/files/list', { cache: 'no-store' });
       isAdmin = !!body.is_admin;
-      var stay = false;
-      try { stay = new URLSearchParams(location.search).get('stay') === '1'; } catch(_){}
-      var mode = String(body.frontend_mode || 'off').toLowerCase();
-      var cloudUrl = body.frontend_url ? String(body.frontend_url) : '';
-      if (cloudUrl && (mode === 'redirect' || mode === 'sso') && !stay) {
-        location.replace(cloudUrl);
-        return;
-      }
-      if (cloudUrl && mode === 'button') {
-        var bar = document.getElementById('ncOpenBar');
-        if (!bar) {
-          bar = document.createElement('a');
-          bar.id = 'ncOpenBar';
-          bar.target = '_blank';
-          bar.rel = 'noopener';
-          bar.style.cssText = 'display:inline-flex;align-items:center;margin:0 0 12px;padding:10px 16px;border-radius:14px;background:#0082c9;color:#fff;font-weight:800;text-decoration:none';
-          var head = document.querySelector('.content-head .toolbar-right') || document.querySelector('.content-head');
-          if (head) head.prepend(bar);
-        }
-        bar.href = cloudUrl;
-        bar.textContent = /owncloud/i.test(cloudUrl) ? '在 ownCloud 開啟' : '在 Nextcloud 開啟';
-      }
       files = (body.files || []).map(f => typeof f === 'string' ? { path: f, name: f } : f);
       folders = body.folders || [];
       render();
@@ -1577,7 +1537,7 @@
   setTimeout(ensure, 300);
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb40c5bd634a45',t:'MTc4NzUwMDAxNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb40c5bd634a45',t:'MTc4NzUwMDAxNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a313d3cc99a64a86',t:'MTc4Nzc1NzY5OA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 
