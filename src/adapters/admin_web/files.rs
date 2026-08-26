@@ -662,7 +662,7 @@ fn inject_filebrowser_trusted_types_assets(html: &mut String) {
         return;
     }
     let assets = concat!(
-        "<script src=\"/admin/static/js/dompurify.min.js?v=20260823trustedtypes\"></script>",
+        "<script src=\"/admin/static/js/dompurify.min.js?v=20260826dompurify3414\"></script>",
         "<script src=\"/admin/static/js/trusted-types-init.js?v=20260823trustedtypes\"></script>"
     );
     let lower = html.to_ascii_lowercase();

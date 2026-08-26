@@ -39,6 +39,21 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
     if SERVICE.get().is_some() {
         return Ok(());
     }
+    // Older clients silently rebound the browser's one PushSubscription to
+    // whichever account happened to log in next. Those rows cannot be trusted
+    // for owner-only delivery, so clear them once and require an explicit tap.
+    const EXPLICIT_BINDING_MIGRATION: &str = "web_push_explicit_binding_v2";
+    if db
+        .get_web_push_setting(EXPLICIT_BINDING_MIGRATION)
+        .await?
+        .as_deref()
+        != Some("1")
+    {
+        let removed = db.clear_all_web_push_subscriptions().await?;
+        db.set_web_push_setting(EXPLICIT_BINDING_MIGRATION, "1")
+            .await?;
+        warn!(removed, "已清除舊版可能錯綁帳號的 Web Push 訂閱；需由手機重新明確啟用");
+    }
     let private_key = match db.get_web_push_setting(VAPID_PRIVATE_KEY_SETTING).await? {
         Some(value) if valid_private_key(&value) => value,
         _ => {

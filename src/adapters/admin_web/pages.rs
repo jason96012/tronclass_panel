@@ -115,8 +115,8 @@ pub(super) fn inject_theme(html: &str) -> String {
     // the large inline dashboard scripts does not delay theme.css.
     const SHARED_ASSETS: &str = concat!(
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
-        r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260823trustedtypes" as="script">"#,
-        r#"<script src="/admin/static/js/dompurify.min.js?v=20260823trustedtypes"></script>"#,
+        r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
+        r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
         r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
         r#"<link rel="preload" href="/admin/static/session-security.js?v=20260821fast" as="script">"#,
         r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260821fast"></script>"#,
