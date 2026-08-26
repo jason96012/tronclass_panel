@@ -5057,6 +5057,39 @@ html.dash-role-user a[href^="/admin/blacklist?"]{
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
 })();
 </script>
+<!-- CLASS_REMINDER_ACCOUNT_CARD_CONTRAST_FIX_V1 -->
+<style id="classReminderAccountCardContrastFixV1">
+/* The shared glass-card override used a light surface in dark mode, while this
+   asynchronously inserted panel inherited dark-mode muted text. Keep the
+   account label and current-account status readable on iPhone and desktop. */
+#classReminderPanel .class-reminder-side{
+  color:var(--text,#172033)!important;
+}
+#classReminderPanel .class-reminder-side > label{
+  color:var(--text,#172033)!important;
+  opacity:1!important;
+}
+@media(prefers-color-scheme:dark){
+  #classReminderPanel .class-reminder-side{
+    background:rgba(30,41,59,.92)!important;
+    border-color:rgba(148,163,184,.24)!important;
+    color:#f1f5f9!important;
+  }
+  #classReminderPanel .class-reminder-side > label{
+    color:#e2e8f0!important;
+  }
+  #classReminderPanel #classReminderInfo{
+    color:#cbd5e1!important;
+    opacity:1!important;
+  }
+  #classReminderPanel #classReminderAccount{
+    background:#172238!important;
+    border-color:rgba(148,163,184,.32)!important;
+    color:#f8fafc!important;
+    -webkit-text-fill-color:#f8fafc!important;
+  }
+}
+</style>
 <!-- LOGIN_FORM_VISUAL_RECOVERY_V1 -->
 <style id="loginFormVisualRecoveryV1">
 html.tron-auth-logged-out body #loginCard,
@@ -5066,11 +5099,27 @@ body.animated-login-active #loginCard,
 body.animated-login-active #loginPanel,
 body.animated-login-active .login-card{opacity:1!important;filter:none!important;pointer-events:auto!important}
 /* iOS autofill can update values without firing input, so labels must never
-   overlap restored account/password text. */
-html.tron-auth-logged-out .animated-login-field label,
-body.animated-login-active .animated-login-field label{top:7px!important;font-size:11px!important;font-weight:900!important;color:#2563eb!important}
-html.tron-auth-logged-out .animated-login-field input,
-body.animated-login-active .animated-login-field input{opacity:1!important;filter:none!important;pointer-events:auto!important}
+   depend on an .active class. Keep them permanently above the field value. */
+html body #animatedLoginForm .animated-login-field > label,
+html body .animated-login-card-inner .animated-login-field > label{
+  top:6px!important;
+  left:16px!important;
+  transform:none!important;
+  font-size:11px!important;
+  line-height:13px!important;
+  font-weight:900!important;
+  color:#2563eb!important;
+  z-index:2!important;
+  pointer-events:none!important;
+}
+html body #animatedLoginForm .animated-login-field > input,
+html body .animated-login-card-inner .animated-login-field > input{
+  padding:23px 48px 7px 16px!important;
+  line-height:20px!important;
+  opacity:1!important;
+  filter:none!important;
+  pointer-events:auto!important;
+}
 @media(prefers-color-scheme:dark){
   html.tron-auth-logged-out body #loginCard,
   html.tron-auth-logged-out body #loginPanel,
@@ -5081,12 +5130,12 @@ body.animated-login-active .animated-login-field input{opacity:1!important;filte
   .animated-login-card-inner{color:#e5eefb!important}
   .animated-login-logo{background:rgba(96,165,250,.16)!important;color:#93c5fd!important}
   .animated-login-header p,.animated-login-options label,.animated-secure-note{color:#94a3b8!important}
-  html.tron-auth-logged-out .animated-login-field label,
-  body.animated-login-active .animated-login-field label{color:#93c5fd!important}
-  html.tron-auth-logged-out .animated-login-field input,
-  body.animated-login-active .animated-login-field input{background:#172238!important;border-color:rgba(148,163,184,.30)!important;color:#f1f5f9!important;-webkit-text-fill-color:#f1f5f9!important}
-  html.tron-auth-logged-out .animated-login-field input:-webkit-autofill,
-  body.animated-login-active .animated-login-field input:-webkit-autofill{-webkit-box-shadow:0 0 0 1000px #172238 inset!important;-webkit-text-fill-color:#f1f5f9!important;caret-color:#f1f5f9!important}
+  html body #animatedLoginForm .animated-login-field > label,
+  html body .animated-login-card-inner .animated-login-field > label{color:#93c5fd!important}
+  html body #animatedLoginForm .animated-login-field > input,
+  html body .animated-login-card-inner .animated-login-field > input{background:#172238!important;border-color:rgba(148,163,184,.30)!important;color:#f1f5f9!important;-webkit-text-fill-color:#f1f5f9!important}
+  html body #animatedLoginForm .animated-login-field > input:-webkit-autofill,
+  html body .animated-login-card-inner .animated-login-field > input:-webkit-autofill{-webkit-box-shadow:0 0 0 1000px #172238 inset!important;-webkit-text-fill-color:#f1f5f9!important;caret-color:#f1f5f9!important}
   .animated-passkey-btn{background:#172238!important;color:#e5eefb!important;border-color:rgba(148,163,184,.28)!important}
   .animated-login-chip{background:rgba(15,23,42,.64)!important;border-color:rgba(148,163,184,.22)!important;color:#cbd5e1!important}
 }
@@ -5110,5 +5159,5 @@ body.animated-login-active .animated-login-field input{opacity:1!important;filte
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',recover);else recover();
 }());
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a31277654bab4a52',t:'MTc4Nzc0MzQyNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a312db3b18e080a4',t:'MTc4Nzc0NzUxNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
