@@ -149,6 +149,8 @@ pub(super) async fn get_handler(
             "preference": preference,
             "evaluation": evaluation,
             "entries": entries,
+            "night_pause_active": crate::detection_schedule::is_night_pause(now.time()),
+            "night_pause": "19:00–07:00",
             "server_time": now.format("%Y-%m-%d %H:%M:%S").to_string(),
         })),
     )

@@ -10,6 +10,40 @@ use serde::Serialize;
 use crate::db::{DetectionSchedulePreferenceRow, TimetableEntryRow};
 
 const WEEK_MINUTES: i64 = 7 * 24 * 60;
+const NIGHT_PAUSE_START_SECS: u32 = 19 * 60 * 60;
+const NIGHT_PAUSE_END_SECS: u32 = 7 * 60 * 60;
+const DAY_SECS: u32 = 24 * 60 * 60;
+
+/// The fixed local-time quiet period is 19:00 (inclusive) through 07:00
+/// (exclusive). During this period timer-triggered provider polling is paused.
+pub fn is_night_pause(now: NaiveTime) -> bool {
+    let seconds = now.num_seconds_from_midnight();
+    seconds >= NIGHT_PAUSE_START_SECS || seconds < NIGHT_PAUSE_END_SECS
+}
+
+/// Seconds until 07:00 when currently in the quiet period.
+pub fn seconds_until_daytime(now: NaiveTime) -> Option<u64> {
+    let seconds = now.num_seconds_from_midnight();
+    let wait = if seconds >= NIGHT_PAUSE_START_SECS {
+        DAY_SECS - seconds + NIGHT_PAUSE_END_SECS
+    } else if seconds < NIGHT_PAUSE_END_SECS {
+        NIGHT_PAUSE_END_SECS - seconds
+    } else {
+        return None;
+    };
+    Some(u64::from(wait.max(1)))
+}
+
+/// Seconds until the next 19:00 quiet-period boundary during daytime.
+pub fn seconds_until_night_pause(now: NaiveTime) -> Option<u64> {
+    (!is_night_pause(now)).then(|| {
+        u64::from(
+            NIGHT_PAUSE_START_SECS
+                .saturating_sub(now.num_seconds_from_midnight())
+                .max(1),
+        )
+    })
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ActiveDetectionWindow {
@@ -219,5 +253,29 @@ mod tests {
             &pref(),
         );
         assert!(result.active);
+    }
+
+    #[test]
+    fn night_pause_uses_inclusive_19_and_exclusive_07_boundaries() {
+        assert!(is_night_pause(NaiveTime::from_hms_opt(19, 0, 0).unwrap()));
+        assert!(is_night_pause(NaiveTime::from_hms_opt(6, 59, 59).unwrap()));
+        assert!(!is_night_pause(NaiveTime::from_hms_opt(7, 0, 0).unwrap()));
+        assert!(!is_night_pause(NaiveTime::from_hms_opt(18, 59, 59).unwrap()));
+    }
+
+    #[test]
+    fn night_pause_boundaries_report_exact_wake_intervals() {
+        assert_eq!(
+            seconds_until_daytime(NaiveTime::from_hms_opt(19, 0, 0).unwrap()),
+            Some(12 * 60 * 60)
+        );
+        assert_eq!(
+            seconds_until_daytime(NaiveTime::from_hms_opt(6, 59, 0).unwrap()),
+            Some(60)
+        );
+        assert_eq!(
+            seconds_until_night_pause(NaiveTime::from_hms_opt(7, 0, 0).unwrap()),
+            Some(12 * 60 * 60)
+        );
     }
 }

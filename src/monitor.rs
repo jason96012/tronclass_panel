@@ -386,23 +386,28 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
     // acquisitions per loop cycle. The target rarely changes (only on
     // Discord/LINE rebind), so one read per iteration is sufficient.
     let mut cached_target;
-    let mut last_timetable_window_state: Option<bool> = None;
+    let mut last_timetable_window_state: Option<(bool, bool)> = None;
 
     loop {
         // ── 等待觸發（定時、強制 or 重新認證）──────────────────────────────────
         let normal_poll_interval =
             crate::runtime_settings::poll_interval(provider_poll_interval_secs).await;
         let timetable_policy = timetable_poll_policy(&ctx, normal_poll_interval).await;
+        let timetable_state = (
+            timetable_policy.inside_window,
+            timetable_policy.polling_allowed,
+        );
         if timetable_policy.controls_schedule
-            && last_timetable_window_state != Some(timetable_policy.inside_window)
+            && last_timetable_window_state != Some(timetable_state)
         {
             info!(
                 account = %ctx.account.id,
                 inside_window = timetable_policy.inside_window,
+                polling_allowed = timetable_policy.polling_allowed,
                 wait_secs = timetable_policy.interval.as_secs(),
                 "課表偵測排程狀態已切換"
             );
-            last_timetable_window_state = Some(timetable_policy.inside_window);
+            last_timetable_window_state = Some(timetable_state);
         }
         let trigger = if timetable_policy.controls_schedule {
             wait_for_duration(
@@ -457,13 +462,16 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
 
         if trigger == MonitorTrigger::Timer {
             let now = Local::now();
-            // When timetable scheduling is enabled, timer polls continue at the
-            // configured slow interval outside class windows. The provider's
-            // broad schedule is only the fallback when timetable scheduling is
-            // explicitly disabled or its settings cannot be read.
-            if !timetable_policy.controls_schedule
-                && !is_within_poll_window(&schedule, now.weekday(), now.time())
-            {
+            if timetable_policy.controls_schedule {
+                // Re-evaluate after every wait so boundaries are applied exactly:
+                // 07:00 resumes immediately, while 19:00 suppresses the poll that
+                // would otherwise run as the night quiet period begins.
+                let current_policy = timetable_poll_policy(&ctx, normal_poll_interval).await;
+                if current_policy.controls_schedule && !current_policy.polling_allowed {
+                    debug!(account = %ctx.account.id, "目前為 19:00–07:00 夜間停止時段，略過簽到列表輪詢");
+                    continue;
+                }
+            } else if !is_within_poll_window(&schedule, now.weekday(), now.time()) {
                 debug!("目前不在 provider 課堂輪詢時段內，略過本次定時觸發");
                 continue;
             }
@@ -849,15 +857,23 @@ struct TimetablePollPolicy {
     interval: Duration,
     controls_schedule: bool,
     inside_window: bool,
+    polling_allowed: bool,
 }
 
-/// Resolve the interval for one monitor iteration. Inside a class window the
-/// normal provider/runtime interval is used. Outside it, polling slows down but
-/// never stops; the wait is shortened when the next window starts sooner.
+/// Resolve the interval for one monitor iteration using local server time.
+/// From 07:00 through 18:59, class windows use the normal interval and all
+/// other times use the configured outside interval. From 19:00 through 06:59,
+/// timer-triggered provider polling is paused and the wake is aligned to 07:00.
 async fn timetable_poll_policy(
     ctx: &MonitorContext,
     normal_interval: Duration,
 ) -> TimetablePollPolicy {
+    let fallback = TimetablePollPolicy {
+        interval: normal_interval,
+        controls_schedule: false,
+        inside_window: false,
+        polling_allowed: true,
+    };
     let preference = match ctx
         .accounts_db
         .get_detection_schedule_preference(&ctx.account.id)
@@ -866,18 +882,20 @@ async fn timetable_poll_policy(
         Ok(value) => value,
         Err(error) => {
             warn!(account = %ctx.account.id, error = %error, "讀取課表偵測設定失敗，沿用 provider 排程");
-            return TimetablePollPolicy {
-                interval: normal_interval,
-                controls_schedule: false,
-                inside_window: false,
-            };
+            return fallback;
         }
     };
     if !preference.enabled {
+        return fallback;
+    }
+
+    let now = Local::now();
+    if let Some(until_daytime) = crate::detection_schedule::seconds_until_daytime(now.time()) {
         return TimetablePollPolicy {
-            interval: normal_interval,
-            controls_schedule: false,
+            interval: Duration::from_secs(until_daytime),
+            controls_schedule: true,
             inside_window: false,
+            polling_allowed: false,
         };
     }
 
@@ -889,40 +907,39 @@ async fn timetable_poll_policy(
         Ok(value) => value,
         Err(error) => {
             warn!(account = %ctx.account.id, error = %error, "讀取課表失敗，沿用 provider 排程");
-            return TimetablePollPolicy {
-                interval: normal_interval,
-                controls_schedule: false,
-                inside_window: false,
-            };
+            return fallback;
         }
     };
-    let now = Local::now();
     let evaluation = crate::detection_schedule::evaluate(
         &entries,
         now.weekday(),
         now.time(),
         &preference,
     );
-    if evaluation.active {
-        return TimetablePollPolicy {
-            interval: normal_interval,
-            controls_schedule: true,
-            inside_window: true,
-        };
-    }
-
-    let slow_interval = Duration::from_secs(
+    let outside_interval = Duration::from_secs(
         u64::try_from(preference.outside_interval_secs.clamp(60, 3600)).unwrap_or(300),
     );
-    let interval = evaluation
-        .next_window_in_secs
-        .map(Duration::from_secs)
-        .map(|until_window| slow_interval.min(until_window.max(Duration::from_secs(1))))
-        .unwrap_or(slow_interval);
+    let mut interval = if evaluation.active {
+        normal_interval
+    } else {
+        outside_interval
+    };
+    if !evaluation.active {
+        if let Some(until_window) = evaluation.next_window_in_secs.map(Duration::from_secs) {
+            interval = interval.min(until_window.max(Duration::from_secs(1)));
+        }
+    }
+    if let Some(until_night) =
+        crate::detection_schedule::seconds_until_night_pause(now.time()).map(Duration::from_secs)
+    {
+        interval = interval.min(until_night.max(Duration::from_secs(1)));
+    }
+
     TimetablePollPolicy {
         interval,
         controls_schedule: true,
-        inside_window: false,
+        inside_window: evaluation.active,
+        polling_allowed: true,
     }
 }
 
