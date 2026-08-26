@@ -564,6 +564,69 @@
     }
   }
 </style>
+
+<style id="ACTIVITY_MOBILE_OVERFLOW_FIX_V1">
+  @media (max-width:820px){
+    html,body{
+      width:100%!important;
+      max-width:100%!important;
+      overflow-x:hidden!important;
+    }
+    main,
+    .view,
+    .panel,
+    .toolbar,
+    .toolbar-right,
+    .mobile-cards{
+      min-width:0!important;
+      max-width:100%!important;
+    }
+    .toolbar-right{
+      width:100%!important;
+    }
+    .toolbar-right > input,
+    .toolbar-right > select{
+      width:100%!important;
+      min-width:0!important;
+      max-width:100%!important;
+    }
+    .mobile-cards{
+      width:100%!important;
+      grid-template-columns:minmax(0,1fr)!important;
+      overflow:hidden!important;
+    }
+    .record-card{
+      width:100%!important;
+      min-width:0!important;
+      max-width:100%!important;
+      overflow:hidden!important;
+    }
+    .card-header-row,
+    .card-actor-row,
+    .card-details-row{
+      width:100%!important;
+      min-width:0!important;
+      max-width:100%!important;
+    }
+    .card-header-row > *,
+    .card-actor-row > *{
+      min-width:0!important;
+      max-width:100%!important;
+    }
+    .card-header-row .pill{
+      flex:0 0 auto!important;
+    }
+    .card-actor-name,
+    .card-account-id,
+    .card-details-row{
+      overflow-wrap:anywhere!important;
+      word-break:break-word!important;
+    }
+    .card-account-id{
+      text-align:right!important;
+    }
+  }
+</style>
 </head>
 <body>
 
@@ -1074,7 +1137,7 @@
   setTimeout(tidy, 80);
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb405dfba54a45',t:'MTc4NzUwMDAwMA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb405dfba54a45',t:'MTc4NzUwMDAwMA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a31258c4a985152a',t:'MTc4Nzc0MjE3Mg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 
