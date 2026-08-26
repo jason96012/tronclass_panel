@@ -281,8 +281,7 @@
 })();
 </script>
 
-<!-- DASHBOARD_CSS_PHASE3A: dashboard-mobile-early.css -->
-<link rel="stylesheet" href="/admin/static/dashboard-mobile-early.css?v=20260826c" data-dashboard-style="css-phase3a-dashboard-mobile-early">
+<!-- DASHBOARD_CSS_PHASE3A mobile stylesheet waits until auth boot has started -->
 
 <script id="MORE_DEAD_BUTTONS_V1">
 (function(){
@@ -942,11 +941,20 @@
   }
   if(window.__tronSkipLoginPaint||window.__tronBootToken){setState('ok');}else{setState('pending');}
   var thisAuthBootGeneration = authBootGeneration;
+  // IPHONE_AUTH_PENDING_TIMEOUT_V1: a suspended or half-open iOS request must
+  // not leave the whole Dashboard in tron-auth-pending forever.
+  var authBootController = typeof AbortController==='function' ? new AbortController() : null;
+  var authBootTimer = setTimeout(function(){
+    if(authBootController) authBootController.abort();
+    if(thisAuthBootGeneration===authBootGeneration && window.__tronAuthState==='pending') setState('out');
+  },12000);
   window.__tronAuthBoot = fetch('/admin/api/status?include_history=false',{
     credentials:'same-origin',
     cache:'no-store',
-    headers:{'Accept':'application/json'}
+    headers:{'Accept':'application/json'},
+    signal:authBootController ? authBootController.signal : undefined
   }).then(function(r){
+    clearTimeout(authBootTimer);
     // Do not let an unauthenticated request created before a login overwrite
     // the state established by that successful login.
     if(thisAuthBootGeneration !== authBootGeneration) return {};
@@ -958,11 +966,18 @@
       setState('out');
       var e=new Error('unauthorized'); e.status=r.status; throw e;
     }
-    setState('pending');
+    setState('out');
     var e2=new Error('HTTP '+r.status); e2.status=r.status; throw e2;
+  }).catch(function(error){
+    clearTimeout(authBootTimer);
+    if(thisAuthBootGeneration===authBootGeneration && window.__tronAuthState==='pending') setState('out');
+    throw error;
   });
 })();
 </script>
+<!-- DASHBOARD_CSS_PHASE3A: dashboard-mobile-early.css -->
+<link rel="stylesheet" href="/admin/static/dashboard-mobile-early.css?v=20260826c" data-dashboard-style="css-phase3a-dashboard-mobile-early">
+
 <script id="HTTPONLY_SESSION_V1">
 (function(){
   var KEYS=['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];
