@@ -63,7 +63,6 @@ pub(super) const DASHBOARD_RUNTIME_JS: &str = include_str!("static/js/dashboard-
 pub(super) const DASHBOARD_FEATURES_JS: &str = include_str!("static/js/dashboard-modules.js");
 
 pub(super) const ADMIN_LOGS_HTML: &str = include_str!("static/logs.html");
-pub(super) const ADMIN_FILES_HTML: &str = include_str!("static/files.html");
 pub(super) const ADMIN_HEALTH_HTML: &str = include_str!("static/health.html");
 pub(super) const ADMIN_DASHBOARD_HTML: &str = include_str!("static/dashboard.html");
 pub(super) const ADMIN_LOGIN_HTML: &str = include_str!("static/login.html");

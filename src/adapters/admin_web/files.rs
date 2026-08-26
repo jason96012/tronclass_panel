@@ -282,12 +282,10 @@ pub(super) async fn admin_files_page_handler(
     if session.must_change_password {
         return must_change_password_redirect();
     }
-    // Keep materials navigation on the Dashboard origin. iOS leaves standalone
-    // PWA mode for the separate files.* origin and adds Safari browser chrome.
-    html_page_response(
-        &headers,
-        super::inject_theme(super::pages::ADMIN_FILES_HTML),
-    )
+    // The Dashboard's 教材 entry is the authenticated gateway to Filebrowser.
+    // Redirect on the server so navigation cannot stall behind a legacy loader
+    // overlay or depend on JavaScript/API timing in the native fallback page.
+    Redirect::temporary(&filebrowser_frontend_url()).into_response()
 }
 
 /// Check the local Filebrowser process before the Dashboard navigates a user

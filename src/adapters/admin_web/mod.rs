@@ -17,7 +17,7 @@ use axum::{
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
-        Html, IntoResponse, Response,
+        Html, IntoResponse, Redirect, Response,
     },
     routing::{get, post},
     Json, Router,
