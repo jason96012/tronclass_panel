@@ -260,6 +260,8 @@ fn vapid_authorization(
         Some(port) => format!("{}://{host}:{port}", endpoint.scheme()),
         None => format!("{}://{host}", endpoint.scheme()),
     };
+    // The decoded VAPID header must be valid JSON. Raw byte strings do not
+    // escape their inner quotes; backslashes here make Apple reject every push.
     let header = URL_SAFE_NO_PAD.encode(br#"{"typ":"JWT","alg":"ES256"}"#);
     let claims = URL_SAFE_NO_PAD.encode(
         serde_json::to_vec(&json!({
