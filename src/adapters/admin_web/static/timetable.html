@@ -1232,33 +1232,26 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
     html+='</div>';
     days.forEach(function(d){
       html+='<div class="tt-mobile-panel'+(d[0]===defaultDay?' is-active':'')+'" data-day="'+d[0]+'" role="tabpanel">';
-      var slots=[];
+      // MOBILE_TIMETABLE_EXPANDED_PERIODS_V1: always render periods 1–10.
+      // A multi-period course gets one independent row per period instead of a
+      // merged "6–7" row, while the desktop poster remains compact.
       for(var p=1;p<=10;p++){
-        var start=null;
-        for(var b=0;b<blocks.length;b++) if(blocks[b].day===d[0] && blocks[b].ps===p){ start=blocks[b]; break; }
-        if(start) slots.push({kind:'course',start:start});
-        else if(!occupied[d[0]+':'+p]) slots.push({kind:'empty',p:p});
-      }
-      while(slots.length && slots[0].kind==='empty') slots.shift();
-      while(slots.length && slots[slots.length-1].kind==='empty') slots.pop();
-      if(!slots.length){
-        html+='<div class="tt-mobile-empty-day">這天沒有課程</div>';
-      }else{
-        slots.forEach(function(slot){
-          if(slot.kind==='course'){
-            var start=slot.start;
-            var place=String(start.e.classroom||'').trim();
-            var teacher=String(start.e.teacher||'').trim();
-            var meta=place||teacher;
-            var nLab=start.ps===start.pe?String(start.ps):(start.ps+'–'+start.pe);
-            var t0=(PERIOD[start.ps]||['',''])[0];
-            var t1=(PERIOD[start.pe]||['',''])[1];
-            html+='<div class="tt-mobile-slot"><div class="tt-mobile-period"><span class="n">'+esc(nLab)+'</span><span class="t">'+esc(t0)+'<br>'+esc(t1)+'</span></div><button type="button" class="tt-poster-course tt-mobile-course" data-course="'+esc(start.e.course_name)+'" title="'+esc((start.e.course_name||'')+(place?' ｜ '+place:'')+(teacher?' ｜ '+teacher:''))+'"><span class="tt-poster-name">'+esc(start.e.course_name)+'</span>'+(meta?'<span class="tt-poster-meta">'+esc(meta)+'</span>':'')+'</button></div>';
-          }else{
-            var tm=PERIOD[slot.p]||['',''];
-            html+='<div class="tt-mobile-slot is-empty"><div class="tt-mobile-period"><span class="n">'+slot.p+'</span><span class="t">'+esc(tm[0])+'<br>'+esc(tm[1])+'</span></div><div class="tt-mobile-empty">空堂</div></div>';
+        var courseBlock=null;
+        for(var b=0;b<blocks.length;b++){
+          if(blocks[b].day===d[0] && blocks[b].ps<=p && blocks[b].pe>=p){
+            courseBlock=blocks[b];
+            break;
           }
-        });
+        }
+        var tm=PERIOD[p]||['',''];
+        if(courseBlock){
+          var place=String(courseBlock.e.classroom||'').trim();
+          var teacher=String(courseBlock.e.teacher||'').trim();
+          var meta=place||teacher;
+          html+='<div class="tt-mobile-slot"><div class="tt-mobile-period"><span class="n">'+p+'</span><span class="t">'+esc(tm[0])+'<br>'+esc(tm[1])+'</span></div><button type="button" class="tt-poster-course tt-mobile-course" data-course="'+esc(courseBlock.e.course_name)+'" title="'+esc((courseBlock.e.course_name||'')+(place?' ｜ '+place:'')+(teacher?' ｜ '+teacher:''))+'"><span class="tt-poster-name">'+esc(courseBlock.e.course_name)+'</span>'+(meta?'<span class="tt-poster-meta">'+esc(meta)+'</span>':'')+'</button></div>';
+        }else{
+          html+='<div class="tt-mobile-slot is-empty"><div class="tt-mobile-period"><span class="n">'+p+'</span><span class="t">'+esc(tm[0])+'<br>'+esc(tm[1])+'</span></div><div class="tt-mobile-empty">空堂</div></div>';
+        }
       }
       html+='</div>';
     });
@@ -2187,7 +2180,7 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
 })(window);
 
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2eee79b88cfae64',t:'MTc4NzM3MDUzNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f21371182d7db2',t:'MTc4NzQwMzc4OA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2eee79b88cfae64',t:'MTc4NzM3MDUzNg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f21371182d7db2',t:'MTc4NzQwMzc4OA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a312fb1e0f98f023',t:'MTc4Nzc0ODgyMg=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
 </html>
 
 
