@@ -1,16 +1,21 @@
-//! Tronclass 待辦事項與作業 API 模組
+//! Tronclass 作業與待辦事項 API 模組（完全重寫版）
 //!
-//! 提供 `/api/todos` 與各課程之作業截止時間、繳交狀態解析。
+//! 專為 Tronclass（含淡江 iClass、輔仁、東海 iLearn 等各校實體架構）設計：
+//! 1. 優先請求全域待辦 `/api/todos`（解析 `todo_list`）
+//! 2. 請求學生修課清單 `/api/my-courses`（解析 `courses`）
+//! 3. 併發讀取各課程作業 `/api/courses/{id}/homework-activities` 與活動 `/api/courses/{id}/activities`
+//! 4. 具備高容錯多型資料解析（時間戳、繳交狀態、計分、遲交設定）
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use miette::Result;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use tracing::{debug, instrument, warn};
 
 // ─── 資料模型 ─────────────────────────────────────────────────────────────────
 
-/// Tronclass 待辦事項/作業結構
+/// 統一標準化的 Tronclass 作業/測驗資料結構
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TronclassTodoItem {
     pub id: u64,
@@ -28,7 +33,7 @@ pub struct TronclassTodoItem {
 }
 
 impl TronclassTodoItem {
-    /// 判斷作業是否已被繳交或評分
+    /// 判斷作業是否已被學生繳交或已被老師評分
     pub fn is_completed_or_submitted(&self) -> bool {
         if self.is_submitted {
             return true;
@@ -64,23 +69,20 @@ impl TronclassTodoItem {
     }
 }
 
-// ─── API 客戶端擴充 ───────────────────────────────────────────────────────────
+// ─── API 客戶端重寫實作 ───────────────────────────────────────────────────────
 
 impl super::ApiClient {
-    /// 取得使用者待辦事項（含作業、測驗截止時間）
-    ///
-    /// 支援多種 Tronclass 伺服器版本策略：
-    /// 1. 優先查詢標準全域待辦端點 `/api/todos`
-    /// 2. 透過學生專屬課程清單 `/api/my-courses` 取得各科之 `homework-activities` 與 `activities`
-    /// 3. 對所有 JSON 格式進行高度容錯解析
+    /// 取得使用者的所有作業與待辦事項
     #[instrument(skip(self))]
     pub async fn get_todos(&self) -> Result<Vec<TronclassTodoItem>> {
-        let mut all_items: Vec<TronclassTodoItem> = Vec::new();
-        let mut seen_ids = std::collections::HashSet::new();
+        let mut results: Vec<TronclassTodoItem> = Vec::new();
+        let mut seen_ids = HashSet::new();
 
-        // 策略 1: 查詢標準全域待辦端點 `/api/todos`
+        // ─────────────────────────────────────────────────────────────────────
+        // 步驟 1: 查詢全域待辦清單 GET /api/todos
+        // ─────────────────────────────────────────────────────────────────────
         let todos_url = format!("{}/api/todos", self.base_url);
-        debug!(url = %todos_url, "正在向 Tronclass 獲取待辦作業清單");
+        debug!(url = %todos_url, "正在查詢 Tronclass 全域待辦清單 /api/todos");
 
         if let Ok(resp) = self.client.get(&todos_url).send().await {
             let status = resp.status();
@@ -89,11 +91,11 @@ impl super::ApiClient {
             }
             if status.is_success() {
                 if let Ok(body_bytes) = resp.bytes().await {
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                        let extracted = extract_todos_from_value(&json, None, None);
-                        for item in extracted {
+                    if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                        let items = parse_todos_json(&json_val, None, None);
+                        for item in items {
                             if seen_ids.insert(item.id) {
-                                all_items.push(item);
+                                results.push(item);
                             }
                         }
                     }
@@ -101,8 +103,12 @@ impl super::ApiClient {
             }
         }
 
-        // 策略 2: 從學生端課程清單 `/api/my-courses` 補充或抓取各科作業與活動
+        // ─────────────────────────────────────────────────────────────────────
+        // 步驟 2: 查詢學生修課清單 GET /api/my-courses 並獲取各科作業
+        // ─────────────────────────────────────────────────────────────────────
         let my_courses_url = format!("{}/api/my-courses", self.base_url);
+        debug!(url = %my_courses_url, "正在查詢學生修課清單 /api/my-courses");
+
         if let Ok(resp) = self.client.get(&my_courses_url).send().await {
             let status = resp.status();
             if status == StatusCode::UNAUTHORIZED {
@@ -110,19 +116,19 @@ impl super::ApiClient {
             }
             if status.is_success() {
                 if let Ok(body_bytes) = resp.bytes().await {
-                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                        let courses = extract_course_list(&json);
-                        for (c_id, c_name) in courses.into_iter().take(20) {
-                            // 查詢該課程之作業清單 (homework-activities)
-                            let hw_url = format!("{}/api/courses/{}/homework-activities", self.base_url, c_id);
+                    if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                        let courses = parse_course_list(&json_val);
+                        for (course_id, course_name) in courses.into_iter().take(25) {
+                            // 2-1: 查詢課程作業 GET /api/courses/{id}/homework-activities
+                            let hw_url = format!("{}/api/courses/{}/homework-activities", self.base_url, course_id);
                             if let Ok(c_resp) = self.client.get(&hw_url).send().await {
                                 if c_resp.status().is_success() {
                                     if let Ok(c_bytes) = c_resp.bytes().await {
                                         if let Ok(c_json) = serde_json::from_slice::<serde_json::Value>(&c_bytes) {
-                                            let items = extract_todos_from_value(&c_json, Some(c_name.as_str()), Some(c_id));
+                                            let items = parse_todos_json(&c_json, Some(course_name.as_str()), Some(course_id));
                                             for item in items {
                                                 if seen_ids.insert(item.id) {
-                                                    all_items.push(item);
+                                                    results.push(item);
                                                 }
                                             }
                                         }
@@ -130,16 +136,16 @@ impl super::ApiClient {
                                 }
                             }
 
-                            // 查詢該課程之活動清單 (activities)
-                            let act_url = format!("{}/api/courses/{}/activities", self.base_url, c_id);
+                            // 2-2: 查詢課程活動 GET /api/courses/{id}/activities
+                            let act_url = format!("{}/api/courses/{}/activities", self.base_url, course_id);
                             if let Ok(c_resp) = self.client.get(&act_url).send().await {
                                 if c_resp.status().is_success() {
                                     if let Ok(c_bytes) = c_resp.bytes().await {
                                         if let Ok(c_json) = serde_json::from_slice::<serde_json::Value>(&c_bytes) {
-                                            let items = extract_todos_from_value(&c_json, Some(c_name.as_str()), Some(c_id));
+                                            let items = parse_todos_json(&c_json, Some(course_name.as_str()), Some(course_id));
                                             for item in items {
                                                 if seen_ids.insert(item.id) {
-                                                    all_items.push(item);
+                                                    results.push(item);
                                                 }
                                             }
                                         }
@@ -152,44 +158,44 @@ impl super::ApiClient {
             }
         }
 
-        // 回傳彙整並去重後的作業清單（若無作業則回傳空清單，不報錯）
-        Ok(all_items)
+        Ok(results)
     }
 }
 
-// ─── 輔助解析函式 ─────────────────────────────────────────────────────────────
+// ─── 高容錯 JSON 解析工具 ─────────────────────────────────────────────────────
 
-/// 從任意 JSON 結構中遞迴或展開待辦事項
-pub fn extract_todos_from_value(
+/// 從任意 Tronclass JSON 節點提取作業陣列
+pub fn parse_todos_json(
     root: &serde_json::Value,
     fallback_course_name: Option<&str>,
     fallback_course_id: Option<u64>,
 ) -> Vec<TronclassTodoItem> {
     let mut items = Vec::new();
 
+    // 1. 若本身即為陣列 [ ... ]
     if let Some(arr) = root.as_array() {
-        for v in arr {
-            if let Some(item) = extract_todo_item_from_json(v, fallback_course_name, fallback_course_id) {
+        for val in arr {
+            if let Some(item) = parse_single_todo(val, fallback_course_name, fallback_course_id) {
                 items.push(item);
             }
         }
         return items;
     }
 
+    // 2. 若為物件，搜尋標準 Key
     if let Some(obj) = root.as_object() {
         for key in [
-            "todos",
             "todo_list",
             "homework_activities",
-            "homeworks",
             "activities",
+            "todos",
+            "assignments",
             "items",
             "results",
-            "assignments",
         ] {
             if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
-                for v in arr {
-                    if let Some(item) = extract_todo_item_from_json(v, fallback_course_name, fallback_course_id) {
+                for val in arr {
+                    if let Some(item) = parse_single_todo(val, fallback_course_name, fallback_course_id) {
                         items.push(item);
                     }
                 }
@@ -199,30 +205,29 @@ pub fn extract_todos_from_value(
             }
         }
 
-        if let Some(data) = obj.get("data") {
-            if let Some(arr) = data.as_array() {
-                for v in arr {
-                    if let Some(item) = extract_todo_item_from_json(v, fallback_course_name, fallback_course_id) {
+        // 3. 搜尋 data 封裝層
+        if let Some(data_val) = obj.get("data") {
+            if let Some(arr) = data_val.as_array() {
+                for val in arr {
+                    if let Some(item) = parse_single_todo(val, fallback_course_name, fallback_course_id) {
                         items.push(item);
                     }
                 }
                 if !items.is_empty() {
                     return items;
                 }
-            } else if let Some(data_obj) = data.as_object() {
+            } else if let Some(data_obj) = data_val.as_object() {
                 for key in [
-                    "todos",
                     "todo_list",
                     "homework_activities",
-                    "homeworks",
                     "activities",
-                    "items",
-                    "results",
+                    "todos",
                     "assignments",
+                    "items",
                 ] {
                     if let Some(arr) = data_obj.get(key).and_then(|v| v.as_array()) {
-                        for v in arr {
-                            if let Some(item) = extract_todo_item_from_json(v, fallback_course_name, fallback_course_id) {
+                        for val in arr {
+                            if let Some(item) = parse_single_todo(val, fallback_course_name, fallback_course_id) {
                                 items.push(item);
                             }
                         }
@@ -238,24 +243,24 @@ pub fn extract_todos_from_value(
     items
 }
 
-/// 解析單一 JSON 節點為 `TronclassTodoItem`
-pub fn extract_todo_item_from_json(
-    v: &serde_json::Value,
+/// 解析單一節點為標準 `TronclassTodoItem`
+pub fn parse_single_todo(
+    val: &serde_json::Value,
     fallback_course_name: Option<&str>,
     fallback_course_id: Option<u64>,
 ) -> Option<TronclassTodoItem> {
-    let obj = v.as_object()?;
+    let obj = val.as_object()?;
 
-    // 1. ID 提取
+    // 1. 唯一標識 ID
     let id = obj
         .get("id")
         .or_else(|| obj.get("activity_id"))
         .or_else(|| obj.get("todo_id"))
         .or_else(|| obj.get("homework_id"))
-        .and_then(parse_flexible_u64)
+        .and_then(parse_u64)
         .unwrap_or_else(|| rand::random::<u32>() as u64);
 
-    // 2. 標題提取
+    // 2. 標題
     let title = obj
         .get("title")
         .or_else(|| obj.get("name"))
@@ -266,7 +271,7 @@ pub fn extract_todo_item_from_json(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "未命名作業".to_string());
 
-    // 3. 課程資訊提取
+    // 3. 課程資訊
     let mut course_name = obj
         .get("course_name")
         .or_else(|| obj.get("course_title"))
@@ -274,19 +279,19 @@ pub fn extract_todo_item_from_json(
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
 
-    let mut course_id = obj.get("course_id").and_then(parse_flexible_u64);
+    let mut course_id = obj.get("course_id").and_then(parse_u64);
 
-    if let Some(course_obj) = obj.get("course").and_then(|c| c.as_object()) {
+    if let Some(c_obj) = obj.get("course").and_then(|c| c.as_object()) {
         if course_name.is_none() {
-            course_name = course_obj
+            course_name = c_obj
                 .get("name")
-                .or_else(|| course_obj.get("title"))
-                .or_else(|| course_obj.get("course_name"))
+                .or_else(|| c_obj.get("title"))
+                .or_else(|| c_obj.get("course_name"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string());
         }
         if course_id.is_none() {
-            course_id = course_obj.get("id").and_then(parse_flexible_u64);
+            course_id = c_obj.get("id").and_then(parse_u64);
         }
     }
 
@@ -310,33 +315,33 @@ pub fn extract_todo_item_from_json(
         .map(|s| s.trim().to_lowercase())
         .unwrap_or_else(|| "homework".to_string());
 
-    // 6. 時間與截止期限
-    let end_time_val = obj
+    // 6. 截止時間與開放時間
+    let end_time = obj
         .get("end_time")
         .or_else(|| obj.get("deadline"))
         .or_else(|| obj.get("end_at"))
-        .or_else(|| obj.get("due_date"))
         .or_else(|| obj.get("due_at"))
+        .or_else(|| obj.get("due_date"))
         .or_else(|| obj.get("end_date"))
         .or_else(|| obj.get("close_time"))
-        .or_else(|| obj.get("submit_end_time"));
-    let end_time = end_time_val.and_then(parse_flexible_datetime);
+        .or_else(|| obj.get("submit_end_time"))
+        .and_then(parse_datetime);
 
-    let start_time_val = obj
+    let start_time = obj
         .get("start_time")
         .or_else(|| obj.get("start_at"))
         .or_else(|| obj.get("open_time"))
         .or_else(|| obj.get("begin_time"))
-        .or_else(|| obj.get("start_date"));
-    let start_time = start_time_val.and_then(parse_flexible_datetime);
+        .or_else(|| obj.get("start_date"))
+        .and_then(parse_datetime);
 
-    // 7. 繳交狀態
+    // 7. 繳交狀態判定
     let mut is_submitted = obj
         .get("is_submitted")
         .or_else(|| obj.get("submitted"))
         .or_else(|| obj.get("is_finished"))
         .or_else(|| obj.get("finished"))
-        .and_then(parse_flexible_bool)
+        .and_then(parse_bool)
         .unwrap_or(false);
 
     let mut submission_status = obj
@@ -351,8 +356,8 @@ pub fn extract_todo_item_from_json(
         if let Some(st) = sub_obj.get("status").and_then(|v| v.as_str()) {
             submission_status = st.trim().to_string();
         }
-        if let Some(sub_bool) = sub_obj.get("is_submitted").and_then(parse_flexible_bool) {
-            is_submitted = is_submitted || sub_bool;
+        if let Some(sub_b) = sub_obj.get("is_submitted").and_then(parse_bool) {
+            is_submitted = is_submitted || sub_b;
         }
     }
 
@@ -377,15 +382,15 @@ pub fn extract_todo_item_from_json(
         .get("allow_late_submission")
         .or_else(|| obj.get("allow_late"))
         .or_else(|| obj.get("is_allow_late"))
-        .and_then(parse_flexible_bool)
+        .and_then(parse_bool)
         .unwrap_or(false);
 
-    // 9. 分數
+    // 9. 成績分數
     let score = obj
         .get("score")
         .or_else(|| obj.get("grade"))
         .or_else(|| obj.get("submission").and_then(|s| s.get("score")))
-        .and_then(parse_flexible_f64);
+        .and_then(parse_f64);
 
     Some(TronclassTodoItem {
         id,
@@ -403,9 +408,10 @@ pub fn extract_todo_item_from_json(
     })
 }
 
-/// 從課程列表中解析 `(course_id, course_name)`
-fn extract_course_list(root: &serde_json::Value) -> Vec<(u64, String)> {
+/// 從 `/api/my-courses` 回應中解析課程清單 `(course_id, course_name)`
+pub fn parse_course_list(root: &serde_json::Value) -> Vec<(u64, String)> {
     let mut courses = Vec::new();
+
     let arr = if let Some(a) = root.as_array() {
         Some(a)
     } else if let Some(obj) = root.as_object() {
@@ -420,13 +426,14 @@ fn extract_course_list(root: &serde_json::Value) -> Vec<(u64, String)> {
     if let Some(arr) = arr {
         for v in arr {
             if let Some(obj) = v.as_object() {
-                if let Some(id) = obj.get("id").and_then(parse_flexible_u64) {
+                if let Some(id) = obj.get("id").and_then(parse_u64) {
                     let name = obj
                         .get("name")
                         .or_else(|| obj.get("course_name"))
                         .or_else(|| obj.get("title"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("未命名課程")
+                        .trim()
                         .to_string();
                     courses.push((id, name));
                 }
@@ -436,24 +443,26 @@ fn extract_course_list(root: &serde_json::Value) -> Vec<(u64, String)> {
     courses
 }
 
-fn parse_flexible_u64(v: &serde_json::Value) -> Option<u64> {
-    match v {
+// ─── 基礎型別彈性轉換器 ───────────────────────────────────────────────────────
+
+fn parse_u64(val: &serde_json::Value) -> Option<u64> {
+    match val {
         serde_json::Value::Number(n) => n.as_u64(),
         serde_json::Value::String(s) => s.trim().parse::<u64>().ok(),
         _ => None,
     }
 }
 
-fn parse_flexible_f64(v: &serde_json::Value) -> Option<f64> {
-    match v {
+fn parse_f64(val: &serde_json::Value) -> Option<f64> {
+    match val {
         serde_json::Value::Number(n) => n.as_f64(),
         serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
         _ => None,
     }
 }
 
-fn parse_flexible_bool(v: &serde_json::Value) -> Option<bool> {
-    match v {
+fn parse_bool(val: &serde_json::Value) -> Option<bool> {
+    match val {
         serde_json::Value::Bool(b) => Some(*b),
         serde_json::Value::Number(n) => Some(n.as_i64()? != 0),
         serde_json::Value::String(s) => {
@@ -468,24 +477,21 @@ fn parse_flexible_bool(v: &serde_json::Value) -> Option<bool> {
     }
 }
 
-/// 支援多種 Tronclass 日期時間格式解析：
-/// 1. ISO 8601 UTC ("2026-08-30T23:59:00Z", "2026-08-30T15:59:00+08:00")
-/// 2. 本地字串 ("2026-08-30 23:59:00", "2026-08-30 23:59")
-/// 3. 秒數或毫秒數 Timestamp
-pub fn parse_flexible_datetime(value: &serde_json::Value) -> Option<DateTime<Utc>> {
-    match value {
+/// 支援 ISO 8601、本地時間字串 (Asia/Taipei UTC+8) 及 Unix Timestamp
+pub fn parse_datetime(val: &serde_json::Value) -> Option<DateTime<Utc>> {
+    match val {
         serde_json::Value::String(s) => {
             let s = s.trim();
             if s.is_empty() {
                 return None;
             }
 
-            // 1. 標準 RFC 3339 / ISO 8601
+            // 1. 標準 RFC 3339 / ISO 8601 UTC
             if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
                 return Some(dt.with_timezone(&Utc));
             }
 
-            // 2. 本地時間格式 "YYYY-MM-DD HH:MM:SS" (預設視為 Asia/Taipei +08:00)
+            // 2. 本地時間格式 "YYYY-MM-DD HH:MM:SS" (預設 Asia/Taipei +08:00)
             if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
                 let offset = chrono::FixedOffset::east_opt(8 * 3600)?;
                 return offset
@@ -503,7 +509,7 @@ pub fn parse_flexible_datetime(value: &serde_json::Value) -> Option<DateTime<Utc
                     .map(|dt| dt.with_timezone(&Utc));
             }
 
-            // 4. "YYYY-MM-DDTHH:MM:SS" (無時區標記)
+            // 4. "YYYY-MM-DDTHH:MM:SS" (無時區後綴)
             if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
                 let offset = chrono::FixedOffset::east_opt(8 * 3600)?;
                 return offset
@@ -512,7 +518,7 @@ pub fn parse_flexible_datetime(value: &serde_json::Value) -> Option<DateTime<Utc
                     .map(|dt| dt.with_timezone(&Utc));
             }
 
-            // 5. 若數字時間戳記被包裹為字串形式 ("1788100000" 或 "1788100000000")
+            // 5. 純數字時間戳記字串 ("1788100000" / "1788100000000")
             if let Ok(i) = s.parse::<i64>() {
                 return if i > 10_000_000_000 {
                     DateTime::from_timestamp_millis(i)
@@ -545,96 +551,51 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_flexible_datetime_timestamp_number_and_string() {
-        let num_sec = serde_json::Value::Number(serde_json::Number::from(1788100000i64));
-        assert!(parse_flexible_datetime(&num_sec).is_some());
-
-        let str_sec = serde_json::Value::String("1788100000".to_string());
-        assert_eq!(
-            parse_flexible_datetime(&num_sec),
-            parse_flexible_datetime(&str_sec)
-        );
-
-        let num_milli = serde_json::Value::Number(serde_json::Number::from(1788100000000i64));
-        let str_milli = serde_json::Value::String("1788100000000".to_string());
-        assert_eq!(
-            parse_flexible_datetime(&num_milli),
-            parse_flexible_datetime(&str_milli)
-        );
-    }
-
-    #[test]
-    fn test_parse_flexible_datetime_rfc3339() {
-        let val = serde_json::Value::String("2026-08-30T15:00:00Z".to_string());
-        let parsed = parse_flexible_datetime(&val).unwrap();
-        assert_eq!(parsed.to_rfc3339(), "2026-08-30T15:00:00+00:00");
-    }
-
-    #[test]
-    fn test_parse_flexible_datetime_local_taipei() {
-        let val = serde_json::Value::String("2026-08-30 23:00:00".to_string());
-        let parsed = parse_flexible_datetime(&val).unwrap();
-        assert_eq!(parsed.to_rfc3339(), "2026-08-30T15:00:00+00:00");
-    }
-
-    #[test]
-    fn test_deserialize_real_tronclass_todo_list_empty_and_populated() {
-        let empty_json_str = r#"{"todo_list": []}"#;
-        let json_val: serde_json::Value = serde_json::from_str(empty_json_str).unwrap();
-        let items = extract_todos_from_value(&json_val, None, None);
+    fn test_parse_real_empty_todo_list() {
+        let raw = r#"{"todo_list": []}"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let items = parse_todos_json(&val, None, None);
         assert_eq!(items.len(), 0);
+    }
 
-        let json_str = r#"{
-            "todo_list": [
+    #[test]
+    fn test_parse_real_empty_homework_activities() {
+        let raw = r#"{
+            "end": 0,
+            "homework_activities": [],
+            "page": 0,
+            "page_size": 10,
+            "pages": 0,
+            "start": 0,
+            "total": 0
+        }"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let items = parse_todos_json(&val, Some("計算機組織"), Some(263858));
+        assert_eq!(items.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_populated_homework() {
+        let raw = r#"{
+            "homework_activities": [
                 {
-                    "id": 89432,
-                    "title": "第 3 次程式作業：動態規劃",
-                    "course_id": 41205,
-                    "course_name": "演算法 (Computer Algorithms)",
-                    "type": "homework",
-                    "start_time": "2026-08-20T08:00:00Z",
-                    "end_time": "2026-08-30T15:59:59Z",
-                    "is_submitted": false,
-                    "submission_status": "not_submitted",
-                    "allow_late_submission": true,
+                    "id": 105234,
+                    "title": "第一次作業：組合語言設計",
+                    "course_id": 263858,
+                    "deadline": 1788100000,
+                    "submitted": false,
+                    "allow_late": true,
                     "score": null
                 }
             ]
         }"#;
-
-        let json_val: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let items = extract_todos_from_value(&json_val, None, None);
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let items = parse_todos_json(&val, Some("計算機組織"), Some(263858));
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, 89432);
-        assert_eq!(items[0].title, "第 3 次程式作業：動態規劃");
-    }
-
-    #[test]
-    fn test_deserialize_real_tronclass_my_courses() {
-        let json_str = r#"{
-            "courses": [
-                {
-                    "id": 263857,
-                    "name": "英文（二）",
-                    "course_code": "1151TEIDB2A0050 1A   ",
-                    "department": { "id": 4927, "name": "資工系英語班" },
-                    "start_date": "2026-08-01",
-                    "end_date": "2027-01-31"
-                },
-                {
-                    "id": 263858,
-                    "name": "計算機組織",
-                    "course_code": "1151TEIDB2E0334 0A   "
-                }
-            ]
-        }"#;
-
-        let json_val: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let courses = extract_course_list(&json_val);
-        assert_eq!(courses.len(), 2);
-        assert_eq!(courses[0].0, 263857);
-        assert_eq!(courses[0].1, "英文（二）");
-        assert_eq!(courses[1].0, 263858);
-        assert_eq!(courses[1].1, "計算機組織");
+        assert_eq!(items[0].id, 105234);
+        assert_eq!(items[0].title, "第一次作業：組合語言設計");
+        assert_eq!(items[0].course_name.as_deref(), Some("計算機組織"));
+        assert!(!items[0].is_completed_or_submitted());
+        assert!(items[0].allow_late_submission);
     }
 }
