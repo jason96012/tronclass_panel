@@ -4222,24 +4222,14 @@ async fn fetch_todos_for_account(
 /// 以帳號已儲存的 session cookie 組出 HTTP client，**不做任何驗證探測**。
 ///
 /// cookie 為空或 client 建立失敗時回傳 `None`，呼叫端會退回完整登入流程。
+///
+/// 由 `crate::session_client` 提供快取：每個帳號只在 session cookie（或
+/// base_url／timeout）變更時才重建，其餘呼叫共享同一連線池，避免每個 API
+/// 請求都重打一次 TCP／TLS 握手。
 fn build_client_from_saved_cookie(
     account: &crate::account::AccountConfig,
 ) -> Option<reqwest::Client> {
-    let saved_cookie = account.session_cookie.trim();
-    if saved_cookie.is_empty() {
-        return None;
-    }
-
-    let url = reqwest::Url::parse(account.base_url()).ok()?;
-    let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
-    for part in saved_cookie.split(';') {
-        let part = part.trim();
-        if !part.is_empty() {
-            jar.add_cookie_str(part, &url);
-        }
-    }
-
-    crate::api::build_http_client(jar, account.request_timeout_secs).ok()
+    crate::session_client::session_http_client(account).map(|shared| (*shared).clone())
 }
 
 async fn admin_homework_list_handler(

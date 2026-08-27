@@ -42,6 +42,7 @@ mod logs;
 mod monitor;
 mod rollcalls;
 mod runtime_settings;
+mod session_client;
 mod web_push_notifications;
 
 use std::io::Read;
@@ -620,6 +621,7 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
         }
         AccountCmd::Remove { id } => {
             if db.delete(&id).await? {
+                crate::session_client::invalidate(&id);
                 println!("✅ 已刪除帳號：{id}");
             } else {
                 eprintln!("找不到帳號：{id}");

@@ -202,28 +202,18 @@ async fn fetch_todos_with_saved_session(
     let saved_cookie = account.session_cookie.trim();
 
     if !saved_cookie.is_empty() {
-        let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
-        if let Ok(url) = reqwest::Url::parse(account.base_url()) {
-            for part in saved_cookie.split(';') {
-                let part = part.trim();
-                if !part.is_empty() {
-                    jar.add_cookie_str(part, &url);
-                }
-            }
-
-            if let Ok(client) =
-                crate::api::build_http_client(jar, account.request_timeout_secs)
-            {
-                let api = ApiClient::new(client, account.base_url());
-                match api.get_todos().await {
-                    Ok(items) => return Ok(items),
-                    Err(e) if !crate::api::is_auth_error(&e.to_string()) => return Err(e),
-                    Err(_) => {
-                        debug!(
-                            account = %account.id,
-                            "已儲存的 session cookie 已失效，改用帳密重新登入"
-                        );
-                    }
+        // 透過 `session_client` 取得快取的 HTTP client：只在 session cookie
+        // 變更時重建，其餘時間共享連線池，避免每 4 分鐘每個帳號重打握手。
+        if let Some(client) = crate::session_client::session_http_client(account) {
+            let api = ApiClient::new((*client).clone(), account.base_url());
+            match api.get_todos().await {
+                Ok(items) => return Ok(items),
+                Err(e) if !crate::api::is_auth_error(&e.to_string()) => return Err(e),
+                Err(_) => {
+                    debug!(
+                        account = %account.id,
+                        "已儲存的 session cookie 已失效，改用帳密重新登入"
+                    );
                 }
             }
         }
