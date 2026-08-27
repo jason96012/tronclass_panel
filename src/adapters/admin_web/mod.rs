@@ -710,15 +710,44 @@ impl AdminWebState {
                 .collect::<HashMap<_, _>>(),
         );
 
-        // Background session cleanup every 5 minutes
+        // Background session cleanup every 5 minutes & initial database session hydration
         let sessions_clone = Arc::clone(&sessions);
+        let accounts_db_clone = accounts_db.clone();
         tokio::spawn(async move {
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let _ = accounts_db_clone.delete_expired_dashboard_sessions(now_unix).await;
+            if let Ok(existing) = accounts_db_clone.list_valid_dashboard_sessions(now_unix).await {
+                let mut guard = sessions_clone.write().await;
+                for row in existing {
+                    let remaining_secs = (row.expires_at - now_unix).max(0) as u64;
+                    if remaining_secs > 0 {
+                        guard.insert(
+                            row.token,
+                            AdminSession {
+                                account_id: row.account_id,
+                                is_admin: row.is_admin,
+                                must_change_password: row.must_change_password,
+                                expires_at: Instant::now() + Duration::from_secs(remaining_secs),
+                            },
+                        );
+                    }
+                }
+            }
+
             loop {
                 tokio::time::sleep(Duration::from_secs(300)).await;
                 sessions_clone
                     .write()
                     .await
                     .retain(|_, s| s.expires_at > Instant::now());
+                let now_unix = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs() as i64;
+                let _ = accounts_db_clone.delete_expired_dashboard_sessions(now_unix).await;
             }
         });
 
@@ -765,26 +794,69 @@ impl AdminWebState {
         // current token is expired and needs removal.
         let session = {
             let sessions = self.sessions.read().await;
-            sessions.get(token).cloned()?
+            sessions.get(token).cloned()
         };
-        if session.expires_at > Instant::now() {
-            return Some(session);
+
+        if let Some(session) = session {
+            if session.expires_at > Instant::now() {
+                return Some(session);
+            }
+
+            let mut sessions = self.sessions.write().await;
+            if sessions
+                .get(token)
+                .map(|session| session.expires_at <= Instant::now())
+                .unwrap_or(false)
+            {
+                sessions.remove(token);
+                let db = self.accounts_db.clone();
+                let tok = token.to_string();
+                tokio::spawn(async move {
+                    let _ = db.delete_dashboard_session(&tok).await;
+                });
+            }
+            return None;
         }
 
-        let mut sessions = self.sessions.write().await;
-        if sessions
-            .get(token)
-            .map(|session| session.expires_at <= Instant::now())
-            .unwrap_or(false)
-        {
-            sessions.remove(token);
+        // 快取未命中（例如重啟後非同步載入尚未完成或已被淘汰）：查詢 SQLite 資料庫
+        if let Ok(Some(row)) = self.accounts_db.get_dashboard_session(token).await {
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            if row.expires_at > now_unix {
+                let remaining_secs = (row.expires_at - now_unix) as u64;
+                let session = AdminSession {
+                    account_id: row.account_id,
+                    is_admin: row.is_admin,
+                    must_change_password: row.must_change_password,
+                    expires_at: Instant::now() + Duration::from_secs(remaining_secs),
+                };
+                let mut sessions = self.sessions.write().await;
+                sessions.insert(token.to_string(), session.clone());
+                return Some(session);
+            } else {
+                let db = self.accounts_db.clone();
+                let tok = token.to_string();
+                tokio::spawn(async move {
+                    let _ = db.delete_dashboard_session(&tok).await;
+                });
+            }
         }
+
         None
     }
 
     async fn revoke_sessions_for_account(&self, account_id: &str) {
         let mut sessions = self.sessions.write().await;
         sessions.retain(|_, session| session.account_id != account_id);
+        if let Err(e) = self
+            .accounts_db
+            .delete_dashboard_sessions_by_account(account_id)
+            .await
+        {
+            warn!(error = %e, "從資料庫刪除帳號 Dashboard sessions 失敗");
+        }
     }
 
     async fn create_session(
@@ -795,11 +867,32 @@ impl AdminWebState {
     ) -> String {
         let token = Uuid::new_v4().simple().to_string();
         let session = AdminSession {
-            account_id,
+            account_id: account_id.clone(),
             is_admin,
             must_change_password,
             expires_at: Instant::now() + SESSION_TTL,
         };
+
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let expires_at_unix = now_unix + SESSION_TTL.as_secs() as i64;
+
+        if let Err(e) = self
+            .accounts_db
+            .insert_dashboard_session(
+                &token,
+                &account_id,
+                is_admin,
+                must_change_password,
+                expires_at_unix,
+            )
+            .await
+        {
+            warn!(error = %e, "無法將 Dashboard session 寫入資料庫");
+        }
+
         let mut sessions = self.sessions.write().await;
         // Enforce max sessions: drop oldest if over limit
         if sessions.len() >= MAX_SESSIONS {
@@ -816,15 +909,16 @@ impl AdminWebState {
     }
 
     async fn revoke_session(&self, token: &str) {
-        self.sessions.write().await.remove(token.trim());
+        let token_trimmed = token.trim();
+        self.sessions.write().await.remove(token_trimmed);
+        if let Err(e) = self.accounts_db.delete_dashboard_session(token_trimmed).await {
+            warn!(error = %e, "從資料庫刪除 Dashboard session 失敗");
+        }
     }
 
     /// Password changes invalidate every Dashboard session for the account.
     async fn revoke_account_sessions(&self, account_id: &str) {
-        self.sessions
-            .write()
-            .await
-            .retain(|_, session| session.account_id != account_id);
+        self.revoke_sessions_for_account(account_id).await;
     }
 }
 
@@ -4041,5 +4135,38 @@ mod tests {
         )
         .await;
         assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn session_persists_across_state_recreation() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+
+        // 建立初始狀態並產生 Session
+        let state1 = AdminWebState::new("", vec![], db.clone(), None, None, 10);
+        let session_token = state1
+            .create_session("student-persisted".to_string(), true, false)
+            .await;
+
+        let auth1 = state1.authorize(&session_token).await.unwrap();
+        assert_eq!(auth1.account_id, "student-persisted");
+        assert!(auth1.is_admin);
+
+        // 模擬伺服器重啟：建立全新的 AdminWebState，快取初時為空或從 SQLite 讀取
+        let state2 = AdminWebState::new("", vec![], db.clone(), None, None, 10);
+
+        // 透過 authorize 測試從 SQLite 讀回 Session
+        let auth2 = state2.authorize(&session_token).await.unwrap();
+        assert_eq!(auth2.account_id, "student-persisted");
+        assert!(auth2.is_admin);
+        assert!(!auth2.must_change_password);
+
+        // 測試登出後從 SQLite 刪除
+        state2.revoke_session(&session_token).await;
+        assert!(state2.authorize(&session_token).await.is_none());
+
+        // 重啟後的 state3 也應無法使用已登出的 session
+        let state3 = AdminWebState::new("", vec![], db, None, None, 10);
+        assert!(state3.authorize(&session_token).await.is_none());
     }
 }
