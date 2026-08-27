@@ -1228,6 +1228,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(mock::admin_mock_qr_svg_handler),
         )
         .route(
+            "/admin/api/homework",
+            get(admin_homework_list_handler),
+        )
+        .route(
             "/admin/timetable",
             axum::routing::get(admin_clean_timetable_page_handler),
         )
@@ -4032,6 +4036,108 @@ fn unauthorized_response() -> Response {
         Json(json!({ "error": "unauthorized" })),
     )
         .into_response()
+}
+
+async fn admin_homework_list_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = query.token.as_deref().unwrap_or("");
+    let Some(session) = state.authorize(token).await else {
+        return unauthorized_response();
+    };
+
+    let target_account_id = if session.is_admin {
+        query.account_id.as_deref().unwrap_or(&session.account_id)
+    } else {
+        &session.account_id
+    };
+
+    let Some(raw_account) = (match state.accounts_db.get(target_account_id).await {
+        Ok(acc) => acc,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+            )
+                .into_response();
+        }
+    }) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "找不到指定帳號" })),
+        )
+            .into_response();
+    };
+
+    if !raw_account.enabled {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "帳號已被停用" })),
+        )
+            .into_response();
+    }
+
+    let config = match crate::config::CONFIG.get() {
+        Some(cfg) => cfg,
+        None => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "系統設定尚未載入" })),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(provider) = config.providers.get(&raw_account.provider) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("未知的 Provider：{}", raw_account.provider) })),
+        )
+            .into_response();
+    };
+
+    let resolved_account = crate::account::AccountConfig {
+        id: raw_account.id.clone(),
+        provider: raw_account.provider.clone(),
+        username: raw_account.username.clone(),
+        password: raw_account.password.clone(),
+        enabled: raw_account.enabled,
+        line_user_id: raw_account.line_user_id.clone(),
+        discord_user_id: raw_account.discord_user_id.clone(),
+        session_cookie: raw_account.session_cookie.clone(),
+        is_admin: raw_account.is_admin,
+        provider_config: provider.clone(),
+        request_timeout_secs: provider.api.request_timeout_secs,
+    };
+
+    let (auth_client, _) = match crate::auth::AuthClient::new(&resolved_account).await {
+        Ok(res) => res,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("Tronclass 登入失敗：{e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    let api = crate::api::ApiClient::new(auth_client.client, resolved_account.base_url());
+    match api.get_todos().await {
+        Ok(items) => (
+            StatusCode::OK,
+            Json(json!({
+                "account_id": target_account_id,
+                "items": items,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("無法獲取待辦作業：{e}") })),
+        )
+            .into_response(),
+    }
 }
 
 #[cfg(test)]

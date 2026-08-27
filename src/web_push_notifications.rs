@@ -147,7 +147,73 @@ pub fn notify_rollcall(
     });
 }
 
+/// Queue one account-owner homework deadline notification.
+pub fn notify_homework(
+    account_id: &str,
+    homework_id: u64,
+    course_name: &str,
+    title: &str,
+    stage_badge: &str,
+) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    let key = format!("hw:{account_id}:{homework_id}:{stage_badge}");
+    {
+        let mut recent = RECENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let now = Instant::now();
+        recent.retain(|_, at| now.duration_since(*at) < Duration::from_secs(2 * 60 * 60));
+        if recent.contains_key(&key) {
+            return;
+        }
+        if recent.len() >= MAX_DEDUPE_ENTRIES {
+            recent.clear();
+        }
+        recent.insert(key, now);
+    }
+
+    let account_id = account_id.to_string();
+    let course_name = course_name.to_string();
+    let title = title.to_string();
+    let stage_badge = stage_badge.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = service
+            .send_homework(&account_id, &course_name, &title, &stage_badge)
+            .await
+        {
+            warn!(account = %account_id, error = %error, "Web Push 作業截止通知失敗");
+        }
+    });
+}
+
 impl WebPushService {
+    async fn send_homework(
+        &self,
+        account_id: &str,
+        course_name: &str,
+        title: &str,
+        stage_badge: &str,
+    ) -> Result<()> {
+        let subscriptions = self.db.list_web_push_subscriptions(account_id).await?;
+        if subscriptions.is_empty() {
+            return Ok(());
+        }
+        let payload = serde_json::to_vec(&json!({
+            "title": format!("📝 作業截止提醒：{course_name}"),
+            "body": format!("【{stage_badge}】「{title}」，請記得至 Tronclass 繳交！"),
+            "url": "/admin/dashboard",
+            "tag": format!("tronclass-homework-{account_id}"),
+        }))
+        .map_err(|error| miette::miette!("序列化 Web Push 作業 payload 失敗：{error}"))?;
+
+        for subscription in subscriptions {
+            if let Err(error) = self.send_one(&subscription, &payload).await {
+                warn!(account = %account_id, endpoint = %subscription.endpoint, error = %error, "Web Push 單一裝置發送失敗");
+            }
+        }
+        Ok(())
+    }
+
     async fn send_rollcall(
         &self,
         account_id: &str,

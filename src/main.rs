@@ -36,6 +36,7 @@ mod config;
 mod dashboard_auth;
 mod db;
 mod detection_schedule;
+mod homework_reminders;
 mod logs;
 mod monitor;
 mod rollcalls;
@@ -966,6 +967,15 @@ async fn main() -> Result<()> {
         );
     }
     // CLASS_REMINDER_SCHEDULER_END_V1
+
+    // HOMEWORK_REMINDER_SCHEDULER_START
+    // 線上定時輪詢各帳號未繳交作業，於截止前 24h、6h、1h 發送倒數提醒
+    homework_reminders::start_homework_reminder_scheduler(
+        accounts_db.clone(),
+        Arc::clone(&config),
+        adapter_hub.as_ref().map(Arc::clone),
+    );
+    // HOMEWORK_REMINDER_SCHEDULER_END
 
     let interactive_adapter = adapter_hub.is_some() || config.adapters.admin_web.enabled;
     let scanner_registry = if interactive_adapter {

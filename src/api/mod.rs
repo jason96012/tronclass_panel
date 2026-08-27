@@ -5,6 +5,7 @@
 
 pub mod profile;
 pub mod rollcall;
+pub mod todos;
 
 use std::sync::Arc;
 use std::time::Duration;

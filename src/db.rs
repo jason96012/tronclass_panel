@@ -697,6 +697,30 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err("初始化 dashboard_sessions account_id index 失敗")?;
 
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS homework_reminder_sent (
+                account_id TEXT NOT NULL DEFAULT '',
+                homework_id TEXT NOT NULL DEFAULT '',
+                stage TEXT NOT NULL DEFAULT '',
+                deadline_timestamp INTEGER NOT NULL DEFAULT 0,
+                sent_at INTEGER NOT NULL DEFAULT 0,
+                sent_time TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(account_id, homework_id, stage)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 homework_reminder_sent 資料表失敗")?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_homework_reminder_sent_at ON homework_reminder_sent(sent_at)",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 homework_reminder_sent index 失敗")?;
+
         let (activity_tx, activity_rx) = mpsc::channel(1024);
         let (material_tx, material_rx) = mpsc::channel(1024);
 
@@ -2042,6 +2066,94 @@ impl AccountsDb {
         Ok(result.rows_affected())
     }
 
+    // ── 作業截止提醒去重 ──────────────────────────────────────────────────────
+
+    /// 檢查某個作業在指定階段（如 24h, 6h, 1h）是否已發送過提醒。
+    /// 若作業截止時間已被老師延長（新 deadline > 舊 deadline），則自動重置歷史並回傳 false。
+    pub async fn is_homework_reminder_sent(
+        &self,
+        account_id: &str,
+        homework_id: &str,
+        stage: &str,
+        deadline_timestamp: i64,
+    ) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT deadline_timestamp FROM homework_reminder_sent
+             WHERE account_id = ? AND homework_id = ? AND stage = ?",
+        )
+        .bind(account_id.trim())
+        .bind(homework_id.trim())
+        .bind(stage.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢 homework_reminder_sent 失敗")?;
+
+        match row {
+            Some((stored_deadline,)) => {
+                if deadline_timestamp > stored_deadline {
+                    // 截止時間已被延期：清理舊通知紀錄以重新提醒
+                    let _ = sqlx::query(
+                        "DELETE FROM homework_reminder_sent WHERE account_id = ? AND homework_id = ?",
+                    )
+                    .bind(account_id.trim())
+                    .bind(homework_id.trim())
+                    .execute(&self.pool)
+                    .await;
+                    Ok(false)
+                } else {
+                    Ok(true)
+                }
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// 標記某個作業的特定階梯提醒已送出
+    pub async fn mark_homework_reminder_sent(
+        &self,
+        account_id: &str,
+        homework_id: &str,
+        stage: &str,
+        deadline_timestamp: i64,
+    ) -> Result<bool> {
+        let now = chrono::Local::now();
+        let sent_at = now.timestamp();
+        let sent_time = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let result = sqlx::query(
+            "INSERT OR REPLACE INTO homework_reminder_sent
+                (account_id, homework_id, stage, deadline_timestamp, sent_at, sent_time)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(account_id.trim())
+        .bind(homework_id.trim())
+        .bind(stage.trim())
+        .bind(deadline_timestamp)
+        .bind(sent_at)
+        .bind(sent_time)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("寫入 homework_reminder_sent 失敗")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 清理 14 天前的歷史作業提醒已送出紀錄
+    pub async fn cleanup_old_homework_reminders_sent(
+        &self,
+        older_than_timestamp: i64,
+    ) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM homework_reminder_sent WHERE sent_at < ?")
+            .bind(older_than_timestamp)
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("清理舊作業提醒紀錄失敗")?;
+        Ok(result.rows_affected())
+    }
+
     /// 檢查 SQLite 結構與索引是否完整。
     pub async fn integrity_check(&self) -> Result<String> {
         let result: String = sqlx::query_scalar("PRAGMA integrity_check")
@@ -2614,5 +2726,55 @@ mod tests {
         assert_eq!(materials.len(), 1);
         assert_eq!(materials[0].file_name, "test.pdf");
         assert_eq!(materials[0].size_label, "2.0 KB");
+    }
+
+    #[tokio::test]
+    async fn homework_reminder_deduplication_and_extension_reset() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+
+        let initial_deadline = 1788100000;
+        let extended_deadline = 1788200000;
+
+        // 1. 初始階段尚未發送
+        assert!(
+            !db.is_homework_reminder_sent("acc1", "hw_101", "24h", initial_deadline)
+                .await
+                .unwrap()
+        );
+
+        // 2. 標記已發送 24h 提醒
+        assert!(
+            db.mark_homework_reminder_sent("acc1", "hw_101", "24h", initial_deadline)
+                .await
+                .unwrap()
+        );
+
+        // 3. 再次檢查相同截止時間的 24h 提醒，應回傳已發送 (true)
+        assert!(
+            db.is_homework_reminder_sent("acc1", "hw_101", "24h", initial_deadline)
+                .await
+                .unwrap()
+        );
+
+        // 4. 作業截止時間被老師延期 (extended_deadline > initial_deadline)
+        // 應自動重置該作業的所有階梯歷史，回傳 false
+        assert!(
+            !db.is_homework_reminder_sent("acc1", "hw_101", "24h", extended_deadline)
+                .await
+                .unwrap()
+        );
+
+        // 5. 標記延期後的新通知
+        assert!(
+            db.mark_homework_reminder_sent("acc1", "hw_101", "24h", extended_deadline)
+                .await
+                .unwrap()
+        );
+        assert!(
+            db.is_homework_reminder_sent("acc1", "hw_101", "24h", extended_deadline)
+                .await
+                .unwrap()
+        );
     }
 }
