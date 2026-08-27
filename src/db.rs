@@ -5,7 +5,7 @@
 use std::{
     path::Path,
     str::FromStr,
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::atomic::AtomicUsize,
     time::Duration,
 };
 

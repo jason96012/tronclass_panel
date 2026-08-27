@@ -4038,12 +4038,21 @@ fn unauthorized_response() -> Response {
         .into_response()
 }
 
+#[derive(Debug, Deserialize)]
+struct AdminHomeworkQuery {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
 async fn admin_homework_list_handler(
     State(state): State<AdminWebState>,
-    Query(query): Query<AdminQuery>,
+    headers: HeaderMap,
+    Query(query): Query<AdminHomeworkQuery>,
 ) -> Response {
-    let token = query.token.as_deref().unwrap_or("");
-    let Some(session) = state.authorize(token).await else {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
         return unauthorized_response();
     };
 
@@ -4078,16 +4087,7 @@ async fn admin_homework_list_handler(
             .into_response();
     }
 
-    let config = match crate::config::CONFIG.get() {
-        Some(cfg) => cfg,
-        None => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "系統設定尚未載入" })),
-            )
-                .into_response();
-        }
-    };
+    let config = crate::config::get_config();
 
     let Some(provider) = config.providers.get(&raw_account.provider) else {
         return (
