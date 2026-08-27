@@ -93,7 +93,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .metric.pending{border-color:rgba(59,130,246,.35)}.metric.pending b{color:#3b82f6}
 .metric.good{border-color:rgba(16,185,129,.35)}.metric.good b{color:#10b981}
 .controls{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:20px;flex-wrap:wrap;background:var(--ds-card);border:1px solid var(--ds-line-soft);padding:16px 20px;border-radius:18px;box-shadow:var(--ds-shadow)}
-.filter-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.filter-tabs{display:flex;gap:6px;flex-wrap:wrap;min-width:0}
 .filter-tab{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 14px;border-radius:999px;border:1px solid var(--ds-line);background:var(--ds-soft);color:var(--ds-muted);font-size:13px;font-weight:750;cursor:pointer;transition:all .15s ease}
 .filter-tab:hover{color:var(--ds-text);border-color:#93c5fd}
 .filter-tab.active{background:linear-gradient(135deg,#0284c7,#4f46e5);border-color:transparent;color:#ffffff;box-shadow:0 4px 12px rgba(37,99,235,.25)}
@@ -177,7 +177,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .hw-group-body{
   border:1px solid var(--ds-line-soft);border-radius:18px;
   background:var(--ds-card);box-shadow:var(--ds-shadow);
-  padding:2px 16px;overflow:hidden
+  padding:2px 16px;min-width:0
 }
 .hw-row{
   display:flex;align-items:center;justify-content:space-between;gap:16px;
@@ -267,19 +267,21 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   .hw-group .controls{padding:13px 0!important}
 
   /* ── 篩選列 ─────────────────────────────────────── */
-  /* 注意：不可用 overflow:hidden，否則會裁掉下方橫向捲動的頁籤列 */
+  /* min-width:0 讓子元素能收縮，橫捲才會生效而不是把卡片撐寬 */
   .controls{
     display:flex!important;flex-direction:column!important;align-items:stretch!important;
     padding:12px;border-radius:16px;gap:11px;margin-bottom:13px;
-    box-shadow:none;overflow:visible
+    box-shadow:none;overflow:visible;min-width:0;max-width:100%
   }
 
-  /* 頁籤橫捲：靠 padding 讓末端有留白，不用負 margin（會被父層圓角切掉） */
+  /* 頁籤橫捲：限制在卡片寬度內，超出的部分用捲動而非溢出。
+     min-width:0 是關鍵 —— flex/grid 子項預設 min-width:auto 會撐開父層。 */
   .filter-tabs{
     flex-wrap:nowrap!important;overflow-x:auto;gap:7px;
     -webkit-overflow-scrolling:touch;scrollbar-width:none;
     scroll-snap-type:x proximity;scroll-padding-inline:2px;
     padding-bottom:3px;
+    min-width:0;max-width:100%;
   }
   .filter-tabs::-webkit-scrollbar{display:none}
   .filter-tab{
@@ -411,6 +413,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 
   <section class="hw-group">
     <h2 class="hw-group-title">篩選</h2>
+    <div class="hw-group-body">
     <div class="controls">
     <div class="filter-tabs">
       <button class="filter-tab active" data-filter="pending" type="button">⏳ 未繳交 <span class="badge-count" id="countPending">0</span></button>
@@ -430,6 +433,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         <option value="course">課程名稱</option>
       </select>
       <input type="search" id="searchInput" placeholder="搜尋作業名稱 / 課程..." aria-label="搜尋作業">
+    </div>
     </div>
     </div>
   </section>
