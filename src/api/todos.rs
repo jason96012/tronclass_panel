@@ -132,7 +132,7 @@ impl super::ApiClient {
                         if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
                             let courses = extract_course_list(&json);
                             for (c_id, c_name) in courses.iter().take(20) {
-                                for sub_path in ["homeworks", "activities", "todos"] {
+                                for sub_path in ["homework-activities", "homeworks", "activities", "todos"] {
                                     let sub_url = format!("{}/api/courses/{}/{}", self.base_url, c_id, sub_path);
                                     if let Ok(c_resp) = self.client.get(&sub_url).send().await {
                                         if c_resp.status().is_success() {
@@ -184,7 +184,16 @@ pub fn extract_todos_from_value(
     }
 
     if let Some(obj) = root.as_object() {
-        for key in ["todos", "activities", "items", "results", "todo_list", "assignments", "homeworks"] {
+        for key in [
+            "todos",
+            "todo_list",
+            "homework_activities",
+            "homeworks",
+            "activities",
+            "items",
+            "results",
+            "assignments",
+        ] {
             if let Some(arr) = obj.get(key).and_then(|v| v.as_array()) {
                 for v in arr {
                     if let Some(item) = extract_todo_item_from_json(v, fallback_course_name, fallback_course_id) {
@@ -208,7 +217,16 @@ pub fn extract_todos_from_value(
                     return items;
                 }
             } else if let Some(data_obj) = data.as_object() {
-                for key in ["todos", "activities", "items", "results", "todo_list", "assignments", "homeworks"] {
+                for key in [
+                    "todos",
+                    "todo_list",
+                    "homework_activities",
+                    "homeworks",
+                    "activities",
+                    "items",
+                    "results",
+                    "assignments",
+                ] {
                     if let Some(arr) = data_obj.get(key).and_then(|v| v.as_array()) {
                         for v in arr {
                             if let Some(item) = extract_todo_item_from_json(v, fallback_course_name, fallback_course_id) {
@@ -536,6 +554,91 @@ mod tests {
         let val = serde_json::Value::String("2026-08-30 23:00:00".to_string());
         let parsed = parse_flexible_datetime(&val).unwrap();
         assert_eq!(parsed.to_rfc3339(), "2026-08-30T15:00:00+00:00");
+    }
+
+    #[test]
+    fn test_deserialize_real_tronclass_todo_list() {
+        // Real Tronclass `GET /api/todos` response shape
+        let json_str = r#"{
+            "todo_list": [
+                {
+                    "id": 89432,
+                    "title": "第 3 次程式作業：動態規劃",
+                    "course_id": 41205,
+                    "course_name": "演算法 (Computer Algorithms)",
+                    "type": "homework",
+                    "start_time": "2026-08-20T08:00:00Z",
+                    "end_time": "2026-08-30T15:59:59Z",
+                    "is_submitted": false,
+                    "submission_status": "not_submitted",
+                    "allow_late_submission": true,
+                    "score": null
+                },
+                {
+                    "id": 89435,
+                    "title": "Ch4 網路層線上測驗",
+                    "course_id": 41208,
+                    "course_name": "計算機網路",
+                    "type": "quiz",
+                    "start_time": "2026-08-25T00:00:00Z",
+                    "end_time": "2026-08-28T12:00:00Z",
+                    "is_submitted": true,
+                    "submission_status": "submitted",
+                    "allow_late_submission": false,
+                    "score": 95.0
+                }
+            ]
+        }"#;
+
+        let json_val: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let items = extract_todos_from_value(&json_val, None, None);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].id, 89432);
+        assert_eq!(items[0].title, "第 3 次程式作業：動態規劃");
+        assert_eq!(items[0].course_name.as_deref(), Some("演算法 (Computer Algorithms)"));
+        assert!(!items[0].is_completed_or_submitted());
+        assert!(items[0].allow_late_submission);
+
+        assert_eq!(items[1].id, 89435);
+        assert!(items[1].is_completed_or_submitted());
+        assert_eq!(items[1].score, Some(95.0));
+    }
+
+    #[test]
+    fn test_deserialize_real_tronclass_homework_activities() {
+        // Real Tronclass `GET /api/courses/{id}/homework-activities` response shape
+        let json_str = r#"{
+            "page": 1,
+            "page_size": 100,
+            "pages": 1,
+            "total": 1,
+            "homework_activities": [
+                {
+                    "id": 105234,
+                    "title": "期中專案報告初稿",
+                    "course_id": 41210,
+                    "course_name": "人工智慧與深度學習",
+                    "type": "homework",
+                    "deadline": 1788200000,
+                    "end_time": "2026-08-31T23:59:00+08:00",
+                    "due_at": "2026-08-31T15:59:00Z",
+                    "submitted": false,
+                    "status": "not_submitted",
+                    "allow_late": false,
+                    "score": null
+                }
+            ]
+        }"#;
+
+        let json_val: serde_json::Value = serde_json::from_str(json_str).unwrap();
+        let items = extract_todos_from_value(&json_val, None, None);
+
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].id, 105234);
+        assert_eq!(items[0].title, "期中專案報告初稿");
+        assert_eq!(items[0].course_name.as_deref(), Some("人工智慧與深度學習"));
+        assert!(!items[0].is_completed_or_submitted());
     }
 
     #[test]
