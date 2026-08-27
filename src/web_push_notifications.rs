@@ -126,8 +126,8 @@ pub async fn send_homework_test(
         .ok_or_else(|| miette::miette!("Web Push 尚未初始化"))?;
     let subscriptions = service.db.list_web_push_subscriptions(account_id).await?;
     let payload = serde_json::to_vec(&json!({
-        "title": format!("📝 作業截止提醒：{course_name}"),
-        "body": format!("【{stage_badge}】「{title}」，請記得至 Tronclass 繳交！"),
+        "title": format!("作業截止提醒｜{course_name}"),
+        "body": format!("{stage_badge}：{title}"),
         "url": "/admin/homework",
         "tag": format!("tronclass-homework-test-{account_id}"),
     }))
@@ -229,8 +229,8 @@ impl WebPushService {
             return Ok(());
         }
         let payload = serde_json::to_vec(&json!({
-            "title": format!("📝 作業截止提醒：{course_name}"),
-            "body": format!("【{stage_badge}】「{title}」，請記得至 Tronclass 繳交！"),
+            "title": format!("作業截止提醒｜{course_name}"),
+            "body": format!("{stage_badge}：{title}"),
             "url": "/admin/dashboard",
             "tag": format!("tronclass-homework-{account_id}"),
         }))

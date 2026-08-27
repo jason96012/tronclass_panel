@@ -164,7 +164,7 @@ pub struct HomeworkDeadlineEvent {
     pub account: String,
     pub course_name: String,
     pub title: String,
-    /// 階段徽章，例如「🚨 最後 1 小時緊急提醒」。
+    /// 階段徽章，例如「最後 1 小時」。
     pub stage_badge: String,
     /// 截止時間（本地時間字串）。
     pub deadline: String,
@@ -176,14 +176,13 @@ impl HomeworkDeadlineEvent {
     /// 組出各 adapter 共用的訊息文字。
     pub fn render(&self) -> String {
         format!(
-            "📝 Tronclass 作業截止提醒\n\
-             【{}】\n\n\
-             📚 課程：{}\n\
-             📌 標題：{}\n\
-             ⏳ 截止時間：{}\n\
-             ⏱️ 剩餘時間：{}\n\
-             👤 帳號：{}\n\n\
-             👉 請儘速至 Tronclass 平台確認並繳交！",
+            "📝 作業截止提醒｜{}\n\n\
+             課程：{}\n\
+             標題：{}\n\
+             截止：{}\n\
+             剩餘：{}\n\
+             帳號：{}\n\n\
+             請儘速至 Tronclass 確認並繳交。",
             self.stage_badge,
             self.course_name,
             self.title,

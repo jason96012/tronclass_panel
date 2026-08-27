@@ -303,14 +303,14 @@ pub async fn evaluate_and_send_reminders(
 
         // 判斷階梯階段 (Stage)
         let (stage, stage_badge, time_desc) = if total_minutes <= 60 {
-            ("1h", "🚨 最後 1 小時緊急提醒", format!("{total_minutes} 分鐘"))
+            ("1h", "最後 1 小時", format!("{total_minutes} 分鐘"))
         } else if total_minutes <= 6 * 60 {
             let hours = total_minutes / 60;
             let mins = total_minutes % 60;
-            ("6h", "⚠️ 6 小時倒數提醒", format!("{hours} 小時 {mins} 分鐘"))
+            ("6h", "6 小時內截止", format!("{hours} 小時 {mins} 分鐘"))
         } else if total_minutes <= 24 * 60 {
             let hours = total_minutes / 60;
-            ("24h", "⏳ 24 小時倒數提醒", format!("約 {hours} 小時"))
+            ("24h", "24 小時內截止", format!("約 {hours} 小時"))
         } else {
             // 超過 24 小時，暫不發送緊急通知
             continue;

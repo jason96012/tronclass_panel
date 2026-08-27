@@ -4116,8 +4116,8 @@ async fn admin_homework_test_notification_handler(
     let event = crate::adapters::events::HomeworkDeadlineEvent {
         account: account_id.clone(),
         course_name: "測試課程".to_string(),
-        title: "🔔 這是一則測試通知（非真實作業）".to_string(),
-        stage_badge: "🚨 最後 1 小時緊急提醒".to_string(),
+        title: "這是一則測試通知（非真實作業）".to_string(),
+        stage_badge: "最後 1 小時".to_string(),
         deadline: deadline.format("%Y-%m-%d %H:%M").to_string(),
         time_remaining: "45 分鐘".to_string(),
     };
@@ -4163,8 +4163,8 @@ async fn admin_homework_test_notification_handler(
             if let Err(error) = crate::web_push_notifications::send_homework_test(
                 &account_id,
                 "測試課程",
-                "🔔 這是一則測試通知（非真實作業）",
-                "🚨 最後 1 小時緊急提醒",
+                "這是一則測試通知（非真實作業）",
+                "最後 1 小時",
             )
             .await
             {
