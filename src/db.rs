@@ -32,6 +32,14 @@ const EVENT_RESULT_MAX_BYTES: usize = 64;
 const EVENT_DETAILS_MAX_BYTES: usize = 4 * 1024;
 const EVENT_IP_MAX_BYTES: usize = 64;
 const EVENT_TRUNCATED_SUFFIX: &str = "…[truncated]";
+/// 作業截止時間延後多久才算「顯著延期」，值得重新跑一輪倒數提醒。
+///
+/// MEANINGFUL_EXTENSION_ONLY_V1
+/// 設為 6 小時：對應提醒階梯的中間級距。老師微調截止時間（往後挪數分鐘或
+/// 一兩小時）不會重置紀錄，避免同一階段重複轟炸；真正的延期（延到隔天、
+/// 延長一週）才會讓 24h/6h/1h 重新提醒一輪。
+const MEANINGFUL_EXTENSION_SECS: i64 = 6 * 60 * 60;
+
 const MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT: usize = 32;
 const MAX_PASSKEY_CREDENTIAL_JSON_BYTES: usize = 64 * 1024;
 const MAX_USERNAME_MATCH_ROWS: i64 = 64;
@@ -2086,7 +2094,12 @@ impl AccountsDb {
     // ── 作業截止提醒去重 ──────────────────────────────────────────────────────
 
     /// 檢查某個作業在指定階段（如 24h, 6h, 1h）是否已發送過提醒。
-    /// 若作業截止時間已被老師延長（新 deadline > 舊 deadline），則自動重置歷史並回傳 false。
+    /// 若作業截止時間被老師顯著延長，則自動重置歷史並回傳 false，讓倒數重新提醒。
+    ///
+    /// MEANINGFUL_EXTENSION_ONLY_V1
+    /// 只有延期超過 [`MEANINGFUL_EXTENSION_SECS`] 才視為「新的一輪」。
+    /// 否則老師只把截止時間往後挪幾分鐘（很常見），會把已發過的階梯紀錄清掉，
+    /// 導致使用者在同一個階段收到重複的緊急提醒。
     pub async fn is_homework_reminder_sent(
         &self,
         account_id: &str,
@@ -2108,8 +2121,9 @@ impl AccountsDb {
 
         match row {
             Some((stored_deadline,)) => {
-                if deadline_timestamp > stored_deadline {
-                    // 截止時間已被延期：清理舊通知紀錄以重新提醒
+                // 只有「顯著延期」才重置。微幅順延（例如往後挪 10 分鐘）
+                // 不應清掉紀錄，否則同一階段會重複發送提醒。
+                if deadline_timestamp.saturating_sub(stored_deadline) >= MEANINGFUL_EXTENSION_SECS {
                     let _ = sqlx::query(
                         "DELETE FROM homework_reminder_sent WHERE account_id = ? AND homework_id = ?",
                     )
@@ -2790,6 +2804,47 @@ mod tests {
         assert_eq!(materials.len(), 1);
         assert_eq!(materials[0].file_name, "test.pdf");
         assert_eq!(materials[0].size_label, "2.0 KB");
+    }
+
+    /// 微幅延期（例如老師把截止時間往後挪 10 分鐘）不可重置提醒紀錄，
+    /// 否則使用者會在同一個階段收到重複的緊急提醒。
+    #[tokio::test]
+    async fn minor_deadline_extension_does_not_resend_reminder() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+
+        let original = 1788100000;
+        let nudged = original + 10 * 60; // 只延後 10 分鐘
+
+        db.mark_homework_reminder_sent("acc1", "hw_201", "1h", original)
+            .await
+            .unwrap();
+
+        // 微幅延期後仍應視為「已發送」，不重複通知
+        assert!(
+            db.is_homework_reminder_sent("acc1", "hw_201", "1h", nudged)
+                .await
+                .unwrap(),
+            "延後 10 分鐘不應觸發重複提醒"
+        );
+
+        // 延後 2 小時（仍小於 6 小時門檻）也不該重置
+        let two_hours = original + 2 * 60 * 60;
+        assert!(
+            db.is_homework_reminder_sent("acc1", "hw_201", "1h", two_hours)
+                .await
+                .unwrap(),
+            "延後 2 小時仍在門檻內，不應重複提醒"
+        );
+
+        // 延後 8 小時（超過門檻）才重置，重新走一輪倒數
+        let eight_hours = original + 8 * 60 * 60;
+        assert!(
+            !db.is_homework_reminder_sent("acc1", "hw_201", "1h", eight_hours)
+                .await
+                .unwrap(),
+            "顯著延期應重置紀錄並重新提醒"
+        );
     }
 
     #[tokio::test]
