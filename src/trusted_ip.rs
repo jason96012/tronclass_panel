@@ -117,7 +117,8 @@ impl TrustedProxies {
         self.v4.push(Net {
             bits: 32,
             mask_len: 8,
-            net: u128::from(Ipv4Addr::new(127, 0, 0, 0)),
+            // u128 has no From<Ipv4Addr>; go through u32 first.
+            net: u128::from(u32::from(Ipv4Addr::new(127, 0, 0, 0))),
         });
         self.v6.push(Net {
             bits: 128,
@@ -135,7 +136,7 @@ impl TrustedProxies {
             return;
         };
         let (bits, value) = match ip {
-            IpAddr::V4(v4) => (32u32, u128::from(v4)),
+            IpAddr::V4(v4) => (32u32, u128::from(u32::from(v4))),
             IpAddr::V6(v6) => (128u32, u128::from(v6)),
         };
         let mask_len = match len_str {
@@ -160,7 +161,7 @@ impl TrustedProxies {
     fn is_trusted(&self, peer: Option<IpAddr>) -> bool {
         match peer {
             Some(IpAddr::V4(v4)) => {
-                let value = u128::from(v4);
+                let value = u128::from(u32::from(v4));
                 self.v4.iter().any(|n| n.contains(value))
             }
             Some(IpAddr::V6(v6)) => {
