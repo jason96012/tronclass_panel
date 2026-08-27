@@ -534,35 +534,44 @@ fn default_max_failures() -> u32 {
 
 // ─── AppConfig 實作 ───────────────────────────────────────────────────────────────────
 impl AppConfig {
-    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
+pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+    let path = path.as_ref();
 
-        let cfg = config::Config::builder()
-            .add_source(
-                config::File::from(path)
-                    .required(true)
-                    .format(config::FileFormat::Toml),
-            )
-            .add_source(
-                config::Environment::with_prefix("TRONCLASS_ROLLCALL")
-                    .separator("__")
-                    .try_parsing(true),
-            )
-            .build()
-            .into_diagnostic()
-            .wrap_err_with(|| format!("Failed to load config from `{}`", path.display()))?;
+    let cfg = config::Config::builder()
+        .add_source(
+            config::File::from(path)
+                .required(true)
+                .format(config::FileFormat::Toml),
+        )
+        .add_source(
+            config::Environment::with_prefix("TRONCLASS_ROLLCALL")
+                .separator("__")
+                .try_parsing(true),
+        )
+        .build()
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Failed to load config from `{}`", path.display()))?;
 
-        let mut app = cfg
-            .try_deserialize::<AppConfig>()
-            .into_diagnostic()
-            .wrap_err("Failed to deserialize config")?;
+    let mut app = cfg
+        .try_deserialize::<AppConfig>()
+        .into_diagnostic()
+        .wrap_err("Failed to deserialize config")?;
 
-        for provider in app.providers.values_mut() {
-            provider.apply_kind_defaults();
-        }
-
-        Ok(app)
+    for provider in app.providers.values_mut() {
+        provider.apply_kind_defaults();
     }
+
+    // AUTO_GLOBAL_CONFIG_V1
+    // Loading a config is the single canonical point through which a
+    // configuration enters the process (main, init, tests). Filling the global
+    // `OnceCell` right here removes the footgun where callers had to remember
+    // `set_global_config()` after loading, or `get_config()` would panic. Now
+    // any code that needs the settings can safely rely on `try_get_config()`
+    // once a config has been loaded anywhere.
+    set_global_config(app.clone());
+
+    Ok(app)
+}
 
     pub fn load_default() -> Result<Self> {
         Self::load("config.toml")

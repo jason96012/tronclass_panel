@@ -4263,7 +4263,7 @@ async fn admin_homework_list_handler(
     // CatchPanicLayer，panic 會讓連線直接斷掉而不回應，反向代理因此合成 502。
     // 改成回傳明確的 JSON 錯誤，讓前端顯示可讀訊息而不是 HTTP 502。
     let Some(config) = crate::config::try_get_config() else {
-        error!("全域設定尚未初始化，無法提供作業清單（請確認 set_global_config 已於啟動時呼叫）");
+        error!("全域設定尚未初始化，無法提供作業清單（啟動時應已由 AppConfig::load() 填入）");
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "伺服器設定尚未就緒，請稍後再試或聯絡管理員" })),
@@ -4478,10 +4478,13 @@ mod tests {
         let response = admin_login_handler(
             State(state.clone()),
             headers.clone(),
-            Json(AdminLoginRequest {
+            ClientIp("127.0.0.1".to_string()),
+            serde_json::to_vec(&AdminLoginRequest {
                 username: "student-a".to_string(),
                 password: dashboard_password.to_string(),
-            }),
+            })
+            .unwrap()
+            .into(),
         )
         .await;
         assert_eq!(response.status(), StatusCode::OK);
@@ -4499,12 +4502,15 @@ mod tests {
         let rejected = admin_login_handler(
             State(state),
             headers,
-            Json(AdminLoginRequest {
+            ClientIp("127.0.0.1".to_string()),
+            serde_json::to_vec(&AdminLoginRequest {
                 username: "student-a".to_string(),
                 // The upstream provider password must no longer authenticate
                 // the public Dashboard.
                 password: provider_password.to_string(),
-            }),
+            })
+            .unwrap()
+            .into(),
         )
         .await;
         assert_eq!(rejected.status(), StatusCode::UNAUTHORIZED);
