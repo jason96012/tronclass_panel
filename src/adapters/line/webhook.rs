@@ -97,10 +97,13 @@ pub async fn start_webhook_server(
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to bind to port {port}"))?;
 
-    axum::serve(listener, app)
-        .await
-        .into_diagnostic()
-        .wrap_err("Webhook server error")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .into_diagnostic()
+    .wrap_err("Webhook server error")
 }
 
 async fn webhook_handler(

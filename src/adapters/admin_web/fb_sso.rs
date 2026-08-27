@@ -227,8 +227,8 @@ pub fn append_expired_fb_sso_cookie(mut response: Response) -> Response {
 pub async fn fb_sso_check_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
 ) -> Response {
-    let ip = super::client_ip_from_headers(&headers);
     if ip != "unknown" {
         match state.accounts_db.is_ip_blacklisted(&ip).await {
             Ok(true) => {

@@ -688,10 +688,13 @@ pub async fn start_scanner_server_with_admin(
         .into_diagnostic()
         .wrap_err_with(|| format!("Failed to bind scanner server to port {port}"))?;
 
-    axum::serve(listener, app)
-        .await
-        .into_diagnostic()
-        .wrap_err("Scanner server error")
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .into_diagnostic()
+    .wrap_err("Scanner server error")
 }
 
 async fn scanner_jsqr_handler() -> Response {

@@ -43,6 +43,7 @@ use crate::adapters::requests::{NumberCodeInput, RequestAccountState};
 use crate::adapters::scanner::QrScannerRegistry;
 use crate::db::{AccountsDb, MaterialEventInput};
 use crate::runtime_settings::{RuntimeRestPeriod, RuntimeSettings};
+use crate::trusted_ip::ClientIp;
 
 mod class_reminder;
 mod detection_schedule;
@@ -180,37 +181,6 @@ impl RateLimiter {
     }
 }
 
-fn normalized_ip(value: &str) -> Option<String> {
-    let value = value.trim();
-    // A textual IPv6 address is at most 45 bytes. Keep a little room for
-    // canonical variants, but never retain an arbitrary forwarded-header value.
-    if value.is_empty() || value.len() > 64 {
-        return None;
-    }
-    value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
-}
-
-fn client_ip_from_headers(headers: &HeaderMap) -> String {
-    for name in ["cf-connecting-ip", "true-client-ip", "x-real-ip"] {
-        if let Some(value) = headers
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .and_then(normalized_ip)
-        {
-            return value;
-        }
-    }
-    if let Some(value) = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|value| value.split(',').next())
-        .and_then(normalized_ip)
-    {
-        return value;
-    }
-    "unknown".to_string()
-}
-
 fn rate_limited_response() -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
@@ -275,7 +245,12 @@ async fn reject_blacklisted_ip_middleware(
     {
         return next.run(request).await;
     }
-    let ip = client_ip_from_headers(&headers);
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let trusted = crate::trusted_ip::trusted_from_global_config();
+    let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
     if ip_is_blacklisted(&state, &ip).await {
         // Do not turn JSON API failures into HTML: frontend fetch handlers
         // depend on `{ "error": "access_denied" }`. Normal document
@@ -3388,9 +3363,9 @@ fn passkey_login_decoy_response(wa: &Webauthn) -> Response {
 async fn admin_passkey_login_start_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
     Json(req): Json<AdminPasskeyLoginStartRequest>,
 ) -> Response {
-    let ip = client_ip_from_headers(&headers);
     if ip_is_blacklisted(&state, &ip).await {
         warn!(ip = %ip, "passkey login rejected for blacklisted IP");
         return blocked_ip_response();
@@ -3467,9 +3442,9 @@ async fn admin_passkey_login_start_handler(
 async fn admin_passkey_login_finish_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
     Json(req): Json<AdminPasskeyLoginFinishRequest>,
 ) -> Response {
-    let ip = client_ip_from_headers(&headers);
     if ip_is_blacklisted(&state, &ip).await {
         warn!(ip = %ip, "passkey finish rejected for blacklisted IP");
         return blocked_ip_response();
@@ -3641,13 +3616,10 @@ async fn admin_passkey_login_finish_handler(
     session_login_response(&headers, &token, account_id, is_admin, false)
 }
 
-fn login_client_identifier(headers: &HeaderMap) -> String {
-    client_ip_from_headers(headers)
-}
-
 async fn admin_login_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
     body: axum::body::Bytes,
 ) -> Response {
     let login: AdminLoginRequest = match serde_json::from_slice(&body) {
@@ -3673,7 +3645,6 @@ async fn admin_login_handler(
     {
         return response;
     }
-    let ip = client_ip_from_headers(&headers);
     if ip_is_blacklisted(&state, &ip).await {
         warn!(ip = %ip, "password login rejected for blacklisted IP");
         return blocked_ip_response();
@@ -3699,7 +3670,7 @@ async fn admin_login_handler(
             .into_response();
     }
 
-    let client = login_client_identifier(&headers);
+    let client = ip.clone();
     let rate_key = format!("login:{}:{client}", username.to_lowercase());
     if !state.rate_limiter.check(&rate_key).await {
         warn!(username = %username, client = %client, "admin web login rate limited");

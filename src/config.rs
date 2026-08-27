@@ -389,6 +389,15 @@ pub struct AdminWebConfig {
     /// It is intentionally not accepted as a Dashboard login credential.
     #[serde(default)]
     pub access_token: String,
+
+    /// Reverse proxies whose forwarded client-IP headers are trusted for rate
+    /// limiting and blacklisting. Each entry is an exact IP, a CIDR block, or
+    /// the keyword `cloudflare` / `loopback`. Loopback is always trusted.
+    /// Requests from any other source use the real peer address, so a public
+    /// origin cannot forge `X-Forwarded-For` to bypass limits or poison the
+    /// blacklist.
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
 impl Default for AdminWebConfig {
@@ -396,6 +405,7 @@ impl Default for AdminWebConfig {
         Self {
             enabled: false,
             access_token: String::new(),
+            trusted_proxies: Vec::new(),
         }
     }
 }
@@ -713,6 +723,7 @@ impl AppConfig {
                     "adapters.admin_web.enabled = true 時，請設定 adapters.discord.public_base_url 或 adapters.line_bot.public_base_url"
                 ));
             }
+            validate_trusted_proxies(&self.adapters.admin_web.trusted_proxies)?;
         }
 
         if self.monitor.retry_interval_secs == 0 {
@@ -741,6 +752,29 @@ impl std::fmt::Display for AppConfig {
             self.adapters.discord.enabled,
         )
     }
+}
+
+/// Validate `adapters.admin_web.trusted_proxies` entries. Each must be an IP,
+/// a CIDR block, or the keyword `cloudflare` / `loopback`.
+fn validate_trusted_proxies(entries: &[String]) -> Result<()> {
+    for (i, entry) in entries.iter().enumerate() {
+        let trimmed = entry.trim();
+        match trimmed.to_ascii_lowercase().as_str() {
+            "cloudflare" | "loopback" | "localhost" => continue,
+            _ => {
+                let (ip_part, _len) = match trimmed.split_once('/') {
+                    Some((ip, len)) => (ip, len.parse::<u32>().ok()),
+                    None => (trimmed, None),
+                };
+                if ip_part.trim().parse::<std::net::IpAddr>().is_err() {
+                    return Err(miette::miette!(
+                        "adapters.admin_web.trusted_proxies[{i}] 必須是 IP、CIDR 或 cloudflare/loopback：`{entry}`"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_discord_id(field: &str, value: &str) -> Result<()> {

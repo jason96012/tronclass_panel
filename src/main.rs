@@ -43,6 +43,7 @@ mod monitor;
 mod rollcalls;
 mod runtime_settings;
 mod session_client;
+mod trusted_ip;
 mod web_push_notifications;
 
 use std::io::Read;
