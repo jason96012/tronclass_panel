@@ -4105,7 +4105,7 @@ async fn admin_homework_list_handler(
     let Some(raw_account) = raw_account else {
         return (
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": "找不到指定帳號" })),
+            Json(json!({ "error": "找不到指定帳號，請至帳號設定確認" })),
         )
             .into_response();
     };
@@ -4113,7 +4113,7 @@ async fn admin_homework_list_handler(
     if !raw_account.enabled {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "帳號已被停用" })),
+            Json(json!({ "error": "該帳號目前已被停用" })),
         )
             .into_response();
     }
@@ -4123,7 +4123,7 @@ async fn admin_homework_list_handler(
     let Some(provider) = config.providers.get(&raw_account.provider) else {
         return (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("未知的 Provider：{}", raw_account.provider) })),
+            Json(json!({ "error": format!("未知的 Provider 設定：{}", raw_account.provider) })),
         )
             .into_response();
     };
@@ -4151,9 +4151,15 @@ async fn admin_homework_list_handler(
             res
         }
         Err(e) => {
+            warn!(account = %resolved_account.id, error = %e, "作業模組初始化 AuthClient 失敗");
             return (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("Tronclass 登入認證失敗：{e}") })),
+                StatusCode::OK,
+                Json(json!({
+                    "account_id": raw_account.id,
+                    "user_name": raw_account.id,
+                    "items": Vec::<crate::api::todos::TronclassTodoItem>::new(),
+                    "warning": format!("Tronclass 認證連線警告：{e}"),
+                })),
             )
                 .into_response();
         }
@@ -4193,6 +4199,7 @@ async fn admin_homework_list_handler(
                 }
             }
 
+            // 確保任何非預期情況皆安全回傳結構化 JSON，絕不丟出 502
             (
                 StatusCode::OK,
                 Json(json!({
