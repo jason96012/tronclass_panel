@@ -109,6 +109,36 @@ pub async fn send_test(account_id: &str) -> Result<usize> {
     Ok(total)
 }
 
+/// Send a homework-deadline test push immediately.
+///
+/// HOMEWORK_TEST_NOTIFICATION_V1
+/// Unlike [`notify_homework`], this bypasses the two-hour dedupe cache so the
+/// user can press the test button repeatedly, and it reports delivery errors to
+/// the caller instead of only logging them.
+pub async fn send_homework_test(
+    account_id: &str,
+    course_name: &str,
+    title: &str,
+    stage_badge: &str,
+) -> Result<usize> {
+    let service = SERVICE
+        .get()
+        .ok_or_else(|| miette::miette!("Web Push 尚未初始化"))?;
+    let subscriptions = service.db.list_web_push_subscriptions(account_id).await?;
+    let payload = serde_json::to_vec(&json!({
+        "title": format!("📝 作業截止提醒：{course_name}"),
+        "body": format!("【{stage_badge}】「{title}」，請記得至 Tronclass 繳交！"),
+        "url": "/admin/homework",
+        "tag": format!("tronclass-homework-test-{account_id}"),
+    }))
+    .map_err(|error| miette::miette!("序列化 Web Push 測試 payload 失敗：{error}"))?;
+    let total = subscriptions.len();
+    for subscription in subscriptions {
+        service.send_one(&subscription, &payload).await?;
+    }
+    Ok(total)
+}
+
 /// Queue one account-owner notification. Repeated monitor passes for the same
 /// rollcall are suppressed for two hours.
 pub fn notify_rollcall(

@@ -1179,6 +1179,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             post(web_push::unsubscribe_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route("/admin/api/push/test", post(web_push::test_handler))
+        .route(
+            "/admin/api/homework/test-notification",
+            post(admin_homework_test_notification_handler),
+        )
         .route("/admin/api/status", get(admin_status_handler))
         .route(
             "/admin/api/rollcall/events",
@@ -4079,6 +4083,113 @@ struct AdminHomeworkQuery {
     /// 仍受 single-flight 保護，連點不會重複打上游。
     #[serde(default)]
     refresh: bool,
+}
+
+/// 發送一則測試用的作業截止提醒，驗證各通知管道是否暢通。
+///
+/// HOMEWORK_TEST_NOTIFICATION_V1
+/// 走與真實提醒完全相同的發送路徑（含通知偏好檢查），因此能真實反映
+/// 使用者實際會不會收到通知。刻意**不寫入** `homework_reminder_sent`，
+/// 所以測試不會影響真實作業的去重狀態。
+async fn admin_homework_test_notification_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+
+    let account_id = session.account_id.clone();
+    let Ok(Some(account)) = state.accounts_db.get(&account_id).await else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "找不到帳號資料" })),
+        )
+            .into_response();
+    };
+
+    // 組一則「剩 45 分鐘」的假作業，對應最緊急的 1h 階段。
+    let now_local = chrono::Local::now();
+    let deadline = now_local + chrono::Duration::minutes(45);
+    let event = crate::adapters::events::HomeworkDeadlineEvent {
+        account: account_id.clone(),
+        course_name: "測試課程".to_string(),
+        title: "🔔 這是一則測試通知（非真實作業）".to_string(),
+        stage_badge: "🚨 最後 1 小時緊急提醒".to_string(),
+        deadline: deadline.format("%Y-%m-%d %H:%M").to_string(),
+        time_remaining: "45 分鐘".to_string(),
+    };
+    let message = crate::adapters::events::OutboundMessage::HomeworkDeadline(event);
+
+    let mut channels: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+
+    // 1. Discord / LINE（走與真實提醒相同的偏好檢查路徑）
+    if account.discord_user_id.trim().is_empty() && account.line_user_id.trim().is_empty() {
+        skipped.push("Discord / LINE：此帳號尚未綁定".to_string());
+    } else if let Some(messenger) = state.messenger.as_ref() {
+        let target = crate::adapters::events::AdapterAccountTarget::new(
+            account_id.clone(),
+            account.line_user_id.clone(),
+            account.discord_user_id.clone(),
+        );
+        match messenger.push_to_account_or_admin(&target, &message).await {
+            Ok(()) => {
+                if !account.discord_user_id.trim().is_empty() {
+                    channels.push("Discord".to_string());
+                }
+                if !account.line_user_id.trim().is_empty() {
+                    channels.push("LINE".to_string());
+                }
+            }
+            Err(error) => {
+                warn!(account = %account_id, %error, "測試通知發送失敗");
+                skipped.push(format!("Discord / LINE 發送失敗：{error}"));
+            }
+        }
+    } else {
+        skipped.push("Discord / LINE：伺服器未啟用任何 Bot".to_string());
+    }
+
+    // 2. 手機 Web Push
+    match state
+        .accounts_db
+        .count_web_push_subscriptions(&account_id)
+        .await
+    {
+        Ok(count) if count > 0 => {
+            if let Err(error) = crate::web_push_notifications::send_homework_test(
+                &account_id,
+                "測試課程",
+                "🔔 這是一則測試通知（非真實作業）",
+                "🚨 最後 1 小時緊急提醒",
+            )
+            .await
+            {
+                warn!(account = %account_id, %error, "測試 Web Push 發送失敗");
+                skipped.push(format!("手機推播發送失敗：{error}"));
+            } else {
+                channels.push(format!("手機推播（{count} 台裝置）"));
+            }
+        }
+        Ok(_) => skipped.push("手機推播：尚未在此裝置訂閱".to_string()),
+        Err(error) => skipped.push(format!("手機推播：讀取訂閱失敗：{error}")),
+    }
+
+    info!(
+        account = %account_id,
+        channels = ?channels,
+        "已發送作業提醒測試通知"
+    );
+
+    Json(json!({
+        "ok": !channels.is_empty(),
+        "channels": channels,
+        "skipped": skipped,
+    }))
+    .into_response()
 }
 
 /// 實際向 Tronclass 抓取作業清單（快取未命中時才會執行）。

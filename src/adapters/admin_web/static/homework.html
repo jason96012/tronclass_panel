@@ -77,6 +77,11 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
 .countdown-badge.pending{background:#dbeafe;color:#1d4ed8}
 .countdown-badge.submitted{background:#dcfce7;color:#15803d}
 .countdown-badge.overdue{background:var(--ds-soft-strong);color:var(--ds-muted)}
+.hw-toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,16px);max-width:min(560px,92vw);padding:14px 18px;border-radius:12px;font-size:13.5px;font-weight:650;line-height:1.65;white-space:pre-wrap;color:#fff;background:#1e293b;box-shadow:0 12px 32px rgba(15,23,42,.28);opacity:0;pointer-events:none;transition:opacity .2s ease,transform .2s ease;z-index:9999}
+.hw-toast.show{opacity:1;transform:translate(-50%,0)}
+.hw-toast[data-kind="ok"]{background:#15803d}
+.hw-toast[data-kind="warn"]{background:#b45309}
+.hw-toast[data-kind="err"]{background:#b91c1c}
 @keyframes pulseUrgent{0%,100%{transform:scale(1);box-shadow:0 0 0 0 rgba(239,68,68,.4)}50%{transform:scale(1.02);box-shadow:0 0 0 6px rgba(239,68,68,0)}}
 .hw-title{font-size:18px;font-weight:850;margin:0 0 14px;color:var(--ds-text);line-height:1.4;word-break:break-word}
 .hw-meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;background:var(--ds-soft);border:1px solid var(--ds-line-soft);padding:12px 14px;border-radius:14px;margin-bottom:16px;font-size:13px}
@@ -128,6 +133,7 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
         <select id="accountSelect"></select>
       </div>
       <button class="button" id="refreshBtn" type="button">🔄 重新整理</button>
+      <button class="button" id="testNotifyBtn" type="button" title="發送一則測試通知，確認 Discord / LINE / 手機推播是否正常">🔔 測試通知</button>
       <a class="button" id="backDashboard" href="/admin#overview">返回 Dashboard</a>
     </div>
   </header>
@@ -218,6 +224,22 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
       throw new Error(data.error || ('HTTP ' + res.status));
     }
     return data;
+  }
+
+  // 簡易 toast：顯示測試通知的結果，支援多行訊息。
+  function showToast(text, kind) {
+    let el = q('hwToast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'hwToast';
+      el.className = 'hw-toast';
+      document.body.appendChild(el);
+    }
+    el.textContent = text;
+    el.dataset.kind = kind || 'ok';
+    el.classList.add('show');
+    if (showToast._timer) clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => el.classList.remove('show'), 6000);
   }
 
   function esc(str) {
@@ -599,6 +621,34 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
     q('refreshBtn').addEventListener('click', () => {
       revalidatePolls = 0;
       loadData(true);
+    });
+
+    // HOMEWORK_TEST_NOTIFICATION_V1
+    // 發一則測試提醒，走與真實通知完全相同的路徑，確認各管道是否暢通。
+    q('testNotifyBtn').addEventListener('click', async function() {
+      const btn = this;
+      if (btn.disabled) return;
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '傳送中…';
+      try {
+        const res = await api('/admin/api/homework/test-notification', { method: 'POST' });
+        const sent = Array.isArray(res.channels) ? res.channels : [];
+        const skipped = Array.isArray(res.skipped) ? res.skipped : [];
+        if (sent.length > 0) {
+          let msg = `✅ 已發送至：${sent.join('、')}`;
+          if (skipped.length > 0) msg += `\n\n未發送：\n・${skipped.join('\n・')}`;
+          showToast(msg, 'ok');
+        } else {
+          const detail = skipped.length > 0 ? `\n\n・${skipped.join('\n・')}` : '';
+          showToast(`⚠️ 沒有任何可用的通知管道${detail}`, 'warn');
+        }
+      } catch (err) {
+        showToast(`❌ 測試失敗：${err.message || '未知錯誤'}`, 'err');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
     });
 
     // 初次載入已於 init() 開頭與 status 並行送出，這裡不再重複抓取。
