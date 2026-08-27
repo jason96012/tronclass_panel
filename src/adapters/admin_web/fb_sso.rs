@@ -134,7 +134,11 @@ fn verify_session_ticket(raw: &str) -> Option<(String, bool, String)> {
         "u" => false,
         _ => return None,
     };
-    if sign_v3(&account_id, session_token, exp, is_admin)? != raw {
+    // Constant-time comparison of the recomputed signature against the
+    // provided ticket avoids a timing side-channel that could otherwise leak
+    // the HMAC one byte at a time.
+    let expected = sign_v3(&account_id, session_token, exp, is_admin)?;
+    if !crate::dashboard_auth::constant_time_eq(expected.as_bytes(), raw.as_bytes()) {
         return None;
     }
     Some((account_id, is_admin, session_token.to_string()))
@@ -167,7 +171,7 @@ pub(crate) fn shell_request_secret_valid(headers: &HeaderMap) -> bool {
     headers
         .get("x-fb-shell-secret")
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|provided| provided == expected)
+        .is_some_and(|provided| crate::dashboard_auth::constant_time_eq(provided.as_bytes(), expected.as_bytes()))
 }
 
 pub fn append_fb_sso_cookie(

@@ -161,7 +161,7 @@ fn pbkdf2_hmac_sha256(password: &[u8], salt: &[u8], iterations: u32, output_len:
     output
 }
 
-fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut difference = left.len() ^ right.len();
     let max_len = left.len().max(right.len());
     for index in 0..max_len {
