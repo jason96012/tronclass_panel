@@ -13,7 +13,9 @@ use chrono::{DateTime, Local, Utc};
 use tracing::{debug, info, warn};
 
 use crate::account::AccountConfig;
-use crate::adapters::events::{AdapterMessenger, OutboundMessage};
+use crate::adapters::events::{
+    AdapterAccountTarget, AdapterMessenger, HomeworkDeadlineEvent, OutboundMessage,
+};
 use crate::api::ApiClient;
 use crate::auth::AuthClient;
 use crate::config::AppConfig;
@@ -335,42 +337,33 @@ pub async fn evaluate_and_send_reminders(
         let deadline_local = deadline.with_timezone(&Local);
         let deadline_str = deadline_local.format("%Y-%m-%d %H:%M").to_string();
 
-        let message = format!(
-            "📝 Tronclass 作業截止提醒\n\
-             【{}】\n\n\
-             📚 課程：{}\n\
-             📌 標題：{}\n\
-             ⏳ 截止時間：{}\n\
-             ⏱️ 剩餘時間：{}\n\
-             👤 帳號：{}\n\n\
-             👉 請儘速至 Tronclass 平台確認並繳交！",
-            stage_badge, course_name, title, deadline_str, time_desc, account.id
-        );
+        // HOMEWORK_NOTIFICATION_PREFERENCE_V1
+        // 改用專屬的 HomeworkDeadline 事件（而非泛用的 Text），這樣訊息才會被
+        // 對應到 "homework_deadline" 這個通知鍵，使用者能在通知設定頁自行關閉。
+        // 以前直接送 Text 會繞過所有偏好檢查，關不掉。
+        let event = OutboundMessage::HomeworkDeadline(HomeworkDeadlineEvent {
+            account: account.id.clone(),
+            course_name: course_name.clone(),
+            title: title.clone(),
+            stage_badge: stage_badge.to_string(),
+            deadline: deadline_str.clone(),
+            time_remaining: time_desc.clone(),
+        });
 
         let mut delivered = false;
 
         // 1. 透過 Messenger 發送（Discord / LINE）
+        // 使用 push_to_account_or_admin 讓通知偏好開關生效。
         if let Some(m) = messenger {
-            if !account.discord_user_id.is_empty() {
-                if let Err(e) = m
-                    .push(&account.discord_user_id, &OutboundMessage::Text(message.clone()))
-                    .await
-                {
-                    warn!(account = %account.id, error = %e, "Discord 作業提醒發送失敗");
-                } else {
-                    delivered = true;
-                }
-            }
-
-            if !account.line_user_id.is_empty() {
-                if let Err(e) = m
-                    .push(&account.line_user_id, &OutboundMessage::Text(message.clone()))
-                    .await
-                {
-                    warn!(account = %account.id, error = %e, "LINE 作業提醒發送失敗");
-                } else {
-                    delivered = true;
-                }
+            let target = AdapterAccountTarget::new(
+                account.id.clone(),
+                account.line_user_id.clone(),
+                account.discord_user_id.clone(),
+            );
+            if let Err(e) = m.push_to_account_or_admin(&target, &event).await {
+                warn!(account = %account.id, error = %e, "作業提醒發送失敗");
+            } else {
+                delivered = true;
             }
         }
 

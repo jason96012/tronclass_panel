@@ -139,6 +139,8 @@ pub enum OutboundMessage {
     NumberCodeRequested(NumberCodeRequest),
     QrCodeRequested(QrCodeRequest),
     RollcallFinished(RollcallResultEvent),
+    /// 作業截止倒數提醒。獨立成一個 variant，讓它能被通知偏好開關控管。
+    HomeworkDeadline(HomeworkDeadlineEvent),
     Help,
     Welcome,
     UnsupportedMedia,
@@ -154,6 +156,42 @@ pub enum OutboundMessage {
     QrNoBoundAccount,
     QrNoPendingRequest,
     UnknownCommand { text: String },
+}
+
+/// 作業截止倒數提醒事件。
+#[derive(Debug, Clone, PartialEq)]
+pub struct HomeworkDeadlineEvent {
+    pub account: String,
+    pub course_name: String,
+    pub title: String,
+    /// 階段徽章，例如「🚨 最後 1 小時緊急提醒」。
+    pub stage_badge: String,
+    /// 截止時間（本地時間字串）。
+    pub deadline: String,
+    /// 剩餘時間描述，例如「約 5 小時」。
+    pub time_remaining: String,
+}
+
+impl HomeworkDeadlineEvent {
+    /// 組出各 adapter 共用的訊息文字。
+    pub fn render(&self) -> String {
+        format!(
+            "📝 Tronclass 作業截止提醒\n\
+             【{}】\n\n\
+             📚 課程：{}\n\
+             📌 標題：{}\n\
+             ⏳ 截止時間：{}\n\
+             ⏱️ 剩餘時間：{}\n\
+             👤 帳號：{}\n\n\
+             👉 請儘速至 Tronclass 平台確認並繳交！",
+            self.stage_badge,
+            self.course_name,
+            self.title,
+            self.deadline,
+            self.time_remaining,
+            self.account
+        )
+    }
 }
 
 /// Security alert emitted after repeated failed Dashboard authentication.

@@ -329,13 +329,18 @@ pub fn parse_single_todo(
     let obj = val.as_object()?;
 
     // 1. 唯一標識 ID
+    //
+    // STABLE_FALLBACK_ID_V1
+    // 這裡以前在缺少 id 欄位時用 rand::random()，每次輪詢都會產生不同 ID，
+    // 導致 homework_reminder_sent 的主鍵永不重複 → 同一份作業被反覆通知。
+    // 改用「課程 + 標題 + 截止時間」的穩定雜湊，讓同一份作業每次都得到相同 ID。
     let id = obj
         .get("id")
         .or_else(|| obj.get("activity_id"))
         .or_else(|| obj.get("todo_id"))
         .or_else(|| obj.get("homework_id"))
         .and_then(parse_u64)
-        .unwrap_or_else(|| rand::random::<u32>() as u64);
+        .unwrap_or_else(|| stable_fallback_id(obj));
 
     // 2. 標題
     let title = obj
@@ -659,6 +664,40 @@ fn current_semester_start(now: DateTime<Utc>) -> DateTime<Utc> {
         .and_then(|naive| taipei.from_local_datetime(&naive).single())
         .map(|dt| dt.with_timezone(&Utc) - chrono::Duration::days(SEMESTER_START_GRACE_DAYS))
         .unwrap_or_else(|| now - chrono::Duration::days(180))
+}
+
+/// 為缺少 id 欄位的作業產生穩定的替代 ID。
+///
+/// STABLE_FALLBACK_ID_V1
+/// 以「課程 + 標題 + 截止時間」做雜湊：只要是同一份作業，每次輪詢都會得到
+/// 相同的 ID，因此 `homework_reminder_sent` 的去重才能正常運作。
+///
+/// 最高位設為 1，避免與上游真實 ID 撞號。
+fn stable_fallback_id(obj: &serde_json::Map<String, serde_json::Value>) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+
+    for key in ["course_id", "course_name", "course_title"] {
+        if let Some(text) = obj.get(key).and_then(extract_scalar_text) {
+            text.hash(&mut hasher);
+        }
+    }
+    for key in ["title", "name", "activity_name", "homework_title"] {
+        if let Some(text) = obj.get(key).and_then(|v| v.as_str()) {
+            text.trim().hash(&mut hasher);
+            break;
+        }
+    }
+    for key in ["end_time", "deadline", "end_at", "due_at", "due_date"] {
+        if let Some(text) = obj.get(key).and_then(extract_scalar_text) {
+            text.hash(&mut hasher);
+            break;
+        }
+    }
+
+    hasher.finish() | (1u64 << 63)
 }
 
 /// 從可能是字串／數字／巢狀物件的欄位中取出可判讀的文字。
@@ -1027,6 +1066,43 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert!(june_homework < current_semester_start(dec));
+    }
+
+    /// 缺少 id 欄位時的替代 ID 必須穩定，否則提醒去重會失效並重複轟炸。
+    #[test]
+    fn test_stable_fallback_id_is_deterministic() {
+        let raw = r#"{"homework_activities":[{
+            "title": "第一次作業",
+            "course_id": 263858,
+            "deadline": "2026-09-01"
+        }]}"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+
+        let first = parse_todos_json(&val, Some("計算機組織"), Some(263858));
+        let second = parse_todos_json(&val, Some("計算機組織"), Some(263858));
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            first[0].id, second[0].id,
+            "同一份作業重複解析必須得到相同 ID，否則去重失效"
+        );
+        assert!(
+            first[0].id >> 63 == 1,
+            "替代 ID 最高位應為 1，避免與上游真實 ID 撞號"
+        );
+    }
+
+    /// 不同作業必須得到不同的替代 ID。
+    #[test]
+    fn test_stable_fallback_id_differs_per_item() {
+        let raw = r#"{"homework_activities":[
+            {"title": "作業一", "course_id": 1, "deadline": "2026-09-01"},
+            {"title": "作業二", "course_id": 1, "deadline": "2026-09-01"}
+        ]}"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let items = parse_todos_json(&val, Some("課"), Some(1));
+        assert_eq!(items.len(), 2);
+        assert_ne!(items[0].id, items[1].id, "不同作業不可共用同一個替代 ID");
     }
 
     #[test]
