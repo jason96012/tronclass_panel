@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, Mutex, RwLock};
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 use uuid::Uuid;
 
 use crate::account::RawAccountConfig;
@@ -4118,7 +4118,18 @@ async fn admin_homework_list_handler(
             .into_response();
     }
 
-    let config = crate::config::get_config();
+    // HOMEWORK_CONFIG_PANIC_GUARD_V1
+    // 這裡以前直接呼叫 get_config()，全域設定未初始化時會 panic。axum 沒有掛
+    // CatchPanicLayer，panic 會讓連線直接斷掉而不回應，反向代理因此合成 502。
+    // 改成回傳明確的 JSON 錯誤，讓前端顯示可讀訊息而不是 HTTP 502。
+    let Some(config) = crate::config::try_get_config() else {
+        error!("全域設定尚未初始化，無法提供作業清單（請確認 set_global_config 已於啟動時呼叫）");
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "伺服器設定尚未就緒，請稍後再試或聯絡管理員" })),
+        )
+            .into_response();
+    };
 
     let Some(provider) = config.providers.get(&raw_account.provider) else {
         return (

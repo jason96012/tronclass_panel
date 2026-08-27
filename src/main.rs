@@ -910,6 +910,13 @@ async fn main() -> Result<()> {
         "設定載入完成"
     );
 
+    // GLOBAL_CONFIG_INIT_V1
+    // `config::get_config()` 讀的是 config.rs 裡的 OnceCell 全域單例，但這裡是用
+    // `AppConfig::load()` 載入的，不會自動填進去。少了這一行，
+    // /admin/api/homework 呼叫 get_config() 時就會 panic，導致連線被中斷、
+    // 反向代理回 502（作業頁「無法載入作業資料 HTTP 502」）。
+    config::set_global_config(config.clone());
+
     adapters::discord::set_notification_preferences_db(accounts_db.clone());
     if let Err(error) = web_push_notifications::initialize(accounts_db.clone()).await {
         warn!(error = %error, "Web Push 初始化失敗；背景手機通知暫停使用");

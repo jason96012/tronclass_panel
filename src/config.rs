@@ -11,11 +11,31 @@ use serde::{Deserialize, Serialize};
 /// 全域設定單例
 static CONFIG: OnceCell<AppConfig> = OnceCell::new();
 
-/// 取得全域設定（必須先呼叫 `init_config`）
+/// 取得全域設定（必須先呼叫 `init_config` 或 `set_global_config`）
+///
+/// # Panics
+/// 全域設定尚未初始化時 panic。Web handler 等「不該讓整條連線斷掉」的情境，
+/// 請改用 [`try_get_config`]，否則 panic 會讓 axum 直接中斷連線，
+/// 反向代理（Caddy / Cloudflare）會回 502 給使用者。
 pub fn get_config() -> &'static AppConfig {
     CONFIG
         .get()
         .expect("Config not initialized. Call init_config() first.")
+}
+
+/// 取得全域設定；尚未初始化時回傳 `None` 而不是 panic。
+pub fn try_get_config() -> Option<&'static AppConfig> {
+    CONFIG.get()
+}
+
+/// 以既有的 `AppConfig` 填入全域單例。
+///
+/// `main` 是用 [`AppConfig::load`] 讀設定（而非 [`init_config`]），
+/// 所以必須另外呼叫這個函式，否則 [`get_config`] 會 panic。
+/// 重複呼叫是安全的：第一次以後直接忽略。
+pub fn set_global_config(config: AppConfig) -> &'static AppConfig {
+    let _ = CONFIG.set(config);
+    CONFIG.get().expect("CONFIG was just set")
 }
 
 /// 從指定路徑初始化全域設定
