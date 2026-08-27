@@ -17,6 +17,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
     FromRow, SqlitePool,
 };
+use tokio::sync::mpsc;
 
 use crate::account::{AccountConfig, AccountsFile, RawAccountConfig};
 use crate::config::AppConfig;
@@ -266,6 +267,8 @@ pub struct ClassReminderDueRow {
 #[derive(Clone)]
 pub struct AccountsDb {
     pool: SqlitePool,
+    activity_tx: mpsc::Sender<ActivityEventInput>,
+    material_tx: mpsc::Sender<MaterialEventInput>,
 }
 
 impl AccountsDb {
@@ -279,13 +282,13 @@ impl AccountsDb {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(Duration::from_secs(5))
+            .busy_timeout(Duration::from_secs(15))
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(20)
+            .max_connections(10)
             .min_connections(1)
-            .acquire_timeout(Duration::from_secs(10))
+            .acquire_timeout(Duration::from_secs(15))
             .connect_with(connect_options)
             .await
             .into_diagnostic()
@@ -694,7 +697,20 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err("初始化 dashboard_sessions account_id index 失敗")?;
 
-        Ok(Self { pool })
+        let (activity_tx, activity_rx) = mpsc::channel(1024);
+        let (material_tx, material_rx) = mpsc::channel(1024);
+
+        let activity_pool = pool.clone();
+        tokio::spawn(activity_event_batch_writer(activity_pool, activity_rx));
+
+        let material_pool = pool.clone();
+        tokio::spawn(material_event_batch_writer(material_pool, material_rx));
+
+        Ok(Self {
+            pool,
+            activity_tx,
+            material_tx,
+        })
     }
 
     pub async fn record_material_event(&self, mut event: MaterialEventInput) -> Result<()> {
@@ -706,42 +722,15 @@ impl AccountsDb {
         event.result = truncate_event_text(event.result, EVENT_RESULT_MAX_BYTES);
         event.details = truncate_event_text(event.details, EVENT_DETAILS_MAX_BYTES);
 
-        let now = chrono::Local::now();
-        let size_label = format_material_event_size(event.size.max(0) as u64);
-        sqlx::query(
-            "INSERT INTO material_events (
-                timestamp, time, actor, action, path, folder, file_name, size, size_label, result, details
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(now.timestamp())
-        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
-        .bind(event.actor)
-        .bind(event.action)
-        .bind(event.path)
-        .bind(event.folder)
-        .bind(event.file_name)
-        .bind(event.size)
-        .bind(size_label)
-        .bind(event.result)
-        .bind(event.details)
-        .execute(&self.pool)
-        .await
-        .into_diagnostic()
-        .wrap_err("寫入教材操作紀錄失敗")?;
-
-        if MATERIAL_EVENT_WRITES_SINCE_PRUNE.fetch_add(1, Ordering::Relaxed) % EVENT_PRUNE_INTERVAL
-            == EVENT_PRUNE_INTERVAL - 1
-        {
-            let _ = sqlx::query(
-                "DELETE FROM material_events WHERE id NOT IN (
-                SELECT id FROM material_events ORDER BY id DESC LIMIT 300
-            )",
-            )
-            .execute(&self.pool)
-            .await;
+        match self.material_tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                insert_material_events_batch(&self.pool, &[event]).await
+            }
+            Err(mpsc::error::TrySendError::Closed(event)) => {
+                insert_material_events_batch(&self.pool, &[event]).await
+            }
         }
-
-        Ok(())
     }
 
     pub async fn list_material_events(&self, limit: i64) -> Result<Vec<MaterialEventRow>> {
@@ -1011,39 +1000,15 @@ impl AccountsDb {
         event.details = truncate_event_text(event.details, EVENT_DETAILS_MAX_BYTES);
         event.ip = truncate_event_text(event.ip, EVENT_IP_MAX_BYTES);
 
-        let now = Local::now();
-        sqlx::query(
-            "INSERT INTO activity_events (timestamp, time, kind, actor, action, account_id, path, result, details, ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(now.timestamp())
-        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
-        .bind(event.kind)
-        .bind(event.actor)
-        .bind(event.action)
-        .bind(event.account_id)
-        .bind(event.path)
-        .bind(event.result)
-        .bind(event.details)
-        .bind(event.ip)
-        .execute(&self.pool)
-        .await
-        .into_diagnostic()
-        .wrap_err("寫入 activity_events 失敗")?;
-
-        if ACTIVITY_EVENT_WRITES_SINCE_PRUNE.fetch_add(1, Ordering::Relaxed) % EVENT_PRUNE_INTERVAL
-            == EVENT_PRUNE_INTERVAL - 1
-        {
-            let _ = sqlx::query(
-                "DELETE FROM activity_events WHERE id NOT IN (
-                SELECT id FROM activity_events ORDER BY id DESC LIMIT 500
-            )",
-            )
-            .execute(&self.pool)
-            .await;
+        match self.activity_tx.try_send(event) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                insert_activity_events_batch(&self.pool, &[event]).await
+            }
+            Err(mpsc::error::TrySendError::Closed(event)) => {
+                insert_activity_events_batch(&self.pool, &[event]).await
+            }
         }
-
-        Ok(())
     }
 
     pub async fn list_activity_events(
@@ -2137,8 +2102,11 @@ async fn apply_sqlite_runtime_pragmas(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("PRAGMA temp_store = MEMORY")
         .execute(pool)
         .await;
+    let _ = sqlx::query("PRAGMA wal_autocheckpoint = 1000")
+        .execute(pool)
+        .await;
 
-    sqlx::query("PRAGMA busy_timeout = 5000")
+    sqlx::query("PRAGMA busy_timeout = 15000")
         .execute(pool)
         .await
         .into_diagnostic()
@@ -2155,6 +2123,175 @@ async fn apply_sqlite_runtime_pragmas(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
         .execute(pool)
         .await;
+    Ok(())
+}
+
+// ─── 非同步批次寫入任務 ───────────────────────────────────────────────────────
+
+async fn activity_event_batch_writer(
+    pool: SqlitePool,
+    mut rx: mpsc::Receiver<ActivityEventInput>,
+) {
+    let mut writes_since_prune = 0usize;
+    while let Some(first_entry) = rx.recv().await {
+        let mut batch = Vec::with_capacity(50);
+        batch.push(first_entry);
+        while batch.len() < 50 {
+            match rx.try_recv() {
+                Ok(entry) => batch.push(entry),
+                Err(_) => break,
+            }
+        }
+
+        let batch_len = batch.len();
+        if let Err(e) = insert_activity_events_batch(&pool, &batch).await {
+            eprintln!("⚠️ 批次寫入 activity_events 失敗（{batch_len} 筆）：{e}");
+            continue;
+        }
+
+        writes_since_prune += batch_len;
+        if writes_since_prune >= EVENT_PRUNE_INTERVAL {
+            writes_since_prune = 0;
+            let _ = sqlx::query(
+                "DELETE FROM activity_events WHERE id NOT IN (
+                    SELECT id FROM activity_events ORDER BY id DESC LIMIT 500
+                )",
+            )
+            .execute(&pool)
+            .await;
+        }
+    }
+}
+
+async fn insert_activity_events_batch(
+    pool: &SqlitePool,
+    entries: &[ActivityEventInput],
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .into_diagnostic()
+        .wrap_err("開始 activity_events 批次寫入交易失敗")?;
+
+    let now = Local::now();
+    let timestamp = now.timestamp();
+    let time_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    for event in entries {
+        sqlx::query(
+            "INSERT INTO activity_events (timestamp, time, kind, actor, action, account_id, path, result, details, ip)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(timestamp)
+        .bind(&time_str)
+        .bind(&event.kind)
+        .bind(&event.actor)
+        .bind(&event.action)
+        .bind(&event.account_id)
+        .bind(&event.path)
+        .bind(&event.result)
+        .bind(&event.details)
+        .bind(&event.ip)
+        .execute(&mut *tx)
+        .await
+        .into_diagnostic()
+        .wrap_err("寫入單筆 activity_event 失敗")?;
+    }
+
+    tx.commit()
+        .await
+        .into_diagnostic()
+        .wrap_err("提交 activity_events 批次寫入交易失敗")?;
+
+    Ok(())
+}
+
+async fn material_event_batch_writer(
+    pool: SqlitePool,
+    mut rx: mpsc::Receiver<MaterialEventInput>,
+) {
+    let mut writes_since_prune = 0usize;
+    while let Some(first_entry) = rx.recv().await {
+        let mut batch = Vec::with_capacity(50);
+        batch.push(first_entry);
+        while batch.len() < 50 {
+            match rx.try_recv() {
+                Ok(entry) => batch.push(entry),
+                Err(_) => break,
+            }
+        }
+
+        let batch_len = batch.len();
+        if let Err(e) = insert_material_events_batch(&pool, &batch).await {
+            eprintln!("⚠️ 批次寫入 material_events 失敗（{batch_len} 筆）：{e}");
+            continue;
+        }
+
+        writes_since_prune += batch_len;
+        if writes_since_prune >= EVENT_PRUNE_INTERVAL {
+            writes_since_prune = 0;
+            let _ = sqlx::query(
+                "DELETE FROM material_events WHERE id NOT IN (
+                    SELECT id FROM material_events ORDER BY id DESC LIMIT 300
+                )",
+            )
+            .execute(&pool)
+            .await;
+        }
+    }
+}
+
+async fn insert_material_events_batch(
+    pool: &SqlitePool,
+    entries: &[MaterialEventInput],
+) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .into_diagnostic()
+        .wrap_err("開始 material_events 批次寫入交易失敗")?;
+
+    let now = Local::now();
+    let timestamp = now.timestamp();
+    let time_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
+
+    for event in entries {
+        let size_label = format_material_event_size(event.size.max(0) as u64);
+        sqlx::query(
+            "INSERT INTO material_events (
+                timestamp, time, actor, action, path, folder, file_name, size, size_label, result, details
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(timestamp)
+        .bind(&time_str)
+        .bind(&event.actor)
+        .bind(&event.action)
+        .bind(&event.path)
+        .bind(&event.folder)
+        .bind(&event.file_name)
+        .bind(event.size)
+        .bind(&size_label)
+        .bind(&event.result)
+        .bind(&event.details)
+        .execute(&mut *tx)
+        .await
+        .into_diagnostic()
+        .wrap_err("寫入單筆 material_event 失敗")?;
+    }
+
+    tx.commit()
+        .await
+        .into_diagnostic()
+        .wrap_err("提交 material_events 批次寫入交易失敗")?;
+
     Ok(())
 }
 
@@ -2428,5 +2565,54 @@ mod tests {
         assert_eq!(deleted_acc, 2); // token2 and token4
         assert!(db.get_dashboard_session("token2").await.unwrap().is_none());
         assert!(db.get_dashboard_session("token4").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn activity_and_material_events_batch_writing() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+
+        // 寫入多筆活動事件
+        for i in 1..=5 {
+            db.record_activity_event(ActivityEventInput {
+                kind: "security".to_string(),
+                actor: "user".to_string(),
+                action: format!("login_attempt_{i}"),
+                account_id: "acc1".to_string(),
+                path: "/admin/login".to_string(),
+                result: "success".to_string(),
+                details: format!("batch test {i}"),
+                ip: "127.0.0.1".to_string(),
+            })
+            .await
+            .unwrap();
+        }
+
+        // 寫入教材事件
+        db.record_material_event(MaterialEventInput {
+            actor: "admin".to_string(),
+            action: "upload".to_string(),
+            path: "/materials/test.pdf".to_string(),
+            folder: "materials".to_string(),
+            file_name: "test.pdf".to_string(),
+            size: 2048,
+            result: "success".to_string(),
+            details: "batch upload".to_string(),
+        })
+        .await
+        .unwrap();
+
+        // 等候背景寫入任務處理佇列
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let activities = db.list_activity_events(Some("security"), 10).await.unwrap();
+        assert_eq!(activities.len(), 5);
+        assert!(activities.iter().any(|a| a.action == "login_attempt_1"));
+        assert!(activities.iter().any(|a| a.action == "login_attempt_5"));
+
+        let materials = db.list_material_events(10).await.unwrap();
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0].file_name, "test.pdf");
+        assert_eq!(materials[0].size_label, "2.0 KB");
     }
 }
