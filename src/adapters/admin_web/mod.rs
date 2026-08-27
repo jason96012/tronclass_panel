@@ -771,6 +771,20 @@ impl AdminWebState {
             .and_then(|index| self.accounts.get(*index))
     }
 
+    /// 從監控器記憶體中的 `MonitorStatus` 取出已驗證的 user_name。
+    ///
+    /// 監控器啟動時已完成登入並存下顯示名稱，因此不需要為了顯示名字
+    /// 而多打一次 `/api/profile`。
+    async fn lookup_monitor_user_name(&self, account_id: &str) -> Option<String> {
+        let account = self.account_by_id(account_id)?;
+        let user_name = account.monitor_status.lock().await.user_name.clone();
+        if user_name.trim().is_empty() {
+            None
+        } else {
+            Some(user_name)
+        }
+    }
+
     async fn authorize(&self, token: &str) -> Option<AdminSession> {
         let session = self.authorize_any(token).await?;
         if session.must_change_password {
@@ -4063,6 +4077,29 @@ struct AdminHomeworkQuery {
     account_id: Option<String>,
 }
 
+/// 以帳號已儲存的 session cookie 組出 HTTP client，**不做任何驗證探測**。
+///
+/// cookie 為空或 client 建立失敗時回傳 `None`，呼叫端會退回完整登入流程。
+fn build_client_from_saved_cookie(
+    account: &crate::account::AccountConfig,
+) -> Option<reqwest::Client> {
+    let saved_cookie = account.session_cookie.trim();
+    if saved_cookie.is_empty() {
+        return None;
+    }
+
+    let url = reqwest::Url::parse(account.base_url()).ok()?;
+    let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
+    for part in saved_cookie.split(';') {
+        let part = part.trim();
+        if !part.is_empty() {
+            jar.add_cookie_str(part, &url);
+        }
+    }
+
+    crate::api::build_http_client(jar, account.request_timeout_secs).ok()
+}
+
 async fn admin_homework_list_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -4152,6 +4189,45 @@ async fn admin_homework_list_handler(
         provider_config: provider.clone(),
         request_timeout_secs: provider.api.request_timeout_secs,
     };
+
+    // NO_REDUNDANT_SESSION_PROBE_V1
+    // 這裡以前無條件呼叫 AuthClient::new()，它會主動打一次 /api/profile。作業頁
+    // 每 5 分鐘自動刷新一次，於是每次刷新都在日誌刷出一輪 session 驗證訊息。
+    // 監控器早已在記憶體裡保有驗證過的 user_name，這個探測純屬多餘。
+    //
+    // 改為先用已儲存的 cookie 直接查詢；只有真的遇到認證錯誤才走完整登入。
+    let cached_user_name = state
+        .lookup_monitor_user_name(&resolved_account.id)
+        .await
+        .unwrap_or_else(|| raw_account.id.clone());
+
+    if let Some(client) = build_client_from_saved_cookie(&resolved_account) {
+        let api = crate::api::ApiClient::new(client, resolved_account.base_url());
+        match api.get_todos().await {
+            Ok(items) => {
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "account_id": raw_account.id,
+                        "user_name": cached_user_name,
+                        "items": items,
+                    })),
+                )
+                    .into_response();
+            }
+            Err(e) if !crate::api::is_auth_error(&e.to_string()) => {
+                warn!(account = %resolved_account.id, error = %e, "讀取作業清單失敗");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("讀取 Tronclass 作業清單失敗：{e}") })),
+                )
+                    .into_response();
+            }
+            Err(_) => {
+                info!(account = %resolved_account.id, "作業頁：session 已失效，重新登入");
+            }
+        }
+    }
 
     let (mut auth_client, session_info) = match crate::auth::AuthClient::new(&resolved_account).await {
         Ok(res) => {

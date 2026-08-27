@@ -82,29 +82,71 @@ async fn run_once(
     Ok(())
 }
 
+/// 直接以資料庫中已儲存的 session cookie 取得作業清單，**不做預先驗證探測**。
+///
+/// 只有在 `get_todos()` 真的回報認證錯誤時，才退回完整登入流程重試一次。
+/// 正常情況（cookie 有效）全程零額外請求、零額外日誌。
+async fn fetch_todos_with_saved_session(
+    account: &AccountConfig,
+    accounts_db: &AccountsDb,
+) -> miette::Result<Vec<crate::api::todos::TronclassTodoItem>> {
+    let saved_cookie = account.session_cookie.trim();
+
+    if !saved_cookie.is_empty() {
+        let jar = std::sync::Arc::new(reqwest::cookie::Jar::default());
+        if let Ok(url) = reqwest::Url::parse(account.base_url()) {
+            for part in saved_cookie.split(';') {
+                let part = part.trim();
+                if !part.is_empty() {
+                    jar.add_cookie_str(part, &url);
+                }
+            }
+
+            if let Ok(client) =
+                crate::api::build_http_client(jar, account.request_timeout_secs)
+            {
+                let api = ApiClient::new(client, account.base_url());
+                match api.get_todos().await {
+                    Ok(items) => return Ok(items),
+                    Err(e) if !crate::api::is_auth_error(&e.to_string()) => return Err(e),
+                    Err(_) => {
+                        debug!(
+                            account = %account.id,
+                            "已儲存的 session cookie 已失效，改用帳密重新登入"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Cookie 不存在或已失效：走完整登入流程（此時才會出現認證日誌，屬預期行為）。
+    let (auth_client, session) = AuthClient::new(account).await?;
+    let _ = accounts_db
+        .set_session_cookie(&account.id, &session.cookie_string)
+        .await;
+    let api = ApiClient::new(auth_client.client, account.base_url());
+    api.get_todos().await
+}
+
 async fn check_account_homework(
     account: &AccountConfig,
     accounts_db: &AccountsDb,
     messenger: Option<&dyn AdapterMessenger>,
     now_utc: DateTime<Utc>,
 ) -> miette::Result<()> {
-    // 建立 API 客戶端（優先使用既有已驗證 Session Cookie）
-    let (auth_client, session) = match AuthClient::new(account).await {
-        Ok(res) => {
-            let _ = accounts_db.set_session_cookie(&account.id, &res.1.cookie_string).await;
-            res
-        }
-        Err(e) => {
-            debug!(account = %account.id, error = %e, "登入認證失敗，略過本輪作業檢查");
-            return Ok(());
-        }
-    };
-
-    let api = ApiClient::new(auth_client.client, account.base_url());
-    let todos = match api.get_todos().await {
+    // NO_REDUNDANT_SESSION_PROBE_V1
+    // 這裡以前每輪都呼叫 AuthClient::new()，而它會主動打一次 /api/profile 驗證
+    // session，於是每 15 分鐘就在日誌刷出一整輪「偵測到已儲存的 session cookie，
+    // 先驗證是否仍有效 / 驗證成功 / 略過重新登入」。監控器開機時已經驗證過同一組
+    // cookie，這個探測純屬多餘。
+    //
+    // 改為直接拿 DB 裡的 session cookie 組出 client，不做任何預先驗證：
+    // get_todos() 本身就會碰到 401/403，屆時才走 lazy re-auth（唯一的例外路徑）。
+    let todos = match fetch_todos_with_saved_session(account, accounts_db).await {
         Ok(items) => items,
         Err(e) => {
-            debug!(account = %account.id, error = %e, "取得 todos 失敗，可能該校無待辦清單端點");
+            debug!(account = %account.id, error = %e, "取得 todos 失敗，略過本輪作業檢查");
             return Ok(());
         }
     };
