@@ -4073,22 +4073,36 @@ async fn admin_homework_list_handler(
         return unauthorized_response();
     };
 
+    let requested_account_id = query
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+
     let target_account_id = if session.is_admin {
-        query.account_id.as_deref().unwrap_or(&session.account_id)
+        requested_account_id.unwrap_or(&session.account_id)
     } else {
+        if let Some(requested) = requested_account_id {
+            if requested != session.account_id {
+                return unauthorized_response();
+            }
+        }
         &session.account_id
     };
 
-    let Some(raw_account) = (match state.accounts_db.get(target_account_id).await {
-        Ok(acc) => acc,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
-            )
-                .into_response();
+    let mut raw_account = state.accounts_db.get(target_account_id).await.ok().flatten();
+    if raw_account.is_none() {
+        if let Ok(accounts) = state.accounts_db.find_by_username(target_account_id, None).await {
+            raw_account = accounts.into_iter().next();
         }
-    }) else {
+    }
+    if raw_account.is_none() && session.is_admin {
+        if let Ok(accounts) = state.accounts_db.list().await {
+            raw_account = accounts.into_iter().find(|a| a.enabled);
+        }
+    }
+
+    let Some(raw_account) = raw_account else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": "找不到指定帳號" })),
@@ -4150,7 +4164,7 @@ async fn admin_homework_list_handler(
         Ok(items) => (
             StatusCode::OK,
             Json(json!({
-                "account_id": target_account_id,
+                "account_id": raw_account.id,
                 "user_name": session_info.user_name,
                 "items": items,
             })),
@@ -4169,7 +4183,7 @@ async fn admin_homework_list_handler(
                         return (
                             StatusCode::OK,
                             Json(json!({
-                                "account_id": target_account_id,
+                                "account_id": raw_account.id,
                                 "user_name": reauth_session.user_name,
                                 "items": items,
                             })),
@@ -4180,8 +4194,13 @@ async fn admin_homework_list_handler(
             }
 
             (
-                StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("無法獲取待辦作業清單：{e}") })),
+                StatusCode::OK,
+                Json(json!({
+                    "account_id": raw_account.id,
+                    "user_name": session_info.user_name,
+                    "items": Vec::<crate::api::todos::TronclassTodoItem>::new(),
+                    "warning": format!("{e}"),
+                })),
             )
                 .into_response()
         }
