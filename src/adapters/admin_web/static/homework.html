@@ -30,9 +30,56 @@ html,body{margin:0;min-height:100%;background:var(--ds-bg)!important;color:var(-
 body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
 .shell{width:min(1400px,calc(100% - 64px));margin:auto;padding:32px 0 52px}
 .top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
-.brand{display:flex;align-items:center;gap:12px}.brand b{color:var(--ds-text);font-size:17px}
-.logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#38bdf8,#6366f1);display:grid;place-items:center;color:#fff;font-size:20px;font-weight:900;box-shadow:0 10px 26px rgba(37,99,235,.28)}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.brand-text{min-width:0}
+.brand b{color:var(--ds-text);font-size:17px;font-weight:850;letter-spacing:-.01em;display:block;line-height:1.3}
+.brand .meta{font-size:12.5px;color:var(--ds-muted);line-height:1.4;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.logo{width:42px;height:42px;flex:0 0 auto;border-radius:14px;background:linear-gradient(135deg,#38bdf8,#6366f1);display:grid;place-items:center;color:#fff;font-size:20px;font-weight:900;box-shadow:0 10px 26px rgba(37,99,235,.28)}
+
 .top-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+
+/* 藥丸按鈕：淡色底 + 同色系文字，比純灰的幽靈按鈕更清楚。
+   用 !important 蓋過 theme.css 對 .top-actions button/a 的強制灰底規則。 */
+.pill-btn{
+  display:inline-flex!important;align-items:center;justify-content:center;gap:7px;
+  min-height:40px;padding:0 15px;border-radius:999px;
+  font:inherit;font-size:13.5px;font-weight:780;white-space:nowrap;
+  cursor:pointer;text-decoration:none;transition:all .15s ease;
+  border:1px solid transparent!important
+}
+.pill-btn svg{flex:0 0 auto}
+.pill-btn:active{transform:scale(.96)}
+.pill-btn[disabled]{opacity:.55;cursor:default;transform:none}
+.pill-btn.is-busy svg{animation:iconSpin .8s linear infinite}
+@keyframes iconSpin{to{transform:rotate(360deg)}}
+
+.pill-btn.refresh{
+  color:#2563eb!important;
+  background:rgba(37,99,235,.12)!important;
+  border-color:rgba(37,99,235,.26)!important
+}
+.pill-btn.refresh:hover{background:rgba(37,99,235,.2)!important;border-color:rgba(37,99,235,.42)!important}
+
+.pill-btn.notify{
+  color:#b45309!important;
+  background:rgba(245,158,11,.14)!important;
+  border-color:rgba(245,158,11,.3)!important
+}
+.pill-btn.notify:hover{background:rgba(245,158,11,.22)!important;border-color:rgba(245,158,11,.46)!important}
+
+.pill-btn.ghost{
+  color:var(--ds-muted)!important;
+  background:var(--ds-card)!important;
+  border-color:var(--ds-line)!important
+}
+.pill-btn.ghost:hover{color:var(--ds-text)!important;border-color:#60a5fa!important}
+
+html[data-theme="dark"] .pill-btn.refresh{color:#7cb2ff!important;background:rgba(59,130,246,.18)!important;border-color:rgba(59,130,246,.34)!important}
+html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba(245,158,11,.16)!important;border-color:rgba(245,158,11,.32)!important}
+@media(prefers-color-scheme:dark){
+  html:not([data-theme="light"]) .pill-btn.refresh{color:#7cb2ff!important;background:rgba(59,130,246,.18)!important;border-color:rgba(59,130,246,.34)!important}
+  html:not([data-theme="light"]) .pill-btn.notify{color:#fbbf24!important;background:rgba(245,158,11,.16)!important;border-color:rgba(245,158,11,.32)!important}
+}
 .top a,.button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;color:var(--ds-text)!important;text-decoration:none;border:1px solid var(--ds-line)!important;background:var(--ds-card)!important;padding:0 16px;border-radius:999px;font-weight:760;box-shadow:0 1px 2px rgba(15,23,42,.03);cursor:pointer;font:inherit}
 .top a:hover,.button:hover{border-color:#60a5fa!important;color:#2563eb!important}
 .hero{padding:28px 32px;border:1px solid var(--ds-line-soft);border-radius:24px;background:radial-gradient(circle at 92% 0,rgba(37,99,235,.15),transparent 44%),linear-gradient(135deg,var(--ds-hero-a),var(--ds-hero-b));box-shadow:var(--ds-shadow);margin-bottom:20px;color:var(--ds-hero-text)}
@@ -56,9 +103,15 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
 .filter-dropdowns select,.filter-dropdowns input{min-height:38px;border:1px solid var(--ds-line);background:var(--ds-input);color:var(--ds-text);border-radius:10px;padding:0 12px;font:inherit;font-size:13px;outline:none}
 .filter-dropdowns input{min-width:200px}
 .filter-dropdowns select:focus,.filter-dropdowns input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.13)}
-.account-selector{display:flex;align-items:center;gap:8px}
-.account-selector label{font-size:13px;font-weight:750;color:var(--ds-muted)}
-.account-selector select{min-height:38px;border:1px solid var(--ds-line);background:var(--ds-input);color:var(--ds-text);border-radius:10px;padding:0 12px;font:inherit;font-size:13px;font-weight:700}
+.account-selector{display:flex;align-items:center;gap:8px;min-width:0}
+.account-selector label{font-size:12px;font-weight:750;color:var(--ds-muted);flex:0 0 auto}
+.account-selector select{
+  min-height:40px;max-width:200px;border:1px solid var(--ds-line)!important;
+  background:var(--ds-card)!important;color:var(--ds-text)!important;border-radius:12px;
+  padding:0 12px;font:inherit;font-size:13px;font-weight:700;cursor:pointer;
+  text-overflow:ellipsis
+}
+.account-selector select:focus{border-color:#3b82f6!important;outline:none;box-shadow:0 0 0 3px rgba(59,130,246,.13)}
 .hw-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(380px,1fr));gap:18px}
 .hw-card{border:1px solid var(--ds-line-soft);border-radius:20px;background:var(--ds-card);padding:22px;box-shadow:var(--ds-shadow);color:var(--ds-text);display:flex;flex-direction:column;justify-content:space-between;transition:transform .15s ease,box-shadow .15s ease;position:relative;overflow:hidden}
 .hw-card:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(15,23,42,.1)}
@@ -109,64 +162,91 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
   .top-actions{justify-content:space-between}
 }
 
-/* MOBILE_COMPACT_V1
-   手機直式：把「頁首 + 說明 + 統計 + 篩選」壓進約一屏，讓作業清單一進來就看得到。
-   原本這四塊在 iPhone 上會佔掉整個畫面，必須捲動才看得到任何一筆作業。 */
+/* MOBILE_COMPACT_V2
+   手機直式版面。設計原則：
+   1. 不使用負 margin 做出血捲動 —— 會被父層圓角切掉，視覺上像斷裂。
+   2. 控制項用 grid 排列，而不是各佔一整行。
+   3. 所有可捲動容器都給 scroll-padding，末端元素不會貼邊。 */
 @media(max-width:640px){
-  .shell{width:calc(100% - 20px);padding:10px 0 28px}
+  .shell{width:calc(100% - 22px);padding:12px 0 32px}
 
-  /* 頁首：logo 縮小、標題單行、按鈕列橫向捲動 */
-  .top{gap:8px;margin-bottom:12px}
-  .brand{gap:9px}
-  .brand b{font-size:15px;line-height:1.3}
-  .logo{width:34px;height:34px;border-radius:11px;font-size:16px;box-shadow:none}
-  .brand .meta{font-size:11.5px}
-  .top-actions{
-    gap:8px;flex-wrap:nowrap;overflow-x:auto;
-    -webkit-overflow-scrolling:touch;scrollbar-width:none;
-    padding-bottom:2px;margin:0 -10px;padding-left:10px;padding-right:10px;
-  }
-  .top-actions::-webkit-scrollbar{display:none}
-  .top a,.button{min-height:38px;padding:0 13px;font-size:13.5px;white-space:nowrap;flex:0 0 auto}
-  .account-selector{flex:0 0 auto}
+  /* ── 頁首：標題一列，控制列一列（比照桌機視覺） ────── */
+  .top{flex-direction:column;align-items:stretch;gap:11px;margin-bottom:14px}
+  .brand{gap:11px;align-items:center}
+  .brand b{font-size:16px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brand .meta{font-size:11.5px;margin-top:1px}
+  .logo{width:38px;height:38px;border-radius:12px;font-size:18px;box-shadow:0 6px 16px rgba(37,99,235,.22)}
+
+  /* 控制列：帳號選單彈性填滿，兩顆按鈕固定寬度並排 */
+  .top-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+  .account-selector{flex:1 1 auto;min-width:0;gap:0}
   .account-selector label{display:none}
-  .account-selector select{min-height:38px;border:1px solid var(--ds-line);background:var(--ds-input);color:var(--ds-text);border-radius:999px;padding:0 12px;font:inherit;font-size:13.5px;max-width:44vw}
+  .account-selector select{width:100%;max-width:none;min-height:40px;border-radius:999px;font-size:13px}
+  .pill-btn{flex:0 0 auto;min-height:40px;padding:0 13px;font-size:13px;gap:6px}
+  /* 返回鍵在手機上換到第二列，避免第一列過擠 */
+  .pill-btn.ghost{flex:1 1 100%;order:3;margin-top:1px}
 
-  /* Hero：手機上隱藏長段說明，只留標題 */
-  .hero{padding:14px 16px;border-radius:16px;margin-bottom:12px}
-  .eyebrow{font-size:10px;letter-spacing:.1em}
-  .hero h1{font-size:21px;margin:4px 0 0}
+  /* ── Hero：手機只留標題，省下一大塊高度 ────────────── */
+  .hero{padding:15px 17px;border-radius:18px;margin-bottom:13px}
+  .eyebrow{font-size:9.5px;letter-spacing:.11em}
+  .hero h1{font-size:22px;margin:5px 0 0;line-height:1.25}
   .hero p{display:none}
 
-  /* 統計卡：2×2 但更緊湊 */
-  .summary{gap:8px;margin-bottom:12px}
-  .metric{padding:11px 12px;border-radius:14px;box-shadow:none}
-  .metric .meta{font-size:11.5px;gap:4px;line-height:1.35}
-  .metric b{font-size:23px;margin-top:2px}
+  /* ── 統計卡 ─────────────────────────────────────── */
+  .summary{gap:9px;margin-bottom:13px}
+  .metric{padding:12px 13px;border-radius:15px;box-shadow:none}
+  .metric .meta{font-size:11.5px;gap:5px;line-height:1.35}
+  .metric b{font-size:24px;margin-top:3px}
 
-  /* 篩選列：頁籤橫向捲動成一行，不再擠成三行 */
-  .controls{padding:11px 12px;border-radius:14px;gap:10px;margin-bottom:12px;box-shadow:none}
+  /* ── 篩選列 ─────────────────────────────────────── */
+  .controls{padding:12px;border-radius:16px;gap:11px;margin-bottom:13px;box-shadow:none;overflow:hidden}
+
+  /* 頁籤橫捲：用 padding 而非負 margin，末端留白靠 scroll-padding */
   .filter-tabs{
     flex-wrap:nowrap;overflow-x:auto;gap:7px;
     -webkit-overflow-scrolling:touch;scrollbar-width:none;
-    margin:0 -12px;padding:0 12px 2px;
+    scroll-snap-type:x proximity;scroll-padding-inline:2px;
+    padding-bottom:3px;
   }
   .filter-tabs::-webkit-scrollbar{display:none}
-  .filter-tab{flex:0 0 auto;min-height:34px;padding:0 12px;font-size:12.5px;white-space:nowrap}
-  .filter-dropdowns{flex-direction:column;gap:8px}
-  .filter-dropdowns select,.filter-dropdowns input{width:100%;min-width:0;min-height:40px;font-size:14px}
+  .filter-tab{
+    flex:0 0 auto;min-height:35px;padding:0 13px;
+    font-size:12.5px;white-space:nowrap;scroll-snap-align:start;
+  }
 
-  /* 作業卡片：縮小留白，資訊欄位改單欄避免擠壓 */
+  /* 控制項：排序與課程並排，搜尋框獨佔一列 */
+  .filter-dropdowns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .filter-dropdowns select,.filter-dropdowns input{
+    width:100%;min-width:0;min-height:40px;font-size:13.5px;
+    border-radius:11px;padding:0 11px;
+  }
+  .filter-dropdowns input{grid-column:1 / -1}
+
+  /* ── 作業卡片 ───────────────────────────────────── */
   .hw-grid{gap:12px}
-  .hw-card{padding:15px;border-radius:16px;box-shadow:none}
-  .hw-title{font-size:15.5px;line-height:1.45;margin:0 0 11px}
-  .hw-meta-grid{gap:9px;padding:10px 12px;border-radius:12px;margin-bottom:12px;font-size:12.5px}
+  .hw-card{padding:16px;border-radius:18px;box-shadow:none}
+  .hw-title{font-size:16px;line-height:1.45;margin:0 0 12px}
+  .hw-meta-grid{gap:10px;padding:11px 13px;border-radius:13px;margin-bottom:13px;font-size:12.5px}
   .hw-meta-label{font-size:10px}
   .hw-meta-val{font-size:12.5px}
-  .countdown-badge{font-size:11.5px;padding:4px 10px}
+  .countdown-badge{font-size:11.5px;padding:5px 11px}
 
-  .hw-toast{left:12px;right:12px;bottom:calc(16px + env(safe-area-inset-bottom,0px));transform:translateY(12px);max-width:none;font-size:13px;padding:12px 14px}
+  .hw-toast{
+    left:12px;right:12px;max-width:none;
+    bottom:calc(16px + env(safe-area-inset-bottom,0px));
+    transform:translateY(12px);font-size:13px;padding:13px 15px;
+  }
   .hw-toast.show{transform:translateY(0)}
+}
+
+/* 極窄機型（iPhone SE 等）：頁籤與統計再收一點 */
+@media(max-width:380px){
+  /* 極窄機型：帳號選單獨佔一列，兩顆按鈕平分下一列 */
+  .account-selector{flex:1 1 100%}
+  .pill-btn.refresh,.pill-btn.notify{flex:1 1 0;min-width:0}
+  .pill-btn span{overflow:hidden;text-overflow:ellipsis}
+  .metric b{font-size:22px}
+  .hero h1{font-size:20px}
 }
 
 /* 瀏海／動態島機型：避免內容貼齊螢幕圓角 */
@@ -192,19 +272,25 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
   <header class="top">
     <div class="brand">
       <div class="logo">📝</div>
-      <div>
+      <div class="brand-text">
         <b>Tronclass 作業截止追蹤</b>
         <div class="meta" id="brandSub">即時倒數與未繳提醒</div>
       </div>
     </div>
     <div class="top-actions">
       <div class="account-selector" id="accountSelectorWrap" style="display:none">
-        <label for="accountSelect">帳號：</label>
+        <label for="accountSelect">帳號</label>
         <select id="accountSelect"></select>
       </div>
-      <button class="button" id="refreshBtn" type="button">🔄 重新整理</button>
-      <button class="button" id="testNotifyBtn" type="button" title="發送一則測試通知，確認 Discord / LINE / 手機推播是否正常">🔔 測試通知</button>
-      <a class="button" id="backDashboard" href="/admin#overview">返回 Dashboard</a>
+      <button class="pill-btn refresh" id="refreshBtn" type="button" title="重新整理">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 11-3.5-7.1"/><path d="M21 3v6h-6"/></svg>
+        <span>重新整理</span>
+      </button>
+      <button class="pill-btn notify" id="testNotifyBtn" type="button" title="發送一則測試通知，確認 Discord / LINE / 手機推播是否正常">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>
+        <span>測試通知</span>
+      </button>
+      <a class="pill-btn ghost" id="backDashboard" href="/admin#overview">返回 Dashboard</a>
     </div>
   </header>
 
@@ -688,9 +774,17 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
     q('courseFilter').addEventListener('change', renderList);
     q('sortFilter').addEventListener('change', renderList);
     q('searchInput').addEventListener('input', renderList);
-    q('refreshBtn').addEventListener('click', () => {
+    q('refreshBtn').addEventListener('click', async function() {
+      if (this.disabled) return;
       revalidatePolls = 0;
-      loadData(true);
+      this.disabled = true;
+      this.classList.add('is-busy');
+      try {
+        await loadData(true);
+      } finally {
+        this.disabled = false;
+        this.classList.remove('is-busy');
+      }
     });
 
     // HOMEWORK_TEST_NOTIFICATION_V1
@@ -698,9 +792,9 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
     q('testNotifyBtn').addEventListener('click', async function() {
       const btn = this;
       if (btn.disabled) return;
-      const original = btn.textContent;
+      // 按鈕內容是 SVG，不能用 textContent 覆蓋；改用 class 做旋轉動畫。
       btn.disabled = true;
-      btn.textContent = '傳送中…';
+      btn.classList.add('is-busy');
       try {
         const res = await api('/admin/api/homework/test-notification', { method: 'POST' });
         const sent = Array.isArray(res.channels) ? res.channels : [];
@@ -717,7 +811,7 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
         showToast(`❌ 測試失敗：${err.message || '未知錯誤'}`, 'err');
       } finally {
         btn.disabled = false;
-        btn.textContent = original;
+        btn.classList.remove('is-busy');
       }
     });
 
