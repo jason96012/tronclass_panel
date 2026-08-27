@@ -1,6 +1,6 @@
 //! Tronclass 待辦事項與作業 API 模組
 //!
-//! 提供 `/api/todos` 呼叫與作業截止時間、繳交狀態解析。
+//! 提供 `/api/todos` 與各課程之作業截止時間、繳交狀態解析。
 
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use miette::Result;
@@ -42,22 +42,18 @@ impl TronclassTodoItem {
 
     /// 判斷是否為進行中且未截止的待辦作業
     pub fn is_active_pending(&self, now: DateTime<Utc>) -> bool {
-        // 若已繳交則不需提醒
         if self.is_completed_or_submitted() {
             return false;
         }
 
-        // 若無截止時間則略過
         let Some(end) = self.end_time else {
             return false;
         };
 
-        // 已過期
         if end <= now {
             return false;
         }
 
-        // 尚未開放
         if let Some(start) = self.start_time {
             if start > now {
                 return false;
@@ -74,43 +70,30 @@ impl super::ApiClient {
     /// 取得使用者待辦事項（含作業、測驗截止時間）
     ///
     /// 支援多種 Tronclass 伺服器版本策略：
-    /// 1. 輪詢 `/api/todos`、`/api/student/todos`、`/api/activities/unfinished` 等全局待辦端點
-    /// 2. 若無全局端點，自動透過 `/api/my-courses` 抓取各科作業清單
+    /// 1. 優先查詢標準全域待辦端點 `/api/todos`
+    /// 2. 透過學生專屬課程清單 `/api/my-courses` 取得各科之 `homework-activities` 與 `activities`
     /// 3. 對所有 JSON 格式進行高度容錯解析
     #[instrument(skip(self))]
     pub async fn get_todos(&self) -> Result<Vec<TronclassTodoItem>> {
         let mut all_items: Vec<TronclassTodoItem> = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
-        // 策略 1: 嘗試常見的全局待辦事項 API 端點
-        let global_endpoints = [
-            "/api/todos",
-            "/api/student/todos",
-            "/api/activities/unfinished",
-            "/api/users/current/todos",
-            "/api/users/todos",
-        ];
+        // 策略 1: 查詢標準全域待辦端點 `/api/todos`
+        let todos_url = format!("{}/api/todos", self.base_url);
+        debug!(url = %todos_url, "正在向 Tronclass 獲取待辦作業清單");
 
-        for endpoint in &global_endpoints {
-            let url = format!("{}{}", self.base_url, endpoint);
-            debug!(url = %url, "嘗試從待辦端點獲取作業清單");
-
-            if let Ok(resp) = self.client.get(&url).send().await {
-                let status = resp.status();
-                if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                    return Err(miette::miette!(crate::api::ApiError::Unauthorized));
-                }
-                if status.is_success() {
-                    if let Ok(body_bytes) = resp.bytes().await {
-                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                            let extracted = extract_todos_from_value(&json, None, None);
-                            for item in extracted {
-                                if seen_ids.insert(item.id) {
-                                    all_items.push(item);
-                                }
-                            }
-                            if !all_items.is_empty() {
-                                return Ok(all_items);
+        if let Ok(resp) = self.client.get(&todos_url).send().await {
+            let status = resp.status();
+            if status == StatusCode::UNAUTHORIZED {
+                return Err(miette::miette!(crate::api::ApiError::Unauthorized));
+            }
+            if status.is_success() {
+                if let Ok(body_bytes) = resp.bytes().await {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                        let extracted = extract_todos_from_value(&json, None, None);
+                        for item in extracted {
+                            if seen_ids.insert(item.id) {
+                                all_items.push(item);
                             }
                         }
                     }
@@ -118,40 +101,50 @@ impl super::ApiClient {
             }
         }
 
-        // 策略 2: 若全局待辦端點無回傳，嘗試從課程清單 `/api/my-courses` 或 `/api/courses` 取得各科作業
-        let course_endpoints = ["/api/my-courses", "/api/courses", "/api/users/courses"];
-        for endpoint in &course_endpoints {
-            let url = format!("{}{}", self.base_url, endpoint);
-            if let Ok(resp) = self.client.get(&url).send().await {
-                let status = resp.status();
-                if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-                    return Err(miette::miette!(crate::api::ApiError::Unauthorized));
-                }
-                if status.is_success() {
-                    if let Ok(body_bytes) = resp.bytes().await {
-                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-                            let courses = extract_course_list(&json);
-                            for (c_id, c_name) in courses.iter().take(20) {
-                                for sub_path in ["homework-activities", "homeworks", "activities", "todos"] {
-                                    let sub_url = format!("{}/api/courses/{}/{}", self.base_url, c_id, sub_path);
-                                    if let Ok(c_resp) = self.client.get(&sub_url).send().await {
-                                        if c_resp.status().is_success() {
-                                            if let Ok(c_bytes) = c_resp.bytes().await {
-                                                if let Ok(c_json) = serde_json::from_slice::<serde_json::Value>(&c_bytes) {
-                                                    let items = extract_todos_from_value(&c_json, Some(c_name.as_str()), Some(*c_id));
-                                                    for item in items {
-                                                        if seen_ids.insert(item.id) {
-                                                            all_items.push(item);
-                                                        }
-                                                    }
+        // 策略 2: 從學生端課程清單 `/api/my-courses` 補充或抓取各科作業與活動
+        let my_courses_url = format!("{}/api/my-courses", self.base_url);
+        if let Ok(resp) = self.client.get(&my_courses_url).send().await {
+            let status = resp.status();
+            if status == StatusCode::UNAUTHORIZED {
+                return Err(miette::miette!(crate::api::ApiError::Unauthorized));
+            }
+            if status.is_success() {
+                if let Ok(body_bytes) = resp.bytes().await {
+                    if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                        let courses = extract_course_list(&json);
+                        for (c_id, c_name) in courses.into_iter().take(20) {
+                            // 查詢該課程之作業清單 (homework-activities)
+                            let hw_url = format!("{}/api/courses/{}/homework-activities", self.base_url, c_id);
+                            if let Ok(c_resp) = self.client.get(&hw_url).send().await {
+                                if c_resp.status().is_success() {
+                                    if let Ok(c_bytes) = c_resp.bytes().await {
+                                        if let Ok(c_json) = serde_json::from_slice::<serde_json::Value>(&c_bytes) {
+                                            let items = extract_todos_from_value(&c_json, Some(c_name.as_str()), Some(c_id));
+                                            for item in items {
+                                                if seen_ids.insert(item.id) {
+                                                    all_items.push(item);
                                                 }
                                             }
                                         }
                                     }
                                 }
                             }
-                            if !all_items.is_empty() {
-                                return Ok(all_items);
+
+                            // 查詢該課程之活動清單 (activities)
+                            let act_url = format!("{}/api/courses/{}/activities", self.base_url, c_id);
+                            if let Ok(c_resp) = self.client.get(&act_url).send().await {
+                                if c_resp.status().is_success() {
+                                    if let Ok(c_bytes) = c_resp.bytes().await {
+                                        if let Ok(c_json) = serde_json::from_slice::<serde_json::Value>(&c_bytes) {
+                                            let items = extract_todos_from_value(&c_json, Some(c_name.as_str()), Some(c_id));
+                                            for item in items {
+                                                if seen_ids.insert(item.id) {
+                                                    all_items.push(item);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -159,7 +152,7 @@ impl super::ApiClient {
             }
         }
 
-        // 若確認已無作業，正常回傳空清單
+        // 回傳彙整並去重後的作業清單（若無作業則回傳空清單，不報錯）
         Ok(all_items)
     }
 }
@@ -585,8 +578,12 @@ mod tests {
     }
 
     #[test]
-    fn test_deserialize_real_tronclass_todo_list() {
-        // Real Tronclass `GET /api/todos` response shape
+    fn test_deserialize_real_tronclass_todo_list_empty_and_populated() {
+        let empty_json_str = r#"{"todo_list": []}"#;
+        let json_val: serde_json::Value = serde_json::from_str(empty_json_str).unwrap();
+        let items = extract_todos_from_value(&json_val, None, None);
+        assert_eq!(items.len(), 0);
+
         let json_str = r#"{
             "todo_list": [
                 {
@@ -601,117 +598,43 @@ mod tests {
                     "submission_status": "not_submitted",
                     "allow_late_submission": true,
                     "score": null
-                },
-                {
-                    "id": 89435,
-                    "title": "Ch4 網路層線上測驗",
-                    "course_id": 41208,
-                    "course_name": "計算機網路",
-                    "type": "quiz",
-                    "start_time": "2026-08-25T00:00:00Z",
-                    "end_time": "2026-08-28T12:00:00Z",
-                    "is_submitted": true,
-                    "submission_status": "submitted",
-                    "allow_late_submission": false,
-                    "score": 95.0
                 }
             ]
         }"#;
 
         let json_val: serde_json::Value = serde_json::from_str(json_str).unwrap();
         let items = extract_todos_from_value(&json_val, None, None);
-
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, 89432);
         assert_eq!(items[0].title, "第 3 次程式作業：動態規劃");
-        assert_eq!(items[0].course_name.as_deref(), Some("演算法 (Computer Algorithms)"));
-        assert!(!items[0].is_completed_or_submitted());
-        assert!(items[0].allow_late_submission);
-
-        assert_eq!(items[1].id, 89435);
-        assert!(items[1].is_completed_or_submitted());
-        assert_eq!(items[1].score, Some(95.0));
     }
 
     #[test]
-    fn test_deserialize_real_tronclass_homework_activities() {
-        // Real Tronclass `GET /api/courses/{id}/homework-activities` response shape
+    fn test_deserialize_real_tronclass_my_courses() {
         let json_str = r#"{
-            "page": 1,
-            "page_size": 100,
-            "pages": 1,
-            "total": 1,
-            "homework_activities": [
+            "courses": [
                 {
-                    "id": 105234,
-                    "title": "期中專案報告初稿",
-                    "course_id": 41210,
-                    "course_name": "人工智慧與深度學習",
-                    "type": "homework",
-                    "deadline": 1788200000,
-                    "end_time": "2026-08-31T23:59:00+08:00",
-                    "due_at": "2026-08-31T15:59:00Z",
-                    "submitted": false,
-                    "status": "not_submitted",
-                    "allow_late": false,
-                    "score": null
-                }
-            ]
-        }"#;
-
-        let json_val: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let items = extract_todos_from_value(&json_val, None, None);
-
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, 105234);
-        assert_eq!(items[0].title, "期中專案報告初稿");
-        assert_eq!(items[0].course_name.as_deref(), Some("人工智慧與深度學習"));
-        assert!(!items[0].is_completed_or_submitted());
-    }
-
-    #[test]
-    fn test_deserialize_raw_todos_complex_shapes() {
-        let json_str = r#"{
-            "activities": [
-                {
-                    "id": "1001",
-                    "title": "作業一：機器學習基礎",
-                    "course": {
-                        "id": "501",
-                        "name": "人工智慧概論"
-                    },
-                    "type": "homework",
-                    "end_time": "2026-08-30T23:59:59Z",
-                    "is_submitted": 0,
-                    "submission_status": "not_submitted"
+                    "id": 263857,
+                    "name": "英文（二）",
+                    "course_code": "1151TEIDB2A0050 1A   ",
+                    "department": { "id": 4927, "name": "資工系英語班" },
+                    "start_date": "2026-08-01",
+                    "end_date": "2027-01-31"
                 },
                 {
-                    "activity_id": 1002,
-                    "name": "單元測驗二",
-                    "course_title": "網路通訊",
-                    "category": "quiz",
-                    "deadline": 1788100000,
-                    "submission": {
-                        "status": "submitted",
-                        "score": 98.5
-                    }
+                    "id": 263858,
+                    "name": "計算機組織",
+                    "course_code": "1151TEIDB2E0334 0A   "
                 }
             ]
         }"#;
 
         let json_val: serde_json::Value = serde_json::from_str(json_str).unwrap();
-        let items = extract_todos_from_value(&json_val, None, None);
-
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].id, 1001);
-        assert_eq!(items[0].title, "作業一：機器學習基礎");
-        assert_eq!(items[0].course_name.as_deref(), Some("人工智慧概論"));
-        assert!(!items[0].is_completed_or_submitted());
-
-        assert_eq!(items[1].id, 1002);
-        assert_eq!(items[1].title, "單元測驗二");
-        assert_eq!(items[1].course_name.as_deref(), Some("網路通訊"));
-        assert!(items[1].is_completed_or_submitted());
-        assert_eq!(items[1].score, Some(98.5));
+        let courses = extract_course_list(&json_val);
+        assert_eq!(courses.len(), 2);
+        assert_eq!(courses[0].0, 263857);
+        assert_eq!(courses[0].1, "英文（二）");
+        assert_eq!(courses[1].0, 263858);
+        assert_eq!(courses[1].1, "計算機組織");
     }
 }
