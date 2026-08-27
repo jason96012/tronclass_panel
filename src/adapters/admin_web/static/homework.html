@@ -29,8 +29,8 @@ html[data-theme="dark"]{color-scheme:dark;--ds-bg:#0f141d;--ds-card:#161d29;--ds
 html,body{margin:0;min-height:100%;background:var(--ds-bg)!important;color:var(--ds-text)!important}
 body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
 .shell{width:min(1400px,calc(100% - 64px));margin:auto;padding:32px 0 52px}
-.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
-.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.top{display:flex;align-items:center;gap:12px;margin-bottom:24px}
+.brand{display:flex;align-items:center;gap:12px;min-width:0;margin-right:auto}
 .brand-text{min-width:0}
 .brand b{color:var(--ds-text);font-size:17px;font-weight:850;letter-spacing:-.01em;display:block;line-height:1.3}
 .brand .meta{font-size:12.5px;color:var(--ds-muted);line-height:1.4;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -170,21 +170,33 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 @media(max-width:640px){
   .shell{width:calc(100% - 22px);padding:12px 0 32px}
 
-  /* ── 頁首：標題一列，控制列一列（比照桌機視覺） ────── */
-  .top{flex-direction:column;align-items:stretch;gap:11px;margin-bottom:14px}
-  .brand{gap:11px;align-items:center}
+  /* ── 頁首：品牌列（含返回鍵）＋ 控制列，共兩列 ────── */
+  .top{
+    display:grid!important;grid-template-columns:1fr auto;
+    align-items:center;gap:10px 8px;margin-bottom:14px
+  }
+  .brand{gap:11px;align-items:center;min-width:0;margin-right:0}
   .brand b{font-size:16px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .brand .meta{font-size:11.5px;margin-top:1px}
   .logo{width:38px;height:38px;border-radius:12px;font-size:18px;box-shadow:0 6px 16px rgba(37,99,235,.22)}
 
-  /* 控制列：帳號選單彈性填滿，兩顆按鈕固定寬度並排 */
-  .top-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
-  .account-selector{flex:1 1 auto;min-width:0;gap:0}
+  /* 返回鍵縮成方形圖示，貼齊標題右側 —— 不再獨佔一整列 */
+  #backDashboard{
+    width:38px;height:38px;padding:0!important;gap:0;
+    border-radius:12px;justify-self:end
+  }
+  #backDashboard .btn-label{display:none}
+
+  /* 控制列：帳號選單 + 兩顆按鈕，橫跨整個寬度 */
+  .top-actions{
+    grid-column:1 / -1;
+    display:grid!important;grid-template-columns:1fr auto auto;
+    gap:8px;align-items:center;width:100%
+  }
+  .account-selector{min-width:0;gap:0}
   .account-selector label{display:none}
   .account-selector select{width:100%;max-width:none;min-height:40px;border-radius:999px;font-size:13px}
-  .pill-btn{flex:0 0 auto;min-height:40px;padding:0 13px;font-size:13px;gap:6px}
-  /* 返回鍵在手機上換到第二列，避免第一列過擠 */
-  .pill-btn.ghost{flex:1 1 100%;order:3;margin-top:1px}
+  .pill-btn{min-height:40px;padding:0 13px;font-size:12.5px;gap:6px;white-space:nowrap}
 
   /* ── Hero：手機只留標題，省下一大塊高度 ────────────── */
   .hero{padding:15px 17px;border-radius:18px;margin-bottom:13px}
@@ -199,26 +211,34 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   .metric b{font-size:24px;margin-top:3px}
 
   /* ── 篩選列 ─────────────────────────────────────── */
-  .controls{padding:12px;border-radius:16px;gap:11px;margin-bottom:13px;box-shadow:none;overflow:hidden}
+  /* 注意：不可用 overflow:hidden，否則會裁掉下方橫向捲動的頁籤列 */
+  .controls{
+    display:flex!important;flex-direction:column!important;align-items:stretch!important;
+    padding:12px;border-radius:16px;gap:11px;margin-bottom:13px;
+    box-shadow:none;overflow:visible
+  }
 
-  /* 頁籤橫捲：用 padding 而非負 margin，末端留白靠 scroll-padding */
+  /* 頁籤橫捲：靠 padding 讓末端有留白，不用負 margin（會被父層圓角切掉） */
   .filter-tabs{
-    flex-wrap:nowrap;overflow-x:auto;gap:7px;
+    flex-wrap:nowrap!important;overflow-x:auto;gap:7px;
     -webkit-overflow-scrolling:touch;scrollbar-width:none;
     scroll-snap-type:x proximity;scroll-padding-inline:2px;
     padding-bottom:3px;
   }
   .filter-tabs::-webkit-scrollbar{display:none}
   .filter-tab{
-    flex:0 0 auto;min-height:35px;padding:0 13px;
+    flex:0 0 auto!important;min-height:35px;padding:0 13px;
     font-size:12.5px;white-space:nowrap;scroll-snap-align:start;
   }
 
-  /* 控制項：排序與課程並排，搜尋框獨佔一列 */
-  .filter-dropdowns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  /* 控制項：課程與排序並排，搜尋框獨佔一列。
+     用 !important 蓋過 900px 斷點的 .filter-dropdowns{flex:1}。 */
+  .filter-dropdowns{
+    display:grid!important;grid-template-columns:1fr 1fr;gap:8px;width:100%
+  }
   .filter-dropdowns select,.filter-dropdowns input{
-    width:100%;min-width:0;min-height:40px;font-size:13.5px;
-    border-radius:11px;padding:0 11px;
+    width:100%!important;min-width:0!important;flex:none!important;
+    min-height:40px;font-size:13.5px;border-radius:11px;padding:0 11px;
   }
   .filter-dropdowns input{grid-column:1 / -1}
 
@@ -242,9 +262,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 /* 極窄機型（iPhone SE 等）：頁籤與統計再收一點 */
 @media(max-width:380px){
   /* 極窄機型：帳號選單獨佔一列，兩顆按鈕平分下一列 */
-  .account-selector{flex:1 1 100%}
-  .pill-btn.refresh,.pill-btn.notify{flex:1 1 0;min-width:0}
-  .pill-btn span{overflow:hidden;text-overflow:ellipsis}
+  .top-actions{grid-template-columns:1fr 1fr}
+  .account-selector{grid-column:1 / -1}
+  .pill-btn{font-size:12px;padding:0 10px;width:100%}
   .metric b{font-size:22px}
   .hero h1{font-size:20px}
 }
@@ -277,6 +297,10 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         <div class="meta" id="brandSub">即時倒數與未繳提醒</div>
       </div>
     </div>
+    <a class="pill-btn ghost" id="backDashboard" href="/admin#overview" title="返回 Dashboard">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+      <span class="btn-label">返回 Dashboard</span>
+    </a>
     <div class="top-actions">
       <div class="account-selector" id="accountSelectorWrap" style="display:none">
         <label for="accountSelect">帳號</label>
@@ -290,7 +314,6 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 01-3.4 0"/></svg>
         <span>測試通知</span>
       </button>
-      <a class="pill-btn ghost" id="backDashboard" href="/admin#overview">返回 Dashboard</a>
     </div>
   </header>
 
