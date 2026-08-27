@@ -217,6 +217,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .hw-meta-val{font-size:13px;font-weight:750;color:var(--ds-text)}
 .hw-meta-val.deadline{color:#ef4444;font-weight:850}
 .hw-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:12px;border-top:1px solid var(--ds-line-soft);font-size:12px}
+.hw-complete-btn{margin-left:auto;padding:6px 12px;border:1px solid var(--ds-line-soft);border-radius:999px;background:transparent;color:var(--ds-muted);font-size:12px;cursor:pointer;transition:all .15s ease;white-space:nowrap}
+.hw-complete-btn:hover{border-color:#10b981;color:#10b981}
+.hw-complete-btn.done{border-color:#10b981;background:rgba(16,185,129,.12);color:#10b981}
 .status-pill{display:inline-flex;align-items:center;gap:5px;font-weight:800;font-size:12px}
 .status-pill.good{color:#10b981}.status-pill.bad{color:#ef4444}.status-pill.warn{color:#f59e0b}
 .empty-box{grid-column:1/-1;padding:48px 24px;text-align:center;border:2px dashed var(--ds-line);border-radius:22px;background:var(--ds-card);color:var(--ds-muted)}
@@ -453,6 +456,8 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   'use strict';
   const q = id => document.getElementById(id);
   let allItems = [];
+  // 使用者手動標記「已完成」的作業 id 集合（HOMEWORK_USER_COMPLETED_V1）。
+  let userCompleted = new Set();
   let currentFilter = 'pending';
   let currentAccount = '';
   let statusInfo = null;
@@ -556,7 +561,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   }
 
   function getItemState(item) {
-    const isSubmitted = item.is_submitted || ['submitted', 'graded', 'group_submitted', 'completed', 'pass', 'passed'].includes((item.submission_status || '').toLowerCase());
+    // 使用者手動標記完成 → 視為已繳交狀態（HOMEWORK_USER_COMPLETED_V1）。
+    const userDone = userCompleted.has(String(item.id));
+    const isSubmitted = item.is_submitted || userDone || ['submitted', 'graded', 'group_submitted', 'completed', 'pass', 'passed'].includes((item.submission_status || '').toLowerCase());
     const rem = getRemainingMs(item.end_time);
 
     if (isSubmitted) return 'submitted';
@@ -580,7 +587,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 
     allItems.forEach(item => {
       if (item.course_name) courseSet.add(item.course_name);
-      const isSubmitted = item.is_submitted || ['submitted', 'graded', 'group_submitted', 'completed', 'pass', 'passed'].includes((item.submission_status || '').toLowerCase());
+      const isSubmitted = item.is_submitted || userCompleted.has(String(item.id)) || ['submitted', 'graded', 'group_submitted', 'completed', 'pass', 'passed'].includes((item.submission_status || '').toLowerCase());
       const rem = getRemainingMs(item.end_time);
 
       if (isSubmitted) {
@@ -683,8 +690,10 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     container.innerHTML = filtered.map(item => {
       const state = getItemState(item);
       const rem = getRemainingMs(item.end_time);
-      const countdown = item.is_submitted || ['submitted', 'graded', 'group_submitted', 'completed', 'pass', 'passed'].includes((item.submission_status || '').toLowerCase())
-        ? { text: '✅ 已繳交', badgeClass: 'submitted' }
+      const userDone = userCompleted.has(String(item.id));
+      const submitted = item.is_submitted || ['submitted', 'graded', 'group_submitted', 'completed', 'pass', 'passed'].includes((item.submission_status || '').toLowerCase());
+      const countdown = (submitted || userDone)
+        ? { text: userDone ? '✅ 已完成（手動）' : '✅ 已繳交', badgeClass: 'submitted' }
         : formatCountdown(rem);
 
       const typeLabel = {
@@ -694,13 +703,15 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         questionnaire: '📊 問卷'
       }[item.item_type] || '📝 作業';
 
-      const statusText = item.score != null
-        ? `💯 已評分：${item.score} 分`
-        : (item.is_submitted || item.submission_status === 'submitted'
-          ? '✅ 已繳交'
-          : (rem != null && rem <= 0 ? '❌ 逾期未繳' : '⏳ 未繳交'));
+      const statusText = userDone
+        ? '✅ 已完成（手動標記）'
+        : (item.score != null
+          ? `💯 已評分：${item.score} 分`
+          : (submitted
+            ? '✅ 已繳交'
+            : (rem != null && rem <= 0 ? '❌ 逾期未繳' : '⏳ 未繳交')));
 
-      const statusClass = item.is_submitted || item.submission_status === 'submitted' || item.score != null
+      const statusClass = (submitted || userDone || item.score != null)
         ? 'good'
         : (rem != null && rem <= 0 ? 'bad' : 'warn');
 
@@ -715,7 +726,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       else if (state === 'overdue') cardClass += ' overdue';
 
       return `
-        <article class="${cardClass}" data-endtime="${esc(item.end_time || '')}" data-submitted="${item.is_submitted ? '1' : '0'}">
+        <article class="${cardClass}" data-endtime="${esc(item.end_time || '')}" data-submitted="${(item.is_submitted || userDone) ? '1' : '0'}">
           <div>
             <div class="hw-header">
               <span class="course-tag">📚 ${esc(item.course_name || '未指定課程')}</span>
@@ -742,6 +753,11 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
               <span class="status-pill ${statusClass}">${esc(statusText)}</span>
               ${lateNotice}
             </div>
+            <button class="hw-complete-btn ${userDone ? 'done' : ''}" type="button"
+              data-hw-id="${esc(item.id)}" data-completed="${userDone ? '1' : '0'}"
+              title="${userDone ? '取消標記完成' : '標記為已完成，停止截止提醒'}">
+              ${userDone ? '↩️ 取消完成' : '✅ 標記完成'}
+            </button>
           </div>
         </article>
       `;
@@ -788,6 +804,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       const queryParam = params.toString() ? `?${params.toString()}` : '';
       const data = await api(`/admin/api/homework${queryParam}`);
       allItems = Array.isArray(data.items) ? data.items : [];
+      userCompleted = new Set(Array.isArray(data.user_completed) ? data.user_completed : []);
       loadedAccountId = data.account_id || targetAccount || '';
       if (data.user_name) {
         q('brandSub').textContent = `${data.user_name} (${targetAccount || '目前帳號'}) 的作業待辦清單`;
@@ -871,6 +888,34 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     q('courseFilter').addEventListener('change', renderList);
     q('sortFilter').addEventListener('change', renderList);
     q('searchInput').addEventListener('input', renderList);
+
+    // HOMEWORK_USER_COMPLETED_V1
+    // 委派處理「標記完成／取消」按鈕（卡片會重新 render，用容器委派避免重綁）。
+    q('homeworkContainer').addEventListener('click', async function(ev) {
+      const btn = ev.target.closest('.hw-complete-btn');
+      if (!btn) return;
+      const homeworkId = btn.getAttribute('data-hw-id');
+      const completed = btn.getAttribute('data-completed') !== '1';
+      btn.disabled = true;
+      try {
+        const res = await api('/admin/api/homework/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ homework_id: Number(homeworkId), completed })
+        });
+        if (res && res.ok) {
+          if (completed) userCompleted.add(String(homeworkId));
+          else userCompleted.delete(String(homeworkId));
+          updateMetrics();
+          renderList();
+        }
+      } catch (err) {
+        showToast('標記作業狀態失敗：' + (err && err.message ? err.message : 'HTTP 錯誤'), 'bad');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
     q('refreshBtn').addEventListener('click', async function() {
       if (this.disabled) return;
       revalidatePolls = 0;

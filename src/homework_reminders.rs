@@ -277,8 +277,19 @@ pub async fn evaluate_and_send_reminders(
     todos: &[crate::api::todos::TronclassTodoItem],
     now_utc: DateTime<Utc>,
 ) -> miette::Result<()> {
+    // HOMEWORK_USER_COMPLETED_V1
+    // 載入「使用者手動標記完成」的作業集合，這些作業不發任何截止提醒
+    // （即使上游 is_submitted 尚未即時反映，例如實體繳交）。
+    let user_completed = accounts_db
+        .list_homework_user_completed(&account.id)
+        .await
+        .unwrap_or_default();
+
     for todo in todos.iter() {
         if !todo.is_active_pending(now_utc) {
+            continue;
+        }
+        if user_completed.contains(&todo.id.to_string()) {
             continue;
         }
 

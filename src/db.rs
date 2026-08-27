@@ -729,6 +729,24 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err("初始化 homework_reminder_sent index 失敗")?;
 
+        // HOMEWORK_USER_COMPLETED_V1
+        // 使用者手動標記「已完成」的作業。上游 is_submitted 未必即時反映
+        // （例如實體繳交、或學校端尚未更新），讓使用者自行標記以停止
+        // 24h/6h/1h 的截止提醒。標記鍵為 (account_id, homework_id)。
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS homework_user_completed (
+                account_id  TEXT NOT NULL DEFAULT '',
+                homework_id TEXT NOT NULL DEFAULT '',
+                completed_at INTEGER NOT NULL DEFAULT 0,
+                completed_time TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(account_id, homework_id)
+            )",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 homework_user_completed 資料表失敗")?;
+
         // HOMEWORK_SNAPSHOT_V1
         // 保存每個帳號最近一次成功抓取的作業清單，讓作業頁一開啟就能立即顯示
         // 上次的結果（stale-while-revalidate），不必空等 Tronclass 回應。
@@ -2169,6 +2187,83 @@ impl AccountsDb {
         .wrap_err("寫入 homework_reminder_sent 失敗")?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    // ── 使用者手動標記作業完成（HOMEWORK_USER_COMPLETED_V1） ───────────────
+
+    /// 標記某個作業為「使用者已手動完成」，停止後續截止提醒。
+    pub async fn mark_homework_user_completed(
+        &self,
+        account_id: &str,
+        homework_id: &str,
+    ) -> Result<bool> {
+        let now = chrono::Local::now();
+        let result = sqlx::query(
+            "INSERT OR REPLACE INTO homework_user_completed
+                (account_id, homework_id, completed_at, completed_time)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(account_id.trim())
+        .bind(homework_id.trim())
+        .bind(now.timestamp())
+        .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("寫入 homework_user_completed 失敗")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 取消標記某個作業為完成。
+    pub async fn unmark_homework_user_completed(
+        &self,
+        account_id: &str,
+        homework_id: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM homework_user_completed WHERE account_id = ? AND homework_id = ?",
+        )
+        .bind(account_id.trim())
+        .bind(homework_id.trim())
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("刪除 homework_user_completed 失敗")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 取得該帳號所有「使用者手動標記完成」的作業 id 集合。
+    pub async fn list_homework_user_completed(
+        &self,
+        account_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT homework_id FROM homework_user_completed WHERE account_id = ?",
+        )
+        .bind(account_id.trim())
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢 homework_user_completed 失敗")?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// 該帳號是否已將此作業標記完成。
+    pub async fn is_homework_user_completed(
+        &self,
+        account_id: &str,
+        homework_id: &str,
+    ) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM homework_user_completed WHERE account_id = ? AND homework_id = ?",
+        )
+        .bind(account_id.trim())
+        .bind(homework_id.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢 homework_user_completed 失敗")?;
+        Ok(row.is_some())
     }
 
     // ── 作業清單快照（開頁秒顯示用） ──────────────────────────────────────────

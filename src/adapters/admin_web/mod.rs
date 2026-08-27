@@ -1227,6 +1227,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(admin_homework_list_handler),
         )
         .route(
+            "/admin/api/homework/complete",
+            post(admin_homework_complete_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
             "/admin/timetable",
             axum::routing::get(admin_clean_timetable_page_handler),
         )
@@ -4056,6 +4061,16 @@ struct AdminHomeworkQuery {
     refresh: bool,
 }
 
+/// 使用者標記／取消標記「作業已完成」的請求。
+#[derive(Debug, Deserialize)]
+struct AdminHomeworkCompleteRequest {
+    #[serde(default)]
+    account_id: Option<String>,
+    homework_id: u64,
+    /// true=標記完成，false=取消標記。
+    completed: bool,
+}
+
 /// 發送一則測試用的作業截止提醒，驗證各通知管道是否暢通。
 ///
 /// HOMEWORK_TEST_NOTIFICATION_V1
@@ -4304,6 +4319,15 @@ async fn admin_homework_list_handler(
         .await
         .unwrap_or_else(|| raw_account.id.clone());
 
+    // HOMEWORK_USER_COMPLETED_V1
+    // 載入該帳號「使用者手動標記完成」的作業 id 集合，隨回應一起給前端，
+    // 讓作業卡顯示已標記狀態。
+    let user_completed = state
+        .accounts_db
+        .list_homework_user_completed(&resolved_account.id)
+        .await
+        .unwrap_or_default();
+
     // DEMAND_DRIVEN_HOMEWORK_CACHE_V1 + INSTANT_FIRST_PAINT_V1
     // 開頁體驗優先：若有任何既有資料（記憶體快取或 SQLite 快照），先立刻回傳，
     // 同時在背景把資料更新到最新（stale-while-revalidate）。
@@ -4363,6 +4387,7 @@ async fn admin_homework_list_handler(
                     "items": items.as_ref(),
                     "fetched_at": fetched_at,
                     "stale": !is_fresh,
+                    "user_completed": user_completed,
                 })),
             )
                 .into_response();
@@ -4387,6 +4412,7 @@ async fn admin_homework_list_handler(
                 "account_id": raw_account.id,
                 "user_name": cached_user_name,
                 "items": items.as_ref(),
+                "user_completed": user_completed,
             })),
         )
             .into_response(),
@@ -4399,11 +4425,86 @@ async fn admin_homework_list_handler(
                     "account_id": raw_account.id,
                     "user_name": cached_user_name,
                     "items": Vec::<crate::api::todos::TronclassTodoItem>::new(),
+                    "user_completed": user_completed,
                     "warning": format!("{e}"),
                 })),
             )
                 .into_response()
         }
+    }
+}
+
+/// 標記／取消標記「作業已完成」。僅影響該帳號自己的提醒與顯示狀態；
+/// 不會寫入上游，也不改動提醒「已送出」紀錄。
+async fn admin_homework_complete_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    let req: AdminHomeworkCompleteRequest = match serde_json::from_slice(&body) {
+        Ok(req) => req,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
+    };
+
+    // 授權：session_cookie_to_query middleware 已把 HttpOnly cookie 注入 query
+    // token，但這裡是 POST body 而非 GET，需自行從 Cookie header 讀。
+    let token = session_cookie_from_headers(&headers).unwrap_or_default();
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+
+    // 目標帳號：管理員可指定其他帳號，一般使用者只能標記自己。
+    let target_account_id = if session.is_admin {
+        req.account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(&session.account_id)
+    } else {
+        if let Some(requested) = req.account_id.as_deref().map(str::trim).filter(|v| !v.is_empty())
+        {
+            if requested != session.account_id {
+                return unauthorized_response();
+            }
+        }
+        &session.account_id
+    };
+
+    let homework_id = req.homework_id.to_string();
+    let result = if req.completed {
+        state
+            .accounts_db
+            .mark_homework_user_completed(target_account_id, &homework_id)
+            .await
+    } else {
+        state
+            .accounts_db
+            .unmark_homework_user_completed(target_account_id, &homework_id)
+            .await
+    };
+
+    match result {
+        Ok(_) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "account_id": target_account_id,
+                "homework_id": req.homework_id,
+                "completed": req.completed,
+            })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("標記作業狀態失敗：{error}") })),
+        )
+            .into_response(),
     }
 }
 
