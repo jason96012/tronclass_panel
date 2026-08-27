@@ -983,6 +983,15 @@ async fn main() -> Result<()> {
         Arc::clone(&config),
         adapter_hub.as_ref().map(Arc::clone),
     );
+
+    // ALWAYS_FRESH_ON_OPEN_V1
+    // 背景預抓作業清單：開機後立刻抓一輪，之後每 4 分鐘刷新（短於快取 TTL），
+    // 讓使用者一進作業頁就命中熱快取 —— 立即顯示且資料是最新的。
+    homework_reminders::start_homework_prefetcher(
+        accounts_db.clone(),
+        Arc::clone(&config),
+        adapter_hub.as_ref().map(Arc::clone),
+    );
     // HOMEWORK_REMINDER_SCHEDULER_END
 
     let interactive_adapter = adapter_hub.is_some() || config.adapters.admin_web.enabled;

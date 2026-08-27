@@ -4242,8 +4242,12 @@ async fn admin_homework_list_handler(
         if let Some((items, fetched_at)) =
             crate::homework_cache::peek_stale(&cache_key, &state.accounts_db).await
         {
+            // 背景預抓器每 4 分鐘刷新一次，因此多數情況下這裡拿到的就是新資料。
+            // is_fresh 為真時回報 stale=false，前端就不會顯示「更新中」也不會回抓。
+            let is_fresh = crate::homework_cache::peek(&cache_key).await.is_some();
+
             // 資料已過期才需要背景更新；仍在 TTL 內就不必打擾上游。
-            if crate::homework_cache::peek(&cache_key).await.is_none() {
+            if !is_fresh {
                 let bg_account = resolved_account.clone();
                 let bg_db = state.accounts_db.clone();
                 let bg_key = cache_key.clone();
@@ -4286,7 +4290,7 @@ async fn admin_homework_list_handler(
                     "user_name": cached_user_name,
                     "items": items.as_ref(),
                     "fetched_at": fetched_at,
-                    "stale": true,
+                    "stale": !is_fresh,
                 })),
             )
                 .into_response();

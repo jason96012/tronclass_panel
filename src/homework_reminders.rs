@@ -23,6 +23,20 @@ use crate::web_push_notifications;
 const CHECK_INTERVAL_SECS: u64 = 15 * 60; // 每 15 分鐘檢查一次
 const RETENTION_DAYS: i64 = 14;
 
+/// 背景預抓間隔。
+///
+/// ALWAYS_FRESH_ON_OPEN_V1
+/// 刻意設得比 `homework_cache::CACHE_TTL`（5 分鐘）短，
+/// 讓快取在使用者開頁前就已經被刷新，永遠處於「新鮮」狀態。
+/// 這樣一進網站就是命中快取（0 上游請求、立即顯示），且資料是即時的。
+const PREFETCH_INTERVAL_SECS: u64 = 4 * 60;
+
+/// 預抓時每個帳號之間的間隔，平滑對學校伺服器的請求流量。
+const PREFETCH_ACCOUNT_GAP_SECS: u64 = 2;
+
+/// 啟動後多久開始第一次預抓（讓監控器與 adapter 先就緒）。
+const PREFETCH_STARTUP_DELAY_SECS: u64 = 5;
+
 /// 啟動作業截止倒數提醒排程器
 pub fn start_homework_reminder_scheduler(
     accounts_db: AccountsDb,
@@ -45,6 +59,99 @@ pub fn start_homework_reminder_scheduler(
             }
         }
     })
+}
+
+/// 啟動作業清單背景預抓器。
+///
+/// ALWAYS_FRESH_ON_OPEN_V1
+/// 目的：讓使用者「一進網站就看到即時的作業」。
+///
+/// - 開機後 5 秒立刻抓一輪 → 首次開頁就不必空等
+/// - 之後每 4 分鐘刷新（短於 5 分鐘的快取 TTL）→ 快取永遠是熱的
+/// - 抓完同時評估截止提醒，通知不必等 15 分鐘排程
+///
+/// 與 15 分鐘的提醒排程器並存：這裡負責「資料新鮮度」，
+/// 那裡負責「保底」，兩者共用 single-flight 不會重複打上游。
+pub fn start_homework_prefetcher(
+    accounts_db: AccountsDb,
+    app_config: Arc<AppConfig>,
+    messenger: Option<Arc<dyn AdapterMessenger>>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        info!(
+            interval_secs = PREFETCH_INTERVAL_SECS,
+            "作業清單背景預抓器已啟動（開頁即為最新資料）"
+        );
+
+        tokio::time::sleep(Duration::from_secs(PREFETCH_STARTUP_DELAY_SECS)).await;
+
+        let mut ticker = tokio::time::interval(Duration::from_secs(PREFETCH_INTERVAL_SECS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            ticker.tick().await;
+            prefetch_all_accounts(&accounts_db, &app_config, messenger.as_deref()).await;
+        }
+    })
+}
+
+/// 為所有啟用中的帳號預抓作業清單並回填快取／快照。
+async fn prefetch_all_accounts(
+    accounts_db: &AccountsDb,
+    app_config: &AppConfig,
+    messenger: Option<&dyn AdapterMessenger>,
+) {
+    let accounts = match accounts_db.resolve(app_config).await {
+        Ok(accounts) => accounts,
+        Err(e) => {
+            debug!(error = %e, "預抓：讀取啟用帳號清單失敗，略過本輪");
+            return;
+        }
+    };
+
+    let now_utc = Utc::now();
+    let mut refreshed = 0usize;
+
+    for account in accounts {
+        if !account.enabled {
+            continue;
+        }
+
+        let account_for_fetch = account.clone();
+        let db_for_fetch = accounts_db.clone();
+        let persist_key = account.id.clone();
+
+        // force=true：預抓的重點就是把資料換成最新的。
+        // single-flight 確保與網頁／排程器同時發生時只會抓一次。
+        match crate::homework_cache::get_or_fetch(&account.id, true, || async move {
+            let items = fetch_todos_with_saved_session(&account_for_fetch, &db_for_fetch).await?;
+            crate::homework_cache::persist(&persist_key, &items, &db_for_fetch).await;
+            Ok(items)
+        })
+        .await
+        {
+            Ok(items) => {
+                refreshed += 1;
+                // 預抓到新資料時順便評估提醒，讓通知即時。
+                // 去重表確保不會重複發送。
+                if let Err(error) =
+                    evaluate_and_send_reminders(&account, accounts_db, messenger, &items, now_utc)
+                        .await
+                {
+                    warn!(account = %account.id, %error, "預抓後評估作業提醒失敗");
+                }
+            }
+            Err(e) => {
+                debug!(account = %account.id, error = %e, "預抓作業清單失敗");
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(PREFETCH_ACCOUNT_GAP_SECS)).await;
+    }
+
+    if refreshed > 0 {
+        debug!(accounts = refreshed, "作業清單預抓完成，快取已更新");
+    }
 }
 
 async fn run_once(
