@@ -154,6 +154,16 @@ enum RawTodosResponse {
         data: Option<Vec<RawTodoItem>>,
         #[serde(default)]
         activities: Option<Vec<RawTodoItem>>,
+        #[serde(default)]
+        items: Option<Vec<RawTodoItem>>,
+        #[serde(default)]
+        results: Option<Vec<RawTodoItem>>,
+        #[serde(default)]
+        todo_list: Option<Vec<RawTodoItem>>,
+        #[serde(default)]
+        assignments: Option<Vec<RawTodoItem>>,
+        #[serde(default)]
+        homeworks: Option<Vec<RawTodoItem>>,
     },
 }
 
@@ -163,28 +173,71 @@ impl super::ApiClient {
     /// `GET /api/todos` — 取得使用者待辦事項（含作業、測驗截止時間）
     #[instrument(skip(self))]
     pub async fn get_todos(&self) -> Result<Vec<TronclassTodoItem>> {
-        let url = format!("{}/api/todos", self.base_url);
-        debug!(url = %url, "GET /api/todos");
+        let endpoints = [
+            "/api/todos",
+            "/api/student/todos",
+            "/api/activities/unfinished",
+        ];
 
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .into_diagnostic()
-            .wrap_err("GET /api/todos failed")?;
+        let mut last_error = None;
 
-        let parsed: RawTodosResponse = self.handle_response(resp).await?;
-        let raw_list = match parsed {
-            RawTodosResponse::List(items) => items,
-            RawTodosResponse::ObjectWrapper {
-                todos,
-                data,
-                activities,
-            } => todos.or(data).or(activities).unwrap_or_default(),
-        };
+        for endpoint in &endpoints {
+            let url = format!("{}{}", self.base_url, endpoint);
+            debug!(url = %url, "嘗試獲取待辦作業");
 
-        Ok(raw_list.into_iter().map(Into::into).collect())
+            let resp = match self.client.get(&url).send().await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    last_error = Some(miette::miette!("請求 {url} 失敗: {e}"));
+                    continue;
+                }
+            };
+
+            let status = resp.status();
+            if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::BAD_REQUEST {
+                debug!(endpoint = %endpoint, status = %status, "端點不存在或請求無效，嘗試備用端點");
+                continue;
+            }
+
+            match self.handle_response::<RawTodosResponse>(resp).await {
+                Ok(parsed) => {
+                    let raw_list = match parsed {
+                        RawTodosResponse::List(items) => items,
+                        RawTodosResponse::ObjectWrapper {
+                            todos,
+                            data,
+                            activities,
+                            items,
+                            results,
+                            todo_list,
+                            assignments,
+                            homeworks,
+                        } => todos
+                            .or(data)
+                            .or(activities)
+                            .or(items)
+                            .or(results)
+                            .or(todo_list)
+                            .or(assignments)
+                            .or(homeworks)
+                            .unwrap_or_default(),
+                    };
+                    return Ok(raw_list.into_iter().map(Into::into).collect());
+                }
+                Err(e) => {
+                    if crate::api::is_auth_error(&e.to_string()) {
+                        return Err(e);
+                    }
+                    last_error = Some(e);
+                }
+            }
+        }
+
+        if let Some(e) = last_error {
+            Err(e).wrap_err("獲取 Tronclass 待辦事項失敗")
+        } else {
+            Ok(Vec::new())
+        }
     }
 }
 

@@ -89,8 +89,11 @@ async fn check_account_homework(
     now_utc: DateTime<Utc>,
 ) -> miette::Result<()> {
     // 建立 API 客戶端（優先使用既有已驗證 Session Cookie）
-    let (auth_client, _) = match AuthClient::new(account).await {
-        Ok(res) => res,
+    let (auth_client, session) = match AuthClient::new(account).await {
+        Ok(res) => {
+            let _ = accounts_db.set_session_cookie(&account.id, &res.1.cookie_string).await;
+            res
+        }
         Err(e) => {
             debug!(account = %account.id, error = %e, "登入認證失敗，略過本輪作業檢查");
             return Ok(());

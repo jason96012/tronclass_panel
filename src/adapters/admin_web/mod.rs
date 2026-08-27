@@ -4128,32 +4128,63 @@ async fn admin_homework_list_handler(
         request_timeout_secs: provider.api.request_timeout_secs,
     };
 
-    let (auth_client, _) = match crate::auth::AuthClient::new(&resolved_account).await {
-        Ok(res) => res,
+    let (mut auth_client, session_info) = match crate::auth::AuthClient::new(&resolved_account).await {
+        Ok(res) => {
+            let _ = state
+                .accounts_db
+                .set_session_cookie(&resolved_account.id, &res.1.cookie_string)
+                .await;
+            res
+        }
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("Tronclass 登入失敗：{e}") })),
+                Json(json!({ "error": format!("Tronclass 登入認證失敗：{e}") })),
             )
                 .into_response();
         }
     };
 
-    let api = crate::api::ApiClient::new(auth_client.client, resolved_account.base_url());
+    let api = crate::api::ApiClient::new(auth_client.client.clone(), resolved_account.base_url());
     match api.get_todos().await {
         Ok(items) => (
             StatusCode::OK,
             Json(json!({
                 "account_id": target_account_id,
+                "user_name": session_info.user_name,
                 "items": items,
             })),
         )
             .into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({ "error": format!("無法獲取待辦作業：{e}") })),
-        )
-            .into_response(),
+        Err(e) => {
+            if crate::api::is_auth_error(&e.to_string()) {
+                if let Ok(reauth_session) = auth_client.re_authenticate(&resolved_account).await {
+                    let _ = state
+                        .accounts_db
+                        .set_session_cookie(&resolved_account.id, &reauth_session.cookie_string)
+                        .await;
+                    let retry_api =
+                        crate::api::ApiClient::new(auth_client.client, resolved_account.base_url());
+                    if let Ok(items) = retry_api.get_todos().await {
+                        return (
+                            StatusCode::OK,
+                            Json(json!({
+                                "account_id": target_account_id,
+                                "user_name": reauth_session.user_name,
+                                "items": items,
+                            })),
+                        )
+                            .into_response();
+                    }
+                }
+            }
+
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("無法獲取待辦作業清單：{e}") })),
+            )
+                .into_response()
+        }
     }
 }
 
