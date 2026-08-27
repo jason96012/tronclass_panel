@@ -130,6 +130,80 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .countdown-badge.pending{background:#dbeafe;color:#1d4ed8}
 .countdown-badge.submitted{background:#dcfce7;color:#15803d}
 .countdown-badge.overdue{background:var(--ds-soft-strong);color:var(--ds-muted)}
+/* ─── iOS 設定頁風格：分組卡片 ─────────────────────────────
+   標題在卡片外、卡片內為列表，每列左側標籤、右側數值。 */
+.hw-page-header{
+  display:flex!important;align-items:center!important;justify-content:space-between!important;
+  gap:14px!important;margin:0 0 14px!important;padding:13px 16px!important;
+  border:1px solid var(--ds-line-soft)!important;border-radius:18px!important;
+  background:var(--ds-card)!important;box-shadow:var(--ds-shadow)!important
+}
+.hw-page-brand{display:flex!important;align-items:center!important;gap:12px!important;min-width:0!important}
+.hw-page-logo{flex:0 0 auto!important}
+.hw-back{
+  flex:0 0 auto;white-space:nowrap;text-decoration:none;
+  min-height:36px;padding:0 14px;border-radius:999px;
+  display:inline-flex;align-items:center;justify-content:center;
+  font:inherit;font-size:13.5px;font-weight:760;
+  color:var(--ds-muted)!important;background:var(--ds-soft)!important;
+  border:1px solid var(--ds-line)!important;transition:all .15s ease
+}
+.hw-back:hover{color:var(--ds-text)!important;border-color:#60a5fa!important}
+.hw-back:active{transform:scale(.96)}
+
+/* 狀態列：綠點 + 標題 + 動作按鈕 */
+.hw-statusbar{
+  display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  padding:15px 17px;margin-bottom:18px;border-radius:18px;
+  border:1px solid var(--ds-line-soft);background:var(--ds-card);box-shadow:var(--ds-shadow)
+}
+.hw-statusbar-info{display:flex;align-items:center;gap:12px;min-width:0}
+.hw-statusbar-text{min-width:0}
+.hw-statusbar-title{font-size:16px;font-weight:850;color:var(--ds-text);line-height:1.3}
+.hw-statusbar-sub{font-size:12.5px;color:var(--ds-muted);margin-top:2px}
+.dot{
+  width:11px;height:11px;flex:0 0 auto;border-radius:50%;background:var(--ds-muted);
+  box-shadow:0 0 0 5px color-mix(in srgb,var(--ds-muted) 16%,transparent)
+}
+.dot.good{background:#16a34a;box-shadow:0 0 0 5px rgba(22,163,74,.16)}
+.hw-statusbar-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+
+/* 分組：標題在外、卡片在內 */
+.hw-group{margin-bottom:18px}
+.hw-group-title{
+  font-size:16px;font-weight:850;color:var(--ds-text);
+  margin:0 0 9px;padding-left:3px;letter-spacing:-.01em
+}
+.hw-group-body{
+  border:1px solid var(--ds-line-soft);border-radius:18px;
+  background:var(--ds-card);box-shadow:var(--ds-shadow);
+  padding:2px 16px;overflow:hidden
+}
+.hw-row{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;
+  padding:13px 0;border-bottom:1px solid var(--ds-line-soft)
+}
+.hw-row:last-child{border-bottom:0}
+.hw-row-key{font-size:14px;color:var(--ds-muted);font-weight:650;min-width:0}
+.hw-row-val{font-size:15px;font-weight:850;text-align:right;color:var(--ds-text);flex:0 0 auto}
+.hw-row-val.urgent{color:#ef4444}
+.hw-row-val.warn{color:#f59e0b}
+.hw-row-val.pending{color:#3b82f6}
+.hw-row-val.good{color:#10b981}
+.hw-row-select{
+  flex:0 1 auto;max-width:60%;min-height:36px;border-radius:10px;
+  border:1px solid var(--ds-line)!important;background:var(--ds-input)!important;
+  color:var(--ds-text)!important;padding:0 11px;font:inherit;font-size:13.5px;font-weight:700;
+  cursor:pointer;text-overflow:ellipsis
+}
+.hw-row-select:focus{border-color:#3b82f6!important;outline:none;box-shadow:0 0 0 3px rgba(59,130,246,.13)}
+
+/* 篩選卡片：去掉自身邊框，改由 .hw-group-body 提供 */
+.hw-group .controls{
+  background:transparent!important;border:0!important;box-shadow:none!important;
+  padding:14px 0!important;margin:0!important;border-radius:0!important
+}
+
 .hw-toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,16px);max-width:min(560px,92vw);padding:14px 18px;border-radius:12px;font-size:13.5px;font-weight:650;line-height:1.65;white-space:pre-wrap;color:#fff;background:#1e293b;box-shadow:0 12px 32px rgba(15,23,42,.28);opacity:0;pointer-events:none;transition:opacity .2s ease,transform .2s ease;z-index:9999}
 .hw-toast.show{opacity:1;transform:translate(-50%,0)}
 .hw-toast[data-kind="ok"]{background:#15803d}
@@ -154,12 +228,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .refresh-pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ds-muted)}
 @media(max-width:900px){
   .shell{width:min(100% - 24px,1400px);padding:16px 0 40px}
-  .summary{grid-template-columns:repeat(2,1fr);gap:10px}
   .hw-grid{grid-template-columns:1fr}
   .controls{flex-direction:column;align-items:stretch;gap:14px}
   .filter-dropdowns{justify-content:stretch}.filter-dropdowns select,.filter-dropdowns input{flex:1}
-  .top{flex-direction:column;align-items:stretch;gap:12px}
-  .top-actions{justify-content:space-between}
 }
 
 /* MOBILE_COMPACT_V2
@@ -170,45 +241,30 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 @media(max-width:640px){
   .shell{width:calc(100% - 22px);padding:12px 0 32px}
 
-  /* ── 頁首：品牌列（含返回鍵）＋ 控制列，共兩列 ────── */
-  .top{
-    display:grid!important;grid-template-columns:1fr auto;
-    align-items:center;gap:10px 8px;margin-bottom:14px
-  }
-  .brand{gap:11px;align-items:center;min-width:0;margin-right:0}
-  .brand b{font-size:16px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .brand .meta{font-size:11.5px;margin-top:1px}
-  .logo{width:38px;height:38px;border-radius:12px;font-size:18px;box-shadow:0 6px 16px rgba(37,99,235,.22)}
+  /* ── 頁首：品牌 + 返回鍵，維持單列 ─────────────────── */
+  .hw-page-header{padding:11px 13px!important;border-radius:16px!important;margin-bottom:12px!important}
+  .brand{gap:10px;align-items:center;min-width:0;margin-right:0}
+  .brand b{font-size:15.5px;line-height:1.25;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .brand .meta{font-size:11.5px;margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .logo{width:36px;height:36px;border-radius:12px;font-size:17px;box-shadow:0 6px 16px rgba(37,99,235,.22)}
+  .hw-back{min-height:34px;padding:0 12px;font-size:13px}
 
-  /* 返回鍵縮成方形圖示，貼齊標題右側 —— 不再獨佔一整列 */
-  #backDashboard{
-    width:38px;height:38px;padding:0!important;gap:0;
-    border-radius:12px;justify-self:end
-  }
-  #backDashboard .btn-label{display:none}
+  /* ── 狀態列：資訊一列、按鈕平分一列 ───────────────── */
+  .hw-statusbar{padding:13px 14px;border-radius:16px;margin-bottom:16px;gap:11px}
+  .hw-statusbar-title{font-size:15px}
+  .hw-statusbar-sub{font-size:11.5px}
+  .hw-statusbar-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%}
+  .pill-btn{min-height:40px;padding:0 12px;font-size:12.5px;gap:6px;white-space:nowrap;width:100%}
 
-  /* 控制列：帳號選單 + 兩顆按鈕，橫跨整個寬度 */
-  .top-actions{
-    grid-column:1 / -1;
-    display:grid!important;grid-template-columns:1fr auto auto;
-    gap:8px;align-items:center;width:100%
-  }
-  .account-selector{min-width:0;gap:0}
-  .account-selector label{display:none}
-  .account-selector select{width:100%;max-width:none;min-height:40px;border-radius:999px;font-size:13px}
-  .pill-btn{min-height:40px;padding:0 13px;font-size:12.5px;gap:6px;white-space:nowrap}
-
-  /* ── Hero：手機只留標題，省下一大塊高度 ────────────── */
-  .hero{padding:15px 17px;border-radius:18px;margin-bottom:13px}
-  .eyebrow{font-size:9.5px;letter-spacing:.11em}
-  .hero h1{font-size:22px;margin:5px 0 0;line-height:1.25}
-  .hero p{display:none}
-
-  /* ── 統計卡 ─────────────────────────────────────── */
-  .summary{gap:9px;margin-bottom:13px}
-  .metric{padding:12px 13px;border-radius:15px;box-shadow:none}
-  .metric .meta{font-size:11.5px;gap:5px;line-height:1.35}
-  .metric b{font-size:24px;margin-top:3px}
+  /* ── 分組卡片 ───────────────────────────────────── */
+  .hw-group{margin-bottom:16px}
+  .hw-group-title{font-size:15px;margin-bottom:8px}
+  .hw-group-body{border-radius:16px;padding:2px 14px}
+  .hw-row{padding:12px 0;gap:12px}
+  .hw-row-key{font-size:13.5px}
+  .hw-row-val{font-size:15px}
+  .hw-row-select{max-width:58%;min-height:36px;font-size:13px}
+  .hw-group .controls{padding:13px 0!important}
 
   /* ── 篩選列 ─────────────────────────────────────── */
   /* 注意：不可用 overflow:hidden，否則會裁掉下方橫向捲動的頁籤列 */
@@ -261,12 +317,12 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 
 /* 極窄機型（iPhone SE 等）：頁籤與統計再收一點 */
 @media(max-width:380px){
-  /* 極窄機型：帳號選單獨佔一列，兩顆按鈕平分下一列 */
-  .top-actions{grid-template-columns:1fr 1fr}
-  .account-selector{grid-column:1 / -1}
-  .pill-btn{font-size:12px;padding:0 10px;width:100%}
-  .metric b{font-size:22px}
-  .hero h1{font-size:20px}
+  /* 極窄機型：兩顆動作鍵改直向堆疊 */
+  .hw-statusbar-actions{grid-template-columns:1fr}
+  .pill-btn{font-size:12.5px;padding:0 10px}
+  .hw-row-key{font-size:13px}
+  .hw-row-val{font-size:14.5px}
+  .hw-row-select{max-width:54%;font-size:12.5px}
 }
 
 /* 瀏海／動態島機型：避免內容貼齊螢幕圓角 */
@@ -289,23 +345,26 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 </head>
 <body>
 <div class="shell">
-  <header class="top">
-    <div class="brand">
-      <div class="logo">📝</div>
+  <header class="top hw-page-header">
+    <div class="brand hw-page-brand">
+      <div class="logo hw-page-logo">📝</div>
       <div class="brand-text">
-        <b>Tronclass 作業截止追蹤</b>
+        <b>作業截止追蹤</b>
         <div class="meta" id="brandSub">即時倒數與未繳提醒</div>
       </div>
     </div>
-    <a class="pill-btn ghost" id="backDashboard" href="/admin#overview" title="返回 Dashboard">
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
-      <span class="btn-label">返回 Dashboard</span>
-    </a>
-    <div class="top-actions">
-      <div class="account-selector" id="accountSelectorWrap" style="display:none">
-        <label for="accountSelect">帳號</label>
-        <select id="accountSelect"></select>
+    <a class="hw-back" id="backDashboard" href="/admin#overview" title="返回 Dashboard">返回</a>
+  </header>
+
+  <section class="hw-statusbar">
+    <div class="hw-statusbar-info">
+      <span class="dot good" aria-hidden="true"></span>
+      <div class="hw-statusbar-text">
+        <div class="hw-statusbar-title">作業追蹤已啟用</div>
+        <div class="hw-statusbar-sub">最後更新：<span id="lastUpdated">—</span></div>
       </div>
+    </div>
+    <div class="hw-statusbar-actions">
       <button class="pill-btn refresh" id="refreshBtn" type="button" title="重新整理">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 11-3.5-7.1"/><path d="M21 3v6h-6"/></svg>
         <span>重新整理</span>
@@ -315,34 +374,44 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         <span>測試通知</span>
       </button>
     </div>
-  </header>
-
-  <section class="hero">
-    <div class="eyebrow">HOMEWORK & QUIZ DEADLINES</div>
-    <h1>作業截止時間</h1>
-    <p>即時串接 Tronclass 平台待辦清單，依剩餘時間動態進行緊急倒數（24h / 6h / 1h 階梯警示），掌握各科繳交進度。</p>
   </section>
 
-  <div class="summary">
-    <div class="metric urgent">
-      <span class="meta">🚨 24 小時內即將截止</span>
-      <b id="statUrgent">-</b>
+  <section class="hw-group" id="accountSelectorWrap" style="display:none">
+    <h2 class="hw-group-title">帳號</h2>
+    <div class="hw-group-body">
+      <div class="hw-row">
+        <label class="hw-row-key" for="accountSelect">目前帳號</label>
+        <select id="accountSelect" class="hw-row-select"></select>
+      </div>
     </div>
-    <div class="metric warn">
-      <span class="meta">⚠️ 7 天內待辦作業</span>
-      <b id="statWeek">-</b>
-    </div>
-    <div class="metric pending">
-      <span class="meta">⏳ 全部未繳交作業</span>
-      <b id="statPending">-</b>
-    </div>
-    <div class="metric good">
-      <span class="meta">✅ 已繳交 / 已評分</span>
-      <b id="statSubmitted">-</b>
-    </div>
-  </div>
+  </section>
 
-  <div class="controls">
+  <section class="hw-group">
+    <h2 class="hw-group-title">繳交概況</h2>
+    <div class="hw-group-body">
+
+      <div class="hw-row">
+        <span class="hw-row-key">24 小時內即將截止</span>
+        <b class="hw-row-val urgent" id="statUrgent">—</b>
+      </div>
+      <div class="hw-row">
+        <span class="hw-row-key">7 天內待辦作業</span>
+        <b class="hw-row-val warn" id="statWeek">—</b>
+      </div>
+      <div class="hw-row">
+        <span class="hw-row-key">全部未繳交作業</span>
+        <b class="hw-row-val pending" id="statPending">—</b>
+      </div>
+      <div class="hw-row">
+        <span class="hw-row-key">已繳交 / 已評分</span>
+        <b class="hw-row-val good" id="statSubmitted">—</b>
+      </div>
+    </div>
+  </section>
+
+  <section class="hw-group">
+    <h2 class="hw-group-title">篩選</h2>
+    <div class="controls">
     <div class="filter-tabs">
       <button class="filter-tab active" data-filter="pending" type="button">⏳ 未繳交 <span class="badge-count" id="countPending">0</span></button>
       <button class="filter-tab" data-filter="urgent" type="button">🚨 24h 緊急 <span class="badge-count" id="countUrgent">0</span></button>
@@ -362,11 +431,10 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       </select>
       <input type="search" id="searchInput" placeholder="搜尋作業名稱 / 課程..." aria-label="搜尋作業">
     </div>
-  </div>
+    </div>
+  </section>
 
-  <div class="refresh-pill" id="syncStatusWrap">
-    <span>最後更新時間：<b id="lastUpdated">-</b></span>
-  </div>
+
 
   <main id="homeworkContainer" class="hw-grid" style="margin-top:14px">
     <div class="loading-box">
@@ -764,7 +832,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     if (statusInfo && statusInfo.accounts && statusInfo.accounts.length > 1) {
       const wrap = q('accountSelectorWrap');
       const select = q('accountSelect');
-      wrap.style.display = 'flex';
+      wrap.style.display = 'block';
       select.innerHTML = statusInfo.accounts.map(acc => `
         <option value="${esc(acc.account_id)}">${esc(acc.account_id)} (${esc(acc.user_name || acc.username || '')})</option>
       `).join('');
