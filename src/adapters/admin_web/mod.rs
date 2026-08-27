@@ -51,8 +51,8 @@ mod timetable;
 mod web_push;
 use self::pages::{
     inject_theme, load_runtime_theme, ADMIN_ACTIVITY_HTML, ADMIN_BLACKLIST_HTML,
-    ADMIN_BLOCKED_HTML, ADMIN_DASHBOARD_HTML, ADMIN_HEALTH_HTML, ADMIN_PASSKEY_HTML,
-    ADMIN_PASSWORD_HTML,
+    ADMIN_BLOCKED_HTML, ADMIN_DASHBOARD_HTML, ADMIN_HEALTH_HTML, ADMIN_HOMEWORK_HTML,
+    ADMIN_PASSKEY_HTML, ADMIN_PASSWORD_HTML,
 };
 mod actions;
 mod files;
@@ -1018,6 +1018,8 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin", get(admin_page_handler))
         .route("/admin/activity", get(admin_activity_page_handler))
         .route("/admin/blacklist", get(admin_blacklist_page_handler))
+        .route("/admin/homework", get(admin_homework_page_handler))
+        .route("/homework", get(admin_homework_page_handler))
         .route("/admin/dashboard", get(admin_dashboard_page_handler))
         // "我的頁面" is linked from the header of three pages and from the PWA
         // manifest shortcut, but had no route and returned 404. The dashboard
@@ -2164,6 +2166,21 @@ async fn admin_dashboard_page_handler(
 
 async fn admin_activity_page_handler(headers: HeaderMap) -> Response {
     html_page_response(&headers, inject_theme(ADMIN_ACTIVITY_HTML))
+}
+
+async fn admin_homework_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return admin_login_redirect("/admin/homework");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    html_page_response(&headers, inject_theme(ADMIN_HOMEWORK_HTML))
 }
 
 // Cache admin flags for /admin/api/status to avoid querying accounts.db on every dashboard refresh.

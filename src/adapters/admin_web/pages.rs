@@ -71,6 +71,7 @@ pub(super) const ADMIN_PASSWORD_HTML: &str = include_str!("static/password.html"
 pub(super) const ADMIN_PASSKEY_HTML: &str = include_str!("static/passkey.html");
 pub(super) const ADMIN_BLACKLIST_HTML: &str = include_str!("static/blacklist.html");
 pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
+pub(super) const ADMIN_HOMEWORK_HTML: &str = include_str!("static/homework.html");
 
 /// Add shared frontend assets without copying about 50 KiB of CSS/JavaScript
 /// into every HTML response. The security script intentionally remains
