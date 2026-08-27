@@ -519,6 +519,15 @@ pub fn parse_flexible_datetime(value: &serde_json::Value) -> Option<DateTime<Utc
                     .map(|dt| dt.with_timezone(&Utc));
             }
 
+            // 5. 若數字時間戳記被包裹為字串形式 ("1788100000" 或 "1788100000000")
+            if let Ok(i) = s.parse::<i64>() {
+                return if i > 10_000_000_000 {
+                    DateTime::from_timestamp_millis(i)
+                } else {
+                    DateTime::from_timestamp(i, 0)
+                };
+            }
+
             None
         }
         serde_json::Value::Number(num) => {
@@ -541,6 +550,25 @@ pub fn parse_flexible_datetime(value: &serde_json::Value) -> Option<DateTime<Utc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_flexible_datetime_timestamp_number_and_string() {
+        let num_sec = serde_json::Value::Number(serde_json::Number::from(1788100000i64));
+        assert!(parse_flexible_datetime(&num_sec).is_some());
+
+        let str_sec = serde_json::Value::String("1788100000".to_string());
+        assert_eq!(
+            parse_flexible_datetime(&num_sec),
+            parse_flexible_datetime(&str_sec)
+        );
+
+        let num_milli = serde_json::Value::Number(serde_json::Number::from(1788100000000i64));
+        let str_milli = serde_json::Value::String("1788100000000".to_string());
+        assert_eq!(
+            parse_flexible_datetime(&num_milli),
+            parse_flexible_datetime(&str_milli)
+        );
+    }
 
     #[test]
     fn test_parse_flexible_datetime_rfc3339() {
