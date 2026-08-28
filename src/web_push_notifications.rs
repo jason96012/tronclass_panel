@@ -23,6 +23,14 @@ use crate::db::{AccountsDb, WebPushSubscriptionRow};
 
 const VAPID_PRIVATE_KEY_SETTING: &str = "vapid_private_key_v1";
 const MAX_DEDUPE_ENTRIES: usize = 4096;
+/// Maximum number of Web Push HTTP sends in flight at once. Prevents a burst
+/// of notifications (or many subscriptions) from spawning unbounded concurrent
+/// tasks / connections against the push service.
+const MAX_CONCURRENT_SENDS: usize = 8;
+
+/// Global concurrency gate for outbound Web Push sends.
+static SEND_SEMAPHORE: Lazy<tokio::sync::Semaphore> =
+    Lazy::new(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_SENDS));
 
 #[derive(Clone)]
 struct WebPushService {
@@ -103,8 +111,9 @@ pub async fn send_test(account_id: &str) -> Result<usize> {
     }))
     .map_err(|error| miette::miette!("序列化 Web Push 測試 payload 失敗：{error}"))?;
     let total = subscriptions.len();
-    for subscription in subscriptions {
-        service.send_one(&subscription, &payload).await?;
+    let (ok, _failed) = service.send_to_many(subscriptions, &payload).await;
+    if total > 0 && ok == 0 {
+        return Err(miette::miette!("Web Push 測試全部發送失敗"));
     }
     Ok(total)
 }
@@ -133,8 +142,9 @@ pub async fn send_homework_test(
     }))
     .map_err(|error| miette::miette!("序列化 Web Push 測試 payload 失敗：{error}"))?;
     let total = subscriptions.len();
-    for subscription in subscriptions {
-        service.send_one(&subscription, &payload).await?;
+    let (ok, _failed) = service.send_to_many(subscriptions, &payload).await;
+    if total > 0 && ok == 0 {
+        return Err(miette::miette!("Web Push 作業測試全部發送失敗"));
     }
     Ok(total)
 }
@@ -236,11 +246,7 @@ impl WebPushService {
         }))
         .map_err(|error| miette::miette!("序列化 Web Push 作業 payload 失敗：{error}"))?;
 
-        for subscription in subscriptions {
-            if let Err(error) = self.send_one(&subscription, &payload).await {
-                warn!(account = %account_id, endpoint = %subscription.endpoint, error = %error, "Web Push 單一裝置發送失敗");
-            }
-        }
+        self.send_to_many(subscriptions, &payload).await;
         Ok(())
     }
 
@@ -264,11 +270,7 @@ impl WebPushService {
         }))
         .map_err(|error| miette::miette!("序列化 Web Push payload 失敗：{error}"))?;
 
-        for subscription in subscriptions {
-            if let Err(error) = self.send_one(&subscription, &payload).await {
-                warn!(account = %account_id, endpoint = %subscription.endpoint, error = %error, "Web Push 單一裝置發送失敗");
-            }
-        }
+        self.send_to_many(subscriptions, &payload).await;
         Ok(())
     }
 
@@ -319,6 +321,38 @@ impl WebPushService {
                 detail.trim()
             ))
         }
+    }
+
+    /// Send a payload to every subscription, bounding concurrency with the
+    /// global semaphore so a burst of notifications or many devices cannot
+    /// flood the push service with parallel connections. Returns (success,
+    /// failed) counts.
+    async fn send_to_many(
+        &self,
+        subscriptions: Vec<WebPushSubscriptionRow>,
+        payload: &[u8],
+    ) -> (usize, usize) {
+        // Fan out in parallel, each send holding one permit from SEND_SEMAPHORE.
+        let futures = subscriptions.into_iter().map(|sub| {
+            let payload = payload.to_vec();
+            async move {
+                let _permit = SEND_SEMAPHORE.acquire().await;
+                self.send_one(&sub, &payload).await
+            }
+        });
+        let results = futures::future::join_all(futures).await;
+        let mut ok = 0usize;
+        let mut failed = 0usize;
+        for result in results {
+            match result {
+                Ok(()) => ok += 1,
+                Err(error) => {
+                    failed += 1;
+                    warn!(error = %error, "Web Push 單一裝置發送失敗");
+                }
+            }
+        }
+        (ok, failed)
     }
 }
 
