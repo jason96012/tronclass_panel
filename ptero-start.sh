@@ -621,15 +621,30 @@ start_filebrowser() {
 
 start_filebrowser
 
-# At-rest encryption master key for the accounts database. If unset, secrets
-# are stored as plaintext (legacy); set it to encrypt upstream passwords and
-# session cookies with AES-256-GCM. Never change the key after accounts exist.
+# At-rest encryption master key for the accounts database. Encrypts upstream
+# passwords and session cookies with AES-256-GCM before storing them.
+# Resolution order:
+#   1. $TRONCLASS_MASTER_KEY (Pterodactyl env var) — highest priority
+#   2. config/master.key file — already exists
+#   3. auto-generate a fresh key into config/master.key (so no manual step is
+#      needed in the Pterodactyl panel)
+# Never change the key after accounts exist, or existing encrypted values
+# cannot be decrypted.
 if [[ -n "${TRONCLASS_MASTER_KEY:-}" ]]; then
   export TRONCLASS_MASTER_KEY
 elif [[ -f config/master.key ]]; then
   export TRONCLASS_MASTER_KEY="$(tr -d '\r\n ' < config/master.key)"
 else
-  echo "[ptero-start] 未設定 TRONCLASS_MASTER_KEY：帳號密碼將以明文儲存（建議設定以啟用 at-rest 加密）"
+  # Generate a 32-byte (64 hex) key once, with umask 077 so the file is 0600.
+  ( umask 077
+    if command -v openssl >/dev/null 2>&1; then
+      openssl rand -hex 32 > config/master.key
+    else
+      tr -dc 'a-f0-9' </dev/urandom | head -c 64 > config/master.key
+    fi )
+  chmod 600 config/master.key 2>/dev/null || true
+  export TRONCLASS_MASTER_KEY="$(tr -d '\r\n ' < config/master.key)"
+  echo "[ptero-start] 已自動產生 at-rest 加密 master key → config/master.key（請勿外流或變更）"
 fi
 
 # Filebrowser 開啟時，Dashboard 教材自動指向同一包 cloud/
