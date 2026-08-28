@@ -133,7 +133,7 @@ pub fn validate_dashboard_password(password: &str, provider_password: &str) -> R
 fn encode_password_hash(password: &str, salt: &[u8], iterations: u32) -> String {
     let derived = pbkdf2_hmac_sha256(password.as_bytes(), salt, iterations, DERIVED_KEY_LEN);
     format!(
-        "{FORMAT}${iterations}${}${}",
+        "{LEGACY_FORMAT}${iterations}${}${}",
         hex::encode(salt),
         hex::encode(derived)
     )
