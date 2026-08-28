@@ -93,6 +93,11 @@ fn master_key() -> Option<[u8; 32]> {
     Some(arr)
 }
 
+/// Whether at-rest encryption is active (a valid master key is configured).
+pub fn is_encryption_enabled() -> bool {
+    master_key().is_some()
+}
+
 fn encrypt_with_key(plaintext: &str, key: [u8; 32]) -> Option<String> {
     // Random 12-byte nonce per value.
     let mut nonce_bytes = [0u8; 12];

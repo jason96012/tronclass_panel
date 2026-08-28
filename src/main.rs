@@ -913,6 +913,29 @@ async fn main() -> Result<()> {
         }
     };
 
+    // AT_REST_AUTO_REENCRYPT_V1
+    // 當 master key 已啟用時，把既有（可能為明文的）帳號憑證重新寫入以加密。
+    // 每次啟動只做一次，成本低（帳號數通常不多），確保「下載 .db 不會看到
+    // 明文密碼」。讀出時已解密成明文，寫回時會走加密路徑。
+    if !validate_only && crate::secret_encryption::is_encryption_enabled() {
+        match accounts_db.list().await {
+            Ok(raw_accounts) => {
+                let mut upgraded = 0usize;
+                for account in &raw_accounts {
+                    if accounts_db.upsert(account).await.is_ok() {
+                        upgraded += 1;
+                    }
+                }
+                if upgraded > 0 {
+                    info!(upgraded, "啟動時已將既有帳號憑證重新寫入（at-rest 加密）");
+                }
+            }
+            Err(e) => {
+                warn!(error = %e, "啟動時重寫既有帳號憑證失敗");
+            }
+        }
+    }
+
     info!(account_count = accounts.len(), "設定驗證通過");
 
     if validate_only {
