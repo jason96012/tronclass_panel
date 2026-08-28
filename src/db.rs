@@ -82,12 +82,17 @@ impl From<AccountRow> for RawAccountConfig {
             id: row.id,
             provider: row.provider,
             username: row.username,
-            password: row.password,
+            // Decrypt at-rest credentials so in-memory callers get plaintext.
+            password: crate::secret_encryption::StoreSecret::from_stored(&row.password)
+                .as_str()
+                .to_string(),
             dashboard_password_hash: row.dashboard_password_hash,
             enabled: row.enabled,
             line_user_id: row.line_user_id,
             discord_user_id: row.discord_user_id,
-            session_cookie: row.session_cookie,
+            session_cookie: crate::secret_encryption::StoreSecret::from_stored(&row.session_cookie)
+                .as_str()
+                .to_string(),
             is_admin: row.is_admin,
         }
     }
@@ -909,6 +914,9 @@ impl AccountsDb {
 
     /// 新增帳號；若 id 已存在則回傳錯誤。
     pub async fn insert(&self, account: &RawAccountConfig) -> Result<()> {
+        let password = crate::secret_encryption::StoreSecret::new(&account.password).store_value();
+        let session_cookie =
+            crate::secret_encryption::StoreSecret::new(&account.session_cookie).store_value();
         sqlx::query(
             "INSERT INTO accounts (id, provider, username, password, dashboard_password_hash, enabled, line_user_id, discord_user_id, session_cookie, is_admin)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -916,12 +924,12 @@ impl AccountsDb {
         .bind(&account.id)
         .bind(&account.provider)
         .bind(&account.username)
-        .bind(&account.password)
+        .bind(&password)
         .bind(&account.dashboard_password_hash)
         .bind(account.enabled)
         .bind(&account.line_user_id)
         .bind(&account.discord_user_id)
-        .bind(&account.session_cookie)
+        .bind(&session_cookie)
         .bind(account.is_admin)
         .execute(&self.pool)
         .await
@@ -932,6 +940,9 @@ impl AccountsDb {
 
     /// 新增或更新帳號（upsert）。
     pub async fn upsert(&self, account: &RawAccountConfig) -> Result<()> {
+        let password = crate::secret_encryption::StoreSecret::new(&account.password).store_value();
+        let session_cookie =
+            crate::secret_encryption::StoreSecret::new(&account.session_cookie).store_value();
         sqlx::query(
             "INSERT INTO accounts (id, provider, username, password, dashboard_password_hash, enabled, line_user_id, discord_user_id, session_cookie, is_admin)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -949,12 +960,12 @@ impl AccountsDb {
         .bind(&account.id)
         .bind(&account.provider)
         .bind(&account.username)
-        .bind(&account.password)
+        .bind(&password)
         .bind(&account.dashboard_password_hash)
         .bind(account.enabled)
         .bind(&account.line_user_id)
         .bind(&account.discord_user_id)
-        .bind(&account.session_cookie)
+        .bind(&session_cookie)
         .bind(account.is_admin)
         .execute(&self.pool)
         .await
@@ -1017,8 +1028,10 @@ impl AccountsDb {
 
     /// 更新帳號最近一次成功登入的 session cookie，回傳是否找到並更新。
     pub async fn set_session_cookie(&self, id: &str, session_cookie: &str) -> Result<bool> {
+        let stored =
+            crate::secret_encryption::StoreSecret::new(session_cookie).store_value();
         let result = sqlx::query("UPDATE accounts SET session_cookie = ? WHERE id = ?")
-            .bind(session_cookie)
+            .bind(&stored)
             .bind(id)
             .execute(&self.pool)
             .await

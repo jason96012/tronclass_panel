@@ -42,6 +42,7 @@ mod logs;
 mod monitor;
 mod rollcalls;
 mod runtime_settings;
+mod secret_encryption;
 mod session_client;
 mod trusted_ip;
 mod web_push_notifications;
