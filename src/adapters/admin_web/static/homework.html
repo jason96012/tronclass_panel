@@ -469,11 +469,27 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   let revalidatePolls = 0;
   const MAX_REVALIDATE_POLLS = 3;
 
+  // Short-lived access token may expire mid-session; try one silent refresh
+  // before redirecting to login (REFRESH_TOKEN_V1).
+  let _refreshInFlight = null;
+  async function _tryRefresh() {
+    if (_refreshInFlight) return _refreshInFlight;
+    _refreshInFlight = fetch('/admin/api/session/refresh', {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store'
+    }).then(r => r.ok).catch(() => false).finally(() => { _refreshInFlight = null; });
+    return _refreshInFlight;
+  }
+
   async function api(path, opts) {
-    const res = await fetch(path, Object.assign({ credentials: 'same-origin', cache: 'no-store' }, opts || {}));
-    if (res.status === 401 || res.status === 403) {
-      location.replace('/admin');
-      throw new Error('請先登入');
+    let res = await fetch(path, Object.assign({ credentials: 'same-origin', cache: 'no-store' }, opts || {}));
+    if ((res.status === 401 || res.status === 403) && !opts && !path.includes('session/refresh')) {
+      const refreshed = await _tryRefresh();
+      if (refreshed) {
+        res = await fetch(path, { credentials: 'same-origin', cache: 'no-store' });
+      } else {
+        location.replace('/admin');
+        throw new Error('請先登入');
+      }
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

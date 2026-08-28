@@ -41,11 +41,42 @@
     return u.pathname + u.search;
   }
 
+  // Single in-flight refresh guard so concurrent 401s trigger one refresh call.
+  var refreshPromise = null;
+
+  function refreshSession(){
+    if(!refreshPromise){
+      refreshPromise = fetch('/admin/api/session/refresh', {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'Accept': 'application/json' }
+      }).then(function(res){
+        if(res.status === 401 || res.status === 403) throw new Error('refresh_failed');
+        if(!res.ok) throw new Error('refresh_failed');
+        return res.json().catch(function(){ return {}; });
+      }).finally(function(){ refreshPromise = null; });
+    }
+    return refreshPromise;
+  }
+
   async function api(path, opts){
     opts = opts || {};
     opts.credentials = opts.credentials || 'same-origin';
     opts.cache = opts.cache || 'no-store';
-    return fetch(withToken(path), opts).then(parseResponse);
+    var res = await fetch(withToken(path), opts);
+    // Access token expired (short-lived): try once to refresh, then retry once.
+    if(res.status === 401 && !opts._refreshed){
+      try{
+        await refreshSession();
+      }catch(_){
+        // Refresh failed (no valid refresh cookie) — surface the original 401.
+        return parseResponse(res);
+      }
+      var retryOpts = Object.assign({}, opts, { _refreshed: true });
+      res = await fetch(withToken(path), retryOpts);
+    }
+    return parseResponse(res);
   }
 
   function clearStatusCache(){
@@ -89,8 +120,13 @@
     status: status,
     statusSummary: statusSummary,
     refreshStatus: function(options){ return status(true, options || {}); },
-    clearStatusCache: clearStatusCache
+    clearStatusCache: clearStatusCache,
+    // REFRESH_TOKEN_V1: expose the silent refresh for session-security.js to
+    // attempt before declaring the session expired.
+    tryRefresh: refreshSession,
+    __tryRefresh: refreshSession
   };
+  window.__tronTryRefresh = refreshSession;
 
   document.addEventListener('visibilitychange', function(){
     if(!document.hidden) clearStatusCache();

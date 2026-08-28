@@ -87,7 +87,12 @@ pub(super) const ADMIN_MAX_DETAILS_BYTES: usize = 4 * 1024;
 pub(super) const ADMIN_MAX_REST_PERIODS: usize = crate::runtime_settings::MAX_RUNTIME_REST_PERIODS;
 pub(super) const ADMIN_MAX_NOTIFICATION_PREFERENCES: usize = 32;
 
-const SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
+/// Short-lived access token lifetime (30 min). A long-lived refresh token is
+/// used to mint a new access token, so a stolen access cookie is only usable
+/// briefly.
+const ACCESS_TOKEN_TTL: Duration = Duration::from_secs(30 * 60);
+/// Long-lived refresh token lifetime (7 days). Each refresh rotates it.
+const REFRESH_TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_SESSIONS: usize = 500;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
@@ -102,7 +107,12 @@ const SECURITY_ALERT_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 const SESSION_COOKIE_MARKER: &str = "cookie";
 const SECURE_SESSION_COOKIE: &str = "__Host-tronclass_admin_session";
 const LOCAL_SESSION_COOKIE: &str = "tronclass_admin_session";
-const SESSION_COOKIE_MAX_AGE: u64 = 8 * 60 * 60;
+/// HttpOnly access-token cookie lifetime (matches ACCESS_TOKEN_TTL).
+const SESSION_COOKIE_MAX_AGE: u64 = 30 * 60;
+/// HttpOnly refresh-token cookie name and lifetime.
+const SECURE_REFRESH_COOKIE: &str = "__Host-tronclass_admin_refresh";
+const LOCAL_REFRESH_COOKIE: &str = "tronclass_admin_refresh";
+const REFRESH_COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
 
 pub(super) fn validate_admin_text(
     value: &str,
@@ -659,6 +669,14 @@ struct AdminSession {
     expires_at: Instant,
 }
 
+/// A freshly issued token pair. The access token authorizes API calls
+/// (short-lived); the refresh token rotates to mint new access tokens.
+#[derive(Debug, Clone)]
+struct SessionTokens {
+    access: String,
+    refresh: String,
+}
+
 impl AdminWebState {
     pub fn new(
         legacy_access_token: impl Into<String>,
@@ -853,29 +871,33 @@ impl AdminWebState {
         account_id: String,
         is_admin: bool,
         must_change_password: bool,
-    ) -> String {
-        let token = Uuid::new_v4().simple().to_string();
+    ) -> SessionTokens {
+        let access = Uuid::new_v4().simple().to_string();
+        let refresh = Uuid::new_v4().simple().to_string();
         let session = AdminSession {
             account_id: account_id.clone(),
             is_admin,
             must_change_password,
-            expires_at: Instant::now() + SESSION_TTL,
+            expires_at: Instant::now() + ACCESS_TOKEN_TTL,
         };
 
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let expires_at_unix = now_unix + SESSION_TTL.as_secs() as i64;
+        let access_expires_at = now_unix + ACCESS_TOKEN_TTL.as_secs() as i64;
+        let refresh_expires_at = now_unix + REFRESH_TOKEN_TTL.as_secs() as i64;
 
         if let Err(e) = self
             .accounts_db
             .insert_dashboard_session(
-                &token,
+                &access,
                 &account_id,
                 is_admin,
                 must_change_password,
-                expires_at_unix,
+                access_expires_at,
+                &refresh,
+                refresh_expires_at,
             )
             .await
         {
@@ -893,8 +915,53 @@ impl AdminWebState {
                 sessions.remove(&key);
             }
         }
-        sessions.insert(token.clone(), session);
-        token
+        sessions.insert(access.clone(), session);
+        SessionTokens { access, refresh }
+    }
+
+    /// Rotate a refresh token into a fresh access+refresh pair.
+    ///
+    /// Validates the refresh token (still present in DB and not expired),
+    /// then issues a new access token and a **new** refresh token, revoking the
+    /// old one so a reused refresh token cannot be replayed after rotation.
+    async fn rotate_session(&self, refresh_token: &str) -> Option<SessionTokens> {
+        let refresh_token = refresh_token.trim();
+        if refresh_token.is_empty() {
+            return None;
+        }
+        let row = self
+            .accounts_db
+            .get_dashboard_session_by_refresh(refresh_token)
+            .await
+            .ok()??;
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if row.refresh_expires_at <= now_unix {
+            // Expired refresh token: revoke it.
+            let _ = self
+                .accounts_db
+                .delete_dashboard_session_by_refresh(refresh_token)
+                .await;
+            return None;
+        }
+
+        // Rotate: revoke the old access token's in-memory session too.
+        self.sessions.write().await.remove(&row.token);
+
+        let tokens = self
+            .create_session(row.account_id.clone(), row.is_admin, row.must_change_password)
+            .await;
+
+        // Revoke the old row (identified by its refresh token) so the old
+        // refresh token cannot be used again.
+        let _ = self
+            .accounts_db
+            .delete_dashboard_session_by_refresh(refresh_token)
+            .await;
+
+        Some(tokens)
     }
 
     async fn revoke_session(&self, token: &str) {
@@ -1232,6 +1299,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
+            "/admin/api/session/refresh",
+            post(admin_session_refresh_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
             "/admin/timetable",
             axum::routing::get(admin_clean_timetable_page_handler),
         )
@@ -1377,10 +1448,54 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
     response
 }
 
+/// Set the HttpOnly refresh-token cookie (long-lived, rotates on each refresh).
+fn append_refresh_cookie(
+    mut response: Response,
+    refresh_token: &str,
+    headers: &HeaderMap,
+) -> Response {
+    let secure = request_uses_https(headers);
+    let (name, secure_attr) = if secure {
+        (SECURE_REFRESH_COOKIE, "; Secure")
+    } else {
+        (LOCAL_REFRESH_COOKIE, "")
+    };
+    let cookie = format!(
+        "{name}={refresh_token}; Path=/; Max-Age={REFRESH_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure_attr}"
+    );
+    if let Ok(value) = cookie.parse::<HeaderValue>() {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    } else {
+        tracing::error!("refresh cookie 無法建立");
+    }
+    response
+}
+
+/// Read the refresh token from the request cookies.
+fn refresh_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    for pair in cookies.split(';') {
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name != SECURE_REFRESH_COOKIE && name != LOCAL_REFRESH_COOKIE {
+            continue;
+        }
+        let value = value.trim();
+        if value.len() >= 16 && !value.is_empty() {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 fn append_expired_session_cookies(mut response: Response) -> Response {
     for (name, secure) in [
         (SECURE_SESSION_COOKIE, "; Secure"),
         (LOCAL_SESSION_COOKIE, ""),
+        (SECURE_REFRESH_COOKIE, "; Secure"),
+        (LOCAL_REFRESH_COOKIE, ""),
     ] {
         let cookie = format!("{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{secure}");
         let value = cookie
@@ -1472,6 +1587,7 @@ fn bootstrap_allowed_api_path(path: &str) -> bool {
             | "/admin/api/public_status"
             | "/admin/api/passkey/login/start"
             | "/admin/api/passkey/login/finish"
+            | "/admin/api/session/refresh"
     )
 }
 
@@ -2033,7 +2149,7 @@ struct AdminLoginResponse {
 
 fn session_login_response(
     request_headers: &HeaderMap,
-    session_token: &str,
+    tokens: &SessionTokens,
     account_id: String,
     is_admin: bool,
     must_change_password: bool,
@@ -2049,9 +2165,12 @@ fn session_login_response(
             })),
         )
             .into_response(),
-        session_token,
+        &tokens.access,
         request_headers,
     );
+    // Refresh cookie is always set alongside the access cookie (bootstrap too,
+    // so the mandatory password-change flow can keep refreshing).
+    let response = append_refresh_cookie(response, &tokens.refresh, request_headers);
 
     // A bootstrap login authenticates with the upstream Tronclass password and
     // is restricted to changing the Dashboard password. It must not also hand
@@ -2066,7 +2185,7 @@ fn session_login_response(
         response,
         &account_id,
         is_admin,
-        session_token,
+        &tokens.access,
         request_headers,
     )
 }
@@ -3607,7 +3726,7 @@ async fn admin_passkey_login_finish_handler(
 
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
-    let token = state
+    let tokens = state
         .create_session(account_id.clone(), is_admin, false)
         .await;
     crate::logs::record_audit(
@@ -3618,7 +3737,7 @@ async fn admin_passkey_login_finish_handler(
         None,
         "Web 管理頁通行密鑰登入成功",
     );
-    session_login_response(&headers, &token, account_id, is_admin, false)
+    session_login_response(&headers, &tokens, account_id, is_admin, false)
 }
 
 async fn admin_login_handler(
@@ -3803,7 +3922,7 @@ async fn admin_login_handler(
 
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
-    let session_token = state
+    let tokens = state
         .create_session(account_id.clone(), is_admin, must_change_password)
         .await;
     let login_action = if must_change_password {
@@ -3853,7 +3972,7 @@ async fn admin_login_handler(
     }
     session_login_response(
         &headers,
-        &session_token,
+        &tokens,
         account_id,
         is_admin,
         must_change_password,
@@ -3894,6 +4013,70 @@ async fn admin_logout_handler(
     fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
         (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
     ))
+}
+
+/// Refresh endpoint: exchange a valid refresh token for a fresh access token
+/// (and a rotated refresh token). Called by the frontend when an API call
+/// returns 401 because the short-lived access token expired.
+async fn admin_session_refresh_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    // Prefer the HttpOnly refresh cookie; fall back to a token query param
+    // (only for compatibility with clients that cannot send cookies).
+    let refresh_token = refresh_cookie_from_headers(&headers)
+        .filter(|t| !t.is_empty())
+        .or_else(|| {
+            let t = query.token.trim();
+            if t.is_empty() { None } else { Some(t.to_string()) }
+        });
+
+    let Some(refresh_token) = refresh_token else {
+        return unauthorized_response();
+    };
+
+    let Some(tokens) = state.rotate_session(&refresh_token).await else {
+        // Invalid/expired refresh token: clear the cookies so the frontend
+        // stops trying.
+        return fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
+            unauthorized_response(),
+        ));
+    };
+
+    // Resolve account id / is_admin for the response.
+    let mut account_id = String::new();
+    let mut must_change = false;
+    let mut is_admin = false;
+    if let Ok(Some(row)) = state.accounts_db.get_dashboard_session(&tokens.access).await {
+        account_id = row.account_id;
+        is_admin = row.is_admin;
+        must_change = row.must_change_password;
+    }
+
+    let response = append_session_cookie(
+        (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "account_id": account_id,
+                "is_admin": is_admin,
+            })),
+        )
+            .into_response(),
+        &tokens.access,
+        &headers,
+    );
+    let response = append_refresh_cookie(response, &tokens.refresh, &headers);
+
+    // Rotation invalidates the old access token the Filebrowser SSO ticket was
+    // bound to, so re-sign the SSO cookie with the new access token. Bootstrap
+    // sessions must not receive a Filebrowser ticket.
+    if !must_change && !account_id.is_empty() && account_id != "<token-admin>" {
+        fb_sso::append_fb_sso_cookie(response, &account_id, is_admin, &tokens.access, &headers)
+    } else {
+        response
+    }
 }
 
 fn password_json_pick(value: &serde_json::Value, keys: &[&str]) -> String {
@@ -4024,7 +4207,7 @@ async fn admin_password_change_handler(
 
     // Revoke all prior sessions, including this one, then issue a fresh cookie.
     state.revoke_account_sessions(&account.id).await;
-    let session_token = state
+    let tokens = state
         .create_session(account.id.clone(), account.is_admin, false)
         .await;
     crate::logs::record_audit(
@@ -4037,7 +4220,7 @@ async fn admin_password_change_handler(
     );
     session_login_response(
         &headers,
-        &session_token,
+        &tokens,
         account.id,
         account.is_admin,
         false,
@@ -4546,9 +4729,10 @@ mod tests {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
         let state = AdminWebState::new("", vec![], db, None, None, 10);
-        let session_token = state
+        let tokens = state
             .create_session("cookie-user".to_string(), false, false)
             .await;
+        let session_token = tokens.access;
         let app = build_admin_router(state);
         let response = app
             .oneshot(
@@ -4642,9 +4826,10 @@ mod tests {
 
         // 建立初始狀態並產生 Session
         let state1 = AdminWebState::new("", vec![], db.clone(), None, None, 10);
-        let session_token = state1
+        let tokens = state1
             .create_session("student-persisted".to_string(), true, false)
             .await;
+        let session_token = tokens.access;
 
         let auth1 = state1.authorize(&session_token).await.unwrap();
         assert_eq!(auth1.account_id, "student-persisted");

@@ -244,6 +244,10 @@ pub struct DashboardSessionRow {
     pub must_change_password: bool,
     pub created_at: i64,
     pub expires_at: i64,
+    /// Rotatable long-lived refresh token. Short-lived access tokens are
+    /// refreshed from this; rotation invalidates the previous refresh token.
+    pub refresh_token: String,
+    pub refresh_expires_at: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -681,13 +685,35 @@ impl AccountsDb {
                 is_admin INTEGER NOT NULL DEFAULT 0,
                 must_change_password INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL DEFAULT 0,
-                expires_at INTEGER NOT NULL DEFAULT 0
+                expires_at INTEGER NOT NULL DEFAULT 0,
+                refresh_token TEXT NOT NULL DEFAULT '',
+                refresh_expires_at INTEGER NOT NULL DEFAULT 0
             )",
         )
         .execute(&pool)
         .await
         .into_diagnostic()
         .wrap_err("初始化 dashboard_sessions 資料表失敗")?;
+
+        // REFRESH_TOKEN_V1
+        // Migrate pre-existing DBs that lack the refresh-token columns.
+        ensure_table_column(&pool, "dashboard_sessions", "refresh_token", "TEXT NOT NULL DEFAULT ''")
+            .await?;
+        ensure_table_column(
+            &pool,
+            "dashboard_sessions",
+            "refresh_expires_at",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_refresh ON dashboard_sessions(refresh_token)",
+        )
+        .execute(&pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 dashboard_sessions refresh index 失敗")?;
 
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expires_at ON dashboard_sessions(expires_at)",
@@ -2018,7 +2044,7 @@ impl AccountsDb {
 
     // ── Dashboard Session 持久化 ──────────────────────────────────────────────
 
-    /// 儲存或更新 Web Dashboard Session
+    /// 儲存或更新 Web Dashboard Session（含 refresh token）。
     pub async fn insert_dashboard_session(
         &self,
         token: &str,
@@ -2026,12 +2052,15 @@ impl AccountsDb {
         is_admin: bool,
         must_change_password: bool,
         expires_at: i64,
+        refresh_token: &str,
+        refresh_expires_at: i64,
     ) -> Result<()> {
         let now = chrono::Local::now().timestamp();
         sqlx::query(
             "INSERT OR REPLACE INTO dashboard_sessions
-                (token, account_id, is_admin, must_change_password, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+                (token, account_id, is_admin, must_change_password, created_at, expires_at,
+                 refresh_token, refresh_expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(token.trim())
         .bind(account_id.trim())
@@ -2039,6 +2068,8 @@ impl AccountsDb {
         .bind(must_change_password)
         .bind(now)
         .bind(expires_at)
+        .bind(refresh_token.trim())
+        .bind(refresh_expires_at)
         .execute(&self.pool)
         .await
         .into_diagnostic()
@@ -2046,10 +2077,11 @@ impl AccountsDb {
         Ok(())
     }
 
-    /// 依 Token 查詢單一 Dashboard Session
+    /// 依 Access Token 查詢單一 Dashboard Session
     pub async fn get_dashboard_session(&self, token: &str) -> Result<Option<DashboardSessionRow>> {
         sqlx::query_as::<_, DashboardSessionRow>(
-            "SELECT token, account_id, is_admin, must_change_password, created_at, expires_at
+            "SELECT token, account_id, is_admin, must_change_password, created_at, expires_at,
+                    refresh_token, refresh_expires_at
              FROM dashboard_sessions WHERE token = ?",
         )
         .bind(token.trim())
@@ -2059,13 +2091,31 @@ impl AccountsDb {
         .wrap_err("讀取 dashboard_sessions 失敗")
     }
 
-    /// 列出所有尚未過期的 Dashboard Session
+    /// 依 Refresh Token 查詢 Dashboard Session（用於輪換）。
+    pub async fn get_dashboard_session_by_refresh(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<DashboardSessionRow>> {
+        sqlx::query_as::<_, DashboardSessionRow>(
+            "SELECT token, account_id, is_admin, must_change_password, created_at, expires_at,
+                    refresh_token, refresh_expires_at
+             FROM dashboard_sessions WHERE refresh_token = ?",
+        )
+        .bind(refresh_token.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("依 refresh token 讀取 dashboard_sessions 失敗")
+    }
+
+    /// 列出所有 access token 尚未過期的 Dashboard Session
     pub async fn list_valid_dashboard_sessions(
         &self,
         now: i64,
     ) -> Result<Vec<DashboardSessionRow>> {
         sqlx::query_as::<_, DashboardSessionRow>(
-            "SELECT token, account_id, is_admin, must_change_password, created_at, expires_at
+            "SELECT token, account_id, is_admin, must_change_password, created_at, expires_at,
+                    refresh_token, refresh_expires_at
              FROM dashboard_sessions WHERE expires_at > ?
              ORDER BY created_at ASC",
         )
@@ -2098,14 +2148,28 @@ impl AccountsDb {
         Ok(result.rows_affected())
     }
 
-    /// 清理所有已過期的 Dashboard Session
+    /// 清理所有已過期的 Dashboard Session（access 與 refresh 皆過期才刪）。
     pub async fn delete_expired_dashboard_sessions(&self, now: i64) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM dashboard_sessions WHERE expires_at <= ?")
-            .bind(now)
+        let result = sqlx::query(
+            "DELETE FROM dashboard_sessions WHERE expires_at <= ? AND refresh_expires_at <= ?",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("清理過期 dashboard_sessions 失敗")?;
+        Ok(result.rows_affected())
+    }
+
+    /// 依 Refresh Token 刪除該 Session（refresh 輪換時撤銷舊 token）。
+    pub async fn delete_dashboard_session_by_refresh(&self, refresh_token: &str) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM dashboard_sessions WHERE refresh_token = ?")
+            .bind(refresh_token.trim())
             .execute(&self.pool)
             .await
             .into_diagnostic()
-            .wrap_err("清理過期 dashboard_sessions 失敗")?;
+            .wrap_err("依 refresh token 刪除 dashboard_sessions 失敗")?;
         Ok(result.rows_affected())
     }
 
@@ -2805,15 +2869,21 @@ mod tests {
         let future_expiry = now + 3600;
         let past_expiry = now - 100;
 
-        db.insert_dashboard_session("token1", "acc1", true, false, future_expiry)
-            .await
-            .unwrap();
-        db.insert_dashboard_session("token2", "acc1", false, true, future_expiry)
-            .await
-            .unwrap();
-        db.insert_dashboard_session("token3", "acc2", false, false, past_expiry)
-            .await
-            .unwrap();
+        db.insert_dashboard_session(
+            "token1", "acc1", true, false, future_expiry, "refresh1", future_expiry,
+        )
+        .await
+        .unwrap();
+        db.insert_dashboard_session(
+            "token2", "acc1", false, true, future_expiry, "refresh2", future_expiry,
+        )
+        .await
+        .unwrap();
+        db.insert_dashboard_session(
+            "token3", "acc2", false, false, past_expiry, "refresh3", past_expiry,
+        )
+        .await
+        .unwrap();
 
         // Get single session
         let s1 = db.get_dashboard_session("token1").await.unwrap().unwrap();
@@ -2826,6 +2896,19 @@ mod tests {
         let s2 = db.get_dashboard_session("token2").await.unwrap().unwrap();
         assert!(!s2.is_admin);
         assert!(s2.must_change_password);
+
+        // Refresh token lookup + rotation revocation
+        let by_refresh = db.get_dashboard_session_by_refresh("refresh1").await.unwrap().unwrap();
+        assert_eq!(by_refresh.token, "token1");
+        let rotated = db.delete_dashboard_session_by_refresh("refresh1").await.unwrap();
+        assert_eq!(rotated, 1);
+        assert!(db.get_dashboard_session_by_refresh("refresh1").await.unwrap().is_none());
+        // Re-insert so the CRUD assertions below still hold.
+        db.insert_dashboard_session(
+            "token1", "acc1", true, false, future_expiry, "refresh1", future_expiry,
+        )
+        .await
+        .unwrap();
 
         // List valid sessions (should exclude expired token3)
         let valid = db.list_valid_dashboard_sessions(now).await.unwrap();
@@ -2843,9 +2926,11 @@ mod tests {
         assert!(db.get_dashboard_session("token1").await.unwrap().is_none());
 
         // Delete sessions by account
-        db.insert_dashboard_session("token4", "acc1", false, false, future_expiry)
-            .await
-            .unwrap();
+        db.insert_dashboard_session(
+            "token4", "acc1", false, false, future_expiry, "refresh4", future_expiry,
+        )
+        .await
+        .unwrap();
         let deleted_acc = db.delete_dashboard_sessions_by_account("acc1").await.unwrap();
         assert_eq!(deleted_acc, 2); // token2 and token4
         assert!(db.get_dashboard_session("token2").await.unwrap().is_none());

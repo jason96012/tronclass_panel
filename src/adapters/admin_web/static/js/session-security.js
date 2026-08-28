@@ -319,7 +319,21 @@
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { 'Accept': 'application/json' }
-    }).then(function (response) {
+    }).then(async function (response) {
+      // REFRESH_TOKEN_V1: access cookie may be short-lived but a valid refresh
+      // cookie can silently mint a new one. Try a single refresh before
+      // declaring the session expired.
+      if ((response.status === 401 || response.status === 403) && window.__tronTryRefresh) {
+        try {
+          var refreshed = await window.__tronTryRefresh();
+          if (refreshed) {
+            response = await nativeFetch('/admin/api/status?include_history=false&resume=' + Date.now(), {
+              credentials: 'same-origin', cache: 'no-store',
+              headers: { 'Accept': 'application/json' }
+            });
+          }
+        } catch (_) {}
+      }
       if (response.status === 401 || response.status === 403) {
         showExpiredLogin();
         return;
