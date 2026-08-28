@@ -806,7 +806,22 @@ watchdog_check_filebrowser() {
   (( bad == 1 )) && watchdog_restart_filebrowser
 }
 
-# ─── 熱重編：原始碼比 binary 新時，背景重新編譯並替換執行中的程式 ─────────
+# ─── 來源內容 hash：不受 mtime / 時區影響的變更偵測 ──────────────────────
+# 為什麼不用「檔案修改時間（mtime）」比對：透過 zip 上傳並解壓時，會保留
+# 打包機器的舊時間戳。若打包機器的時鐘比伺服器慢，來源檔 mtime 就會比 binary
+# 還舊，導致 find -newer 永遠偵測不到變更（看起來像「修了沒效」）。
+# 因此改比對「內容 hash」：任何 .rs / static / Cargo 檔的內容或增刪都會被偵測。
+src_hash() {
+  local h
+  h="$(find src Cargo.toml Cargo.lock -type f -print0 2>/dev/null \
+        | xargs -0 sha256sum 2>/dev/null \
+        | sort \
+        | sha256sum \
+        | awk '{print $1}')"
+  [[ -n "$h" ]] && printf '%s' "$h" || printf 'empty'
+}
+
+# ─── 熱重編：來源內容有變時，背景重新編譯並替換執行中的程式 ─────────────
 # 讓使用者在面板上傳新 src/ 後「不用按 Restart」：看門狗會自動偵測、編譯，
 # 成功後短暫重啟服務程序（Pterodactyl 本身不重啟）。設 HOT_REBUILD=0 可關閉。
 # 回傳值：0 = 已編譯完成、準備替換；1 = 無需編譯 / 冷卻中 / 編譯失敗。
@@ -814,9 +829,10 @@ hot_rebuild_if_needed() {
   local bin="$1"
   [[ "${HOT_REBUILD:-1}" == "1" ]] || return 1
   [[ -f "$bin" && "${FORCE_REBUILD:-0}" != "1" ]] || return 1
-  local newer=""
-  newer="$(find src Cargo.toml Cargo.lock -newer "$bin" 2>/dev/null | head -5)"
-  [[ -n "$newer" ]] || return 1
+  local cur saved
+  cur="$(src_hash)"
+  saved="$(cat logs/src-hash 2>/dev/null || true)"
+  [[ -n "$saved" && "$cur" == "$saved" ]] && return 1
   # 編譯失敗時避免每 15 秒就重試一次（編譯動輒數分鐘），設最小重試間隔。
   local now last
   now="$(date +%s)"
@@ -825,11 +841,9 @@ hot_rebuild_if_needed() {
     return 1
   fi
   printf '%s\n' "$now" > logs/hot-rebuild.last
-  echo "[watchdog] 偵測到原始碼比 binary 新，背景重新編譯（服務持續運作）"
-  local f
-  for f in $newer; do echo "[watchdog]   新於 binary：$f"; done
+  echo "[watchdog] 偵測到原始碼內容有變，背景重新編譯（服務持續運作）"
   if cargo build --release --no-default-features; then
-    # 把 binary mtime 設成「現在」，避免與來源檔時間出入造成重複觸發。
+    printf '%s\n' "$cur" > logs/src-hash
     touch "$bin" 2>/dev/null || true
     touch logs/hot-rebuild.pending
     echo "[watchdog] 編譯完成，即將以新 binary 替換（僅服務程序短暫重啟）"
@@ -890,6 +904,11 @@ run_bin() {
   while true; do
     chmod +x "$bin" 2>/dev/null || true
     echo "[ptero-start] 啟動 $bin（watchdog interval=${WATCHDOG_INTERVAL_SECS:-15}s）"
+    if [[ "${HOT_REBUILD:-1}" == "1" ]]; then
+      echo "[ptero-start] 熱重編監控：已啟用（每 ${WATCHDOG_INTERVAL_SECS:-15}s 檢查 src/ 是否比 binary 新，新則自動重編、免重啟）"
+    else
+      echo "[ptero-start] 熱重編監控：已關閉（HOT_REBUILD=0）"
+    fi
     "$bin" &
     local child=$!
     echo "$child" > logs/dashboard.pid
@@ -909,17 +928,21 @@ run_bin() {
 }
 
 # 已編譯過就直接跑。原本只認 FORCE_REBUILD，改了 .rs / static 檔卻忘了設，
-# 就會一直跑舊 binary，看起來像「修了沒效」。改成自動比對修改時間。
+# 就會一直跑舊 binary，看起來像「修了沒效」。改成自動比對「內容 hash」
+# （src_hash），不靠 mtime，避免 zip 上傳保留舊時間戳造成誤判。
 BIN=./target/release/tronclass_rollcall
+_cur_hash="$(src_hash)"
 if [[ -f "$BIN" && "${FORCE_REBUILD:-0}" != "1" ]]; then
-  newer="$(find src Cargo.toml Cargo.lock -newer "$BIN" 2>/dev/null | head -5)"
-  if [[ -n "$newer" ]]; then
-    echo "[ptero-start] 偵測到原始碼比 binary 新，將重新編譯："
-    printf '[ptero-start]   %s\n' $newer
-  else
+  _saved_hash="$(cat logs/src-hash 2>/dev/null || true)"
+  if [[ -n "$_saved_hash" && "$_cur_hash" == "$_saved_hash" ]]; then
     echo "[ptero-start] binary 已是最新（$(date -r "$BIN" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)）"
     run_bin "$BIN"
     exit $?
+  fi
+  if [[ -z "$_saved_hash" ]]; then
+    echo "[ptero-start] 尚未有來源 hash 基準，重新編譯一次以建立基準"
+  else
+    echo "[ptero-start] 偵測到原始碼內容有變，將重新編譯"
   fi
 fi
 
@@ -954,6 +977,8 @@ if [[ -f Cargo.toml && -d src ]]; then
   echo "[ptero-start] cargo build --release --no-default-features"
   export TRONCLASS_BUILD_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
   if cargo build --release --no-default-features; then
+    mkdir -p logs
+    printf '%s\n' "$_cur_hash" > logs/src-hash
     run_bin ./target/release/tronclass_rollcall
     exit $?
   fi
