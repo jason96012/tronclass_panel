@@ -806,12 +806,49 @@ watchdog_check_filebrowser() {
   (( bad == 1 )) && watchdog_restart_filebrowser
 }
 
+# ─── 熱重編：原始碼比 binary 新時，背景重新編譯並替換執行中的程式 ─────────
+# 讓使用者在面板上傳新 src/ 後「不用按 Restart」：看門狗會自動偵測、編譯，
+# 成功後短暫重啟服務程序（Pterodactyl 本身不重啟）。設 HOT_REBUILD=0 可關閉。
+# 回傳值：0 = 已編譯完成、準備替換；1 = 無需編譯 / 冷卻中 / 編譯失敗。
+hot_rebuild_if_needed() {
+  local bin="$1"
+  [[ "${HOT_REBUILD:-1}" == "1" ]] || return 1
+  [[ -f "$bin" && "${FORCE_REBUILD:-0}" != "1" ]] || return 1
+  local newer=""
+  newer="$(find src Cargo.toml Cargo.lock -newer "$bin" 2>/dev/null | head -5)"
+  [[ -n "$newer" ]] || return 1
+  # 編譯失敗時避免每 15 秒就重試一次（編譯動輒數分鐘），設最小重試間隔。
+  local now last
+  now="$(date +%s)"
+  last="$(cat logs/hot-rebuild.last 2>/dev/null || echo 0)"
+  if (( now - last < ${HOT_REBUILD_BACKOFF_SECS:-120} )); then
+    return 1
+  fi
+  printf '%s\n' "$now" > logs/hot-rebuild.last
+  echo "[watchdog] 偵測到原始碼比 binary 新，背景重新編譯（服務持續運作）"
+  local f
+  for f in $newer; do echo "[watchdog]   新於 binary：$f"; done
+  if cargo build --release --no-default-features; then
+    # 把 binary mtime 設成「現在」，避免與來源檔時間出入造成重複觸發。
+    touch "$bin" 2>/dev/null || true
+    touch logs/hot-rebuild.pending
+    echo "[watchdog] 編譯完成，即將以新 binary 替換（僅服務程序短暫重啟）"
+    return 0
+  fi
+  echo "[watchdog] 編譯失敗，維持舊 binary；上傳修正後的新檔會自動重試"
+  return 1
+}
+
 
 watchdog_loop() {
   local bin="$1" child="$2" started_at now elapsed
   started_at="$(date +%s)"
   while kill -0 "$child" 2>/dev/null; do
     watchdog_start_tunnel
+    if hot_rebuild_if_needed "$bin"; then
+      kill "$child" 2>/dev/null || true
+      break
+    fi
     now="$(date +%s)"
     elapsed=$((now - started_at))
     # Login/initialisation may take longer with many accounts. Do not kill a
@@ -839,23 +876,36 @@ watchdog_loop() {
     sleep "${WATCHDOG_INTERVAL_SECS:-15}"
   done
   wait "$child" 2>/dev/null || true
+  if [[ -f logs/hot-rebuild.pending ]]; then
+    echo "[watchdog] 熱重編流程：交回 run_bin 重啟新 binary"
+    exit 0
+  fi
   echo "[watchdog] $bin 已停止，讓 Pterodactyl 重新啟動整個服務"
   exit 1
 }
 
 run_bin() {
-  chmod +x "$1" 2>/dev/null || true
-  echo "[ptero-start] 啟動 $1（watchdog interval=${WATCHDOG_INTERVAL_SECS:-15}s）"
-  "$1" &
-  local child=$!
-  echo "$child" > logs/dashboard.pid
-  watchdog_loop "$1" "$child" &
-  local wd=$!
-  wait "$child"
-  local rc=$?
-  kill "$wd" 2>/dev/null || true
-  wait "$wd" 2>/dev/null || true
-  return "$rc"
+  local bin="$1"
+  # 熱重編後在此迴圈內直接重啟新 binary，不需退出讓 Pterodactyl 重啟。
+  while true; do
+    chmod +x "$bin" 2>/dev/null || true
+    echo "[ptero-start] 啟動 $bin（watchdog interval=${WATCHDOG_INTERVAL_SECS:-15}s）"
+    "$bin" &
+    local child=$!
+    echo "$child" > logs/dashboard.pid
+    watchdog_loop "$bin" "$child" &
+    local wd=$!
+    wait "$child"
+    local rc=$?
+    kill "$wd" 2>/dev/null || true
+    wait "$wd" 2>/dev/null || true
+    if [[ -f logs/hot-rebuild.pending ]]; then
+      rm -f logs/hot-rebuild.pending
+      echo "[ptero-start] 熱重編完成，重新啟動新 binary"
+      continue
+    fi
+    return "$rc"
+  done
 }
 
 # 已編譯過就直接跑。原本只認 FORCE_REBUILD，改了 .rs / static 檔卻忘了設，
