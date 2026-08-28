@@ -50,6 +50,8 @@ passkey-auth = "0.1.3"
 # Argon2id password hashing for Dashboard credentials (replaces hand-rolled PBKDF2
 # for new hashes). Pure-Rust, no C dependency — safe for the minimal Pterodactyl image.
 argon2 = { version = "0.5", features = ["std", "password-hash"] }
+# CSPRNG for at-rest secret nonces.
+getrandom = "0.2"
 
 # URL parsing
 url = "2"

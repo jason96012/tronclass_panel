@@ -612,6 +612,17 @@ start_filebrowser() {
 
 start_filebrowser
 
+# At-rest encryption master key for the accounts database. If unset, secrets
+# are stored as plaintext (legacy); set it to encrypt upstream passwords and
+# session cookies with AES-256-GCM. Never change the key after accounts exist.
+if [[ -n "${TRONCLASS_MASTER_KEY:-}" ]]; then
+  export TRONCLASS_MASTER_KEY
+elif [[ -f config/master.key ]]; then
+  export TRONCLASS_MASTER_KEY="$(tr -d '\r\n ' < config/master.key)"
+else
+  echo "[ptero-start] 未設定 TRONCLASS_MASTER_KEY：帳號密碼將以明文儲存（建議設定以啟用 at-rest 加密）"
+fi
+
 # Filebrowser 開啟時，Dashboard 教材自動指向同一包 cloud/
 if [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]]; then
   export TRONCLASS_MATERIALS_DIR="${TRONCLASS_MATERIALS_DIR:-cloud}"
