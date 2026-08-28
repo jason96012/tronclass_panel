@@ -191,8 +191,28 @@ pub(super) async fn admin_clean_timetable_page_handler(headers: HeaderMap) -> Re
 }
 
 pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
+    // TOKEN_QUERY_STRIP_ALL_ADMIN_V1 (H-2): `/` is outside the scrubbing
+    // middleware's `/admin` scope, so forwarding the query verbatim would
+    // bounce an attacker-supplied `?token=` straight into the address bar of
+    // `/admin`. Drop `token` (and the transient `logout` marker is preserved,
+    // since the login shell reads it) while forwarding everything else.
     let loc = match uri.query() {
-        Some(q) if !q.is_empty() => format!("/admin?{q}"),
+        Some(q) if !q.is_empty() => {
+            let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+            let mut kept = 0usize;
+            for (name, value) in url::form_urlencoded::parse(q.as_bytes()) {
+                if name == "token" {
+                    continue;
+                }
+                serializer.append_pair(&name, &value);
+                kept += 1;
+            }
+            if kept == 0 {
+                "/admin".to_string()
+            } else {
+                format!("/admin?{}", serializer.finish())
+            }
+        }
         _ => "/admin".to_string(),
     };
     (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, loc)]).into_response()

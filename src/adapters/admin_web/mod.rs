@@ -1527,7 +1527,20 @@ async fn session_cookie_to_query_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if !request.uri().path().starts_with("/admin/api/") {
+    // TOKEN_QUERY_STRIP_ALL_ADMIN_V1 (H-2): this scrubbing must cover *every*
+    // authenticated surface, not just `/admin/api/`. Page handlers call
+    // `session_token(&headers, &query.token)`, which prefers the query value,
+    // so limiting the strip to the API prefix left URLs such as
+    // `/admin/push-status?token=<victim token>` fully functional. That places a
+    // live session token in browser history, `Referer` headers and every
+    // reverse-proxy access log, and lets an attacker seed a session by sending
+    // a link.
+    //
+    // Scrubbing here (rather than in each handler) keeps the guarantee in one
+    // place: after this middleware, `token` in the query string is *only* ever
+    // the value read from the HttpOnly cookie.
+    let path = request.uri().path();
+    if !(path == "/admin" || path.starts_with("/admin/") || path == "/homework") {
         return next.run(request).await;
     }
 
@@ -1631,30 +1644,81 @@ async fn require_dashboard_password_change_middleware(
     next.run(request).await
 }
 
+/// Decide whether a state-changing request demonstrably originates from this
+/// site.
+///
+/// CSRF_FAIL_CLOSED_V1 (H-1): this check is fail-closed. A mutating request is
+/// only accepted when it *proves* same-origin provenance, either through
+/// `Sec-Fetch-Site: same-origin` or through an `Origin` header that exactly
+/// matches this deployment's scheme+host. Anything ambiguous — no `Origin` and
+/// no `Sec-Fetch-Site`, an opaque `Origin: null`, or `Sec-Fetch-Site: none` —
+/// is rejected.
+///
+/// Rationale for the removed allowances:
+/// * `.unwrap_or(true)` previously accepted every request that carried neither
+///   header, so any client able to suppress them bypassed the only CSRF control
+///   guarding `/admin/api/`.
+/// * `Sec-Fetch-Site: none` means a user-initiated navigation (address bar,
+///   bookmark), not a same-origin fetch, and must not authorize a mutation.
+/// * `Sec-Fetch-Site: same-site` allows sibling subdomains. The Filebrowser SSO
+///   cookie is deliberately scoped to the parent domain, so a compromised
+///   sibling host must not be able to drive Dashboard state changes.
+///
+/// This is safe for the shipped frontend: every mutation is issued via
+/// `fetch()`, which always attaches a real `Origin` on POST/PUT/PATCH/DELETE.
+/// There are no native `<form method=post>` submissions (which, under this
+/// deployment's `Referrer-Policy: no-referrer`, would send `Origin: null`).
 fn same_origin_request(headers: &HeaderMap) -> bool {
+    // Signal 1: the browser's own provenance metadata. Page JavaScript cannot
+    // forge this, so `same-origin` is by itself sufficient proof.
+    //
+    // Any other value is an explicit rejection: `same-site` would admit sibling
+    // subdomains (the Filebrowser SSO cookie is scoped to the parent domain, so
+    // a compromised sibling host must not drive Dashboard state changes),
+    // `cross-site` is hostile, and `none` is a top-level user navigation
+    // (address bar / bookmark) rather than a same-origin fetch.
+    let sec_fetch_site = headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim);
+    match sec_fetch_site {
+        Some(site) if site.eq_ignore_ascii_case("same-origin") => return true,
+        Some(_) => return false,
+        None => {}
+    }
+
+    // Signal 2: no Sec-Fetch-Site (older browsers, non-browser clients). Fall
+    // back to an exact Origin match. A missing Origin is no longer treated as
+    // proof of anything.
     let Some(origin) = headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
+        .map(str::trim)
     else {
-        // Browsers send Sec-Fetch-Site for cross-site form submissions. Permit
-        // command-line maintenance clients that do not send browser metadata.
-        return headers
-            .get("sec-fetch-site")
-            .and_then(|value| value.to_str().ok())
-            .map(|value| matches!(value, "same-origin" | "same-site" | "none"))
-            .unwrap_or(true);
+        return false;
     };
 
+    // `Origin: null` is opaque (sandboxed iframe, cross-origin redirect chain,
+    // or a form post under `Referrer-Policy: no-referrer`) and proves nothing.
+    if origin.is_empty() || origin.eq_ignore_ascii_case("null") {
+        return false;
+    }
+
+    // This deployment is HTTPS-only behind Cloudflare/Caddy, so an absent
+    // forwarded scheme defaults to https rather than weakening the comparison.
     let proto = headers
         .get("x-forwarded-proto")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(',').next())
         .unwrap_or("https")
         .trim();
+    // Take the first hop of X-Forwarded-Host; a comma-joined list would never
+    // match a browser-sent Origin and must not be compared verbatim.
     let host = headers
         .get("x-forwarded-host")
-        .or_else(|| headers.get(header::HOST))
         .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .or_else(|| headers.get(header::HOST).and_then(|v| v.to_str().ok()))
         .unwrap_or("")
         .trim();
     if host.is_empty() {
@@ -2047,15 +2111,29 @@ async fn record_persistent_login_event(
 
 fn session_token(headers: &HeaderMap, query_token: &str) -> String {
     // PERFORMANCE_SESSION_TOKEN_V1:
-    // The session_cookie_to_query_middleware already injected the HttpOnly
-    // cookie into query.token for /admin/api/ paths. Prefer query.token
-    // first to avoid redundant Cookie header parsing on every request.
-    // Fall back to direct cookie read for non-API paths (page handlers).
+    // session_cookie_to_query_middleware already injected the HttpOnly cookie
+    // into query.token for every /admin path, so preferring query.token avoids
+    // re-parsing the Cookie header on each request.
+    //
+    // TOKEN_QUERY_STRIP_ALL_ADMIN_V1 (H-2): this is only safe because that
+    // middleware unconditionally removes any caller-supplied `token` before
+    // re-adding the cookie value. The query parameter is therefore server-
+    // controlled, never attacker-controlled. Defence in depth: reject anything
+    // that is not a well-formed access token (32 lowercase hex chars, matching
+    // `Uuid::simple`) so a future routing change cannot silently reintroduce
+    // query-string session injection.
     let trimmed = query_token.trim();
-    if !trimmed.is_empty() {
+    if is_valid_access_token_format(trimmed) {
         return trimmed.to_string();
     }
     session_cookie_from_headers(headers).unwrap_or_default()
+}
+
+/// Access tokens are `Uuid::new_v4().simple()` — exactly 32 hex characters.
+/// Used to reject malformed/injected token values early. Kept byte-for-byte
+/// consistent with the check in `session_cookie_from_headers`.
+fn is_valid_access_token_format(value: &str) -> bool {
+    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Refresh endpoint: exchange a valid refresh token for a fresh access token
@@ -2212,5 +2290,338 @@ mod tests {
         // 重啟後的 state3 也應無法使用已登出的 session
         let state3 = AdminWebState::new("", vec![], db, None, None, 10);
         assert!(state3.authorize(&session_token).await.is_none());
+    }
+
+    // ── CSRF_FAIL_CLOSED_V1 (H-1) ────────────────────────────────────────────
+    // same_origin_request() must be fail-closed: a mutating request is only
+    // accepted when it proves same-origin provenance.
+
+    fn origin_headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for (name, value) in pairs {
+            headers.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        headers
+    }
+
+    #[test]
+    fn csrf_bare_request_without_any_provenance_header_is_rejected() {
+        // Regression for H-1: this previously returned true via unwrap_or(true),
+        // leaving /admin/api/ mutations with no CSRF protection at all.
+        assert!(!same_origin_request(&origin_headers(&[(
+            "host",
+            "dashboard.jasoncloudserver.me"
+        )])));
+        assert!(!same_origin_request(&origin_headers(&[])));
+    }
+
+    #[test]
+    fn csrf_sec_fetch_site_none_is_rejected() {
+        // `none` is a top-level navigation, not a same-origin fetch.
+        assert!(!same_origin_request(&origin_headers(&[
+            ("sec-fetch-site", "none"),
+            ("host", "dashboard.jasoncloudserver.me"),
+        ])));
+    }
+
+    #[test]
+    fn csrf_sec_fetch_site_cross_and_same_site_are_rejected() {
+        for site in ["cross-site", "same-site"] {
+            assert!(
+                !same_origin_request(&origin_headers(&[
+                    ("sec-fetch-site", site),
+                    ("host", "dashboard.jasoncloudserver.me"),
+                ])),
+                "sec-fetch-site: {site} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn csrf_sec_fetch_site_same_origin_is_accepted() {
+        assert!(same_origin_request(&origin_headers(&[
+            ("sec-fetch-site", "same-origin"),
+            ("host", "dashboard.jasoncloudserver.me"),
+        ])));
+        // Case-insensitive per RFC header token comparison.
+        assert!(same_origin_request(&origin_headers(&[(
+            "sec-fetch-site",
+            "Same-Origin"
+        )])));
+    }
+
+    #[test]
+    fn csrf_matching_origin_is_accepted_without_sec_fetch_site() {
+        assert!(same_origin_request(&origin_headers(&[
+            ("origin", "https://dashboard.jasoncloudserver.me"),
+            ("host", "dashboard.jasoncloudserver.me"),
+            ("x-forwarded-proto", "https"),
+        ])));
+        // A trailing slash on Origin is tolerated.
+        assert!(same_origin_request(&origin_headers(&[
+            ("origin", "https://dashboard.jasoncloudserver.me/"),
+            ("host", "dashboard.jasoncloudserver.me"),
+        ])));
+    }
+
+    #[test]
+    fn csrf_foreign_origin_is_rejected() {
+        assert!(!same_origin_request(&origin_headers(&[
+            ("origin", "https://evil.example"),
+            ("host", "dashboard.jasoncloudserver.me"),
+            ("x-forwarded-proto", "https"),
+        ])));
+    }
+
+    #[test]
+    fn csrf_null_origin_is_rejected() {
+        // Sandboxed iframe / no-referrer form post.
+        assert!(!same_origin_request(&origin_headers(&[
+            ("origin", "null"),
+            ("host", "dashboard.jasoncloudserver.me"),
+        ])));
+    }
+
+    #[test]
+    fn csrf_origin_scheme_must_match() {
+        // http:// Origin against an https deployment must not pass.
+        assert!(!same_origin_request(&origin_headers(&[
+            ("origin", "http://dashboard.jasoncloudserver.me"),
+            ("host", "dashboard.jasoncloudserver.me"),
+            ("x-forwarded-proto", "https"),
+        ])));
+    }
+
+    #[test]
+    fn csrf_sibling_subdomain_origin_is_rejected() {
+        // The fb-sso cookie is scoped to .jasoncloudserver.me, so a sibling
+        // host must not be able to drive Dashboard mutations.
+        assert!(!same_origin_request(&origin_headers(&[
+            ("origin", "https://files.jasoncloudserver.me"),
+            ("host", "dashboard.jasoncloudserver.me"),
+        ])));
+    }
+
+    #[test]
+    fn csrf_missing_host_is_rejected() {
+        assert!(!same_origin_request(&origin_headers(&[(
+            "origin",
+            "https://dashboard.jasoncloudserver.me"
+        )])));
+    }
+
+    #[test]
+    fn csrf_forwarded_host_list_uses_first_hop() {
+        // A comma-joined X-Forwarded-Host must not be compared verbatim.
+        assert!(same_origin_request(&origin_headers(&[
+            ("origin", "https://dashboard.jasoncloudserver.me"),
+            (
+                "x-forwarded-host",
+                "dashboard.jasoncloudserver.me, internal.local",
+            ),
+            ("x-forwarded-proto", "https, http"),
+        ])));
+    }
+
+    #[tokio::test]
+    async fn csrf_mutating_api_request_without_provenance_is_forbidden() {
+        // End-to-end: the middleware must reject before the handler runs.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("csrf-user".to_string(), true, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/admin/api/action")
+                    .header(
+                        header::COOKIE,
+                        format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                    )
+                    .header("x-forwarded-proto", "https")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"stop"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn csrf_same_origin_mutating_request_passes_middleware() {
+        // The shipped frontend uses fetch(), which always sends Origin on POST.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("csrf-user".to_string(), true, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/admin/api/action")
+                    .header(
+                        header::COOKIE,
+                        format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                    )
+                    .header("origin", "https://dashboard.jasoncloudserver.me")
+                    .header("host", "dashboard.jasoncloudserver.me")
+                    .header("x-forwarded-proto", "https")
+                    .header("sec-fetch-site", "same-origin")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"stop"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Must NOT be the CSRF rejection; the request reaches the handler.
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── TOKEN_QUERY_STRIP_ALL_ADMIN_V1 (H-2) ─────────────────────────────────
+    // A session token must never be accepted from, or echoed into, the URL on
+    // any /admin surface.
+
+    #[test]
+    fn access_token_format_matches_cookie_validation() {
+        assert!(is_valid_access_token_format(
+            "0123456789abcdef0123456789abcdef"
+        ));
+        assert!(is_valid_access_token_format(
+            "0123456789ABCDEF0123456789ABCDEF"
+        ));
+        assert!(!is_valid_access_token_format("cookie"));
+        assert!(!is_valid_access_token_format(""));
+        // 31 and 33 chars
+        assert!(!is_valid_access_token_format(
+            "0123456789abcdef0123456789abcde"
+        ));
+        assert!(!is_valid_access_token_format(
+            "0123456789abcdef0123456789abcdef0"
+        ));
+        // right length, non-hex
+        assert!(!is_valid_access_token_format(
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        ));
+    }
+
+    #[tokio::test]
+    async fn page_route_ignores_attacker_supplied_query_token() {
+        // Regression for H-2: /admin/push-status?token=<victim> used to
+        // authenticate, because the strip middleware only covered /admin/api/.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let victim = state
+            .create_session("victim".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/admin/push-status?token={}", victim.access))
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // No cookie was sent, so the page must bounce to login instead of
+        // honouring the token in the URL.
+        assert!(
+            response.status().is_redirection(),
+            "expected redirect to login, got {}",
+            response.status()
+        );
+    }
+
+    #[tokio::test]
+    async fn page_route_still_authenticates_via_cookie() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("cookie-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/push-status")
+                    .header(
+                        header::COOKIE,
+                        format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                    )
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn root_redirect_drops_token_but_keeps_other_params() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?token=0123456789abcdef0123456789abcdef&logout=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            !location.contains("token="),
+            "token must not survive the redirect: {location}"
+        );
+        assert!(
+            location.contains("logout=1"),
+            "unrelated params must be preserved: {location}"
+        );
+    }
+
+    #[tokio::test]
+    async fn root_redirect_without_params_is_clean() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/?token=0123456789abcdef0123456789abcdef")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(location, "/admin");
     }
 }
