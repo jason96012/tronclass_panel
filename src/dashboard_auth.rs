@@ -5,22 +5,22 @@
 //! while no Dashboard verifier exists; that session must immediately create a
 //! separate, slow Dashboard password verifier before any account data is shown.
 //!
-//! We use PBKDF2-HMAC-SHA256 with a unique 128-bit salt. New hashes use
-//! 100,000 iterations (fast enough for interactive login on a Pterodactyl VPS
-//! while still exceeding OWASP 2024 minimums for SHA-256). Existing hashes
-//! stored with higher iteration counts (up to 1,000,000) remain valid because
-//! verification reads the iteration count from the stored hash itself.
-//!
-//! The project already carries the cryptographic primitives used here, so this
-//! standards-based verifier does not expand the deployed dependency surface.
+//! New Dashboard verifiers use **Argon2id** (memory-hard, GPU/ASIC-resistant).
+//! Legacy hashes stored as PBKDF2-HMAC-SHA256 remain verifiable so existing
+//! users are not locked out; a successful login with a legacy hash re-hashes it
+//! to Argon2id in place (smooth migration). Verification reads the algorithm
+//! from the stored PHC/hash string itself.
 
+use argon2::{
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    Argon2,
+};
 use hmac::{Hmac, Mac};
 use miette::Result;
 use sha2::Sha256;
-use uuid::Uuid;
 
-const FORMAT: &str = "pbkdf2-sha256";
-const PBKDF2_ITERATIONS: u32 = 100_000;
+const LEGACY_FORMAT: &str = "pbkdf2-sha256";
+const PBKDF2_ITERATIONS: u32 = 200_000;
 const MIN_ACCEPTED_ITERATIONS: u32 = 100_000;
 const MAX_ACCEPTED_ITERATIONS: u32 = 1_000_000;
 const DERIVED_KEY_LEN: usize = 32;
@@ -29,26 +29,50 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// Hash a Dashboard-only password for persistent storage.
 ///
-/// The upstream provider password is passed only to make accidental password
-/// reuse fail fast. It is never included in the resulting verifier.
+/// Uses Argon2id with a random salt. The upstream provider password is passed
+/// only to make accidental password reuse fail fast; it is never included in
+/// the resulting verifier.
 pub fn hash_dashboard_password(password: &str, provider_password: &str) -> Result<String> {
     validate_dashboard_password(password, provider_password)?;
-    let uuid = Uuid::new_v4();
-    let salt = uuid.as_bytes();
-    Ok(encode_password_hash(password, salt, PBKDF2_ITERATIONS))
+    let salt = SaltString::generate(&mut OsRng);
+    let argon2 = Argon2::default();
+    let hash = argon2
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| miette::miette!("密碼雜湊失敗：{e}"))?;
+    Ok(hash.to_string())
 }
 
 /// Verify a Dashboard password against a stored verifier.
 ///
-/// Malformed, obsolete, or deliberately weakened records are rejected. The
-/// upstream credential is only accepted by [`verify_first_login_password`] when
-/// no Dashboard verifier has been configured yet.
+/// Accepts both Argon2id (PHC format, `$argon2id$...`) and legacy PBKDF2
+/// (`pbkdf2-sha256$...`) hashes so existing users are not locked out during
+/// migration. Malformed or deliberately weakened records are rejected.
 pub fn verify_dashboard_password(password: &str, stored: &str) -> bool {
+    let stored = stored.trim();
+    if stored.starts_with("$argon2") || stored.starts_with("argon2") {
+        // Argon2id PHC string.
+        let Ok(parsed) = PasswordHash::new(stored) else {
+            return false;
+        };
+        return Argon2::default()
+            .verify_password(password.as_bytes(), &parsed)
+            .is_ok();
+    }
+    verify_legacy_pbkdf2(password, stored)
+}
+
+/// Whether a stored verifier is an older PBKDF2 hash (eligible for in-place
+/// upgrade to Argon2id on next successful login).
+pub fn is_legacy_pbkdf2_hash(stored: &str) -> bool {
+    stored.trim().starts_with(&format!("{LEGACY_FORMAT}$"))
+}
+
+fn verify_legacy_pbkdf2(password: &str, stored: &str) -> bool {
     let mut fields = stored.split('$');
     let Some(format) = fields.next() else {
         return false;
     };
-    if format != FORMAT {
+    if format != LEGACY_FORMAT {
         return false;
     }
 

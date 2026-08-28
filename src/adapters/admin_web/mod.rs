@@ -3783,6 +3783,24 @@ async fn admin_login_handler(
     state.rate_limiter.clear(&rate_key).await;
     // 登入成功即重置失敗計數，確保只有「連續」失敗才會觸發告警。
     clear_auth_failures(username, &ip).await;
+
+    // ARGON2_MIGRATION_V1
+    // 平滑遷移：成功登入且既有雜湊仍是舊 PBKDF2 時，用這次的明文密碼
+    // 重算成 Argon2id 並回寫，下次登入即走新的抗暴力破解雜湊。bootstrap
+    // （首登改用上游密碼、強制改密碼）不在此升級，改密碼流程會寫 Argon2id。
+    if !must_change_password && crate::dashboard_auth::is_legacy_pbkdf2_hash(&account.dashboard_password_hash) {
+        let account_for_upgrade = account.clone();
+        if let Ok(new_hash) =
+            crate::dashboard_auth::hash_dashboard_password(password, &account_for_upgrade.password)
+        {
+            let _ = state
+                .accounts_db
+                .set_dashboard_password_hash(&account_for_upgrade.id, &new_hash)
+                .await;
+            info!(account = %account_for_upgrade.id, "Dashboard 密碼雜湊已由 PBKDF2 升級為 Argon2id");
+        }
+    }
+
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
     let session_token = state
