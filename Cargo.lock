@@ -5765,6 +5765,7 @@ dependencies = [
  "ddddocr",
  "encoding_rs",
  "futures",
+ "getrandom 0.2.17",
  "hex",
  "hkdf",
  "hmac",
