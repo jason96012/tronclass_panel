@@ -32,6 +32,39 @@ const MAX_CONCURRENT_SENDS: usize = 8;
 static SEND_SEMAPHORE: Lazy<tokio::sync::Semaphore> =
     Lazy::new(|| tokio::sync::Semaphore::new(MAX_CONCURRENT_SENDS));
 
+/// Dedup window for notifications.
+const DEDUPE_WINDOW: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// Check-and-record a notification key in the dedupe map.
+///
+/// Returns `true` if the notification is new (should be sent), `false` if it
+/// was already sent within the window (suppress).
+///
+/// This is the "lazy cleanup" version: it does **not** scan the whole map on
+/// every call. A single key is O(1); only when the map reaches its cap do we
+/// pay an O(n) prune of expired entries, so the hot path stays cheap and does
+/// not hold the lock while scanning 4096 rows repeatedly.
+fn dedupe_should_send(recent: &mut HashMap<String, Instant>, key: &str) -> bool {
+    let now = Instant::now();
+    let window = DEDUPE_WINDOW;
+
+    if let Some(&at) = recent.get(key) {
+        if now.duration_since(at) < window {
+            // Already sent within the window → suppress.
+            return false;
+        }
+        // Entry exists but expired → replace it below.
+    }
+
+    if recent.len() >= MAX_DEDUPE_ENTRIES {
+        // Rare: only when the map is at capacity, prune all expired entries.
+        recent.retain(|_, at| now.duration_since(*at) < window);
+    }
+
+    recent.insert(key.to_string(), now);
+    true
+}
+
 #[derive(Clone)]
 struct WebPushService {
     db: AccountsDb,
@@ -163,15 +196,9 @@ pub fn notify_rollcall(
     let key = format!("{account_id}:{rollcall_id}");
     {
         let mut recent = RECENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let now = Instant::now();
-        recent.retain(|_, at| now.duration_since(*at) < Duration::from_secs(2 * 60 * 60));
-        if recent.contains_key(&key) {
+        if !dedupe_should_send(&mut recent, &key) {
             return;
         }
-        if recent.len() >= MAX_DEDUPE_ENTRIES {
-            recent.clear();
-        }
-        recent.insert(key, now);
     }
 
     let account_id = account_id.to_string();
@@ -201,15 +228,9 @@ pub fn notify_homework(
     let key = format!("hw:{account_id}:{homework_id}:{stage_badge}");
     {
         let mut recent = RECENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let now = Instant::now();
-        recent.retain(|_, at| now.duration_since(*at) < Duration::from_secs(2 * 60 * 60));
-        if recent.contains_key(&key) {
+        if !dedupe_should_send(&mut recent, &key) {
             return;
         }
-        if recent.len() >= MAX_DEDUPE_ENTRIES {
-            recent.clear();
-        }
-        recent.insert(key, now);
     }
 
     let account_id = account_id.to_string();
