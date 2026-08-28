@@ -99,7 +99,7 @@ fn encrypt_with_key(plaintext: &str, key: [u8; 32]) -> Option<String> {
     getrandom::getrandom(&mut nonce_bytes).ok()?;
     let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
     let ciphertext = cipher
-        .encrypt(Nonce::from(nonce_bytes), plaintext.as_bytes())
+        .encrypt(&Nonce::from(nonce_bytes), plaintext.as_bytes())
         .ok()?;
     Some(format!(
         "{ENC_PREFIX}{}{}",
@@ -123,7 +123,7 @@ fn decrypt_with_key(stored: &str, key: [u8; 32]) -> Option<String> {
     let ciphertext = STANDARD.decode(b64).ok()?;
     let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
     let plaintext = cipher
-        .decrypt(Nonce::from(nonce_arr), ciphertext.as_ref())
+        .decrypt(&Nonce::from(nonce_arr), ciphertext.as_ref())
         .ok()?;
     String::from_utf8(plaintext).ok()
 }
