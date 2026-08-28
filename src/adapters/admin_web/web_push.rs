@@ -27,7 +27,7 @@ pub(super) async fn page_handler(
     if session.must_change_password {
         return must_change_password_redirect();
     }
-    html_page_response(&headers, super::inject_theme(PAGE_HTML))
+    html_page_response(&headers, super::pages::inject_theme(PAGE_HTML))
 }
 
 #[derive(Debug, Deserialize)]

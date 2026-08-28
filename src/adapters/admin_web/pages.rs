@@ -2,6 +2,10 @@
 
 use std::sync::RwLock;
 
+// Page handlers below reuse the shared auth/cookie/response helpers from the
+// parent module, so pull in the parent namespace (same pattern as files.rs).
+use super::*;
+
 static RUNTIME_THEME: RwLock<Option<String>> = RwLock::new(None);
 
 pub(super) fn load_runtime_theme() {
@@ -142,4 +146,86 @@ pub(super) fn inject_theme(html: &str) -> String {
         }
     }
     stamp_asset_urls(&html.replacen("</head>", &(assets + "</head>"), 1))
+}
+pub(super) async fn admin_dashboard_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        // `/admin` remains the public login shell, but `/admin/dashboard` must
+        // never return a 200 login SPA to an unauthenticated caller.
+        return admin_login_redirect("/admin/dashboard");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
+    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
+}
+
+pub(super) async fn admin_activity_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_ACTIVITY_HTML))
+}
+
+pub(super) async fn admin_homework_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return admin_login_redirect("/admin/homework");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    html_page_response(&headers, inject_theme(ADMIN_HOMEWORK_HTML))
+}
+
+const ADMIN_CLEAN_TIMETABLE_HTML: &str = include_str!("static/timetable.html");
+
+pub(super) async fn admin_clean_timetable_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_CLEAN_TIMETABLE_HTML))
+}
+
+pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
+    let loc = match uri.query() {
+        Some(q) if !q.is_empty() => format!("/admin?{q}"),
+        _ => "/admin".to_string(),
+    };
+    (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, loc)]).into_response()
+}
+
+pub(super) async fn admin_password_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_PASSWORD_HTML))
+}
+
+pub(super) async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {
+    html_page_response(&headers, inject_theme(ADMIN_PASSKEY_HTML))
+}
+
+pub(super) async fn session_must_change_password(
+    state: &AdminWebState,
+    headers: &HeaderMap,
+    query_token: &str,
+) -> bool {
+    state
+        .authorize_any(&session_token(headers, query_token))
+        .await
+        .map(|session| session.must_change_password)
+        .unwrap_or(false)
+}
+
+pub(super) async fn admin_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    if session_must_change_password(&state, &headers, &query.token).await {
+        return must_change_password_redirect();
+    }
+    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
+    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
 }

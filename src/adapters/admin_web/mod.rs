@@ -45,18 +45,20 @@ use crate::db::{AccountsDb, MaterialEventInput};
 use crate::runtime_settings::{RuntimeRestPeriod, RuntimeSettings};
 use crate::trusted_ip::ClientIp;
 
+mod actions;
+mod auth;
+mod blacklist;
 mod class_reminder;
 mod detection_schedule;
+mod files;
+mod homework;
+mod notifications;
 mod pages;
+mod passkey;
+mod static_assets;
+mod status;
 mod timetable;
 mod web_push;
-use self::pages::{
-    inject_theme, load_runtime_theme, ADMIN_ACTIVITY_HTML, ADMIN_BLACKLIST_HTML,
-    ADMIN_BLOCKED_HTML, ADMIN_DASHBOARD_HTML, ADMIN_HEALTH_HTML, ADMIN_HOMEWORK_HTML,
-    ADMIN_PASSKEY_HTML, ADMIN_PASSWORD_HTML,
-};
-mod actions;
-mod files;
 pub mod materials_webdav;
 pub mod oidc;
 mod fb_sso;
@@ -65,6 +67,7 @@ mod logs;
 mod mock;
 mod pwa;
 mod utils;
+use self::pages::{load_runtime_theme, ADMIN_BLOCKED_HTML};
 use self::utils::*;
 
 const PW_SALT: &[u8] = b"tronclass-rollcall-admin-web-password-hash-v2";
@@ -982,106 +985,106 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
     let password_guard_state = state.clone();
     let blacklist_guard_state = state.clone();
     Router::new()
-        .route("/", get(admin_root_redirect_handler))
+        .route("/", get(pages::admin_root_redirect_handler))
         .route("/healthz", get(health::healthz_handler))
         .route("/manifest.webmanifest", get(pwa::manifest_handler))
         .route("/service-worker.js", get(pwa::service_worker_handler))
         .route("/admin/pwa/icon.svg", get(pwa::icon_handler))
-        .route("/admin/static/theme.css", get(admin_theme_css_handler))
+        .route("/admin/static/theme.css", get(static_assets::admin_theme_css_handler))
         .route(
             "/admin/static/session-security.js",
-            get(admin_session_security_js_handler),
+            get(static_assets::admin_session_security_js_handler),
         )
-        .route("/admin/static/core-api.js", get(admin_core_api_js_handler))
-        .route("/admin/static/web-push.js", get(admin_web_push_js_handler))
+        .route("/admin/static/core-api.js", get(static_assets::admin_core_api_js_handler))
+        .route("/admin/static/web-push.js", get(static_assets::admin_web_push_js_handler))
         .route(
             "/admin/static/js/dompurify.min.js",
-            get(admin_dompurify_js_handler),
+            get(static_assets::admin_dompurify_js_handler),
         )
         .route(
             "/admin/static/js/trusted-types-init.js",
-            get(admin_trusted_types_init_js_handler),
+            get(static_assets::admin_trusted_types_init_js_handler),
         )
         .route(
             "/admin/static/accounts.js",
-            get(admin_accounts_module_js_handler),
+            get(static_assets::admin_accounts_module_js_handler),
         )
         .route(
             "/admin/static/mock-rollcall.js",
-            get(admin_mock_rollcall_module_js_handler),
+            get(static_assets::admin_mock_rollcall_module_js_handler),
         )
         .route(
             "/admin/static/notifications.js",
-            get(admin_notifications_module_js_handler),
+            get(static_assets::admin_notifications_module_js_handler),
         )
         .route(
             "/admin/static/timetable.js",
-            get(admin_timetable_ui_module_js_handler),
+            get(static_assets::admin_timetable_ui_module_js_handler),
         )
         .route(
             "/admin/static/maintenance-implementation.js",
-            get(admin_maintenance_implementation_js_handler),
+            get(static_assets::admin_maintenance_implementation_js_handler),
         )
         .route(
             "/admin/static/maintenance.js",
-            get(admin_maintenance_module_js_handler),
+            get(static_assets::admin_maintenance_module_js_handler),
         )
         .route(
             "/admin/static/maintenance-components.css",
-            get(admin_maintenance_components_css_handler),
+            get(static_assets::admin_maintenance_components_css_handler),
         )
         .route(
             "/admin/static/account-components.css",
-            get(admin_account_components_css_handler),
+            get(static_assets::admin_account_components_css_handler),
         )
         .route(
             "/admin/static/mobile-timetable.css",
-            get(admin_mobile_timetable_css_handler),
+            get(static_assets::admin_mobile_timetable_css_handler),
         )
         .route(
             "/admin/static/mobile-navigation.css",
-            get(admin_mobile_navigation_css_handler),
+            get(static_assets::admin_mobile_navigation_css_handler),
         )
         // DASHBOARD_MODULE_LOADER_PHASE1
         .route(
             "/admin/static/dashboard.css",
-            get(admin_dashboard_css_handler),
+            get(static_assets::admin_dashboard_css_handler),
         )
         .route(
             "/admin/static/dashboard-late-fixes.css",
-            get(admin_dashboard_late_fixes_css_handler),
+            get(static_assets::admin_dashboard_late_fixes_css_handler),
         )
         .route(
             "/admin/static/dashboard-mobile.css",
-            get(admin_dashboard_mobile_css_handler),
+            get(static_assets::admin_dashboard_mobile_css_handler),
         )
         .route(
             "/admin/static/dashboard-components.css",
-            get(admin_dashboard_components_css_handler),
+            get(static_assets::admin_dashboard_components_css_handler),
         )
         .route(
             "/admin/static/dashboard-access.css",
-            get(admin_dashboard_access_css_handler),
+            get(static_assets::admin_dashboard_access_css_handler),
         )
         .route(
             "/admin/static/dashboard-runtime.js",
-            get(admin_dashboard_runtime_handler),
+            get(static_assets::admin_dashboard_runtime_handler),
         )
         .route(
             "/admin/static/dashboard-modules.js",
-            get(admin_dashboard_modules_handler),
+            get(static_assets::admin_dashboard_modules_handler),
         )
-        .route("/admin", get(admin_page_handler))
-        .route("/admin/activity", get(admin_activity_page_handler))
-        .route("/admin/blacklist", get(admin_blacklist_page_handler))
-        .route("/admin/homework", get(admin_homework_page_handler))
-        .route("/homework", get(admin_homework_page_handler))
-        .route("/admin/dashboard", get(admin_dashboard_page_handler))
+        .route("/admin", get(pages::admin_page_handler))
+        .route("/admin/activity", get(pages::admin_activity_page_handler))
+        .route("/admin/blacklist", get(blacklist::admin_blacklist_page_handler))
+        .route("/admin/homework", get(pages::admin_homework_page_handler))
+        .route("/homework", get(pages::admin_homework_page_handler))
+        .route("/admin/dashboard", get(pages::admin_dashboard_page_handler))
         // "我的頁面" is linked from the header of three pages and from the PWA
         // manifest shortcut, but had no route and returned 404. The dashboard
         // already narrows itself to the session's own account for non-admins,
         // so it is the correct destination.
-        .route("/admin/me", get(admin_dashboard_page_handler))
+        .route("/admin/me", get(pages::admin_dashboard_page_handler))
         .route(
             "/admin/detection-schedule",
             get(detection_schedule::page_handler),
@@ -1102,19 +1105,19 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/oidc/token", post(oidc::token_handler))
         .route("/admin/oidc/userinfo", get(oidc::userinfo_handler))
         .route("/admin/oidc/jwks", get(oidc::jwks_handler))
-        .route("/admin/password", get(admin_password_page_handler))
-        .route("/admin/passkey", get(admin_passkey_page_handler))
+        .route("/admin/password", get(pages::admin_password_page_handler))
+        .route("/admin/passkey", get(pages::admin_passkey_page_handler))
         .route("/admin/logs", get(logs::admin_logs_page_handler))
-        .route("/admin/api/public_status", get(admin_public_status_handler))
-        .route("/admin/api/blacklist", get(admin_blacklist_list_handler))
+        .route("/admin/api/public_status", get(status::admin_public_status_handler))
+        .route("/admin/api/blacklist", get(blacklist::admin_blacklist_list_handler))
         .route(
             "/admin/api/blacklist/block",
-            post(admin_blacklist_block_handler)
+            post(blacklist::admin_blacklist_block_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
             "/admin/api/blacklist/unblock",
-            post(admin_blacklist_unblock_handler)
+            post(blacklist::admin_blacklist_unblock_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route("/admin/api/health", get(health::admin_health_api_handler))
@@ -1176,40 +1179,40 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/api/fb-sso-check", get(fb_sso::fb_sso_check_handler))
         .route(
             "/admin/api/login",
-            post(admin_login_handler).layer(DefaultBodyLimit::max(ADMIN_LOGIN_BODY_LIMIT)),
+            post(auth::admin_login_handler).layer(DefaultBodyLimit::max(ADMIN_LOGIN_BODY_LIMIT)),
         )
         .route(
             "/admin/api/logout",
-            post(admin_logout_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+            post(auth::admin_logout_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
             "/admin/api/password",
-            post(admin_password_change_handler)
+            post(auth::admin_password_change_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_LOGIN_BODY_LIMIT)),
         )
         .route(
             "/admin/api/passkey/register/start",
-            post(admin_passkey_register_start_handler)
+            post(passkey::admin_passkey_register_start_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
             "/admin/api/passkey/register/finish",
-            post(admin_passkey_register_finish_handler)
+            post(passkey::admin_passkey_register_finish_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
         )
         .route(
             "/admin/api/passkey/login/start",
-            post(admin_passkey_login_start_handler)
+            post(passkey::admin_passkey_login_start_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
             "/admin/api/passkey/login/finish",
-            post(admin_passkey_login_finish_handler)
+            post(passkey::admin_passkey_login_finish_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
         )
         .route(
             "/admin/api/activity/login",
-            get(admin_login_activity_handler),
+            get(auth::admin_login_activity_handler),
         )
         .route("/admin/api/push/config", get(web_push::config_handler))
         .route(
@@ -1223,12 +1226,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/api/push/test", post(web_push::test_handler))
         .route(
             "/admin/api/homework/test-notification",
-            post(admin_homework_test_notification_handler),
+            post(homework::admin_homework_test_notification_handler),
         )
-        .route("/admin/api/status", get(admin_status_handler))
+        .route("/admin/api/status", get(status::admin_status_handler))
         .route(
             "/admin/api/rollcall/events",
-            get(admin_rollcall_events_handler),
+            get(status::admin_rollcall_events_handler),
         )
         .route(
             "/admin/api/class_reminder",
@@ -1244,8 +1247,8 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route(
             "/admin/api/notifications/preferences",
-            get(admin_notification_preferences_get_handler)
-                .post(admin_notification_preferences_update_handler)
+            get(notifications::admin_notification_preferences_get_handler)
+                .post(notifications::admin_notification_preferences_update_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
@@ -1291,20 +1294,20 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route(
             "/admin/api/homework",
-            get(admin_homework_list_handler),
+            get(homework::admin_homework_list_handler),
         )
         .route(
             "/admin/api/homework/complete",
-            post(admin_homework_complete_handler)
+            post(homework::admin_homework_complete_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
             "/admin/api/session/refresh",
-            post(admin_session_refresh_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+            post(auth::admin_session_refresh_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
             "/admin/timetable",
-            axum::routing::get(admin_clean_timetable_page_handler),
+            axum::routing::get(pages::admin_clean_timetable_page_handler),
         )
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         .layer(axum::middleware::from_fn_with_state(
@@ -1910,159 +1913,12 @@ struct AdminQuery {
     history_limit: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AdminBlacklistIpRequest {
-    ip: String,
-}
-
 fn normalize_admin_ip(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() || value.len() > 64 {
         return None;
     }
     value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
-}
-
-async fn admin_blacklist_page_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize(&token).await else {
-        return admin_login_redirect("/admin/blacklist");
-    };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
-    html_page_response(&headers, inject_theme(ADMIN_BLACKLIST_HTML))
-}
-
-async fn admin_blacklist_list_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize(&token).await else {
-        return unauthorized_response();
-    };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
-    match state.accounts_db.list_ip_blacklist(4096).await {
-        Ok(items) => (StatusCode::OK, Json(json!({ "items": items }))).into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("讀取 IP 黑名單失敗：{error}") })),
-        )
-            .into_response(),
-    }
-}
-
-async fn admin_blacklist_block_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-    Json(request): Json<AdminBlacklistIpRequest>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize(&token).await else {
-        return unauthorized_response();
-    };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
-    let Some(ip) = normalize_admin_ip(&request.ip) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid IP address" })),
-        )
-            .into_response();
-    };
-    match state
-        .accounts_db
-        .block_ip(&ip, &session.account_id, "Web Admin manual block")
-        .await
-    {
-        Ok(created) => {
-            crate::logs::record_audit(
-                "web",
-                &session.account_id,
-                "ip_blacklist_block",
-                None,
-                Some(&ip),
-                "Web 管理頁封鎖 IP",
-            );
-            let _ = state
-                .accounts_db
-                .record_activity_event(crate::db::ActivityEventInput {
-                    kind: "security".to_string(),
-                    actor: session.account_id.clone(),
-                    action: "ip_blacklist_block".to_string(),
-                    account_id: String::new(),
-                    path: ip.clone(),
-                    result: "success".to_string(),
-                    details: "Web Admin manual block".to_string(),
-                    ip: ip.clone(),
-                })
-                .await;
-            (
-                StatusCode::OK,
-                Json(json!({ "ok": true, "blocked": created, "ip": ip })),
-            )
-                .into_response()
-        }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("封鎖 IP 失敗：{error}") })),
-        )
-            .into_response(),
-    }
-}
-
-async fn admin_blacklist_unblock_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-    Json(request): Json<AdminBlacklistIpRequest>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize(&token).await else {
-        return unauthorized_response();
-    };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
-    let Some(ip) = normalize_admin_ip(&request.ip) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid IP address" })),
-        )
-            .into_response();
-    };
-    match state.accounts_db.unblock_ip(&ip).await {
-        Ok(removed) => {
-            crate::logs::record_audit(
-                "web",
-                &session.account_id,
-                "ip_blacklist_unblock",
-                None,
-                Some(&ip),
-                "Web 管理頁解除 IP 封鎖",
-            );
-            (
-                StatusCode::OK,
-                Json(json!({ "ok": true, "unblocked": removed, "ip": ip })),
-            )
-                .into_response()
-        }
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("解除 IP 封鎖失敗：{error}") })),
-        )
-            .into_response(),
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2075,78 +1931,6 @@ struct AdminLogsQuery {
     limit: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AdminActivityQuery {
-    #[serde(default)]
-    token: String,
-    #[serde(default)]
-    limit: Option<usize>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminPasskeyLoginStartRequest {
-    username: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminPasskeyRegisterFinishRequest {
-    ceremony_id: String,
-    response: RegistrationResponse,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminPasskeyLoginFinishRequest {
-    ceremony_id: String,
-    response: AuthenticationResponse,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminNotificationPreferencesQuery {
-    #[serde(default)]
-    token: String,
-    #[serde(default)]
-    account_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminNotificationPreferenceInput {
-    key: String,
-    enabled: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminNotificationPreferencesUpdateRequest {
-    #[serde(default)]
-    account_id: Option<String>,
-    preferences: Vec<AdminNotificationPreferenceInput>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminLoginRequest {
-    username: String,
-    password: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminPasswordChangeRequest {
-    #[serde(default)]
-    current_password: String,
-    #[serde(default)]
-    new_password: String,
-}
-
-#[derive(Debug, Serialize)]
-struct AdminLoginResponse {
-    /// Compatibility marker for legacy static pages. The actual random token is
-    /// in a HttpOnly cookie and is never returned to browser JavaScript.
-    token: String,
-    account_id: String,
-    is_admin: bool,
-    /// True only for a first login that used the upstream Tronclass password.
-    /// The browser must immediately show the mandatory password-change flow.
-    must_change_password: bool,
-}
-
 fn session_login_response(
     request_headers: &HeaderMap,
     tokens: &SessionTokens,
@@ -2157,7 +1941,7 @@ fn session_login_response(
     let response = append_session_cookie(
         (
             StatusCode::OK,
-            Json(json!(AdminLoginResponse {
+            Json(json!(auth::AdminLoginResponse {
                 token: SESSION_COOKIE_MARKER.to_string(),
                 account_id: account_id.clone(),
                 is_admin,
@@ -2223,898 +2007,16 @@ struct AdminActionRequest {
     rest_periods: Option<Vec<RuntimeRestPeriod>>,
 }
 
-#[derive(Debug, Serialize)]
-struct AdminPublicStatusResponse {
-    total_accounts: usize,
-    running_accounts: usize,
-    detected_accounts: usize,
-}
-
-#[derive(Debug, Serialize)]
-struct AdminStatusResponse {
-    current_account_id: String,
-    is_admin: bool,
-    /// A bootstrap session has authenticated once with the upstream password
-    /// and may only change its Dashboard password.
-    must_change_password: bool,
-    default_poll_interval_secs: u64,
-    settings: RuntimeSettings,
-    accounts: Vec<AdminAccountStatus>,
-}
-
-#[derive(Debug, Serialize)]
-struct AdminAccountStatus {
-    account_id: String,
-    username: String,
-    line_user_id: String,
-    discord_user_id: String,
-    account_admin: bool,
-    is_running: bool,
-    user_name: String,
-    last_poll_timestamp: Option<i64>,
-    last_success_course: Option<String>,
-    last_success_rollcall_id: Option<u64>,
-    last_detected_timestamp: Option<i64>,
-    last_detected_course: Option<String>,
-    last_detected_rollcall_id: Option<u64>,
-    last_detected_url: Option<String>,
-    rollcall_history: Vec<RollcallHistoryEntry>,
-    consecutive_failures: u32,
-    started_at: i64,
-}
-
-async fn admin_dashboard_page_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
-        // `/admin` remains the public login shell, but `/admin/dashboard` must
-        // never return a 200 login SPA to an unauthenticated caller.
-        return admin_login_redirect("/admin/dashboard");
-    };
-    if session.must_change_password {
-        return must_change_password_redirect();
-    }
-    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
-    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
-}
-
-async fn admin_activity_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_ACTIVITY_HTML))
-}
-
-async fn admin_homework_page_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
-        return admin_login_redirect("/admin/homework");
-    };
-    if session.must_change_password {
-        return must_change_password_redirect();
-    }
-    html_page_response(&headers, inject_theme(ADMIN_HOMEWORK_HTML))
-}
-
-// Cache admin flags for /admin/api/status to avoid querying accounts.db on every dashboard refresh.
-static ADMIN_STATUS_ADMIN_FLAG_CACHE: once_cell::sync::Lazy<
-    tokio::sync::Mutex<Option<(std::time::Instant, std::collections::HashMap<String, bool>)>>,
-> = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(None));
-
-const ADMIN_STATUS_SHORT_CACHE_TTL: Duration = Duration::from_secs(2);
-const ADMIN_STATUS_HISTORY_LIMIT: usize = 30;
-
-// Cache status responses briefly to absorb burst dashboard refreshes.
-// The key includes the session role/account because the payload contains
-// `current_account_id` and regular users only see their own account.
-static ADMIN_STATUS_SHORT_CACHE: once_cell::sync::Lazy<
-    tokio::sync::Mutex<HashMap<String, (Instant, serde_json::Value)>>,
-> = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
-
-/// Clear status caches after an account permission change so the Dashboard
-/// immediately renders the new administrator badge/button state.
-pub(super) async fn invalidate_admin_status_cache() {
-    *ADMIN_STATUS_ADMIN_FLAG_CACHE.lock().await = None;
-    ADMIN_STATUS_SHORT_CACHE.lock().await.clear();
-}
-
-fn admin_status_short_cache_key(
-    session: &AdminSession,
-    include_history: bool,
-    history_limit: usize,
-) -> String {
-    let role = if session.is_admin { "admin" } else { "user" };
-    format!(
-        "{role}:{}:must_change={}:history={}:limit={}",
-        session.account_id, session.must_change_password, include_history, history_limit
-    )
-}
-
-async fn admin_status_short_cache_get(key: &str) -> Option<serde_json::Value> {
-    let mut cache = ADMIN_STATUS_SHORT_CACHE.lock().await;
-    let now = Instant::now();
-    if cache.len() > MAX_SESSIONS {
-        cache.retain(|_, (updated_at, _)| {
-            now.saturating_duration_since(*updated_at) <= ADMIN_STATUS_SHORT_CACHE_TTL
-        });
-    }
-    cache.get(key).and_then(|(updated_at, value)| {
-        (now.saturating_duration_since(*updated_at) <= ADMIN_STATUS_SHORT_CACHE_TTL)
-            .then(|| value.clone())
-    })
-}
-
-async fn admin_status_short_cache_put(key: String, value: serde_json::Value) {
-    let mut cache = ADMIN_STATUS_SHORT_CACHE.lock().await;
-    cache.insert(key, (Instant::now(), value));
-    if cache.len() > MAX_SESSIONS {
-        let now = Instant::now();
-        cache.retain(|_, (updated_at, _)| {
-            now.saturating_duration_since(*updated_at) <= ADMIN_STATUS_SHORT_CACHE_TTL
-        });
-    }
-}
-
-async fn admin_status_admin_flags_cached(
-    state: &AdminWebState,
-) -> std::result::Result<std::collections::HashMap<String, bool>, Response> {
-    {
-        let cache = ADMIN_STATUS_ADMIN_FLAG_CACHE.lock().await;
-        if let Some((updated_at, flags)) = cache.as_ref() {
-            if updated_at.elapsed() <= std::time::Duration::from_secs(30) {
-                return Ok(flags.clone());
-            }
-        }
-    }
-
-    let raw_accounts = match state.accounts_db.list().await {
-        Ok(accounts) => accounts,
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
-            )
-                .into_response());
-        }
-    };
-    let flags = raw_accounts
-        .into_iter()
-        .map(|account| (account.id, account.is_admin))
-        .collect::<std::collections::HashMap<_, _>>();
-
-    *ADMIN_STATUS_ADMIN_FLAG_CACHE.lock().await = Some((std::time::Instant::now(), flags.clone()));
-    Ok(flags)
-}
-
-/// Adds non-sensitive timing information to `/admin/api/status` responses.
-///
-/// These metrics are intentionally exposed through the standard `Server-Timing`
-/// response header so they can be inspected in the browser Network panel without
-/// logging a session token, account name, or any upstream credential.
-fn with_admin_status_timing(
-    mut response: Response,
-    total: Duration,
-    phases: &[(&str, Duration)],
-) -> Response {
-    let mut value = format!("app;dur={:.1}", total.as_secs_f64() * 1000.0);
-    for (name, duration) in phases {
-        value.push_str(&format!("; {name};dur={:.1}", duration.as_secs_f64() * 1000.0));
-    }
-    if let Ok(value) = HeaderValue::try_from(value.as_str()) {
-        response
-            .headers_mut()
-            .insert(HeaderName::from_static("server-timing"), value);
-    }
-    response
-}
-
-/// Server-Sent Events stream for immediate Dashboard rollcall alerts.
-///
-/// The stream reads only the accounts visible to this session. It emits a
-/// rollcall event as soon as the monitor exposes a direct input URL, avoiding
-/// the dashboard's normal refresh interval for time-sensitive attendance.
-async fn admin_rollcall_events_handler(
-    State(state): State<AdminWebState>,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
-        return unauthorized_response();
-    };
-    if session.must_change_password {
-        return unauthorized_response();
-    }
-
-    let accounts = Arc::clone(&state.accounts);
-    let account_id = session.account_id;
-    let is_admin = session.is_admin;
-    let stream = futures::stream::unfold(
-        (accounts, account_id, is_admin, HashMap::<String, String>::new()),
-        |(accounts, account_id, is_admin, mut last_seen)| async move {
-            tokio::time::sleep(Duration::from_millis(350)).await;
-            let mut detected = Vec::new();
-            for account in accounts.iter() {
-                if !is_admin && account.account_id != account_id {
-                    continue;
-                }
-                let status = account.monitor_status.lock().await;
-                let (timestamp, course, rollcall_id, url) = (
-                    status.last_detected_timestamp,
-                    status.last_detected_course.clone(),
-                    status.last_detected_rollcall_id,
-                    status.last_detected_url.clone(),
-                );
-                drop(status);
-                let Some(timestamp) = timestamp else { continue };
-                let Some(url) = url.filter(|value| !value.trim().is_empty()) else { continue };
-                let event_key = format!("{}:{}:{}", account.account_id, rollcall_id.unwrap_or(0), timestamp);
-                if last_seen.get(&account.account_id) == Some(&event_key) {
-                    continue;
-                }
-                last_seen.insert(account.account_id.clone(), event_key.clone());
-                detected.push(json!({
-                    "key": event_key,
-                    "account": account.account_id,
-                    "course": course.unwrap_or_else(|| "新點名".to_string()),
-                    "rollcall_id": rollcall_id,
-                    "timestamp": timestamp,
-                    "url": url,
-                }));
-            }
-            let event = if detected.is_empty() {
-                SseEvent::default().event("ping").data("{}")
-            } else {
-                SseEvent::default()
-                    .event("rollcall")
-                    .data(serde_json::to_string(&detected).unwrap_or_else(|_| "[]".to_string()))
-            };
-            Some((Ok::<_, std::convert::Infallible>(event), (accounts, account_id, is_admin, last_seen)))
-        },
-    );
-    Sse::new(stream)
-        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive"))
-        .into_response()
-}
-
-async fn admin_status_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    // Temporary production profiling for first-paint diagnosis. Keep the
-    // measurements around lock acquisition and SQLite, rather than around
-    // individual accounts, to avoid leaking account-specific timing.
-    let request_started = Instant::now();
-    // PERFORMANCE_STATUS_AUTH_V1:
-    // The session_cookie_to_query_middleware already injected the HttpOnly
-    // cookie into query.token, so we can skip redundant header parsing.
-    // Fall back to direct cookie read only if middleware was bypassed.
-    let token = if query.token.trim().is_empty() {
-        session_cookie_from_headers(&headers)
-            .unwrap_or_default()
-    } else {
-        query.token.trim().to_string()
-    };
-    let Some(session) = state.authorize_any(&token).await else {
-        // Session expired or missing — this is a normal event (e.g., after
-        // server restart or cookie expiry), not a warning. Log at debug level
-        // to avoid flooding the console during routine re-authentication.
-        tracing::debug!(
-            parsed_token_len = token.len(),
-            uses_https = request_uses_https(&headers),
-            "STATUS 401: no valid session"
-        );
-        return append_expired_session_cookies(unauthorized_response());
-    };
-    let auth_elapsed = request_started.elapsed();
-
-    let include_history = query.include_history.unwrap_or(true);
-    let history_limit = if include_history {
-        query
-            .history_limit
-            .unwrap_or(ADMIN_STATUS_HISTORY_LIMIT)
-            .min(ADMIN_STATUS_HISTORY_LIMIT)
-    } else {
-        0
-    };
-
-    let cache_key = admin_status_short_cache_key(&session, include_history, history_limit);
-    if let Some(cached) = admin_status_short_cache_get(&cache_key).await {
-        let total = request_started.elapsed();
-        info!(
-            total_ms = total.as_millis(),
-            auth_ms = auth_elapsed.as_millis(),
-            include_history,
-            history_limit,
-            "admin status profile: cache hit"
-        );
-        return with_admin_status_timing(
-            (StatusCode::OK, Json(cached)).into_response(),
-            total,
-            &[("auth", auth_elapsed), ("cache", total.saturating_sub(auth_elapsed))],
-        );
-    }
-
-    // A first-login session may use this endpoint only to learn that it must
-    // change its Dashboard password. Do not expose account status, schedules,
-    // or management data until the password is changed.
-    if session.must_change_password {
-        let response_json = json!(AdminStatusResponse {
-            current_account_id: session.account_id.clone(),
-            is_admin: session.is_admin,
-            must_change_password: true,
-            default_poll_interval_secs: state.default_poll_interval_secs,
-            settings: crate::runtime_settings::snapshot().await,
-            accounts: vec![],
-        });
-        admin_status_short_cache_put(cache_key, response_json.clone()).await;
-        return (StatusCode::OK, Json(response_json)).into_response();
-    }
-
-    let admin_flags_started = Instant::now();
-    let admin_by_id = if session.is_admin {
-        match admin_status_admin_flags_cached(&state).await {
-            Ok(flags) => flags,
-            Err(resp) => return resp,
-        }
-    } else {
-        std::collections::HashMap::new()
-    };
-    let admin_flags_elapsed = admin_flags_started.elapsed();
-
-    let visible_accounts = resolve_visible_accounts(&state, &session);
-    // PERFORMANCE_STATUS_PAYLOAD_V1:
-    // Build the response directly while each account status is locked instead
-    // of cloning the full MonitorStatus.  The dashboard only renders the first
-    // 30 history entries, so cap history in the hot /admin/api/status payload.
-    let status_futures: Vec<_> = visible_accounts
-        .iter()
-        .map(|account| {
-            let account_admin = admin_by_id
-                .get(&account.account_id)
-                .copied()
-                .unwrap_or(false);
-            async move {
-                let status = account.monitor_status.lock().await;
-                let rollcall_history = status
-                    .rollcall_history
-                    .iter()
-                    .take(history_limit)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let user_name = status.user_name.clone();
-                let last_success_course = status.last_success_course.clone();
-                let last_detected_course = status.last_detected_course.clone();
-                let last_detected_url = status.last_detected_url.clone();
-                let last_poll_timestamp = status.last_poll_timestamp;
-                let last_success_rollcall_id = status.last_success_rollcall_id;
-                let last_detected_timestamp = status.last_detected_timestamp;
-                let last_detected_rollcall_id = status.last_detected_rollcall_id;
-                let consecutive_failures = status.consecutive_failures;
-                let started_at = status.started_at;
-                drop(status);
-
-                // PERFORMANCE_STATUS_TARGET_V1:
-                // Extract only the fields we need from the target lock instead
-                // of cloning the entire AdapterAccountTarget struct.
-                let (line_user_id, discord_user_id) = {
-                    let target = account.target.lock().await;
-                    (target.line_user_id.clone(), target.discord_user_id.clone())
-                };
-                let running = *account.is_running.lock().await;
-
-                AdminAccountStatus {
-                    account_id: account.account_id.clone(),
-                    username: account.username.clone(),
-                    line_user_id,
-                    discord_user_id,
-                    account_admin,
-                    is_running: running,
-                    user_name,
-                    last_poll_timestamp,
-                    last_success_course,
-                    last_success_rollcall_id,
-                    last_detected_timestamp,
-                    last_detected_course,
-                    last_detected_rollcall_id,
-                    last_detected_url,
-                    rollcall_history,
-                    consecutive_failures,
-                    started_at,
-                }
-            }
-        })
-        .collect();
-    let account_locks_started = Instant::now();
-    let mut accounts = futures::future::join_all(status_futures).await;
-    let account_locks_elapsed = account_locks_started.elapsed();
-    accounts.sort_by(|a, b| a.account_id.cmp(&b.account_id));
-
-    let settings_started = Instant::now();
-    let settings = crate::runtime_settings::snapshot().await;
-    let settings_elapsed = settings_started.elapsed();
-    let account_count = accounts.len();
-    let response_json = json!(AdminStatusResponse {
-        current_account_id: session.account_id.clone(),
-        is_admin: session.is_admin,
-        must_change_password: false,
-        default_poll_interval_secs: state.default_poll_interval_secs,
-        settings,
-        accounts,
-    });
-
-    admin_status_short_cache_put(cache_key, response_json.clone()).await;
-
-    let total = request_started.elapsed();
-    info!(
-        total_ms = total.as_millis(),
-        auth_ms = auth_elapsed.as_millis(),
-        admin_flags_ms = admin_flags_elapsed.as_millis(),
-        account_locks_ms = account_locks_elapsed.as_millis(),
-        settings_ms = settings_elapsed.as_millis(),
-        account_count,
-        include_history,
-        history_limit,
-        "admin status profile: cache miss"
-    );
-    with_admin_status_timing(
-        (StatusCode::OK, Json(response_json)).into_response(),
-        total,
-        &[
-            ("auth", auth_elapsed),
-            ("admin_flags", admin_flags_elapsed),
-            ("account_locks", account_locks_elapsed),
-            ("settings", settings_elapsed),
-        ],
-    )
-}
-
-const DISCORD_NOTIFICATION_KEYS: &[(&str, &str, &str)] = &[
-    ("system_started", "系統啟動", "服務啟動或帳號監控開始時通知"),
-    ("rollcall_detected", "偵測到點名", "偵測到新點名時通知"),
-    ("number_code", "數字點名", "需要輸入數字點名碼時通知"),
-    ("qr_code", "QR Code 點名", "需要掃描或送出 QR Code 時通知"),
-    (
-        "rollcall_finished",
-        "點名完成結果",
-        "點名成功或失敗結果通知",
-    ),
-    ("status", "狀態回覆", "主動推送狀態摘要通知"),
-    (
-        "control",
-        "控制操作",
-        "暫停、恢復、Force、Reauth 等控制通知",
-    ),
-    ("other", "其他通知", "其他 Discord 通知"),
-];
-
-fn resolve_notification_target(
-    session: &AdminSession,
-    requested: Option<String>,
-) -> Result<String, Response> {
-    if session.is_admin {
-        let target = requested
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| session.account_id.clone());
-        if target == "<token-admin>" {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "請指定 account_id" })),
-            )
-                .into_response());
-        }
-        Ok(target)
-    } else {
-        if let Some(requested) = requested
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-        {
-            if requested != session.account_id {
-                return Err(unauthorized_response());
-            }
-        }
-        Ok(session.account_id.clone())
-    }
-}
-
-async fn admin_notification_preferences_get_handler(
-    State(state): State<AdminWebState>,
-    Query(query): Query<AdminNotificationPreferencesQuery>,
-) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
-        return unauthorized_response();
-    };
-    if let Err(response) = validate_optional_admin_text(
-        query.account_id.as_deref(),
-        ADMIN_MAX_IDENTIFIER_BYTES,
-        "account_id",
-    ) {
-        return response;
-    }
-    let target = match resolve_notification_target(&session, query.account_id) {
-        Ok(target) => target,
-        Err(resp) => return resp,
-    };
-    let rows = match state
-        .accounts_db
-        .list_notification_preferences(&target, "discord")
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("notification database error: {e}") })),
-            )
-                .into_response();
-        }
-    };
-    let mut saved = std::collections::HashMap::new();
-    for row in rows {
-        saved.insert(row.notification_key, row.enabled);
-    }
-    let preferences = DISCORD_NOTIFICATION_KEYS
-        .iter()
-        .map(|(key, label, description)| {
-            json!({
-                "key": key,
-                "label": label,
-                "description": description,
-                "enabled": saved.get(*key).copied().unwrap_or(true),
-            })
-        })
-        .collect::<Vec<_>>();
-    (
-        StatusCode::OK,
-        Json(json!({
-            "account_id": target,
-            "channel": "discord",
-            "is_admin": session.is_admin,
-            "preferences": preferences,
-        })),
-    )
-        .into_response()
-}
-
-async fn admin_notification_preferences_update_handler(
-    State(state): State<AdminWebState>,
-    Query(query): Query<AdminQuery>,
-    body: axum::body::Bytes,
-) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
-        return unauthorized_response();
-    };
-    let req: AdminNotificationPreferencesUpdateRequest = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "invalid_request" })),
-            )
-                .into_response();
-        }
-    };
-    if req.preferences.len() > ADMIN_MAX_NOTIFICATION_PREFERENCES {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": format!(
-                    "too many notification preferences; max {}",
-                    ADMIN_MAX_NOTIFICATION_PREFERENCES
-                )
-            })),
-        )
-            .into_response();
-    }
-    if let Err(response) = validate_optional_admin_text(
-        req.account_id.as_deref(),
-        ADMIN_MAX_IDENTIFIER_BYTES,
-        "account_id",
-    ) {
-        return response;
-    }
-    let target = match resolve_notification_target(&session, req.account_id) {
-        Ok(target) => target,
-        Err(resp) => return resp,
-    };
-    let allowed = DISCORD_NOTIFICATION_KEYS
-        .iter()
-        .map(|(key, _, _)| *key)
-        .collect::<std::collections::HashSet<_>>();
-    let mut preferences = Vec::with_capacity(req.preferences.len());
-    let mut seen = std::collections::HashSet::with_capacity(req.preferences.len());
-    for pref in req.preferences {
-        if let Err(response) =
-            validate_admin_text(&pref.key, ADMIN_MAX_ACTION_BYTES, "notification key")
-        {
-            return response;
-        }
-        let key = pref.key.trim().to_string();
-        if !seen.insert(key.clone()) {
-            continue;
-        }
-        if !allowed.contains(key.as_str()) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("unknown notification key: {key}") })),
-            )
-                .into_response();
-        }
-        preferences.push((key, pref.enabled));
-    }
-    if let Err(e) = state
-        .accounts_db
-        .set_notification_preferences(&target, "discord", &preferences)
-        .await
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save notification preference failed: {e}") })),
-        )
-            .into_response();
-    }
-    crate::logs::record_audit(
-        "web",
-        &session.account_id,
-        "notification_preferences",
-        Some(&target),
-        Some("discord"),
-        "更新 Discord 通知設定",
-    );
-    (
-        StatusCode::OK,
-        Json(json!({ "ok": true, "account_id": target })),
-    )
-        .into_response()
-}
-
-const ADMIN_CLEAN_TIMETABLE_HTML: &str = include_str!("static/timetable.html");
-
-async fn admin_clean_timetable_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_CLEAN_TIMETABLE_HTML))
-}
-
-const ADMIN_STATIC_CACHE_CONTROL: &str = "public, max-age=604800, immutable, stale-while-revalidate=86400";
-
-fn admin_static_asset(content_type: &'static str, body: impl IntoResponse) -> Response {
-    let mut response = body.into_response();
-    response
-        .headers_mut()
-        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static(ADMIN_STATIC_CACHE_CONTROL),
-    );
-    response
-}
-
-async fn admin_theme_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::theme_css())
-}
-
-async fn admin_session_security_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::SESSION_SECURITY_JS,
-    )
-}
-
-async fn admin_dashboard_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::DASHBOARD_MODULE_CSS)
-}
-
-async fn admin_dashboard_late_fixes_css_handler() -> Response {
-    admin_static_asset(
-        "text/css; charset=utf-8",
-        pages::DASHBOARD_LATE_FIXES_CSS,
-    )
-}
-
-async fn admin_dashboard_mobile_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::DASHBOARD_MOBILE_CSS)
-}
-
-async fn admin_dashboard_components_css_handler() -> Response {
-    admin_static_asset(
-        "text/css; charset=utf-8",
-        pages::DASHBOARD_COMPONENTS_CSS,
-    )
-}
-
-async fn admin_dashboard_access_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::DASHBOARD_ACCESS_CSS)
-}
-
-async fn admin_dashboard_runtime_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::DASHBOARD_RUNTIME_JS,
-    )
-}
-
-async fn admin_dashboard_modules_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::DASHBOARD_FEATURES_JS,
-    )
-}
-
-async fn admin_mobile_navigation_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::MOBILE_NAVIGATION_CSS)
-}
-
-async fn admin_mobile_timetable_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::MOBILE_TIMETABLE_CSS)
-}
-
-async fn admin_account_components_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::ACCOUNT_COMPONENTS_CSS)
-}
-
-async fn admin_maintenance_components_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::MAINTENANCE_COMPONENTS_CSS)
-}
-
-async fn admin_maintenance_module_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::MAINTENANCE_MODULE_JS,
-    )
-}
-
-async fn admin_maintenance_implementation_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::MAINTENANCE_IMPLEMENTATION_JS,
-    )
-}
-
-async fn admin_timetable_ui_module_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::TIMETABLE_UI_MODULE_JS,
-    )
-}
-
-async fn admin_notifications_module_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::NOTIFICATIONS_MODULE_JS,
-    )
-}
-
-async fn admin_mock_rollcall_module_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::MOCK_ROLLCALL_MODULE_JS,
-    )
-}
-
-async fn admin_accounts_module_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::ACCOUNTS_MODULE_JS,
-    )
-}
-
-async fn admin_core_api_js_handler() -> Response {
-    admin_static_asset("application/javascript; charset=utf-8", pages::CORE_API_JS)
-}
-
-async fn admin_web_push_js_handler() -> Response {
-    admin_static_asset("application/javascript; charset=utf-8", pages::WEB_PUSH_JS)
-}
-
-async fn admin_dompurify_js_handler() -> Response {
-    admin_static_asset("application/javascript; charset=utf-8", pages::DOMPURIFY_JS)
-}
-
-async fn admin_trusted_types_init_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::TRUSTED_TYPES_INIT_JS,
-    )
-}
-
 fn admin_login_redirect(next_path: &str) -> Response {
     let encoded_next: String = url::form_urlencoded::byte_serialize(next_path.as_bytes()).collect();
     let location = format!("/admin?next={encoded_next}");
     (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
 }
 
-async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
-    let loc = match uri.query() {
-        Some(q) if !q.is_empty() => format!("/admin?{q}"),
-        _ => "/admin".to_string(),
-    };
-    (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, loc)]).into_response()
-}
-
-async fn admin_password_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_PASSWORD_HTML))
-}
-
-async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_PASSKEY_HTML))
-}
-
 fn must_change_password_redirect() -> Response {
     (
         StatusCode::TEMPORARY_REDIRECT,
         [(header::LOCATION, "/admin/password?first=1")],
-    )
-        .into_response()
-}
-
-async fn session_must_change_password(
-    state: &AdminWebState,
-    headers: &HeaderMap,
-    query_token: &str,
-) -> bool {
-    state
-        .authorize_any(&session_token(headers, query_token))
-        .await
-        .map(|session| session.must_change_password)
-        .unwrap_or(false)
-}
-
-async fn admin_page_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    if session_must_change_password(&state, &headers, &query.token).await {
-        return must_change_password_redirect();
-    }
-    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
-    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
-}
-
-async fn admin_public_status_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    // PERFORMANCE_STATUS_AUTH_V1: prefer middleware-injected query.token
-    let token = if query.token.trim().is_empty() {
-        session_cookie_from_headers(&headers)
-            .unwrap_or_default()
-    } else {
-        query.token.trim().to_string()
-    };
-    let Some(session) = state.authorize(&token).await else {
-        return unauthorized_response();
-    };
-    let visible = resolve_visible_accounts(&state, &session);
-    let total_accounts = visible.len();
-    let statuses: Vec<_> = visible
-        .into_iter()
-        .map(|account| async move {
-            let running = *account.is_running.lock().await;
-            let detected = account
-                .monitor_status
-                .lock()
-                .await
-                .last_detected_timestamp
-                .is_some();
-            (running, detected)
-        })
-        .collect();
-    let all = futures::future::join_all(statuses).await;
-    let running_accounts = all.iter().filter(|(r, _)| *r).count();
-    let detected_accounts = all.iter().filter(|(_, d)| *d).count();
-
-    (
-        StatusCode::OK,
-        Json(json!(AdminPublicStatusResponse {
-            total_accounts,
-            running_accounts,
-            detected_accounts,
-        })),
     )
         .into_response()
 }
@@ -3143,842 +2045,6 @@ async fn record_persistent_login_event(
         .await;
 }
 
-async fn admin_login_activity_handler(
-    State(state): State<AdminWebState>,
-    Query(query): Query<AdminActivityQuery>,
-) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
-        return unauthorized_response();
-    };
-    if !session.is_admin {
-        return unauthorized_response();
-    }
-
-    let limit = query.limit.unwrap_or(200).clamp(1, 1000) as i64;
-    match state
-        .accounts_db
-        .list_activity_events(Some("login"), limit)
-        .await
-    {
-        Ok(events) => (StatusCode::OK, Json(json!({ "events": events }))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("activity database error: {e}") })),
-        )
-            .into_response(),
-    }
-}
-
-struct PasskeyRegistrationCeremony {
-    account_id: String,
-    state: RegistrationState,
-    expires_at: Instant,
-}
-
-struct PasskeyAuthenticationCeremony {
-    account_id: String,
-    state: AuthenticationState,
-    expires_at: Instant,
-}
-
-static PASSKEY_REG_STATES: once_cell::sync::Lazy<
-    Mutex<HashMap<String, PasskeyRegistrationCeremony>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
-static PASSKEY_AUTH_STATES: once_cell::sync::Lazy<
-    Mutex<HashMap<String, PasskeyAuthenticationCeremony>>,
-> = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
-const MAX_PENDING_PASSKEY_STATES: usize = 128;
-const MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT: usize = 32;
-
-fn passkey_user_handle(account_id: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(b"tronclass-rollcall-passkey-user-handle-v1");
-    hasher.update(account_id.as_bytes());
-    hasher.finalize().to_vec()
-}
-
-fn passkey_webauthn_from_headers(headers: &HeaderMap) -> Result<Webauthn, Response> {
-    for (name, max_bytes) in [
-        (header::ORIGIN.as_str(), 512usize),
-        (header::HOST.as_str(), 255usize),
-        ("x-forwarded-proto", 16usize),
-    ] {
-        if headers
-            .get(name)
-            .map(|value| value.as_bytes().len() > max_bytes)
-            .unwrap_or(false)
-        {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("{name} header is too long") })),
-            )
-                .into_response());
-        }
-    }
-    let origin = headers
-        .get(header::ORIGIN)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .or_else(|| {
-            let host = headers.get(header::HOST)?.to_str().ok()?;
-            let proto = headers
-                .get("x-forwarded-proto")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or(
-                    if host.starts_with("127.0.0.1") || host.starts_with("localhost") {
-                        "http"
-                    } else {
-                        "https"
-                    },
-                );
-            Some(format!("{proto}://{host}"))
-        })
-        .unwrap_or_else(|| "https://dashboard.jasoncloudserver.me".to_string());
-    let parsed = match url::Url::parse(&origin) {
-        Ok(parsed) => parsed,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "invalid Origin for passkey" })),
-            )
-                .into_response());
-        }
-    };
-    let Some(rp_id) = parsed.host_str() else {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "missing host for passkey rp_id" })),
-        )
-            .into_response());
-    };
-    Ok(Webauthn::new(rp_id, "Tronclass Rollcall", &origin)
-        .authenticator_attachment(Attachment::Any)
-        .require_user_verification(false))
-}
-
-async fn cleanup_passkey_states() {
-    let now = Instant::now();
-    PASSKEY_REG_STATES
-        .lock()
-        .await
-        .retain(|_, state| state.expires_at > now);
-    PASSKEY_AUTH_STATES
-        .lock()
-        .await
-        .retain(|_, state| state.expires_at > now);
-}
-
-async fn admin_passkey_register_start_handler(
-    State(state): State<AdminWebState>,
-    Query(query): Query<AdminQuery>,
-    headers: HeaderMap,
-) -> Response {
-    let Some(session) = state.authorize(&query.token).await else {
-        return unauthorized_response();
-    };
-    if session.account_id == "<token-admin>" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "emergency token cannot register passkey; login as a real account first" })),
-        )
-            .into_response();
-    }
-    let wa = match passkey_webauthn_from_headers(&headers) {
-        Ok(wa) => wa,
-        Err(resp) => return resp,
-    };
-
-    let account = match state.accounts_db.get(&session.account_id).await {
-        Ok(Some(account)) if account.enabled => account,
-        Ok(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "account not found or disabled" })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
-            )
-                .into_response();
-        }
-    };
-    match state
-        .accounts_db
-        .count_passkey_credentials(&account.id)
-        .await
-    {
-        Ok(count) if count >= MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT as i64 => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!(
-                        "too many passkeys for this account; max {}",
-                        MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT
-                    )
-                })),
-            )
-                .into_response();
-        }
-        Ok(_) => {}
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
-            )
-                .into_response();
-        }
-    }
-    let existing_credentials = state
-        .accounts_db
-        .list_passkey_credentials(&account.id)
-        .await
-        .unwrap_or_default();
-    let existing: Vec<CredentialId> = existing_credentials
-        .iter()
-        .map(|credential| credential.id.clone())
-        .collect();
-    let display_name = if account.id == account.username || account.username.trim().is_empty() {
-        account.id.clone()
-    } else {
-        format!("{} ({})", account.id, account.username)
-    };
-    let (challenge, reg_state) = wa.start_registration(
-        &passkey_user_handle(&account.id),
-        &account.id,
-        &display_name,
-        &existing,
-    );
-    let ceremony_id = Uuid::new_v4().simple().to_string();
-    cleanup_passkey_states().await;
-    let mut pending = PASSKEY_REG_STATES.lock().await;
-    if pending.len() >= MAX_PENDING_PASSKEY_STATES {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "too many pending passkey registrations; retry shortly" })),
-        )
-            .into_response();
-    }
-    pending.insert(
-        ceremony_id.clone(),
-        PasskeyRegistrationCeremony {
-            account_id: account.id.clone(),
-            state: reg_state,
-            expires_at: Instant::now() + Duration::from_secs(300),
-        },
-    );
-    drop(pending);
-    (
-        StatusCode::OK,
-        Json(json!({ "ceremony_id": ceremony_id, "publicKey": challenge })),
-    )
-        .into_response()
-}
-
-async fn admin_passkey_register_finish_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Json(req): Json<AdminPasskeyRegisterFinishRequest>,
-) -> Response {
-    if let Err(response) =
-        validate_admin_text(&req.ceremony_id, ADMIN_MAX_IDENTIFIER_BYTES, "ceremony_id")
-    {
-        return response;
-    }
-    let wa = match passkey_webauthn_from_headers(&headers) {
-        Ok(wa) => wa,
-        Err(resp) => return resp,
-    };
-    cleanup_passkey_states().await;
-    let ceremony = match PASSKEY_REG_STATES.lock().await.remove(&req.ceremony_id) {
-        Some(ceremony) if ceremony.expires_at > Instant::now() => ceremony,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "passkey registration expired; please try again" })),
-            )
-                .into_response();
-        }
-    };
-    let credential = match wa.finish_registration(&ceremony.state, &req.response) {
-        Ok(credential) => credential,
-        Err(e) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": format!("passkey registration verify failed: {e}") })),
-            )
-                .into_response();
-        }
-    };
-    let credential_id = credential.id.to_b64url();
-    match state
-        .accounts_db
-        .upsert_passkey_credential(&ceremony.account_id, &credential)
-        .await
-    {
-        Ok(()) => {
-            crate::logs::record_audit(
-                "web",
-                &ceremony.account_id,
-                "passkey_register",
-                Some(&ceremony.account_id),
-                Some(&credential_id),
-                "Web 管理頁新增通行密鑰",
-            );
-            (
-                StatusCode::OK,
-                Json(json!({ "ok": true, "credential_id": credential_id })),
-            )
-                .into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save passkey failed: {e}") })),
-        )
-            .into_response(),
-    }
-}
-
-async fn resolve_passkey_login_account(
-    state: &AdminWebState,
-    username: &str,
-) -> Option<crate::account::RawAccountConfig> {
-    let username = username.trim();
-    if username.is_empty() {
-        return None;
-    }
-    let mut candidates = Vec::new();
-    if let Ok(Some(account)) = state.accounts_db.get(username).await {
-        candidates.push(account);
-    }
-    if candidates.is_empty() {
-        if let Ok(accounts) = state.accounts_db.find_by_username(username, None).await {
-            candidates = accounts;
-        }
-    }
-    let enabled = candidates
-        .into_iter()
-        .filter(|account| account.enabled)
-        .collect::<Vec<_>>();
-    match enabled.as_slice() {
-        [account] => Some(account.clone()),
-        _ => None,
-    }
-}
-
-fn passkey_login_decoy_response(wa: &Webauthn) -> Response {
-    // Usernameless/discoverable flow: never put a per-user credential ID in
-    // the response. Unknown, disabled and passkey-less accounts all receive
-    // the same empty allowCredentials challenge; the decoy state is not
-    // persisted, so a follow-up finish request can only fail authentication.
-    let (challenge, _) = wa.start_authentication(&[]);
-    (
-        StatusCode::OK,
-        Json(json!({
-            "ceremony_id": Uuid::new_v4().simple().to_string(),
-            "publicKey": challenge,
-        })),
-    )
-        .into_response()
-}
-
-async fn admin_passkey_login_start_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    ClientIp(ip): ClientIp,
-    Json(req): Json<AdminPasskeyLoginStartRequest>,
-) -> Response {
-    if ip_is_blacklisted(&state, &ip).await {
-        warn!(ip = %ip, "passkey login rejected for blacklisted IP");
-        return blocked_ip_response();
-    }
-    if !state
-        .rate_limiter
-        .check_limit(&format!("passkey-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
-        .await
-    {
-        warn!(ip = %ip, "passkey login rate limited by ip");
-        alert_abnormal_traffic(&state, "通行密鑰登入", &req.username, &ip).await;
-        return rate_limited_response();
-    }
-    if let Err(response) = validate_admin_text(&req.username, ADMIN_MAX_USERNAME_BYTES, "username")
-    {
-        return response;
-    }
-    let username_key = req.username.trim().to_lowercase();
-    if !username_key.is_empty()
-        && !state
-            .rate_limiter
-            .check_limit(&format!("passkey-user:{username_key}"), RATE_LIMIT_MAX_ATTEMPTS)
-            .await
-    {
-        warn!(ip = %ip, "passkey login rate limited by username");
-        alert_abnormal_traffic(&state, "通行密鑰帳號探測", &req.username, &ip).await;
-        return rate_limited_response();
-    }
-    let wa = match passkey_webauthn_from_headers(&headers) {
-        Ok(wa) => wa,
-        Err(resp) => return resp,
-    };
-    let Some(account) = resolve_passkey_login_account(&state, &req.username).await else {
-        return passkey_login_decoy_response(&wa);
-    };
-    let credentials = match state
-        .accounts_db
-        .list_passkey_credentials(&account.id)
-        .await
-    {
-        Ok(credentials) => credentials,
-        Err(_) => return passkey_login_decoy_response(&wa),
-    };
-    if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT || credentials.is_empty() {
-        return passkey_login_decoy_response(&wa);
-    }
-    // Keep allowCredentials empty even after finding the account. This makes
-    // the public challenge shape identical for existing and unknown accounts;
-    // the browser must use a discoverable passkey, while the server still
-    // scopes the finish step to the account named by the user.
-    let (challenge, auth_state) = wa.start_authentication(&[]);
-    let ceremony_id = Uuid::new_v4().simple().to_string();
-    cleanup_passkey_states().await;
-    let mut pending = PASSKEY_AUTH_STATES.lock().await;
-    if pending.len() >= MAX_PENDING_PASSKEY_STATES {
-        return passkey_login_decoy_response(&wa);
-    }
-    pending.insert(
-        ceremony_id.clone(),
-        PasskeyAuthenticationCeremony {
-            account_id: account.id,
-            state: auth_state,
-            expires_at: Instant::now() + Duration::from_secs(300),
-        },
-    );
-    drop(pending);
-    (
-        StatusCode::OK,
-        Json(json!({ "ceremony_id": ceremony_id, "publicKey": challenge })),
-    )
-        .into_response()
-}
-
-async fn admin_passkey_login_finish_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    ClientIp(ip): ClientIp,
-    Json(req): Json<AdminPasskeyLoginFinishRequest>,
-) -> Response {
-    if ip_is_blacklisted(&state, &ip).await {
-        warn!(ip = %ip, "passkey finish rejected for blacklisted IP");
-        return blocked_ip_response();
-    }
-    if !state
-        .rate_limiter
-        .check_limit(&format!("passkey-finish-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
-        .await
-    {
-        warn!(ip = %ip, "passkey finish rate limited by ip");
-        alert_abnormal_traffic(&state, "通行密鑰驗證", "", &ip).await;
-        return rate_limited_response();
-    }
-    if let Err(response) =
-        validate_admin_text(&req.ceremony_id, ADMIN_MAX_IDENTIFIER_BYTES, "ceremony_id")
-    {
-        return response;
-    }
-    if let Err(response) = validate_admin_text(&req.response.id, 4096, "credential id") {
-        return response;
-    }
-    let wa = match passkey_webauthn_from_headers(&headers) {
-        Ok(wa) => wa,
-        Err(resp) => return resp,
-    };
-    cleanup_passkey_states().await;
-    let ceremony = match PASSKEY_AUTH_STATES.lock().await.remove(&req.ceremony_id) {
-        Some(ceremony) if ceremony.expires_at > Instant::now() => ceremony,
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "passkey authentication expired; please try again" })),
-            )
-                .into_response();
-        }
-    };
-    if !state
-        .rate_limiter
-        .check_limit(
-            &format!("passkey-finish-account:{}", ceremony.account_id),
-            RATE_LIMIT_MAX_ATTEMPTS,
-        )
-        .await
-    {
-        warn!(account = %ceremony.account_id, ip = %ip, "passkey finish rate limited by account");
-        alert_abnormal_traffic(
-            &state,
-            "通行密鑰驗證",
-            &ceremony.account_id,
-            &ip,
-        )
-        .await;
-        return rate_limited_response();
-    }
-    let mut credentials = match state
-        .accounts_db
-        .list_passkey_credentials(&ceremony.account_id)
-        .await
-    {
-        Ok(credentials) => credentials,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
-            )
-                .into_response();
-        }
-    };
-    if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "this account has too many stored passkeys; remove legacy entries before login" })),
-        )
-            .into_response();
-    }
-    let asserted_id = match CredentialId::from_b64url(&req.response.id) {
-        Ok(id) => id,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "bad passkey credential id" })),
-            )
-                .into_response();
-        }
-    };
-    let Some(stored) = credentials
-        .iter_mut()
-        .find(|credential| credential.id == asserted_id)
-    else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unknown passkey credential" })),
-        )
-            .into_response();
-    };
-    let outcome = match wa.finish_authentication(&ceremony.state, &req.response, stored) {
-        Ok(outcome) => outcome,
-        Err(e) => {
-            record_persistent_login_event(
-                &state,
-                &ceremony.account_id,
-                Some(&ceremony.account_id),
-                "login_failed",
-                "fail",
-                "Web 管理頁通行密鑰驗證失敗",
-                &ip,
-            )
-            .await;
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": format!("passkey verify failed: {e}") })),
-            )
-                .into_response();
-        }
-    };
-    stored.counter = outcome.new_counter;
-    let _ = state
-        .accounts_db
-        .upsert_passkey_credential(&ceremony.account_id, stored)
-        .await;
-
-    let account = match state.accounts_db.get(&ceremony.account_id).await {
-        Ok(Some(account)) => account,
-        Ok(None) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "account not found" })),
-            )
-                .into_response();
-        }
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
-            )
-                .into_response();
-        }
-    };
-    // Password login refuses disabled accounts; passkey login must too,
-    // otherwise disabling an account leaves any registered passkey as a
-    // working back door.
-    if !account.enabled {
-        record_persistent_login_event(
-            &state,
-            &account.id,
-            Some(&account.id),
-            "login_failed",
-            "fail",
-            "帳號已停用，通行密鑰登入遭拒",
-            &ip,
-        )
-        .await;
-        return unauthorized_response();
-    }
-
-    let account_id = account.id.clone();
-    let is_admin = account.is_admin;
-    let tokens = state
-        .create_session(account_id.clone(), is_admin, false)
-        .await;
-    crate::logs::record_audit(
-        "web",
-        &account_id,
-        "passkey_login",
-        Some(&account_id),
-        None,
-        "Web 管理頁通行密鑰登入成功",
-    );
-    session_login_response(&headers, &tokens, account_id, is_admin, false)
-}
-
-async fn admin_login_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    ClientIp(ip): ClientIp,
-    body: axum::body::Bytes,
-) -> Response {
-    let login: AdminLoginRequest = match serde_json::from_slice(&body) {
-        Ok(login) => login,
-        Err(error) => {
-            // Keep parser details in server logs only; never expose field names,
-            // line numbers or the serde/axum implementation to a caller.
-            tracing::debug!(error = %error, "admin login request rejected as invalid JSON");
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "invalid_request" })),
-            )
-                .into_response();
-        }
-    };
-    if let Err(response) =
-        validate_admin_text(&login.username, ADMIN_MAX_USERNAME_BYTES, "username")
-    {
-        return response;
-    }
-    if let Err(response) =
-        validate_admin_text(&login.password, ADMIN_MAX_PASSWORD_BYTES, "password")
-    {
-        return response;
-    }
-    if ip_is_blacklisted(&state, &ip).await {
-        warn!(ip = %ip, "password login rejected for blacklisted IP");
-        return blocked_ip_response();
-    }
-    if !state
-        .rate_limiter
-        .check_limit(&format!("login-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
-        .await
-    {
-        warn!(ip = %ip, "login rate limited by ip");
-        alert_abnormal_traffic(&state, "密碼登入", "", &ip).await;
-        return rate_limited_response();
-    }
-
-    let username = login.username.trim();
-    // Passwords are opaque strings: do not trim user-entered whitespace.
-    let password = login.password.as_str();
-    if username.is_empty() || password.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "username and password are required" })),
-        )
-            .into_response();
-    }
-
-    let client = ip.clone();
-    let rate_key = format!("login:{}:{client}", username.to_lowercase());
-    if !state.rate_limiter.check(&rate_key).await {
-        warn!(username = %username, client = %client, "admin web login rate limited");
-        // The sixth request is rejected by the five-attempt login rate limiter
-        // before password verification. It must still count as a failed login;
-        // otherwise the auto-blacklist threshold (>5 failures) is impossible
-        // to reach. Run this off the response path just like a normal failed
-        // password verification.
-        {
-            let state = state.clone();
-            let user = username.to_string();
-            let ip = ip.clone();
-            tokio::spawn(async move {
-                record_persistent_login_event(
-                    &state,
-                    &user,
-                    None,
-                    "login_rate_limited",
-                    "failed",
-                    "Dashboard login rejected by rate limit",
-                    &ip,
-                )
-                .await;
-                alert_password_failures(&state, &user, &ip).await;
-            });
-        }
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({ "error": "too many attempts; please wait" })),
-        )
-            .into_response();
-    }
-
-    let mut candidates = Vec::new();
-    // Try exact account-id match first, then fall back to username search.
-    if let Ok(Some(account)) = state.accounts_db.get(username).await {
-        candidates.push(account);
-    }
-    if candidates.is_empty() {
-        if let Ok(accounts) = state.accounts_db.find_by_username(username, None).await {
-            candidates = accounts;
-        }
-    }
-
-    // Normal logins use the separate Dashboard verifier. If no Dashboard
-    // password exists yet, allow the stored Tronclass password once and create
-    // a restricted bootstrap session that can only set a new Dashboard password.
-    let mut matched = None;
-    for account in candidates {
-        if !account.enabled {
-            continue;
-        }
-        if !account.dashboard_password_hash.is_empty()
-            && crate::dashboard_auth::verify_dashboard_password(
-                password,
-                &account.dashboard_password_hash,
-            )
-        {
-            matched = Some((account, false));
-            break;
-        }
-        if account.dashboard_password_hash.is_empty()
-            && crate::dashboard_auth::verify_first_login_password(password, &account.password)
-        {
-            matched = Some((account, true));
-            break;
-        }
-    }
-
-    let Some((account, must_change_password)) = matched else {
-        warn!(username = %username, client = %client, "admin web login failed");
-        crate::logs::record_audit(
-            "web",
-            username,
-            "login_failed",
-            None,
-            None,
-            "Web 管理頁登入失敗",
-        );
-        // PERFORMANCE_LOGIN_RESPONSE_V1:
-        // Fire-and-forget the failure audit and security alert so the user
-        // gets the 401 response immediately instead of waiting for SQLite
-        // writes and potential Discord notification round-trips.
-        {
-            let state = state.clone();
-            let user = username.to_string();
-            let ip = ip.clone();
-            tokio::spawn(async move {
-                record_persistent_login_event(
-                    &state,
-                    &user,
-                    None,
-                    "login",
-                    "failed",
-                    "Web 管理頁登入失敗",
-                    &ip,
-                )
-                .await;
-                alert_password_failures(&state, &user, &ip).await;
-            });
-        }
-        return unauthorized_response();
-    };
-
-    state.rate_limiter.clear(&rate_key).await;
-    // 登入成功即重置失敗計數，確保只有「連續」失敗才會觸發告警。
-    clear_auth_failures(username, &ip).await;
-
-    // ARGON2_MIGRATION_V1
-    // 平滑遷移：成功登入且既有雜湊仍是舊 PBKDF2 時，用這次的明文密碼
-    // 重算成 Argon2id 並回寫，下次登入即走新的抗暴力破解雜湊。bootstrap
-    // （首登改用上游密碼、強制改密碼）不在此升級，改密碼流程會寫 Argon2id。
-    if !must_change_password && crate::dashboard_auth::is_legacy_pbkdf2_hash(&account.dashboard_password_hash) {
-        let account_for_upgrade = account.clone();
-        if let Ok(new_hash) =
-            crate::dashboard_auth::hash_dashboard_password(password, &account_for_upgrade.password)
-        {
-            let _ = state
-                .accounts_db
-                .set_dashboard_password_hash(&account_for_upgrade.id, &new_hash)
-                .await;
-            info!(account = %account_for_upgrade.id, "Dashboard 密碼雜湊已由 PBKDF2 升級為 Argon2id");
-        }
-    }
-
-    let account_id = account.id.clone();
-    let is_admin = account.is_admin;
-    let tokens = state
-        .create_session(account_id.clone(), is_admin, must_change_password)
-        .await;
-    let login_action = if must_change_password {
-        "login_bootstrap"
-    } else {
-        "login"
-    };
-    let login_message = if must_change_password {
-        "首次使用 Tronclass 密碼登入；必須立即設定新的 Dashboard 密碼"
-    } else if is_admin {
-        "Web 管理頁管理員登入成功"
-    } else {
-        "Web 管理頁登入成功"
-    };
-    info!(account = %account_id, is_admin = is_admin, bootstrap = must_change_password, client = %client, "admin web login success");
-    crate::logs::record_audit(
-        "web",
-        &account_id,
-        login_action,
-        Some(&account_id),
-        None,
-        login_message,
-    );
-    // PERFORMANCE_LOGIN_RESPONSE_V1:
-    // Fire-and-forget the persistent login event so the SQLite INSERT does
-    // not delay the response. The session cookie is already set; the audit
-    // row is best-effort and must not block the user.
-    {
-        let state = state.clone();
-        let actor = account_id.clone();
-        let acct = account_id.clone();
-        let action = login_action.to_string();
-        let msg = login_message.to_string();
-        let ip = ip.clone();
-        tokio::spawn(async move {
-            record_persistent_login_event(
-                &state,
-                &actor,
-                Some(&acct),
-                &action,
-                "success",
-                &msg,
-                &ip,
-            )
-            .await;
-        });
-    }
-    session_login_response(
-        &headers,
-        &tokens,
-        account_id,
-        is_admin,
-        must_change_password,
-    )
-}
-
 fn session_token(headers: &HeaderMap, query_token: &str) -> String {
     // PERFORMANCE_SESSION_TOKEN_V1:
     // The session_cookie_to_query_middleware already injected the HttpOnly
@@ -3992,255 +2058,9 @@ fn session_token(headers: &HeaderMap, query_token: &str) -> String {
     session_cookie_from_headers(headers).unwrap_or_default()
 }
 
-async fn admin_logout_handler(
-    State(state): State<AdminWebState>,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    if let Some(session) = state.authorize(&query.token).await {
-        if session.account_id != "<token-admin>" {
-            state.revoke_session(&query.token).await;
-            crate::logs::record_audit(
-                "web",
-                &session.account_id,
-                "logout",
-                Some(&session.account_id),
-                None,
-                "Web 管理頁登出",
-            );
-        }
-    }
-
-    fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
-        (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
-    ))
-}
-
 /// Refresh endpoint: exchange a valid refresh token for a fresh access token
 /// (and a rotated refresh token). Called by the frontend when an API call
 /// returns 401 because the short-lived access token expired.
-async fn admin_session_refresh_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    // Prefer the HttpOnly refresh cookie; fall back to a token query param
-    // (only for compatibility with clients that cannot send cookies).
-    let refresh_token = refresh_cookie_from_headers(&headers)
-        .filter(|t| !t.is_empty())
-        .or_else(|| {
-            let t = query.token.trim();
-            if t.is_empty() { None } else { Some(t.to_string()) }
-        });
-
-    let Some(refresh_token) = refresh_token else {
-        return unauthorized_response();
-    };
-
-    let Some(tokens) = state.rotate_session(&refresh_token).await else {
-        // Invalid/expired refresh token: clear the cookies so the frontend
-        // stops trying.
-        return fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
-            unauthorized_response(),
-        ));
-    };
-
-    // Resolve account id / is_admin for the response.
-    let mut account_id = String::new();
-    let mut must_change = false;
-    let mut is_admin = false;
-    if let Ok(Some(row)) = state.accounts_db.get_dashboard_session(&tokens.access).await {
-        account_id = row.account_id;
-        is_admin = row.is_admin;
-        must_change = row.must_change_password;
-    }
-
-    let response = append_session_cookie(
-        (
-            StatusCode::OK,
-            Json(json!({
-                "ok": true,
-                "account_id": account_id,
-                "is_admin": is_admin,
-            })),
-        )
-            .into_response(),
-        &tokens.access,
-        &headers,
-    );
-    let response = append_refresh_cookie(response, &tokens.refresh, &headers);
-
-    // Rotation invalidates the old access token the Filebrowser SSO ticket was
-    // bound to, so re-sign the SSO cookie with the new access token. Bootstrap
-    // sessions must not receive a Filebrowser ticket.
-    if !must_change && !account_id.is_empty() && account_id != "<token-admin>" {
-        fb_sso::append_fb_sso_cookie(response, &account_id, is_admin, &tokens.access, &headers)
-    } else {
-        response
-    }
-}
-
-fn password_json_pick(value: &serde_json::Value, keys: &[&str]) -> String {
-    for key in keys {
-        if let Some(text) = value.get(*key).and_then(|v| v.as_str()) {
-            return text.to_string();
-        }
-    }
-    String::new()
-}
-
-fn password_change_from_body(body: &[u8]) -> AdminPasswordChangeRequest {
-    let parsed = serde_json::from_slice::<serde_json::Value>(body).unwrap_or(serde_json::json!({}));
-    let new_password =
-        password_json_pick(&parsed, &["new_password", "password", "newPassword", "new"]);
-    let current_password = password_json_pick(
-        &parsed,
-        &[
-            "current_password",
-            "old_password",
-            "currentPassword",
-            "oldPassword",
-        ],
-    );
-    AdminPasswordChangeRequest {
-        current_password,
-        new_password,
-    }
-}
-
-async fn admin_password_change_handler(
-    State(state): State<AdminWebState>,
-    Query(query): Query<AdminQuery>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let request = password_change_from_body(&body);
-    if let Err(response) = validate_admin_text(
-        &request.current_password,
-        ADMIN_MAX_PASSWORD_BYTES,
-        "current password",
-    ) {
-        return response;
-    }
-    if let Err(response) = validate_admin_text(
-        &request.new_password,
-        ADMIN_MAX_PASSWORD_BYTES,
-        "new password",
-    ) {
-        return response;
-    }
-    let Some(session) = state.authorize_any(&query.token).await else {
-        return unauthorized_response();
-    };
-    if session.account_id == "<token-admin>" {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "emergency token cannot change a Dashboard password" })),
-        )
-            .into_response();
-    }
-
-    let account = match state.accounts_db.get(&session.account_id).await {
-        Ok(Some(account)) if account.enabled => account,
-        Ok(_) => return unauthorized_response(),
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {error}") })),
-            )
-                .into_response();
-        }
-    };
-    let first_setup =
-        session.must_change_password || account.dashboard_password_hash.trim().is_empty();
-
-    // The first-login session has already verified the upstream Tronclass
-    // password. It may set a Dashboard password without asking the user to
-    // submit that upstream password a second time. Every normal password change
-    // still requires the current Dashboard password.
-    if !first_setup
-        && (!session.must_change_password
-            && (account.dashboard_password_hash.is_empty()
-                || !crate::dashboard_auth::verify_dashboard_password(
-                    request.current_password.as_str(),
-                    &account.dashboard_password_hash,
-                )))
-    {
-        crate::logs::record_audit(
-            "web",
-            &account.id,
-            "dashboard_password_change_failed",
-            Some(&account.id),
-            None,
-            "Dashboard 密碼變更驗證失敗",
-        );
-        return unauthorized_response();
-    }
-
-    let hash = match crate::dashboard_auth::hash_dashboard_password(
-        &request.new_password,
-        &account.password,
-    ) {
-        Ok(hash) => hash,
-        Err(error) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": error.to_string() })),
-            )
-                .into_response();
-        }
-    };
-    match state
-        .accounts_db
-        .set_dashboard_password_hash(&account.id, &hash)
-        .await
-    {
-        Ok(true) => {}
-        Ok(false) => return unauthorized_response(),
-        Err(error) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("save password failed: {error}") })),
-            )
-                .into_response();
-        }
-    }
-
-    // Revoke all prior sessions, including this one, then issue a fresh cookie.
-    state.revoke_account_sessions(&account.id).await;
-    let tokens = state
-        .create_session(account.id.clone(), account.is_admin, false)
-        .await;
-    crate::logs::record_audit(
-        "web",
-        &account.id,
-        "dashboard_password_change",
-        Some(&account.id),
-        None,
-        "Dashboard 密碼已變更，先前登入工作階段已失效",
-    );
-    session_login_response(
-        &headers,
-        &tokens,
-        account.id,
-        account.is_admin,
-        false,
-    )
-}
-
-fn resolve_visible_accounts<'a>(
-    state: &'a AdminWebState,
-    session: &AdminSession,
-) -> Vec<&'a RequestAccountState> {
-    if session.is_admin {
-        state.accounts.iter().collect()
-    } else {
-        state
-            .account_by_id(&session.account_id)
-            .into_iter()
-            .collect()
-    }
-}
-
 fn unauthorized_response() -> Response {
     tracing::debug!("admin web unauthorized request");
     (
@@ -4248,465 +2068,6 @@ fn unauthorized_response() -> Response {
         Json(json!({ "error": "unauthorized" })),
     )
         .into_response()
-}
-
-#[derive(Debug, Deserialize)]
-struct AdminHomeworkQuery {
-    #[serde(default)]
-    token: String,
-    #[serde(default)]
-    account_id: Option<String>,
-    /// 使用者按下「重新整理」時帶 `refresh=1`，略過快取強制重抓。
-    /// 仍受 single-flight 保護，連點不會重複打上游。
-    #[serde(default)]
-    refresh: bool,
-}
-
-/// 使用者標記／取消標記「作業已完成」的請求。
-#[derive(Debug, Deserialize)]
-struct AdminHomeworkCompleteRequest {
-    #[serde(default)]
-    account_id: Option<String>,
-    homework_id: u64,
-    /// true=標記完成，false=取消標記。
-    completed: bool,
-}
-
-/// 發送一則測試用的作業截止提醒，驗證各通知管道是否暢通。
-///
-/// HOMEWORK_TEST_NOTIFICATION_V1
-/// 走與真實提醒完全相同的發送路徑（含通知偏好檢查），因此能真實反映
-/// 使用者實際會不會收到通知。刻意**不寫入** `homework_reminder_sent`，
-/// 所以測試不會影響真實作業的去重狀態。
-async fn admin_homework_test_notification_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminQuery>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize(&token).await else {
-        return unauthorized_response();
-    };
-
-    let account_id = session.account_id.clone();
-    let Ok(Some(account)) = state.accounts_db.get(&account_id).await else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "找不到帳號資料" })),
-        )
-            .into_response();
-    };
-
-    // 組一則「剩 45 分鐘」的假作業，對應最緊急的 1h 階段。
-    let now_local = chrono::Local::now();
-    let deadline = now_local + chrono::Duration::minutes(45);
-    let event = crate::adapters::events::HomeworkDeadlineEvent {
-        account: account_id.clone(),
-        course_name: "測試課程".to_string(),
-        title: "這是一則測試通知（非真實作業）".to_string(),
-        stage_badge: "最後 1 小時".to_string(),
-        deadline: deadline.format("%Y-%m-%d %H:%M").to_string(),
-        time_remaining: "45 分鐘".to_string(),
-    };
-    let message = crate::adapters::events::OutboundMessage::HomeworkDeadline(event);
-
-    let mut channels: Vec<String> = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-
-    // 1. Discord / LINE（走與真實提醒相同的偏好檢查路徑）
-    if account.discord_user_id.trim().is_empty() && account.line_user_id.trim().is_empty() {
-        skipped.push("Discord / LINE：此帳號尚未綁定".to_string());
-    } else if let Some(messenger) = state.messenger.as_ref() {
-        let target = crate::adapters::events::AdapterAccountTarget::new(
-            account_id.clone(),
-            account.line_user_id.clone(),
-            account.discord_user_id.clone(),
-        );
-        match messenger.push_to_account_or_admin(&target, &message).await {
-            Ok(()) => {
-                if !account.discord_user_id.trim().is_empty() {
-                    channels.push("Discord".to_string());
-                }
-                if !account.line_user_id.trim().is_empty() {
-                    channels.push("LINE".to_string());
-                }
-            }
-            Err(error) => {
-                warn!(account = %account_id, %error, "測試通知發送失敗");
-                skipped.push(format!("Discord / LINE 發送失敗：{error}"));
-            }
-        }
-    } else {
-        skipped.push("Discord / LINE：伺服器未啟用任何 Bot".to_string());
-    }
-
-    // 2. 手機 Web Push
-    match state
-        .accounts_db
-        .count_web_push_subscriptions(&account_id)
-        .await
-    {
-        Ok(count) if count > 0 => {
-            if let Err(error) = crate::web_push_notifications::send_homework_test(
-                &account_id,
-                "測試課程",
-                "這是一則測試通知（非真實作業）",
-                "最後 1 小時",
-            )
-            .await
-            {
-                warn!(account = %account_id, %error, "測試 Web Push 發送失敗");
-                skipped.push(format!("手機推播發送失敗：{error}"));
-            } else {
-                channels.push(format!("手機推播（{count} 台裝置）"));
-            }
-        }
-        Ok(_) => skipped.push("手機推播：尚未在此裝置訂閱".to_string()),
-        Err(error) => skipped.push(format!("手機推播：讀取訂閱失敗：{error}")),
-    }
-
-    info!(
-        account = %account_id,
-        channels = ?channels,
-        "已發送作業提醒測試通知"
-    );
-
-    Json(json!({
-        "ok": !channels.is_empty(),
-        "channels": channels,
-        "skipped": skipped,
-    }))
-    .into_response()
-}
-
-/// 實際向 Tronclass 抓取作業清單（快取未命中時才會執行）。
-///
-/// 先用已儲存的 session cookie 直接查詢；只有真的遇到認證錯誤才走完整登入，
-/// 藉此避免多餘的 `/api/profile` 探測。
-async fn fetch_todos_for_account(
-    account: &crate::account::AccountConfig,
-    accounts_db: &crate::db::AccountsDb,
-) -> miette::Result<Vec<crate::api::todos::TronclassTodoItem>> {
-    if let Some(client) = build_client_from_saved_cookie(account) {
-        let api = crate::api::ApiClient::new(client, account.base_url());
-        match api.get_todos().await {
-            Ok(items) => return Ok(items),
-            Err(e) if !crate::api::is_auth_error(&e.to_string()) => return Err(e),
-            Err(_) => {
-                info!(account = %account.id, "作業頁：session 已失效，重新登入");
-            }
-        }
-    }
-
-    let (auth_client, session) = crate::auth::AuthClient::new(account).await?;
-    let _ = accounts_db
-        .set_session_cookie(&account.id, &session.cookie_string)
-        .await;
-    let api = crate::api::ApiClient::new(auth_client.client, account.base_url());
-    api.get_todos().await
-}
-
-/// 以帳號已儲存的 session cookie 組出 HTTP client，**不做任何驗證探測**。
-///
-/// cookie 為空或 client 建立失敗時回傳 `None`，呼叫端會退回完整登入流程。
-///
-/// 由 `crate::session_client` 提供快取：每個帳號只在 session cookie（或
-/// base_url／timeout）變更時才重建，其餘呼叫共享同一連線池，避免每個 API
-/// 請求都重打一次 TCP／TLS 握手。
-fn build_client_from_saved_cookie(
-    account: &crate::account::AccountConfig,
-) -> Option<reqwest::Client> {
-    crate::session_client::session_http_client(account).map(|shared| (*shared).clone())
-}
-
-async fn admin_homework_list_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    Query(query): Query<AdminHomeworkQuery>,
-) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize(&token).await else {
-        return unauthorized_response();
-    };
-
-    let requested_account_id = query
-        .account_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|v| !v.is_empty());
-
-    let target_account_id = if session.is_admin {
-        requested_account_id.unwrap_or(&session.account_id)
-    } else {
-        if let Some(requested) = requested_account_id {
-            if requested != session.account_id {
-                return unauthorized_response();
-            }
-        }
-        &session.account_id
-    };
-
-    let mut raw_account = state.accounts_db.get(target_account_id).await.ok().flatten();
-    if raw_account.is_none() {
-        if let Ok(accounts) = state.accounts_db.find_by_username(target_account_id, None).await {
-            raw_account = accounts.into_iter().next();
-        }
-    }
-    if raw_account.is_none() && session.is_admin {
-        if let Ok(accounts) = state.accounts_db.list().await {
-            raw_account = accounts.into_iter().find(|a| a.enabled);
-        }
-    }
-
-    let Some(raw_account) = raw_account else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "找不到指定帳號，請至帳號設定確認" })),
-        )
-            .into_response();
-    };
-
-    if !raw_account.enabled {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "該帳號目前已被停用" })),
-        )
-            .into_response();
-    }
-
-    // HOMEWORK_CONFIG_PANIC_GUARD_V1
-    // 這裡以前直接呼叫 get_config()，全域設定未初始化時會 panic。axum 沒有掛
-    // CatchPanicLayer，panic 會讓連線直接斷掉而不回應，反向代理因此合成 502。
-    // 改成回傳明確的 JSON 錯誤，讓前端顯示可讀訊息而不是 HTTP 502。
-    let Some(config) = crate::config::try_get_config() else {
-        error!("全域設定尚未初始化，無法提供作業清單（啟動時應已由 AppConfig::load() 填入）");
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "伺服器設定尚未就緒，請稍後再試或聯絡管理員" })),
-        )
-            .into_response();
-    };
-
-    let Some(provider) = config.providers.get(&raw_account.provider) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": format!("未知的 Provider 設定：{}", raw_account.provider) })),
-        )
-            .into_response();
-    };
-
-    let resolved_account = crate::account::AccountConfig {
-        id: raw_account.id.clone(),
-        provider: raw_account.provider.clone(),
-        username: raw_account.username.clone(),
-        password: raw_account.password.clone(),
-        enabled: raw_account.enabled,
-        line_user_id: raw_account.line_user_id.clone(),
-        discord_user_id: raw_account.discord_user_id.clone(),
-        session_cookie: raw_account.session_cookie.clone(),
-        is_admin: raw_account.is_admin,
-        provider_config: provider.clone(),
-        request_timeout_secs: provider.api.request_timeout_secs,
-    };
-
-    // NO_REDUNDANT_SESSION_PROBE_V1
-    // 這裡以前無條件呼叫 AuthClient::new()，它會主動打一次 /api/profile。作業頁
-    // 每 5 分鐘自動刷新一次，於是每次刷新都在日誌刷出一輪 session 驗證訊息。
-    // 監控器早已在記憶體裡保有驗證過的 user_name，這個探測純屬多餘。
-    //
-    // 改為先用已儲存的 cookie 直接查詢；只有真的遇到認證錯誤才走完整登入。
-    let cached_user_name = state
-        .lookup_monitor_user_name(&resolved_account.id)
-        .await
-        .unwrap_or_else(|| raw_account.id.clone());
-
-    // HOMEWORK_USER_COMPLETED_V1
-    // 載入該帳號「使用者手動標記完成」的作業 id 集合，隨回應一起給前端，
-    // 讓作業卡顯示已標記狀態。
-    let user_completed = state
-        .accounts_db
-        .list_homework_user_completed(&resolved_account.id)
-        .await
-        .unwrap_or_default();
-
-    // DEMAND_DRIVEN_HOMEWORK_CACHE_V1 + INSTANT_FIRST_PAINT_V1
-    // 開頁體驗優先：若有任何既有資料（記憶體快取或 SQLite 快照），先立刻回傳，
-    // 同時在背景把資料更新到最新（stale-while-revalidate）。
-    // 使用者一進頁面就看得到作業與截止日，不必空等 Tronclass 回應。
-    let cache_key = resolved_account.id.clone();
-
-    if !query.refresh {
-        if let Some((items, fetched_at)) =
-            crate::homework_cache::peek_stale(&cache_key, &state.accounts_db).await
-        {
-            // 背景預抓器每 4 分鐘刷新一次，因此多數情況下這裡拿到的就是新資料。
-            // is_fresh 為真時回報 stale=false，前端就不會顯示「更新中」也不會回抓。
-            let is_fresh = crate::homework_cache::peek(&cache_key).await.is_some();
-
-            // 資料已過期才需要背景更新；仍在 TTL 內就不必打擾上游。
-            if !is_fresh {
-                let bg_account = resolved_account.clone();
-                let bg_db = state.accounts_db.clone();
-                let bg_key = cache_key.clone();
-                let bg_messenger = state.messenger.clone();
-                tokio::spawn(async move {
-                    let fetch_account = bg_account.clone();
-                    let fetch_db = bg_db.clone();
-                    let persist_key = bg_key.clone();
-                    let fetched =
-                        crate::homework_cache::get_or_fetch(&bg_key, true, || async move {
-                            let items = fetch_todos_for_account(&fetch_account, &fetch_db).await?;
-                            crate::homework_cache::persist(&persist_key, &items, &fetch_db).await;
-                            Ok(items)
-                        })
-                        .await;
-
-                    // REMINDERS_ON_ANY_REFRESH_V1
-                    // 使用者開頁觸發的背景更新也評估一次截止提醒，讓通知不必
-                    // 等到下一輪 15 分鐘排程。去重表確保不會重複發送。
-                    if let Ok(items) = fetched {
-                        if let Err(error) = crate::homework_reminders::evaluate_and_send_reminders(
-                            &bg_account,
-                            &bg_db,
-                            bg_messenger.as_deref(),
-                            &items,
-                            chrono::Utc::now(),
-                        )
-                        .await
-                        {
-                            warn!(account = %bg_account.id, %error, "背景更新評估作業提醒失敗");
-                        }
-                    }
-                });
-            }
-
-            return (
-                StatusCode::OK,
-                Json(json!({
-                    "account_id": raw_account.id,
-                    "user_name": cached_user_name,
-                    "items": items.as_ref(),
-                    "fetched_at": fetched_at,
-                    "stale": !is_fresh,
-                    "user_completed": user_completed,
-                })),
-            )
-                .into_response();
-        }
-    }
-
-    // 沒有任何既有資料（首次使用該帳號）或使用者要求強制刷新 → 同步抓取。
-    let fetch_account = resolved_account.clone();
-    let fetch_db = state.accounts_db.clone();
-    let persist_key = cache_key.clone();
-    let result = crate::homework_cache::get_or_fetch(&cache_key, query.refresh, || async move {
-        let items = fetch_todos_for_account(&fetch_account, &fetch_db).await?;
-        crate::homework_cache::persist(&persist_key, &items, &fetch_db).await;
-        Ok(items)
-    })
-    .await;
-
-    match result {
-        Ok(items) => (
-            StatusCode::OK,
-            Json(json!({
-                "account_id": raw_account.id,
-                "user_name": cached_user_name,
-                "items": items.as_ref(),
-                "user_completed": user_completed,
-            })),
-        )
-            .into_response(),
-        Err(e) => {
-            warn!(account = %resolved_account.id, error = %e, "讀取作業清單失敗");
-            // 確保任何非預期情況皆安全回傳結構化 JSON，絕不丟出 502
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "account_id": raw_account.id,
-                    "user_name": cached_user_name,
-                    "items": Vec::<crate::api::todos::TronclassTodoItem>::new(),
-                    "user_completed": user_completed,
-                    "warning": format!("{e}"),
-                })),
-            )
-                .into_response()
-        }
-    }
-}
-
-/// 標記／取消標記「作業已完成」。僅影響該帳號自己的提醒與顯示狀態；
-/// 不會寫入上游，也不改動提醒「已送出」紀錄。
-async fn admin_homework_complete_handler(
-    State(state): State<AdminWebState>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Response {
-    let req: AdminHomeworkCompleteRequest = match serde_json::from_slice(&body) {
-        Ok(req) => req,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "invalid_request" })),
-            )
-                .into_response();
-        }
-    };
-
-    // 授權：session_cookie_to_query middleware 已把 HttpOnly cookie 注入 query
-    // token，但這裡是 POST body 而非 GET，需自行從 Cookie header 讀。
-    let token = session_cookie_from_headers(&headers).unwrap_or_default();
-    let Some(session) = state.authorize(&token).await else {
-        return unauthorized_response();
-    };
-
-    // 目標帳號：管理員可指定其他帳號，一般使用者只能標記自己。
-    let target_account_id = if session.is_admin {
-        req.account_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .unwrap_or(&session.account_id)
-    } else {
-        if let Some(requested) = req.account_id.as_deref().map(str::trim).filter(|v| !v.is_empty())
-        {
-            if requested != session.account_id {
-                return unauthorized_response();
-            }
-        }
-        &session.account_id
-    };
-
-    let homework_id = req.homework_id.to_string();
-    let result = if req.completed {
-        state
-            .accounts_db
-            .mark_homework_user_completed(target_account_id, &homework_id)
-            .await
-    } else {
-        state
-            .accounts_db
-            .unmark_homework_user_completed(target_account_id, &homework_id)
-            .await
-    };
-
-    match result {
-        Ok(_) => (
-            StatusCode::OK,
-            Json(json!({
-                "ok": true,
-                "account_id": target_account_id,
-                "homework_id": req.homework_id,
-                "completed": req.completed,
-            })),
-        )
-            .into_response(),
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("標記作業狀態失敗：{error}") })),
-        )
-            .into_response(),
-    }
 }
 
 #[cfg(test)]
@@ -4778,11 +2139,11 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
 
-        let response = admin_login_handler(
+        let response = auth::admin_login_handler(
             State(state.clone()),
             headers.clone(),
             ClientIp("127.0.0.1".to_string()),
-            serde_json::to_vec(&AdminLoginRequest {
+            serde_json::to_vec(&auth::AdminLoginRequest {
                 username: "student-a".to_string(),
                 password: dashboard_password.to_string(),
             })
@@ -4802,11 +2163,11 @@ mod tests {
         assert!(set_cookie.contains("Secure"));
         assert!(set_cookie.contains("SameSite=Lax"));
 
-        let rejected = admin_login_handler(
+        let rejected = auth::admin_login_handler(
             State(state),
             headers,
             ClientIp("127.0.0.1".to_string()),
-            serde_json::to_vec(&AdminLoginRequest {
+            serde_json::to_vec(&auth::AdminLoginRequest {
                 username: "student-a".to_string(),
                 // The upstream provider password must no longer authenticate
                 // the public Dashboard.

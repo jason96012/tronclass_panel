@@ -11,7 +11,7 @@ pub(super) async fn healthz_handler() -> Response {
 }
 
 pub(super) async fn admin_health_page_handler(headers: HeaderMap) -> Response {
-    super::html_page_response(&headers, super::pages::inject_theme(ADMIN_HEALTH_HTML))
+    super::html_page_response(&headers, super::pages::inject_theme(super::pages::ADMIN_HEALTH_HTML))
 }
 
 pub(super) async fn admin_health_api_handler(

@@ -175,7 +175,7 @@ pub(super) async fn admin_action_handler(
         }
     }
 
-    super::invalidate_admin_status_cache().await;
+    super::status::invalidate_admin_status_cache().await;
 
     info!(
         action = %action_name,
@@ -288,7 +288,7 @@ pub(super) async fn handle_admin_account_action(
             {
                 Ok(true) => {
                     state.revoke_sessions_for_account(&account_id).await;
-                    super::invalidate_admin_status_cache().await;
+                    super::status::invalidate_admin_status_cache().await;
                     (
                         StatusCode::OK,
                         Json(json!({
@@ -328,7 +328,7 @@ pub(super) async fn handle_admin_account_action(
             match state.accounts_db.set_admin(&account_id, is_admin).await {
                 Ok(true) => {
                     // Do not keep the old admin badge/button state for the cache TTL.
-                    super::invalidate_admin_status_cache().await;
+                    super::status::invalidate_admin_status_cache().await;
                     // AdminSession caches is_admin at login time and lives for
                     // 8 hours, so a demoted account would otherwise keep full
                     // admin API access until its session expired. Force a
@@ -374,7 +374,7 @@ pub(super) async fn handle_admin_account_action(
                 rest_periods: action.rest_periods.unwrap_or(current.rest_periods),
             };
             crate::runtime_settings::update(settings.clone()).await;
-            super::invalidate_admin_status_cache().await;
+            super::status::invalidate_admin_status_cache().await;
             (
                 StatusCode::OK,
                 Json(json!({

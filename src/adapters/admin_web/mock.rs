@@ -62,7 +62,7 @@ fn normalize_mock_selections(values: Vec<String>) -> Result<Vec<String>, Respons
 
 pub(super) async fn admin_mock_page_handler(headers: HeaderMap) -> Response {
     // 模擬點名已整合到 /admin 的彈出視窗，/admin/mock 也回同一個管理頁。
-    super::html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
+    super::html_page_response(&headers, inject_theme(super::pages::ADMIN_DASHBOARD_HTML))
 }
 
 pub(super) async fn admin_mock_start_handler(

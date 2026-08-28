@@ -78,19 +78,27 @@ pub(crate) const MAX_TIMETABLE_TEMPLATE_CREATOR_BYTES: usize = 256;
 //
 // 這些 re-export 保留公開 API 面。部分型別（*Row）目前僅作為方法回傳型別被
 // 間接使用，在 binary crate 中從未被 by-name 引用，會觸發 unused_imports lint；
-// 標 `#[allow(unused_imports)]` 以明確表達「保留 API、非遺漏」。
+// 每行標 `#[allow(unused_imports)]` 以明確表達「保留 API、非遺漏」。
+// （attribute 只作用於緊接的下一項，所以必須逐行標註。）
 
 #[allow(unused_imports)]
 pub use accounts::UsernameUpdateResult;
+#[allow(unused_imports)]
 pub use activity::{ActivityEventInput, ActivityEventRow};
+#[allow(unused_imports)]
 pub use blacklist::IpBlacklistRow;
+#[allow(unused_imports)]
 pub use materials::{MaterialEventInput, MaterialEventRow};
+#[allow(unused_imports)]
 pub use preferences::{
     ClassReminderDueRow, ClassReminderPreferenceRow, DetectionSchedulePreferenceRow,
     NotificationPreferenceRow,
 };
+#[allow(unused_imports)]
 pub use sessions::DashboardSessionRow;
+#[allow(unused_imports)]
 pub use timetable::{TimetableEntryInput, TimetableEntryRow, TimetableTemplateRow};
+#[allow(unused_imports)]
 pub use web_push::WebPushSubscriptionRow;
 
 // ─── AccountsDb ───────────────────────────────────────────────────────────────
