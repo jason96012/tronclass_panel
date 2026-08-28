@@ -4,6 +4,18 @@
 set -uo pipefail
 cd /home/container 2>/dev/null || cd "$(dirname "$0")"
 
+# ─── 測試模式（面板沒有 shell，用這個開關在 console 跑測試）───────────────
+# 用法：在面板「Startup」把啟動命令改成 `RUN_MODE=test ./ptero-start.sh`，
+#       或在環境變數加 RUN_MODE=test，然後 Restart。跑完看 console 即可。
+#       確認後改回原本的 `./ptero-start.sh` 再 Restart 恢復正常服務。
+# 預設不帶 ocr feature（本映像無 libstdc++/g++，與下方正式編譯一致）。
+if [[ "${RUN_MODE:-}" == "test" ]]; then
+  echo "[ptero-start] 測試模式：cargo test --no-default-features"
+  cargo test --no-default-features
+  echo "[ptero-start] 測試結束，exit code = $?"
+  exit 0
+fi
+
 export RUST_LOG="${RUST_LOG:-info}"
 PORT="${SERVER_PORT:-26000}"
 export CARGO_PROFILE_RELEASE_LTO=false

@@ -75,7 +75,12 @@ pub(crate) const MAX_TIMETABLE_TEMPLATE_JSON_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_TIMETABLE_TEMPLATE_CREATOR_BYTES: usize = 256;
 
 // ─── 對外型別再匯出（維持 crate::db::Xxx 路徑不變）──────────────────────────
+//
+// 這些 re-export 保留公開 API 面。部分型別（*Row）目前僅作為方法回傳型別被
+// 間接使用，在 binary crate 中從未被 by-name 引用，會觸發 unused_imports lint；
+// 標 `#[allow(unused_imports)]` 以明確表達「保留 API、非遺漏」。
 
+#[allow(unused_imports)]
 pub use accounts::UsernameUpdateResult;
 pub use activity::{ActivityEventInput, ActivityEventRow};
 pub use blacklist::IpBlacklistRow;
