@@ -99,6 +99,8 @@ enum AccountCmd {
         id: String,
         password: String,
     },
+    /// 將既有帳號的密碼與 session cookie 重新寫入（以啟用 at-rest 加密）。
+    Reencrypt,
 }
 
 impl AccountCmd {
@@ -250,6 +252,7 @@ impl AccountCmd {
                 let id = cli_require_positional(args, *i, "remove", "<id>");
                 Self::Remove { id }
             }
+            "reencrypt" => Self::Reencrypt,
             "enable" => {
                 *i += 1;
                 let id = cli_require_positional(args, *i, "enable", "<id>");
@@ -262,7 +265,7 @@ impl AccountCmd {
             }
             "" => {
                 eprintln!(
-                    "錯誤：account 需要子命令\n用法：account <list|show|add|bind|admin|unadmin|dashboard-password|remove|enable|disable>"
+                    "錯誤：account 需要子命令\n用法：account <list|show|add|bind|admin|unadmin|dashboard-password|remove|enable|disable|reencrypt>"
                 );
                 std::process::exit(1);
             }
@@ -455,6 +458,7 @@ fn print_help() {
     println!("  account remove <id>        刪除帳號");
     println!("  account enable <id>        啟用帳號");
     println!("  account disable <id>       停用帳號");
+    println!("  account reencrypt          將所有既有帳號的密碼/憑證重新寫入（啟用 at-rest 加密）");
     println!();
     println!("選項：");
     println!("  -c, --config <PATH>    指定設定檔路徑（預設：config/config.toml）");
@@ -670,6 +674,25 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
             } else {
                 eprintln!("找不到帳號：{id}");
                 std::process::exit(1);
+            }
+        }
+        AccountCmd::Reencrypt => {
+            let accounts = db.list().await?;
+            if accounts.is_empty() {
+                println!("（沒有帳號）");
+            } else {
+                let mut upgraded = 0usize;
+                for account in &accounts {
+                    // RawAccountConfig 已在讀出時解密成明文；重新寫入（upsert）
+                    // 會走加密路徑，把 password 與 session_cookie 加密存回。
+                    if db.upsert(account).await.is_ok() {
+                        upgraded += 1;
+                        println!("🔄 已重新加密：{}", account.id);
+                    } else {
+                        eprintln!("⚠️ 重新加密失敗：{}", account.id);
+                    }
+                }
+                println!("✅ 完成：{upgraded}/{} 個帳號已重新寫入（啟用 at-rest 加密）", accounts.len());
             }
         }
     }
