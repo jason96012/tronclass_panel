@@ -58,8 +58,23 @@ impl StoreSecret {
     pub fn from_stored(stored: &str) -> Self {
         match master_key() {
             Some(key) => {
-                let plaintext = decrypt_with_key(stored, key).unwrap_or_else(|| stored.to_string());
-                StoreSecret(plaintext)
+                if stored.starts_with(ENC_PREFIX) {
+                    match decrypt_with_key(stored, key) {
+                        Some(plaintext) => StoreSecret(plaintext),
+                        None => {
+                            // AT_REST_DECRYPT_FAIL_V1
+                            // enc:v1 開頭但解不開 → key 與寫入時不一致。此時若
+                            // 回退成原始加密字串當密碼，登入必失敗。明確記錄警告，
+                            // 並回退成原文（讓呼叫端可用原始值，但能從 log 察覺）。
+                            tracing::warn!(
+                                "at-rest 解密失敗：enc:v1 值無法用目前 master key 解密（key 可能不一致或資料損毀）"
+                            );
+                            StoreSecret(stored.to_string())
+                        }
+                    }
+                } else {
+                    StoreSecret(stored.to_string())
+                }
             }
             None => StoreSecret(stored.to_string()),
         }

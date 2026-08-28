@@ -952,6 +952,13 @@ async fn main() -> Result<()> {
     init_tracing(&config.logging.level);
     logs::install_panic_hook();
 
+    // AT_REST_ENCRYPTION_STATUS_V1
+    // 明確印出 at-rest 加密是否啟用，方便診斷「加密後無法登入」。
+    info!(
+        at_rest_encryption = crate::secret_encryption::is_encryption_enabled(),
+        "at-rest 加密狀態（需 TRONCLASS_MASTER_KEY 環境變數為有效的 64 hex）"
+    );
+
     info!(
         version = VERSION,
         config = %args.config_path.display(),
