@@ -12,8 +12,8 @@ pub(super) struct AdminActivityQuery {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AdminLoginRequest {
-    username: String,
-    password: String,
+    pub(super) username: String,
+    pub(super) password: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -28,12 +28,12 @@ pub(super) struct AdminPasswordChangeRequest {
 pub(super) struct AdminLoginResponse {
     /// Compatibility marker for legacy static pages. The actual random token is
     /// in a HttpOnly cookie and is never returned to browser JavaScript.
-    token: String,
-    account_id: String,
-    is_admin: bool,
+    pub(super) token: String,
+    pub(super) account_id: String,
+    pub(super) is_admin: bool,
     /// True only for a first login that used the upstream Tronclass password.
     /// The browser must immediately show the mandatory password-change flow.
-    must_change_password: bool,
+    pub(super) must_change_password: bool,
 }
 
 pub(super) async fn admin_login_activity_handler(
