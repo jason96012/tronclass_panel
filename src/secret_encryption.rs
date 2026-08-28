@@ -57,8 +57,11 @@ impl StoreSecret {
     /// treat it as legacy plaintext.
     pub fn from_stored(stored: &str) -> Self {
         match master_key() {
-            Some(key) => decrypt_with_key(stored, key).unwrap_or_else(|| stored.to_string()),
-            None => stored.to_string(),
+            Some(key) => {
+                let plaintext = decrypt_with_key(stored, key).unwrap_or_else(|| stored.to_string());
+                StoreSecret(plaintext)
+            }
+            None => StoreSecret(stored.to_string()),
         }
     }
 }
@@ -96,7 +99,7 @@ fn encrypt_with_key(plaintext: &str, key: [u8; 32]) -> Option<String> {
     getrandom::getrandom(&mut nonce_bytes).ok()?;
     let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce_bytes), plaintext.as_bytes())
+        .encrypt(Nonce::from(nonce_bytes), plaintext.as_bytes())
         .ok()?;
     Some(format!(
         "{ENC_PREFIX}{}{}",
@@ -111,11 +114,16 @@ fn decrypt_with_key(stored: &str, key: [u8; 32]) -> Option<String> {
         return None;
     }
     let (nonce_hex, b64) = rest.split_at(24);
-    let nonce = hex::decode(nonce_hex).ok()?;
+    let nonce_hex_decoded = hex::decode(nonce_hex).ok()?;
+    if nonce_hex_decoded.len() != 12 {
+        return None;
+    }
+    let mut nonce_arr = [0u8; 12];
+    nonce_arr.copy_from_slice(&nonce_hex_decoded);
     let ciphertext = STANDARD.decode(b64).ok()?;
     let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .decrypt(Nonce::from(nonce_arr), ciphertext.as_ref())
         .ok()?;
     String::from_utf8(plaintext).ok()
 }

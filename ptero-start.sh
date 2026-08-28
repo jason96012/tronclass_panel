@@ -140,6 +140,15 @@ nc_dl_resume() {
   return 1
 }
 
+# Defined before start_tunnel (which calls it) so bash finds it; the watchdog
+# block later re-defines the same body harmlessly.
+cloudflare_validate_config() {
+  local token="$1"
+  [[ "$token" == eyJ* ]] || { echo "[watchdog] Cloudflare token 格式異常" >> logs/cloudflared-watchdog.log; return 1; }
+  [[ "${#token}" -ge 40 ]] || return 1
+  return 0
+}
+
 start_tunnel() {
   local token
   token="$(read_token)"
@@ -669,13 +678,6 @@ watchdog_http_ok() {
   code="$(curl -L -sS --max-time "${WATCHDOG_HTTP_TIMEOUT_SECS:-5}" -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo 000)"
   # 401/403 still prove the public route reached the application.
   [[ "$code" =~ ^(2[0-9][0-9]|3[0-9][0-9]|401|403)$ ]]
-}
-
-cloudflare_validate_config() {
-  local token="$1"
-  [[ "$token" == eyJ* ]] || { echo "[watchdog] Cloudflare token 格式異常" >> logs/cloudflared-watchdog.log; return 1; }
-  [[ "${#token}" -ge 40 ]] || return 1
-  return 0
 }
 
 watchdog_check_filebrowser_http() {
