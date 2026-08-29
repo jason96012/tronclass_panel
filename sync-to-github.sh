@@ -93,6 +93,8 @@ do_push() {
 
   git add -- .gitignore Cargo.toml Cargo.lock src 2>/dev/null || true
   [[ -d tools ]] && git add -- tools || true
+  # FILEBROWSER_GITHUB_SYNC_V1: File Browser 自訂品牌（CSS/logo 等，不含憑證）隨同步備份
+  [[ -d filebrowser-branding ]] && git add -- filebrowser-branding || true
   [[ -f config/config.toml.example ]] && git add -- config/config.toml.example || true
   shopt -s nullglob
   extra=( *.sh *.py *.md )
@@ -102,6 +104,36 @@ do_push() {
   git rm -r --cached --ignore-unmatch -- .cargo .cache target logs tailscale-state materials \
     config/config.toml config/accounts.db config/cf.token config/tailscale.authkey \
     config/github.env config/github.token .env >/dev/null 2>&1 || true
+
+  # FILEBROWSER_GITHUB_SYNC_V1: fb-data/ 內含 File Browser 帳號密碼資料庫
+  # （auth.db/admin.db/open.db：帳號、bcrypt 密碼雜湊、session 權杖），預設「絕不」上傳。
+  # 只有在同時滿足以下兩條件才會備份：
+  #   1. 你明確建立開關檔 config/github-fbdata.allow
+  #   2. 目標 repo 經 GitHub API 驗證為「私有」（無法驗證即拒絕）
+  FBDATA_ALLOW=0
+  if [[ -f config/github-fbdata.allow ]]; then
+    if command -v curl >/dev/null 2>&1; then
+      priv="$(curl -fsS --max-time 15 \
+        -H "Authorization: token ${TOKEN}" -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/repos/${REPO}" 2>/dev/null \
+        | grep -o '"private"[[:space:]]*:[[:space:]]*\(true\|false\)' | head -1)"
+      if [[ "$priv" == *true* ]]; then
+        FBDATA_ALLOW=1
+        echo "fb-data 備份已啟用（repo 已驗證為私有）"
+      else
+        echo "fb-data 未上傳：${REPO} 不是私有 repo（或無法確認）。fb-data 內含帳密資料庫，僅允許備份到私有 repo。"
+      fi
+    else
+      echo "fb-data 未上傳：找不到 curl，無法驗證 repo 是否為私有。"
+    fi
+  else
+    echo "fb-data 未上傳（預設保護中）。要啟用請建立 config/github-fbdata.allow，且 repo 必須為私有。"
+  fi
+  if [[ "$FBDATA_ALLOW" == 1 ]]; then
+    git add -f -- fb-data 2>/dev/null || true
+  else
+    git rm -r --cached --ignore-unmatch -- fb-data >/dev/null 2>&1 || true
+  fi
 
   bad="$(git diff --cached --name-only | grep -E '(^|/)(\.cargo|\.cache|target|logs|tailscale-state|materials)(/|$)|(^|/)config/config\.toml$|accounts\.db|(^|/)cf\.token$|tailscale\.authkey|github\.(token|env)|^\.env$' || true)"
   if [[ -n "$bad" ]]; then
