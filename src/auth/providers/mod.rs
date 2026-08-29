@@ -9,7 +9,9 @@ use crate::config::ProviderKind;
 use super::AuthSession;
 
 mod fju;
-mod tku;
+// TIMETABLE_AUTO_SYNC_V1: `timetable_source::tku` 重用這裡的 SSO 核心
+// （`sso_login_to_service`），因此模組本身必須對 crate 內可見。
+pub(crate) mod tku;
 
 // ─── AuthFlow trait ───────────────────────────────────────────────────────────
 

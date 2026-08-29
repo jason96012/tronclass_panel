@@ -29,6 +29,7 @@ mod preferences;
 mod schema;
 mod sessions;
 mod timetable;
+mod timetable_sync;
 mod web_push;
 
 use std::{path::Path, str::FromStr, time::Duration};
@@ -98,6 +99,9 @@ pub use preferences::{
 pub use sessions::DashboardSessionRow;
 #[allow(unused_imports)]
 pub use timetable::{TimetableEntryInput, TimetableEntryRow, TimetableTemplateRow};
+
+// TIMETABLE_AUTO_SYNC_V1
+pub use timetable_sync::TimetableSyncStateRow;
 #[allow(unused_imports)]
 pub use web_push::WebPushSubscriptionRow;
 

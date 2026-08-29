@@ -929,7 +929,15 @@ impl AdminWebState {
     /// old one so a reused refresh token cannot be replayed after rotation.
     async fn rotate_session(&self, refresh_token: &str) -> Option<SessionTokens> {
         let refresh_token = refresh_token.trim();
-        if refresh_token.is_empty() {
+        // REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): reject malformed values here as
+        // well as at the cookie reader. `admin_session_refresh_handler` also
+        // accepts a `?token=` fallback for cookie-less clients, so the cookie
+        // check alone does not cover every way a value reaches this function.
+        //
+        // This also stops a legacy row whose `refresh_token` column is the
+        // schema default `''` from ever being matched (the empty-string guard
+        // this replaces existed for exactly that reason, and is subsumed here).
+        if !is_valid_session_token_format(refresh_token) {
             return None;
         }
         let row = self
@@ -1265,6 +1273,23 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             post(timetable::admin_timetable_clear_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
+        // TIMETABLE_AUTO_SYNC_V1
+        // 讀取狀態走 GET；會產生對外連線或改變狀態的操作走 POST，
+        // 因此自動受既有的 same-origin CSRF 檢查保護。
+        .route(
+            "/admin/api/timetable/sync",
+            get(timetable::admin_timetable_sync_status_handler),
+        )
+        .route(
+            "/admin/api/timetable/sync/toggle",
+            post(timetable::admin_timetable_sync_toggle_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/timetable/sync/run",
+            post(timetable::admin_timetable_sync_run_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         .route(
             "/admin/api/timetable/templates",
             get(timetable::admin_timetable_templates_list_handler),
@@ -1323,6 +1348,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             session_cookie_to_query_middleware,
         ))
         .layer(axum::middleware::from_fn(https_redirect_middleware))
+        // HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): outermost admin layer, so every
+        // middleware and handler below sees forwarded headers only when they
+        // came from a trusted proxy hop.
+        .layer(axum::middleware::from_fn(
+            sanitize_forwarded_headers_middleware,
+        ))
         .layer(
             // The dashboard HTML is ~260 KB of inline script/CSS; it compresses
             // to roughly a tenth of that. Brotli beats gzip on this kind of
@@ -1343,29 +1374,94 @@ async fn https_redirect_middleware(
 ) -> Response {
     let path = uri.path();
     if path.starts_with("/admin") {
-        let proto = headers
+        // HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): `sanitize_forwarded_headers_middleware`
+        // has already dropped `x-forwarded-proto` for untrusted peers, so any
+        // value seen here came from a trusted hop.
+        //
+        // An absent header therefore means "a trusted hop did not declare a
+        // scheme", which in practice is direct loopback access during local
+        // development. Redirecting that to https:// would break dev (nothing
+        // serves TLS on that port) without protecting anyone: an untrusted
+        // client that reached us in plaintext has already sent its request, and
+        // the cookie hardening in `request_uses_https` is what actually keeps a
+        // session off a plaintext channel. So absence still means "do not
+        // redirect" — but it is now a deliberate, narrow case rather than a
+        // header an attacker can influence.
+        //
+        // The comparison is first-hop, trimmed and case-insensitive; the
+        // previous exact `== "http"` silently failed to redirect for values
+        // such as `HTTP` or `http, https`.
+        let is_plain_http = headers
             .get("x-forwarded-proto")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("https");
-        if proto == "http" {
+            .and_then(|v| v.split(',').next())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("http"));
+
+        if is_plain_http {
+            // Build the redirect target from the forwarded/Host value, but only
+            // when it is a plausible authority. The Location header is a 301
+            // (cacheable), so a value containing a path, scheme or credentials
+            // must never be interpolated verbatim.
             let host = headers
-                .get(header::HOST)
+                .get("x-forwarded-host")
                 .and_then(|v| v.to_str().ok())
-                .unwrap_or("localhost");
+                .and_then(|v| v.split(',').next())
+                .or_else(|| headers.get(header::HOST).and_then(|v| v.to_str().ok()))
+                .map(str::trim)
+                .filter(|value| is_safe_redirect_authority(value));
+
+            let Some(host) = host else {
+                // No usable host: fall through rather than emit a redirect to
+                // an attacker-shaped authority.
+                return next.run(request).await;
+            };
+
             let https_uri = format!(
                 "https://{host}{}",
                 uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("")
             );
-            return (
-                StatusCode::MOVED_PERMANENTLY,
-                [(header::LOCATION, https_uri)],
-            )
-                .into_response();
+            if let Ok(location) = HeaderValue::from_str(&https_uri) {
+                return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, location)])
+                    .into_response();
+            }
+            return next.run(request).await;
         }
     }
     next.run(request).await
 }
 
+/// Accept only `host[:port]` shapes for use in a redirect `Location`.
+/// Rejects anything carrying a scheme, path, query, fragment, userinfo or
+/// control characters, which could otherwise redirect elsewhere entirely.
+fn is_safe_redirect_authority(value: &str) -> bool {
+    if value.is_empty() || value.len() > 255 {
+        return false;
+    }
+    value.bytes().all(|b| {
+        b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b':' || b == b'_'
+    }) && !value.starts_with(':')
+}
+
+/// Decide whether the *original* client connection used HTTPS.
+///
+/// HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): this reads only forwarded scheme headers,
+/// which is safe **because `sanitize_forwarded_headers_middleware` has already
+/// removed them when the request did not arrive from a trusted proxy hop**.
+/// Keeping the sanitisation in one middleware, rather than threading a peer
+/// address through every handler, means a new call site cannot accidentally
+/// reintroduce the vulnerability.
+///
+/// Removed signal and why:
+/// * "the Cookie header mentions the `__Host-` name" proved only that a client
+///   *sent* that name. Anyone can send `Cookie: __Host-anything=1`, so it was
+///   never evidence about the transport, trusted hop or not. It is gone.
+///
+/// `CF-Visitor` is retained as a fallback (Cloudflare Tunnel does not always
+/// set `X-Forwarded-Proto`) but is now only ever seen from a trusted hop.
+///
+/// Deployment note: `cloudflared` runs inside the same container and connects
+/// over loopback, and `TrustedProxies` always includes loopback, so genuine
+/// Tunnel traffic keeps its `__Host-` cookies and no login loop is introduced.
 fn request_uses_https(headers: &HeaderMap) -> bool {
     if headers
         .get("x-forwarded-proto")
@@ -1375,22 +1471,51 @@ fn request_uses_https(headers: &HeaderMap) -> bool {
     {
         return true;
     }
-    // Cloudflare Tunnel does not always set X-Forwarded-Proto. `CF-Visitor`
-    // carries the original scheme, and any `__Host-` cookie the browser already
-    // accepted proves the origin is HTTPS. Misdetecting HTTPS as HTTP makes the
-    // server emit a `__Host-` cookie without `Secure`, which browsers silently
-    // discard, producing an endless 401 login loop.
-    if headers
+
+    headers
         .get("cf-visitor")
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.contains("https"))
-    {
-        return true;
+}
+
+/// Headers that describe the *original* client connection. They are only
+/// meaningful when set by our own reverse proxy; from any other peer they are
+/// attacker-controlled input and must not survive into handler logic.
+const UNTRUSTED_FORWARDED_HEADERS: &[&str] = &[
+    "x-forwarded-proto",
+    "x-forwarded-host",
+    "x-forwarded-for",
+    "cf-visitor",
+    "cf-connecting-ip",
+    "true-client-ip",
+    "x-real-ip",
+];
+
+/// HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): strip proxy-provenance headers unless the
+/// TCP peer is a configured trusted proxy (loopback is always trusted, which
+/// covers the in-container `cloudflared`).
+///
+/// This runs before every other admin middleware, so downstream code —
+/// `request_uses_https`, `same_origin_request`, `https_redirect_middleware` —
+/// can read these headers without repeating the trust check.
+async fn sanitize_forwarded_headers_middleware(
+    mut request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip());
+
+    let trusted = crate::trusted_ip::trusted_from_global_config();
+    if !trusted.is_trusted_peer(peer) {
+        let headers = request.headers_mut();
+        for name in UNTRUSTED_FORWARDED_HEADERS {
+            headers.remove(*name);
+        }
     }
-    headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains(SECURE_SESSION_COOKIE))
+
+    next.run(request).await
 }
 
 fn session_cookie_name(headers: &HeaderMap) -> &'static str {
@@ -1418,7 +1543,9 @@ fn session_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
             continue;
         }
         let value = value.trim();
-        if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        // REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): shares one definition with the
+        // refresh-cookie reader so the two cannot drift apart.
+        if is_valid_session_token_format(value) {
             return Some(value.to_string());
         }
     }
@@ -1475,6 +1602,14 @@ fn append_refresh_cookie(
 }
 
 /// Read the refresh token from the request cookies.
+///
+/// REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): refresh tokens are minted by
+/// `create_session` as `Uuid::new_v4().simple()` — exactly 32 hex characters,
+/// byte-for-byte the same shape as the access token. The previous
+/// `len() >= 16` test accepted anything longer than that, including multi-
+/// kilobyte values and arbitrary non-hex bytes, and passed them on to the DB
+/// lookup in `rotate_session` and to any log line that records the token.
+/// Validating the exact format here keeps that entire input surface closed.
 fn refresh_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
     let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in cookies.split(';') {
@@ -1486,7 +1621,7 @@ fn refresh_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
             continue;
         }
         let value = value.trim();
-        if value.len() >= 16 && !value.is_empty() {
+        if is_valid_session_token_format(value) {
             return Some(value.to_string());
         }
     }
@@ -1625,9 +1760,33 @@ async fn require_dashboard_password_change_middleware(
     // The session_cookie_to_query_middleware already ran and injected the
     // cookie into the URI query string. Read from URI only — avoids a second
     // pass through the Cookie header on every authenticated request.
+    //
+    // BOOTSTRAP_GATE_AUTHORIZE_ANY_V1 (M-1): this must call `authorize_any`,
+    // not `authorize`.
+    //
+    // `authorize` is defined as "a session that is fully usable", and it
+    // implements that by returning `None` for exactly the sessions this
+    // middleware exists to catch (`must_change_password == true`, see
+    // `AdminWebState::authorize`). Written against `authorize`, the
+    // `if session.must_change_password` branch below was unreachable — the
+    // gate was dead code and the 403 could never be emitted.
+    //
+    // Enforcement happened to still occur, but only as a side effect: each
+    // handler separately called `authorize`, got `None`, and returned 401.
+    // That left the guarantee spread across every handler instead of in this
+    // one layer, so any handler using `authorize_any` (a legitimate need —
+    // page handlers and `/admin/api/status` must be able to *see* a bootstrap
+    // session in order to redirect it to the password form) silently sat
+    // outside the gate.
+    //
+    // `authorize_any` returns the session regardless of password state, so the
+    // check below now actually runs and this middleware becomes the single
+    // authoritative chokepoint. Endpoints the bootstrap session legitimately
+    // needs (`bootstrap_allowed_api_path`, checked above) are exempted before
+    // we get here.
     let token = session_token_from_uri(request.uri());
     if let Some(token) = token {
-        if let Some(session) = state.authorize(&token).await {
+        if let Some(session) = state.authorize_any(&token).await {
             if session.must_change_password {
                 return (
                     StatusCode::FORBIDDEN,
@@ -2129,11 +2288,22 @@ fn session_token(headers: &HeaderMap, query_token: &str) -> String {
     session_cookie_from_headers(headers).unwrap_or_default()
 }
 
-/// Access tokens are `Uuid::new_v4().simple()` — exactly 32 hex characters.
-/// Used to reject malformed/injected token values early. Kept byte-for-byte
-/// consistent with the check in `session_cookie_from_headers`.
-fn is_valid_access_token_format(value: &str) -> bool {
+/// Both session token kinds are `Uuid::new_v4().simple()` — exactly 32 hex
+/// characters (see `AdminWebState::create_session`, which mints the access and
+/// refresh tokens the same way). Used to reject malformed/injected values
+/// before they reach a DB lookup or a log line.
+///
+/// REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): this is the single definition shared
+/// by `session_cookie_from_headers`, `refresh_cookie_from_headers` and
+/// `session_token`, so the access and refresh paths cannot drift apart again.
+fn is_valid_session_token_format(value: &str) -> bool {
     value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Historical name kept as a thin alias so existing call sites and tests read
+/// naturally where an *access* token specifically is meant.
+fn is_valid_access_token_format(value: &str) -> bool {
+    is_valid_session_token_format(value)
 }
 
 /// Refresh endpoint: exchange a valid refresh token for a fresh access token
@@ -2599,6 +2769,733 @@ mod tests {
         assert!(
             location.contains("logout=1"),
             "unrelated params must be preserved: {location}"
+        );
+    }
+
+    // ── HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4) ────────────────────────────────────
+    // A client-settable header must never be able to convince the server that
+    // a cleartext connection was HTTPS (which would send the session cookie
+    // without `Secure`), nor to shape a 301 Location.
+
+    /// Drive the full router with an explicit TCP peer, the way a real
+    /// connection arrives via `into_make_service_with_connect_info`.
+    async fn router_response_from_peer(
+        app: Router,
+        peer: &str,
+        request: Request<Body>,
+    ) -> Response {
+        let peer: std::net::SocketAddr = peer.parse().unwrap();
+        app.layer(axum::Extension(axum::extract::ConnectInfo(peer)))
+            .oneshot(request)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn https_detection_ignores_client_settable_cookie_name() {
+        // Regression: `request_uses_https` used to return true merely because
+        // the Cookie header mentioned a `__Host-` name. Anyone can send that.
+        assert!(!request_uses_https(&origin_headers(&[(
+            "cookie",
+            "__Host-tronclass_admin_session=0123456789abcdef0123456789abcdef",
+        )])));
+        assert!(!request_uses_https(&origin_headers(&[(
+            "cookie",
+            "__Host-anything=1",
+        )])));
+    }
+
+    #[test]
+    fn https_detection_reads_forwarded_scheme_first_hop() {
+        assert!(request_uses_https(&origin_headers(&[(
+            "x-forwarded-proto",
+            "https",
+        )])));
+        // Case-insensitive and whitespace tolerant.
+        assert!(request_uses_https(&origin_headers(&[(
+            "x-forwarded-proto",
+            " HTTPS ",
+        )])));
+        // Only the first hop counts: the edge-most proxy states the client
+        // scheme, so `http, https` is a plaintext client connection.
+        assert!(!request_uses_https(&origin_headers(&[(
+            "x-forwarded-proto",
+            "http, https",
+        )])));
+        assert!(request_uses_https(&origin_headers(&[(
+            "x-forwarded-proto",
+            "https, http",
+        )])));
+        // No signal at all means "assume cleartext".
+        assert!(!request_uses_https(&HeaderMap::new()));
+        assert!(request_uses_https(&origin_headers(&[(
+            "cf-visitor",
+            "{\"scheme\":\"https\"}",
+        )])));
+    }
+
+    #[tokio::test]
+    async fn untrusted_peer_cannot_forge_https_and_gets_insecure_cookie_name() {
+        // The attack: connect in cleartext from an untrusted address and claim
+        // X-Forwarded-Proto: https. If believed, the session cookie is issued
+        // as `__Host-...; Secure` over plaintext.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("victim".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "203.0.113.9:51234",
+            Request::builder()
+                .uri("/admin/api/session/refresh")
+                .method(Method::POST)
+                .header("x-forwarded-proto", "https")
+                .header("cf-visitor", "{\"scheme\":\"https\"}")
+                .header("origin", "https://dashboard.jasoncloudserver.me")
+                .header("host", "dashboard.jasoncloudserver.me")
+                .header("sec-fetch-site", "same-origin")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_REFRESH_COOKIE}={}", tokens.refresh),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        // No *live* cookie may be minted as Secure/__Host- for a peer that only
+        // claimed to be behind TLS. Cookie-clearing headers (Max-Age=0) are
+        // emitted for both variants by design and are not part of this check.
+        let minted: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .filter(|cookie| !cookie.contains("Max-Age=0"))
+            .map(str::to_string)
+            .collect();
+        assert!(
+            !minted.is_empty(),
+            "expected the refresh to mint cookies so the assertion is meaningful"
+        );
+        for cookie in minted {
+            assert!(
+                !cookie.contains("; Secure"),
+                "forged X-Forwarded-Proto produced a Secure cookie: {cookie}"
+            );
+            assert!(
+                !cookie.starts_with("__Host-"),
+                "forged X-Forwarded-Proto produced a __Host- cookie: {cookie}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn trusted_loopback_peer_keeps_forwarded_scheme() {
+        // The in-container `cloudflared` connects over loopback, which
+        // `TrustedProxies` always trusts, so genuine Tunnel traffic must keep
+        // its headers and its hardened cookie. This is what stops the fix from
+        // causing the documented endless-401 login loop.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("cookie-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "127.0.0.1:41000",
+            Request::builder()
+                .uri("/admin/api/status")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                )
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn untrusted_peer_forged_forwarded_host_cannot_pass_csrf_check() {
+        // Sanitising X-Forwarded-Host also hardens H-1: the CSRF origin
+        // comparison must not accept an attacker-declared host.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("csrf-user".to_string(), true, false)
+            .await;
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "203.0.113.9:51234",
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/api/action")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                )
+                .header("origin", "https://evil.example")
+                // Without sanitisation this forged hop would make the expected
+                // origin `https://evil.example`, matching Origin exactly and
+                // letting the CSRF check pass.
+                .header("x-forwarded-host", "evil.example")
+                .header("x-forwarded-proto", "https")
+                .header("host", "dashboard.jasoncloudserver.me")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"action":"stop"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn untrusted_peer_cannot_shape_https_redirect_location() {
+        // With X-Forwarded-Proto stripped, an untrusted peer can no longer
+        // trigger the 301 at all, so it cannot plant a cacheable redirect to a
+        // host of its choosing.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "203.0.113.9:51234",
+            Request::builder()
+                .uri("/admin/push-status")
+                .header("x-forwarded-proto", "http")
+                .header("host", "evil.example/@attacker")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            !location.starts_with("https://evil.example"),
+            "untrusted peer shaped the redirect target: {location}"
+        );
+    }
+
+    #[test]
+    fn redirect_authority_rejects_non_authority_values() {
+        assert!(is_safe_redirect_authority("dashboard.jasoncloudserver.me"));
+        assert!(is_safe_redirect_authority("127.0.0.1:26000"));
+        // Anything that could redirect elsewhere or split the URL.
+        assert!(!is_safe_redirect_authority(""));
+        assert!(!is_safe_redirect_authority("evil.example/@victim.example"));
+        assert!(!is_safe_redirect_authority("user@evil.example"));
+        assert!(!is_safe_redirect_authority("evil.example?next=/"));
+        assert!(!is_safe_redirect_authority("evil.example#frag"));
+        assert!(!is_safe_redirect_authority("host with space"));
+        assert!(!is_safe_redirect_authority(":26000"));
+    }
+
+    #[test]
+    fn trusted_proxy_peer_gate_matches_client_ip_logic() {
+        let trusted = crate::trusted_ip::TrustedProxies::from_config(&[]);
+        // Loopback is always trusted (in-container cloudflared).
+        assert!(trusted.is_trusted_peer(Some("127.0.0.1".parse().unwrap())));
+        assert!(trusted.is_trusted_peer(Some("::1".parse().unwrap())));
+        // Public addresses are not.
+        assert!(!trusted.is_trusted_peer(Some("203.0.113.9".parse().unwrap())));
+        // An absent peer must never be trusted.
+        assert!(!trusted.is_trusted_peer(None));
+    }
+
+    // ── BOOTSTRAP_GATE_AUTHORIZE_ANY_V1 (M-1) ────────────────────────────────
+    // A session still carrying `must_change_password` must be confined to the
+    // bootstrap endpoints by the middleware itself, not incidentally by each
+    // handler's own `authorize()` call.
+
+    #[tokio::test]
+    async fn authorize_rejects_bootstrap_session_but_authorize_any_returns_it() {
+        // The root cause of M-1: `authorize` filters out exactly the sessions
+        // the gate needs to inspect, so a gate written against it is dead code.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("bootstrap-user".to_string(), false, true)
+            .await;
+
+        assert!(
+            state.authorize(&tokens.access).await.is_none(),
+            "authorize() must hide a must_change_password session"
+        );
+        let session = state
+            .authorize_any(&tokens.access)
+            .await
+            .expect("authorize_any() must still return it");
+        assert!(
+            session.must_change_password,
+            "the gate depends on this flag being observable"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_session_is_403_on_a_normal_api_route() {
+        // Regression: this 403 was unreachable before the fix.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("bootstrap-user".to_string(), false, true)
+            .await;
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "127.0.0.1:41000",
+            Request::builder()
+                .uri("/admin/api/timetable?account_id=bootstrap-user")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                )
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "the password-change gate must reject before the handler runs"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "password_change_required");
+        assert_eq!(json["must_change_password"], true);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_session_reaches_authorize_any_handlers_that_used_to_bypass() {
+        // `/admin/api/status` uses `authorize_any`, so before the fix a
+        // bootstrap session sailed straight past the gate. It is deliberately
+        // on the allowlist (the password form polls it), so it must STILL be
+        // reachable — and must report the flag the frontend redirects on.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("bootstrap-user".to_string(), false, true)
+            .await;
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "127.0.0.1:41000",
+            Request::builder()
+                .uri("/admin/api/status")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                )
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "the password form polls this endpoint; gating it would deadlock login"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_allowlist_covers_every_endpoint_the_password_form_needs() {
+        // password.html calls /admin/api/status and /admin/api/password;
+        // session-security.js additionally calls /admin/api/logout. If any of
+        // these were gated, a first-time user could never escape the modal.
+        for path in [
+            "/admin/api/status",
+            "/admin/api/password",
+            "/admin/api/logout",
+            "/admin/api/session/refresh",
+        ] {
+            assert!(
+                bootstrap_allowed_api_path(path),
+                "{path} must stay exempt or first-login deadlocks"
+            );
+        }
+        // Ordinary endpoints must NOT be exempt.
+        for path in [
+            "/admin/api/timetable",
+            "/admin/api/action",
+            "/admin/api/health",
+        ] {
+            assert!(
+                !bootstrap_allowed_api_path(path),
+                "{path} must be gated"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn normal_session_is_unaffected_by_the_gate() {
+        // must_change_password == false must pass through untouched.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("normal-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "127.0.0.1:41000",
+            Request::builder()
+                .uri("/admin/api/timetable?account_id=normal-user")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                )
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_ne!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a normal session must not be caught by the password-change gate"
+        );
+    }
+
+    // ── REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2) ─────────────────────────────────
+    // The refresh cookie must be validated to the same 32-hex shape as the
+    // access cookie, instead of the old "any value of length >= 16".
+
+    fn cookie_headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let joined = pairs
+            .iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        origin_headers(&[("cookie", joined.as_str())])
+    }
+
+    #[test]
+    fn refresh_cookie_accepts_only_uuid_simple_shape() {
+        let valid = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            refresh_cookie_from_headers(&cookie_headers(&[(SECURE_REFRESH_COOKIE, valid)])),
+            Some(valid.to_string())
+        );
+        assert_eq!(
+            refresh_cookie_from_headers(&cookie_headers(&[(LOCAL_REFRESH_COOKIE, valid)])),
+            Some(valid.to_string())
+        );
+        // Uppercase hex is still a valid Uuid rendering.
+        let upper = "0123456789ABCDEF0123456789ABCDEF";
+        assert_eq!(
+            refresh_cookie_from_headers(&cookie_headers(&[(SECURE_REFRESH_COOKIE, upper)])),
+            Some(upper.to_string())
+        );
+    }
+
+    #[test]
+    fn refresh_cookie_rejects_values_the_old_length_check_allowed() {
+        // Every one of these passed the previous `len() >= 16` test.
+        let rejected = [
+            // 16-31 chars: long enough for the old check, wrong length.
+            "0123456789abcdef",
+            "0123456789abcdef0123456789abcde",
+            // 33 chars.
+            "0123456789abcdef0123456789abcdef0",
+            // Right length, non-hex — could carry delimiters or control bytes
+            // into the DB lookup and the logs.
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            "0123456789abcdef0123456789abcde'",
+            "../../../../etc/passwd0123456789",
+            // Oversized payload.
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        for value in rejected {
+            assert_eq!(
+                refresh_cookie_from_headers(&cookie_headers(&[(SECURE_REFRESH_COOKIE, value)])),
+                None,
+                "refresh cookie must reject {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_cookie_skips_malformed_entry_and_keeps_scanning() {
+        // A hostile or stale cookie earlier in the header must not mask the
+        // real one later in the list.
+        let valid = "0123456789abcdef0123456789abcdef";
+        let headers = cookie_headers(&[
+            ("_ga", "GA1.1.123"),
+            (SECURE_REFRESH_COOKIE, "short"),
+            (LOCAL_REFRESH_COOKIE, valid),
+        ]);
+        assert_eq!(
+            refresh_cookie_from_headers(&headers),
+            Some(valid.to_string())
+        );
+    }
+
+    #[test]
+    fn access_and_refresh_share_one_format_definition() {
+        // Guards against the two paths drifting apart again.
+        for value in [
+            "0123456789abcdef0123456789abcdef",
+            "0123456789ABCDEF0123456789ABCDEF",
+        ] {
+            assert!(is_valid_session_token_format(value));
+            assert!(is_valid_access_token_format(value));
+        }
+        for value in ["", "cookie", "0123456789abcdef", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"] {
+            assert!(!is_valid_session_token_format(value));
+            assert!(!is_valid_access_token_format(value));
+        }
+    }
+
+    #[tokio::test]
+    async fn rotate_session_rejects_malformed_token_without_touching_the_db() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+
+        for value in [
+            "",
+            "   ",
+            // The schema default for legacy rows: must never match.
+            "''",
+            "short",
+            "0123456789abcdef",
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        ] {
+            assert!(
+                state.rotate_session(value).await.is_none(),
+                "rotate_session must reject {value:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rotate_session_still_accepts_a_freshly_minted_refresh_token() {
+        // The tightened format must not break the real rotation flow.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("rotate-user".to_string(), false, false)
+            .await;
+
+        assert!(
+            is_valid_session_token_format(&tokens.refresh),
+            "minted refresh tokens must satisfy the validator"
+        );
+        assert!(
+            is_valid_session_token_format(&tokens.access),
+            "minted access tokens must satisfy the validator"
+        );
+
+        let rotated = state
+            .rotate_session(&tokens.refresh)
+            .await
+            .expect("a freshly minted refresh token must still rotate");
+        assert!(is_valid_session_token_format(&rotated.access));
+        assert!(is_valid_session_token_format(&rotated.refresh));
+        assert_ne!(
+            rotated.refresh, tokens.refresh,
+            "rotation must issue a new refresh token"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_endpoint_rejects_oversized_cookie_end_to_end() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let app = build_admin_router(state);
+
+        let junk = "a".repeat(4096);
+        let response = router_response_from_peer(
+            app,
+            "127.0.0.1:41000",
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/api/session/refresh")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_REFRESH_COOKIE}={junk}"),
+                )
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ── FB_SHELL_SERVER_SIDE_ROLE_V1 (M-5) ───────────────────────────────────
+    // The Filebrowser shell bridge must derive `is_admin` from evidence this
+    // process can verify, never from an `X-Fb-Admin` request header.
+
+    /// Drive `/admin/api/filebrowser-shell` with caller-controlled headers.
+    async fn filebrowser_shell_response(
+        state: AdminWebState,
+        extra_headers: &[(&str, &str)],
+    ) -> Response {
+        let app = build_admin_router(state);
+        let mut builder = Request::builder()
+            .uri("/admin/api/filebrowser-shell")
+            .header("x-forwarded-proto", "https");
+        for (name, value) in extra_headers {
+            builder = builder.header(*name, *value);
+        }
+        router_response_from_peer(
+            app,
+            "127.0.0.1:41000",
+            builder.body(Body::empty()).unwrap(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn shell_secret_alone_cannot_self_assert_admin() {
+        // The M-5 attack: reach the Dashboard port directly (ptero-start.sh
+        // binds it to 0.0.0.0), present the shell secret, and claim admin.
+        // Without a verifiable identity the role must resolve to user scope,
+        // so the admin backend is refused.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+
+        // `shell_request_secret_valid` returns false when the secret env var is
+        // unset, so an unauthenticated caller is rejected outright here. Either
+        // outcome is acceptable; what must never happen is a 200 serving the
+        // admin backend.
+        let response = filebrowser_shell_response(
+            state,
+            &[
+                ("x-fb-shell-secret", "guessed-or-leaked-secret"),
+                ("x-fb-admin", "yes"),
+                ("x-fb-backend", "admin"),
+            ],
+        )
+        .await;
+
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+            ),
+            "a self-asserted X-Fb-Admin must never reach the admin backend, got {}",
+            response.status()
+        );
+        assert_ne!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn non_admin_session_cannot_reach_admin_backend_via_header() {
+        // A genuine, *non-admin* Dashboard session that adds the headers by
+        // hand must still be confined to the user backend.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("regular-user".to_string(), false, false)
+            .await;
+
+        let response = filebrowser_shell_response(
+            state,
+            &[
+                (
+                    "cookie",
+                    &format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                ),
+                ("x-fb-admin", "yes"),
+                ("x-fb-backend", "admin"),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            response.status(),
+            StatusCode::FORBIDDEN,
+            "a non-admin session must be refused the admin backend regardless of headers"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["error"],
+            "admin Filebrowser backend requires an admin Dashboard session"
+        );
+    }
+
+    #[tokio::test]
+    async fn shell_bridge_requires_some_verifiable_caller() {
+        // No session, no ticket, no secret: refused before any upstream call.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+
+        let response = filebrowser_shell_response(state, &[("x-fb-admin", "yes")]).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn fb_sso_ticket_role_requires_a_live_matching_session() {
+        // The ticket is the only header-borne role source still trusted, and
+        // only because it is HMAC-signed and re-bound to a live session here.
+        // A syntactically plausible but unsigned cookie must not authenticate.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let tokens = state
+            .create_session("ticket-user".to_string(), true, false)
+            .await;
+
+        // Forged ticket claiming the admin role ("a") for a real live session.
+        let forged = format!(
+            "v3.ticket-user.{}.9999999999.a.{}",
+            tokens.access,
+            "0".repeat(64)
+        );
+        let headers = origin_headers(&[("cookie", &format!("tronclass_fb_sso={forged}"))]);
+        assert!(
+            fb_sso::verified_ticket_role(&state, &headers).await.is_none(),
+            "an unsigned/forged ticket must not yield a role"
+        );
+
+        // No cookie at all.
+        assert!(
+            fb_sso::verified_ticket_role(&state, &HeaderMap::new())
+                .await
+                .is_none()
         );
     }
 

@@ -228,6 +228,46 @@ pub fn append_expired_fb_sso_cookie(mut response: Response) -> Response {
 }
 
 /// Caddy forward_auth：只有仍存在且未過期的 Dashboard session 才能免登。
+/// Resolve the caller's identity from the `tronclass_fb_sso` ticket **and**
+/// confirm the Dashboard session it is bound to is still live.
+///
+/// Returns `(account_id, is_admin)`, or `None` when there is no ticket, the
+/// signature does not verify, it has expired, the referenced session is gone
+/// (logout / restart), the account no longer matches, the role recorded in the
+/// signed payload disagrees with the live session, or the account still owes a
+/// password change.
+///
+/// FB_SHELL_SERVER_SIDE_ROLE_V1 (M-5): factored out of `fb_sso_check_handler`
+/// so the Filebrowser shell bridge derives privilege from the same verified
+/// evidence instead of trusting an `X-Fb-Admin` request header. Both callers
+/// must stay on this one implementation.
+pub(crate) async fn verified_ticket_identity(
+    state: &AdminWebState,
+    headers: &HeaderMap,
+) -> Option<(String, bool)> {
+    let raw = cookie_value_from_headers(headers)?;
+    let (account_id, ticket_is_admin, session_token) = verify_session_ticket(&raw)?;
+    state
+        .authorize_any(&session_token)
+        .await
+        .filter(|session| {
+            session.account_id == account_id
+                && session.is_admin == ticket_is_admin
+                && !session.must_change_password
+        })
+        .map(|_| (account_id, ticket_is_admin))
+}
+
+/// Convenience wrapper for callers that only need the role.
+pub(crate) async fn verified_ticket_role(
+    state: &AdminWebState,
+    headers: &HeaderMap,
+) -> Option<bool> {
+    verified_ticket_identity(state, headers)
+        .await
+        .map(|(_, is_admin)| is_admin)
+}
+
 pub async fn fb_sso_check_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -252,20 +292,9 @@ pub async fn fb_sso_check_handler(
             Err(error) => warn!(ip = %ip, error = %error, "檢查 Filebrowser SSO 黑名單失敗"),
         }
     }
-    let ticket = cookie_value_from_headers(&headers)
-        .and_then(|raw| verify_session_ticket(&raw));
-    let active_ticket = match ticket {
-        Some((account_id, ticket_is_admin, session_token)) => state
-            .authorize_any(&session_token)
-            .await
-            .filter(|session| {
-                session.account_id == account_id
-                    && session.is_admin == ticket_is_admin
-                    && !session.must_change_password
-            })
-            .map(|_| (account_id, ticket_is_admin)),
-        None => None,
-    };
+    // FB_SHELL_SERVER_SIDE_ROLE_V1 (M-5): shared with the Filebrowser shell
+    // bridge so both surfaces apply identical ticket validation.
+    let active_ticket = verified_ticket_identity(&state, &headers).await;
     let authed = active_ticket.is_some();
     let is_admin = active_ticket
         .as_ref()

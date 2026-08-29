@@ -245,6 +245,59 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 timetable_entries weekday/account/start index 失敗")?;
 
+    // TIMETABLE_AUTO_SYNC_V1
+    // 課表自動同步（從學校校務系統爬取）的每帳號狀態機。
+    //
+    // 設計要點：
+    // - `enabled` 預設 0 —— 必須由使用者明確開啟，升級既有部署不會突然
+    //   開始對學校伺服器發出請求。
+    // - `consecutive_failures` 提供指數退避的依據；成功時歸零。
+    // - `last_error` 只存清洗過的訊息，不得包含帳密或 cookie。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS timetable_sync_state (
+            account_id TEXT PRIMARY KEY NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 0,
+            last_success_at INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at INTEGER NOT NULL DEFAULT 0,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT NOT NULL DEFAULT '',
+            last_summary TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 timetable_sync_state 資料表失敗")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_timetable_sync_state_enabled
+         ON timetable_sync_state(enabled, last_success_at)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 timetable_sync_state enabled index 失敗")?;
+
+    // 舊版資料庫可能已有此表但缺欄位；逐一補齊以維持向前相容。
+    ensure_table_column(
+        pool,
+        "timetable_sync_state",
+        "last_summary",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+
+    // PERFORMANCE_TIMETABLE_AUTO_SOURCE_V1
+    // 自動同步只重寫 source='auto' 的列，因此 (account_id, source) 是熱查詢。
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_timetable_entries_account_source
+         ON timetable_entries(account_id, source)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 timetable_entries account/source index 失敗")?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS timetable_templates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

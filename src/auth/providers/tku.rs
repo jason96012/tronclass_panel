@@ -51,81 +51,7 @@ impl AuthFlow for TkuAuthFlow {
             .into_diagnostic()
             .wrap_err("TKU: 無效的 Tronclass base_url")?;
 
-        debug!(url = %login_url, "TKU: GET iClass 登入入口");
-        let resp = client
-            .get(login_url.clone())
-            .header(header::ACCEPT, HTML_ACCEPT)
-            .header(header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
-            .send()
-            .await
-            .into_diagnostic()
-            .wrap_err("TKU: Failed to GET iClass login entry")?;
-
-        if !resp.status().is_success() {
-            return auth_failed(format!("TKU: 登入入口返回非 2xx 狀態：{}", resp.status()));
-        }
-
-        let nam_landing_url = resp.url().clone();
-        let landing_html = resp
-            .text()
-            .await
-            .into_diagnostic()
-            .wrap_err("TKU: Failed to read SSO landing page")?;
-
-        let neai_entry = extract_nam_entry_url(&landing_html)
-            .ok_or_else(|| AuthError::LoginFailed {
-                reason: "TKU: 無法從 SSO landing page 解析 NEAI 登入入口".to_string(),
-            })
-            .into_diagnostic()?;
-        let sso_origin = origin_from_url(&neai_entry).into_diagnostic()?;
-        set_iv_jct_cookie(cookie_jar, &sso_origin).into_diagnostic()?;
-
-        let nam_form_url = format!("{}{}", neai_entry, nam_landing_url.as_str());
-        debug!(url = %nam_form_url, "TKU: GET NEAI 登入表單");
-        let mut form = fetch_login_form(client, &login_url, &nam_form_url).await?;
-
-        // 有些 NAM 節點第一次回應會把 jsessionid 放在 form action；重新抓一次可讓
-        // cookie jar 固定同一個 session。若第二次仍保留 jsessionid，照樣可送出。
-        if form.action_url.as_str().contains(";jsessionid=") {
-            debug!(action = %form.action_url, "TKU: form action 含 jsessionid，重新取得表單");
-            form = fetch_login_form(client, &login_url, &nam_form_url).await?;
-        }
-
-        if let Some(vidcode_field) = form.vidcode_field.clone() {
-            let vidcode = fetch_nam_vidcode(client, &form.action_url, &sso_origin, &nam_form_url)
-                .await
-                .wrap_err("TKU: 取得 NEAI 驗證碼 token 失敗")?;
-            debug!("TKU: NEAI 驗證碼 token 取得成功");
-            form.fields.insert(vidcode_field, vidcode);
-        }
-
-        form.fields
-            .insert(form.username_field.clone(), account.username.clone());
-        form.fields
-            .insert(form.password_field.clone(), account.password.clone());
-
-        debug!(action = %form.action_url, "TKU: POST NEAI 登入表單");
-        let post_resp = client
-            .post(form.action_url.clone())
-            .header(header::ACCEPT, HTML_ACCEPT)
-            .header(header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
-            .header(header::CACHE_CONTROL, "max-age=0")
-            .header(header::ORIGIN, &sso_origin)
-            .header(header::REFERER, &nam_form_url)
-            .header("Upgrade-Insecure-Requests", "1")
-            .form(&form.fields)
-            .send()
-            .await
-            .into_diagnostic()
-            .wrap_err("TKU: Failed to POST NEAI login form")?;
-
-        let final_url = post_resp.url().clone();
-        let body = post_resp
-            .text()
-            .await
-            .into_diagnostic()
-            .wrap_err("TKU: Failed to read NEAI login response")?;
-        let final_url = follow_html_redirects(client, body, final_url).await?;
+        let final_url = sso_login_to_service(client, cookie_jar, &login_url, account).await?;
         debug!(url = %final_url, "TKU: SSO 登入流程完成，驗證 iClass session");
 
         let user_name = verify_session_with_client(client, base_url)
@@ -146,6 +72,100 @@ impl AuthFlow for TkuAuthFlow {
             cookie_string: format!("session={}", session_cookie),
         })
     }
+}
+
+/// 執行一次完整的淡江 SSO 登入，把 session 綁定到 `service_url` 所屬的服務。
+///
+/// TKU_SSO_SERVICE_PARAM_V1
+/// 原本這段流程寫死在 `AuthFlow::login` 裡、只服務 iClass（`LOGIN_PATH`）。
+/// 校務行政系統（`sso.tku.edu.tw/aissinfo/emis/`）走的是**同一套** NEAI/NAM
+/// SSO：未登入時同樣被導向 `NEAI/logineb.jsp?myurl=<原始網址>`。把 service
+/// 參數化之後，課表爬蟲可以直接重用這裡，不需要複製一份 18KB 的登入邏輯。
+///
+/// 回傳登入流程結束後停留的 URL（通常就是 `service_url` 本身）。
+pub(crate) async fn sso_login_to_service(
+    client: &Client,
+    cookie_jar: &Arc<Jar>,
+    service_url: &Url,
+    account: &AccountConfig,
+) -> Result<Url> {
+    debug!(url = %service_url, "TKU: GET SSO 服務入口");
+    let resp = client
+        .get(service_url.clone())
+        .header(header::ACCEPT, HTML_ACCEPT)
+        .header(header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
+        .send()
+        .await
+        .into_diagnostic()
+        .wrap_err("TKU: Failed to GET SSO service entry")?;
+
+    if !resp.status().is_success() {
+        return auth_failed(format!("TKU: 登入入口返回非 2xx 狀態：{}", resp.status()));
+    }
+
+    let nam_landing_url = resp.url().clone();
+    let landing_html = resp
+        .text()
+        .await
+        .into_diagnostic()
+        .wrap_err("TKU: Failed to read SSO landing page")?;
+
+    // 若已經有有效 session，學校不會回登入頁，這裡就找不到 NEAI 入口。
+    // 這種情況直接視為登入完成，避免無謂地再送一次帳密。
+    let Some(neai_entry) = extract_nam_entry_url(&landing_html) else {
+        debug!("TKU: 未偵測到 NEAI 登入入口，判定既有 session 仍有效");
+        return Ok(nam_landing_url);
+    };
+
+    let sso_origin = origin_from_url(&neai_entry).into_diagnostic()?;
+    set_iv_jct_cookie(cookie_jar, &sso_origin).into_diagnostic()?;
+
+    let nam_form_url = format!("{}{}", neai_entry, nam_landing_url.as_str());
+    debug!(url = %nam_form_url, "TKU: GET NEAI 登入表單");
+    let mut form = fetch_login_form(client, service_url, &nam_form_url).await?;
+
+    // 有些 NAM 節點第一次回應會把 jsessionid 放在 form action；重新抓一次可讓
+    // cookie jar 固定同一個 session。若第二次仍保留 jsessionid，照樣可送出。
+    if form.action_url.as_str().contains(";jsessionid=") {
+        debug!(action = %form.action_url, "TKU: form action 含 jsessionid，重新取得表單");
+        form = fetch_login_form(client, service_url, &nam_form_url).await?;
+    }
+
+    if let Some(vidcode_field) = form.vidcode_field.clone() {
+        let vidcode = fetch_nam_vidcode(client, &form.action_url, &sso_origin, &nam_form_url)
+            .await
+            .wrap_err("TKU: 取得 NEAI 驗證碼 token 失敗")?;
+        debug!("TKU: NEAI 驗證碼 token 取得成功");
+        form.fields.insert(vidcode_field, vidcode);
+    }
+
+    form.fields
+        .insert(form.username_field.clone(), account.username.clone());
+    form.fields
+        .insert(form.password_field.clone(), account.password.clone());
+
+    debug!(action = %form.action_url, "TKU: POST NEAI 登入表單");
+    let post_resp = client
+        .post(form.action_url.clone())
+        .header(header::ACCEPT, HTML_ACCEPT)
+        .header(header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
+        .header(header::CACHE_CONTROL, "max-age=0")
+        .header(header::ORIGIN, &sso_origin)
+        .header(header::REFERER, &nam_form_url)
+        .header("Upgrade-Insecure-Requests", "1")
+        .form(&form.fields)
+        .send()
+        .await
+        .into_diagnostic()
+        .wrap_err("TKU: Failed to POST NEAI login form")?;
+
+    let final_url = post_resp.url().clone();
+    let body = post_resp
+        .text()
+        .await
+        .into_diagnostic()
+        .wrap_err("TKU: Failed to read NEAI login response")?;
+    follow_html_redirects(client, body, final_url).await
 }
 
 async fn fetch_login_form(

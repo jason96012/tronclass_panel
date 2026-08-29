@@ -158,6 +158,16 @@ impl TrustedProxies {
         }
     }
 
+    /// Public wrapper over [`Self::is_trusted`] so other modules can gate
+    /// proxy-supplied metadata (e.g. `X-Forwarded-Proto`, `CF-Visitor`) on the
+    /// same trust decision used for client-IP resolution.
+    ///
+    /// A `None` peer (no `ConnectInfo`, e.g. unit-test `oneshot` calls) is
+    /// never trusted.
+    pub fn is_trusted_peer(&self, peer: Option<IpAddr>) -> bool {
+        self.is_trusted(peer)
+    }
+
     fn is_trusted(&self, peer: Option<IpAddr>) -> bool {
         match peer {
             Some(IpAddr::V4(v4)) => {

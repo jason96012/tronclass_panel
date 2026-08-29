@@ -44,6 +44,8 @@ mod rollcalls;
 mod runtime_settings;
 mod secret_encryption;
 mod session_client;
+mod timetable_source;
+mod timetable_sync;
 mod trusted_ip;
 mod web_push_notifications;
 
@@ -1047,6 +1049,17 @@ async fn main() -> Result<()> {
         adapter_hub.as_ref().map(Arc::clone),
     );
     // HOMEWORK_REMINDER_SCHEDULER_END
+
+    // TIMETABLE_AUTO_SYNC_V1
+    // 定期從學校校務系統爬取課表，覆寫 source='auto' 的列。
+    // 預設所有帳號都是關閉的（opt-in），沒人開啟時這個 task 幾乎不耗資源。
+    // 刻意獨立於 monitor loop：課表一天同步一次，點名是每幾秒一次，
+    // 讓爬蟲逾時不會拖累點名偵測。
+    timetable_sync::start_timetable_sync_scheduler(
+        accounts_db.clone(),
+        Arc::clone(&config),
+        adapter_hub.as_ref().map(Arc::clone),
+    );
 
     let interactive_adapter = adapter_hub.is_some() || config.adapters.admin_web.enabled;
     let scanner_registry = if interactive_adapter {

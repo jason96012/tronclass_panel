@@ -337,27 +337,56 @@ pub(super) async fn admin_filebrowser_shell_handler(
     Query(query): Query<AdminFilesQuery>,
     headers: HeaderMap,
 ) -> Response {
-    // The Dashboard session cookie is host-only by design. When Caddy sends
-    // the Filebrowser request here, the Caddy-only secret is the proof that
-    // `forward_auth` already validated the live Dashboard session.
+    // FB_SHELL_SERVER_SIDE_ROLE_V1 (M-5): the privilege decision is made here,
+    // from evidence this process can verify itself. It must never be read from
+    // a request header.
+    //
+    // Previously `X-Fb-Admin: yes` / `X-Fb-Backend: admin` were taken straight
+    // off the request once `X-Fb-Shell-Secret` matched. Caddy does overwrite
+    // those headers via `forward_auth`, so the deployed path was sound — but
+    // that made a Rust-side authorisation decision depend on a Caddyfile
+    // staying correct, and the shell secret alone then became equivalent to
+    // full-filesystem access.
+    //
+    // That is not merely theoretical here: `ptero-start.sh:107` rewrites
+    // `webhook_bind_addr` to `0.0.0.0`, so the Dashboard port (26000) listens
+    // on every interface, while Caddy binds loopback only. Anyone who can
+    // reach 26000 directly and learns the shell secret could previously
+    // self-assert `X-Fb-Admin: yes` and be proxied the whole `cloud/` tree.
+    //
+    // Two verifiable sources of role, in order:
+    //   1. a live Dashboard session (`?token=`, injected from the HttpOnly
+    //      cookie by `session_cookie_to_query_middleware`);
+    //   2. the `tronclass_fb_sso` ticket — HMAC-SHA256 signed by this process
+    //      with a secret Caddy never holds, carrying the role in the signed
+    //      payload and bound to a live 32-hex session token. `verify_session_
+    //      ticket` re-derives the signature and compares in constant time, and
+    //      we additionally require the referenced session to still exist, so a
+    //      ticket cannot outlive logout or a restart.
+    //
+    // The shell secret is retained strictly as proof that the request came via
+    // Caddy (it gates *access* to this bridge), never as proof of *role*.
     let dashboard_session = state.authorize(&query.token).await;
     let trusted_caddy = super::fb_sso::shell_request_secret_valid(&headers);
     if dashboard_session.is_none() && !trusted_caddy {
         return unauthorized_response();
     }
-    let is_admin = dashboard_session
-        .as_ref()
-        .map(|session| session.is_admin)
-        .or_else(|| {
-            trusted_caddy.then(|| {
-                headers
-                    .get("x-fb-admin")
-                    .and_then(|value| value.to_str().ok())
-                    .is_some_and(|value| value.eq_ignore_ascii_case("yes"))
-            })
-        })
-        .unwrap_or(false);
 
+    let is_admin = match dashboard_session.as_ref() {
+        Some(session) => session.is_admin,
+        // No host-only cookie (the normal case for `files.`): fall back to the
+        // signed ticket and re-validate its bound session server-side.
+        None => match super::fb_sso::verified_ticket_role(&state, &headers).await {
+            Some(role_is_admin) => role_is_admin,
+            // Reaching the bridge with a valid Caddy secret but no verifiable
+            // identity is a user-scope request, never an admin one.
+            None => false,
+        },
+    };
+
+    // `X-Fb-Backend` selects which upstream to render, but it can only ever
+    // *narrow* the scope: an admin backend requires an admin role established
+    // above, so the header cannot grant anything on its own.
     let backend = headers
         .get("x-fb-backend")
         .and_then(|value| value.to_str().ok())

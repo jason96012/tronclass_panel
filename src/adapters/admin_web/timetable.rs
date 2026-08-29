@@ -672,3 +672,283 @@ pub(super) async fn admin_timetable_template_apply_handler(
             .into_response(),
     }
 }
+
+// ─── 課表自動同步（TIMETABLE_AUTO_SYNC_V1） ──────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminTimetableSyncToggleRequest {
+    #[serde(default)]
+    account_id: Option<String>,
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminTimetableSyncRunRequest {
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
+/// 依 account_id 重建可用於爬取的 `AccountConfig`。
+///
+/// 與 `homework.rs` 相同的作法：資料庫只存原始欄位，provider 設定要從
+/// 全域 AppConfig 補上。回傳的結構含有上游密碼，僅供伺服器端使用，
+/// 絕不可序列化回前端（`AccountConfig` 已對 password/session_cookie
+/// 標記 `skip_serializing`）。
+async fn resolve_account_for_sync(
+    state: &AdminWebState,
+    account_id: &str,
+) -> Result<crate::account::AccountConfig, Response> {
+    let raw_account = match state.accounts_db.get(account_id).await {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "找不到指定帳號" })),
+            )
+                .into_response());
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+            )
+                .into_response());
+        }
+    };
+
+    let Some(config) = crate::config::try_get_config() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "伺服器設定尚未就緒，請稍後再試" })),
+        )
+            .into_response());
+    };
+
+    let Some(provider) = config.providers.get(&raw_account.provider) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("未知的 Provider 設定：{}", raw_account.provider)
+            })),
+        )
+            .into_response());
+    };
+
+    Ok(crate::account::AccountConfig {
+        id: raw_account.id.clone(),
+        provider: raw_account.provider.clone(),
+        username: raw_account.username.clone(),
+        password: raw_account.password.clone(),
+        enabled: raw_account.enabled,
+        line_user_id: raw_account.line_user_id.clone(),
+        discord_user_id: raw_account.discord_user_id.clone(),
+        session_cookie: raw_account.session_cookie.clone(),
+        is_admin: raw_account.is_admin,
+        provider_config: provider.clone(),
+        request_timeout_secs: provider.api.request_timeout_secs,
+    })
+}
+
+/// GET /admin/api/timetable/sync —— 查詢自動同步狀態。
+pub(super) async fn admin_timetable_sync_status_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminTimetableQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) = validate_optional_admin_text(
+        query.account_id.as_deref(),
+        ADMIN_MAX_IDENTIFIER_BYTES,
+        "account_id",
+    ) {
+        return response;
+    }
+    let target = match resolve_timetable_target(&session, query.account_id) {
+        Ok(target) => target,
+        Err(resp) => return resp,
+    };
+
+    let state_row = match state.accounts_db.get_timetable_sync_state(&target).await {
+        Ok(row) => row,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("讀取同步狀態失敗：{e}") })),
+            )
+                .into_response();
+        }
+    };
+
+    // 這個帳號的學校是否支援自動同步。不支援時前端會把開關變灰。
+    let supported = match resolve_account_for_sync(&state, &target).await {
+        Ok(account) => crate::timetable_source::get_timetable_source(&account).is_some(),
+        Err(_) => false,
+    };
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "account_id": target,
+            "supported": supported,
+            "enabled": state_row.is_enabled(),
+            "last_success_at": state_row.last_success_at,
+            "last_attempt_at": state_row.last_attempt_at,
+            "consecutive_failures": state_row.consecutive_failures,
+            "last_error": state_row.last_error,
+            "last_summary": state_row.last_summary,
+        })),
+    )
+        .into_response()
+}
+
+/// POST /admin/api/timetable/sync/toggle —— 開啟或關閉自動同步。
+pub(super) async fn admin_timetable_sync_toggle_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    let req: AdminTimetableSyncToggleRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(response) = validate_optional_admin_text(
+        req.account_id.as_deref(),
+        ADMIN_MAX_IDENTIFIER_BYTES,
+        "account_id",
+    ) {
+        return response;
+    }
+    let target = match resolve_timetable_target(&session, req.account_id) {
+        Ok(target) => target,
+        Err(resp) => return resp,
+    };
+
+    // 開啟前先確認這間學校真的有實作，否則使用者會開了一個永遠不會動的開關。
+    if req.enabled {
+        match resolve_account_for_sync(&state, &target).await {
+            Ok(account) => {
+                if crate::timetable_source::get_timetable_source(&account).is_none() {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({
+                            "error": "此帳號的學校尚未支援課表自動同步"
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+            Err(resp) => return resp,
+        }
+    }
+
+    match state
+        .accounts_db
+        .set_timetable_sync_enabled(&target, req.enabled)
+        .await
+    {
+        Ok(()) => {
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "timetable_sync_toggle",
+                Some(&target),
+                Some(&format!("enabled={}", req.enabled)),
+                "切換課表自動同步",
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "account_id": target, "enabled": req.enabled })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("更新同步開關失敗：{e}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// POST /admin/api/timetable/sync/run —— 立即手動觸發一次同步。
+pub(super) async fn admin_timetable_sync_run_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    let req: AdminTimetableSyncRunRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => AdminTimetableSyncRunRequest { account_id: None },
+    };
+    if let Err(response) = validate_optional_admin_text(
+        req.account_id.as_deref(),
+        ADMIN_MAX_IDENTIFIER_BYTES,
+        "account_id",
+    ) {
+        return response;
+    }
+    let target = match resolve_timetable_target(&session, req.account_id) {
+        Ok(target) => target,
+        Err(resp) => return resp,
+    };
+
+    let account = match resolve_account_for_sync(&state, &target).await {
+        Ok(account) => account,
+        Err(resp) => return resp,
+    };
+
+    crate::logs::record_audit(
+        "web",
+        &session.account_id,
+        "timetable_sync_manual",
+        Some(&target),
+        None,
+        "手動觸發課表同步",
+    );
+
+    match crate::timetable_sync::sync_account(
+        &account,
+        &state.accounts_db,
+        state.messenger.as_deref(),
+    )
+    .await
+    {
+        Ok(outcome) => (
+            StatusCode::OK,
+            Json(json!({
+                "ok": true,
+                "account_id": target,
+                "count": outcome.entries,
+                "added": outcome.added,
+                "removed": outcome.removed,
+                "summary": outcome.summary,
+            })),
+        )
+            .into_response(),
+        // 錯誤訊息已由 timetable_sync::sanitize_error 清洗過，
+        // 不含密碼、學號或 cookie，可安全回給前端。
+        //
+        // NO_5XX_FOR_UPSTREAM_FAILURE_V1
+        // 這裡刻意**不用 5xx**。原本回 502 (BAD_GATEWAY) 會被反向代理／
+        // Cloudflare 攔截並替換成它自己的錯誤頁，使用者看到的是「網站 502」，
+        // 誤以為整個服務掛掉（實際上服務完全正常，只是這次爬取失敗）。
+        // 422 屬於 4xx，代理不會攔截，前端就能顯示我們清洗過的真實原因。
+        Err(e) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(json!({ "error": format!("{e}") })),
+        )
+            .into_response(),
+    }
+}
