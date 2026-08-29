@@ -28,6 +28,13 @@ pub(super) async fn admin_session_security_js_handler() -> Response {
     )
 }
 
+pub(super) async fn admin_notifications_page_js_handler() -> Response {
+    admin_static_asset(
+        "application/javascript; charset=utf-8",
+        pages::NOTIFICATIONS_PAGE_JS,
+    )
+}
+
 pub(super) async fn admin_app_settings_js_handler() -> Response {
     admin_static_asset(
         "application/javascript; charset=utf-8",
@@ -109,13 +116,6 @@ pub(super) async fn admin_timetable_ui_module_js_handler() -> Response {
     admin_static_asset(
         "application/javascript; charset=utf-8",
         pages::TIMETABLE_UI_MODULE_JS,
-    )
-}
-
-pub(super) async fn admin_notifications_module_js_handler() -> Response {
-    admin_static_asset(
-        "application/javascript; charset=utf-8",
-        pages::NOTIFICATIONS_MODULE_JS,
     )
 }
 

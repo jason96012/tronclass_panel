@@ -1,4 +1,5 @@
-/* APP_SETTINGS_V1 — 全站外觀與本地偏好設定
+/* APP_SETTINGS_BUILD: 20260829settings7 — fix8 (通知改獨立頁 /admin/notifications;設定分頁錨定在「維護」前) */
+ /* APP_SETTINGS_V1 — 全站外觀與本地偏好設定
  *
  * 這支腳本被 inject_theme() 放進每個頁面 <head> 的最前面（早於 theme.css），
  * 職責：
@@ -6,8 +7,9 @@
  *    data-fontscale / data-motion 掛到 <html>，避免主題閃爍（FOUC）。
  * 2) 「跟隨系統」模式監聽 prefers-color-scheme 變化，即時切換深淺色。
  * 3) 其他分頁變更設定時，透過 storage 事件同步到目前分頁。
- * 4) 注入「設定」入口：Dashboard 放進分頁列緊鄰「通知」分頁，其他頁面放
- *    header 的 top-actions（皆為純文字，無表情符號）。
+ * 4) 注入「設定」入口：僅存在於 Dashboard 分頁列（緊鄰「通知」分頁）與
+ *    手機「更多」面板。所有頁面（含課表／作業／檔案）的右上角 header
+ *    一律不加入設定按鈕。
  * 5) 在 /admin/settings 頁面（有 #appSettingsRoot）掛上互動邏輯。
  *
  * 對應的 CSS 覆蓋規則在 pages.rs 的 APP_SETTINGS_DYNAMIC_CSS（隨 theme.css
@@ -113,12 +115,12 @@
     resolvedTheme: function () { return resolvedTheme(current); }
   };
 
-  // ── 各頁面注入「設定」入口 ────────────────────────────────────────────────
-  // Dashboard：放進分頁列（.tabs），緊鄰「通知」分頁。「通知」分頁本身由
-  // notifications.js 動態建立，因此以輪詢等它出現後再把設定分頁移到旁邊。
-  // 手機版（≤820px）.tabs 整列隱藏，此時改用 header 的 top-actions 入口
-  // （掛 mobile-only class，僅小螢幕顯示）。其他頁面：一律放 top-actions。
-  var GEAR_POLL_MAX = 25; // 25 × 320ms ≈ 8 秒
+  // ── 注入「設定」入口 ─────────────────────────────────────────────────────
+  // 僅 Dashboard：分頁列（.tabs）「維護」分頁前（通知分頁已改為獨立頁面）。
+  // 手機版（≤820px）分頁列隱藏，改在「更多」面板（#mobileMoreFinalV2）補入口，
+  // 該面板由 dashboard JS 動態建立，以輪詢等它出現。
+  // 其他頁面（課表／作業／檔案…）的 header 一律不加設定按鈕。
+  var SHEET_POLL_MAX = 30;   // 30 × 400ms ≈ 12 秒（等手機更多面板）
 
   function buildGearTab() {
     var b = document.createElement('button');
@@ -131,45 +133,43 @@
     return b;
   }
 
-  function buildGearLink(mobileOnly) {
+  function startGearTabFlow(tabs) {
+    if (document.getElementById('appSettingsGearTab')) return;
+    var gear = buildGearTab();
+    // NOTIFICATIONS_STANDALONE_PAGE_V1: 通知分頁已移除，設定分頁錨定在「維護」前。
+    var ref = tabs.querySelector('.tab[data-view="maintenance"]');
+    if (ref) tabs.insertBefore(gear, ref); else tabs.appendChild(gear);
+  }
+
+  function injectMobileSheetEntry() {
+    if (document.getElementById('moreSettingsFinalV2')) return true;
+    var grid = document.querySelector('#mobileMoreFinalV2 .more-grid') ||
+               document.querySelector('#mobileSheet .sheet-grid');
+    if (!grid) return false;
     var a = document.createElement('a');
-    a.id = 'appSettingsGearLink';
-    a.className = 'app-settings-gear' + (mobileOnly ? ' mobile-only' : '');
+    a.id = 'moreSettingsFinalV2';
+    a.className = 'button secondary';
     a.href = '/admin/settings';
-    a.setAttribute('aria-label', '設定');
-    a.textContent = '設定';
-    return a;
+    a.textContent = '外觀設定';
+    grid.insertBefore(a, grid.firstChild);
+    return true;
+  }
+
+  function startMobileSheetFlow() {
+    if (injectMobileSheetEntry()) return;
+    var polls = 0;
+    var timer = setInterval(function () {
+      polls += 1;
+      if (injectMobileSheetEntry() || polls >= SHEET_POLL_MAX) clearInterval(timer);
+    }, 400);
   }
 
   function injectGear() {
     if (document.getElementById('appSettingsRoot')) return; // 設定頁本身不需要
     var tabs = document.querySelector('.tabs');
-    if (tabs) {
-      if (!document.getElementById('appSettingsGearTab')) {
-        tabs.appendChild(buildGearTab());
-        var polls = 0;
-        var timer = setInterval(function () {
-          polls += 1;
-          var gear = document.getElementById('appSettingsGearTab');
-          if (!gear) { clearInterval(timer); return; }
-          var notifyTab = tabs.querySelector('.tab[data-view="notifications"]');
-          if (notifyTab && gear !== notifyTab.nextSibling) {
-            notifyTab.parentNode.insertBefore(gear, notifyTab.nextSibling);
-          }
-          if (notifyTab || polls >= GEAR_POLL_MAX) clearInterval(timer);
-        }, 320);
-      }
-      // 手機版 .tabs 隱藏：補一個僅小螢幕顯示的 header 入口
-      var actions = document.querySelector('.top-actions');
-      if (actions && !document.getElementById('appSettingsGearLink')) {
-        actions.appendChild(buildGearLink(true));
-      }
-      return;
-    }
-    if (document.getElementById('appSettingsGearLink')) return;
-    var bar = document.querySelector('.top-actions');
-    if (!bar) return;
-    bar.appendChild(buildGearLink(false));
+    if (!tabs) return; // 非 Dashboard 頁面：右上角不加入任何設定按鈕
+    startGearTabFlow(tabs);
+    startMobileSheetFlow();
   }
 
   // ── /admin/settings 頁面互動 ─────────────────────────────────────────────

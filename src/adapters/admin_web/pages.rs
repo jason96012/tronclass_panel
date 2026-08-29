@@ -39,7 +39,6 @@ pub(super) const CORE_API_JS: &str = include_str!("static/js/core-api.js");
 pub(super) const WEB_PUSH_JS: &str = include_str!("static/js/web-push.js");
 pub(super) const ACCOUNTS_MODULE_JS: &str = include_str!("static/js/accounts.js");
 pub(super) const MOCK_ROLLCALL_MODULE_JS: &str = include_str!("static/js/mock-rollcall.js");
-pub(super) const NOTIFICATIONS_MODULE_JS: &str = include_str!("static/js/notifications.js");
 pub(super) const TIMETABLE_UI_MODULE_JS: &str = include_str!("static/js/timetable.js");
 pub(super) const MAINTENANCE_IMPLEMENTATION_JS: &str =
     include_str!("static/js/maintenance-implementation.js");
@@ -77,7 +76,9 @@ pub(super) const ADMIN_BLACKLIST_HTML: &str = include_str!("static/blacklist.htm
 pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
 pub(super) const ADMIN_HOMEWORK_HTML: &str = include_str!("static/homework.html");
 pub(super) const ADMIN_SETTINGS_HTML: &str = include_str!("static/settings.html");
+pub(super) const ADMIN_NOTIFICATIONS_HTML: &str = include_str!("static/notifications.html");
 pub(super) const APP_SETTINGS_JS: &str = include_str!("static/js/app-settings.js");
+pub(super) const NOTIFICATIONS_PAGE_JS: &str = include_str!("static/js/notifications-page.js");
 
 /// Add shared frontend assets without copying about 50 KiB of CSS/JavaScript
 /// into every HTML response. The security script intentionally remains
@@ -139,7 +140,7 @@ pub(super) fn inject_theme(html: &str) -> String {
     // （此 inline <style> 由 html_page_response() 統一補上 CSP nonce。）
     // 注意：concat!() 只接受字面值（literal），不能展開 const，因此全部內聯在此。
     const SHARED_ASSETS: &str = concat!(
-        r#"<script src="/admin/static/app-settings.js?v=20260829settings2"></script>"#,
+        r#"<script src="/admin/static/app-settings.js?v=20260829settings7"></script>"#,
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
@@ -168,12 +169,14 @@ html[data-app-settings][data-theme="dark"][data-accent="cyan"]{--primary:#22D3EE
 html[data-app-settings][data-fontscale="lg"] body{zoom:1.08}
 html[data-app-settings][data-fontscale="xl"] body{zoom:1.16}
 html[data-app-settings][data-motion="reduced"] *,html[data-app-settings][data-motion="reduced"] *::before,html[data-app-settings][data-motion="reduced"] *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
-.app-settings-gear{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 14px;border-radius:999px;background:var(--soft,#f1f5f9);color:var(--text,#172033);border:1px solid var(--line,#cbd5e1);font:inherit;font-weight:800;font-size:13px;line-height:1;text-decoration:none;cursor:pointer;white-space:nowrap}
-.app-settings-gear:hover{filter:brightness(.96)}
-.app-settings-gear:active{transform:scale(.97)}
 .app-settings-tab.active{background:var(--card)!important;color:var(--text)!important;border-color:var(--line)!important}
-.app-settings-gear.mobile-only{display:none}
-@media(max-width:820px){.app-settings-gear.mobile-only{display:inline-flex}}
+/* 使用者要求:隱藏 Dashboard 右上角的重新整理圖示(#refreshAll)。
+   用 CSS 隱藏而非刪除 markup:dashboard 內聯 script 有未加防護的
+   q('refreshAll').onclick=...,刪除元素會讓整段腳本拋錯掛掉。 */
+#refreshAll{display:none!important}
+/* 保險:若瀏覽器/service worker 仍快取舊版 app-settings.js 並把「設定」
+   連結塞進 header,此規則(每次導頁都隨 no-cache HTML 刷新)保證將其隱藏。 */
+#appSettingsGearLink,.app-settings-gear{display:none!important}
 </style>"#
     );
     let assets = SHARED_ASSETS.to_string();
@@ -262,6 +265,23 @@ pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Respons
 
 pub(super) async fn admin_password_page_handler(headers: HeaderMap) -> Response {
     html_page_response(&headers, inject_theme(ADMIN_PASSWORD_HTML))
+}
+
+/// /admin/notifications — 通知設定獨立頁（NOTIFICATIONS_STANDALONE_PAGE_V1）。
+/// 原 Dashboard「通知」分頁移除，通知偏好/上課提醒/提示音集中於此頁。
+pub(super) async fn admin_notifications_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return admin_login_redirect("/admin/notifications");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    html_page_response(&headers, inject_theme(ADMIN_NOTIFICATIONS_HTML))
 }
 
 /// /admin/settings — 外觀與本機偏好設定頁。
