@@ -71,8 +71,56 @@
   button.ghost:hover{color:var(--text);filter:brightness(.98)}
   p.note{margin:14px 0 0;color:var(--muted);font-size:12px;line-height:1.6;font-weight:650}
   @media(max-width:560px){.links{grid-template-columns:1fr}.seg{width:100%}.seg button{flex:1;min-width:0}}
+  /* SETTINGS_RESPONSIVE_V1: 電腦版/手機版雙版型 */
+  .pref-duo{display:block}
+  @media(min-width:960px){
+    .top{max-width:1000px;padding:26px 24px 12px}
+    main{max-width:1000px;padding:26px 24px 56px}
+    .card{padding:28px 26px 24px;margin-bottom:18px}
+    h1{font-size:26px}
+    .theme-grid{grid-template-columns:repeat(3,1fr);gap:16px}
+    .mini{height:96px}
+    .pref-duo{display:grid;grid-template-columns:1fr 1fr;column-gap:36px;align-items:start}
+    .pref-col+.pref-col{border-left:1px solid var(--line);padding-left:36px}
+    .links{grid-template-columns:repeat(2,1fr)}
+  }
+  @media(max-width:640px){
+    main{padding:14px 12px 44px}
+    .card{padding:18px 14px 16px;border-radius:18px;margin-bottom:14px}
+    h1{font-size:20px}
+    .theme-grid{grid-template-columns:1fr}
+    .mini{height:76px}
+    .swatch{width:42px;height:42px}
+  }
   @media(max-width:760px){.top{min-height:70px;padding:14px 12px 8px}.brand{gap:13px}.logo{width:48px;height:48px;font-size:20px}.brand b{display:block;font-size:19px;line-height:1.2}.brand .meta{font-size:13px;margin-top:3px}.top a{min-height:46px;padding:0 16px;font-size:14px}}
   @media(max-width:390px){.top{padding-inline:12px}.brand{gap:9px}.logo{width:44px;height:44px}.brand b{font-size:17px}.brand .meta{font-size:11px}.top a{min-height:42px;padding:0 11px;font-size:12px}}
+  /* ── 測試通知卡（TEST_NOTIFICATION_CARD_V1）── */
+  .test-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-top:4px}
+  .test-row+.test-row{margin-top:10px}
+  .test-row b{display:block;font-size:14px;font-weight:850}
+  .test-row i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
+  .tbtn{flex:0 0 auto;min-height:40px;padding:0 18px;border:0;border-radius:999px;background:var(--primary);color:#fff;font:inherit;font-weight:800;font-size:13px;cursor:pointer}
+  .tbtn:hover{filter:brightness(1.08)}
+  .tbtn:disabled{opacity:.55;cursor:default}
+  .tmsg{min-height:18px;margin-top:10px;font-size:13px;font-weight:800;color:var(--muted);white-space:pre-line}
+  .tmsg.ok{color:var(--ok)}
+  .tmsg.bad{color:#b91c1c}
+  @media(max-width:640px){.test-row{flex-direction:column;align-items:stretch}.tbtn{width:100%}}
+  /* ── SETTINGS_PICKER_VISIBILITY_V1：深色下 theme.css 通用按鈕規則會蓋掉本頁樣式，以更高優先權還原 ── */
+  html[data-theme="dark"] button.theme-card{background:var(--soft)!important;color:var(--text)!important}
+  html[data-theme="dark"] button.theme-card.active{background:var(--card)!important;border-color:var(--primary)!important;box-shadow:0 0 0 3px rgba(59,130,246,.35)!important}
+  html[data-theme="dark"] button.swatch.swatch.swatch{background:var(--sw)!important}
+  html[data-theme="dark"] button.swatch.swatch.swatch.active{border-color:var(--text)!important}
+  html[data-theme="dark"] .seg button{background:var(--soft)!important;color:var(--text)!important}
+  html[data-theme="dark"] .seg button.active{background:var(--primary)!important;color:#fff!important;border-color:var(--primary)!important}
+  html[data-theme="dark"] button.tbtn{background:var(--primary)!important;color:#fff!important}
+  /* 所有模式：未選卡片降透明度、選中卡片加「使用中」徽章，一眼可辨 */
+  .theme-card{position:relative;opacity:.6}
+  .theme-card:hover{opacity:.85}
+  .theme-card.active{opacity:1;border-color:var(--primary)!important;box-shadow:0 0 0 3px rgba(59,130,246,.30)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 35%,transparent)}
+  .theme-card.active::after{content:'使用中';position:absolute;top:10px;right:10px;padding:3px 10px;border-radius:999px;background:var(--primary);color:#fff;font-size:11px;font-weight:850;letter-spacing:.02em}
+  .swatch:not(.active){opacity:.8}
+  .swatch.active{border-color:var(--text)!important;box-shadow:0 0 0 3px rgba(120,120,128,.32)!important}
 </style>
 </head>
 <body>
@@ -98,6 +146,8 @@
       </button>
     </div>
 
+    <div class="pref-duo">
+    <div class="pref-col">
     <h2>強調色</h2>
     <div class="swatches">
       <button class="swatch" data-set-accent="blue"   type="button" style="--sw:#2563EB" aria-label="藍色（預設）" title="藍色（預設）"></button>
@@ -108,7 +158,8 @@
       <button class="swatch" data-set-accent="rose"   type="button" style="--sw:#E11D48" aria-label="玫瑰色" title="玫瑰色"></button>
       <button class="swatch" data-set-accent="cyan"   type="button" style="--sw:#0E7490" aria-label="青色" title="青色"></button>
     </div>
-
+    </div>
+    <div class="pref-col">
     <h2>字體大小</h2>
     <div class="seg">
       <button data-set-fontscale="std" type="button">標準</button>
@@ -124,20 +175,36 @@
         <span class="slider"></span>
       </span>
     </label>
+    </div>
+    </div>
   </section>
 
+  <!-- TEST_NOTIFICATION_CARD_V1: 集中所有測試通知按鈕 -->
+  <section class="card">
+    <h1>測試通知</h1>
+    <p class="hint">集中各管道的測試按鈕，快速確認通知是否暢通。</p>
+    <div class="test-row">
+      <span><b>Discord / LINE 測試通知</b><i>以一則測試作業走真實通知路徑（含偏好檢查），確認綁定與通知偏好設定正確。</i></span>
+      <button id="testDiscordBtn" class="tbtn" type="button">發送測試</button>
+    </div>
+    <div class="test-row">
+      <span><b>iPhone 背景推播測試</b><i>安排 10 秒後發送推播；按下後請立刻把 App 從多工畫面往上滑掉，以測試背景送達。</i></span>
+      <button id="testPushBtn" class="tbtn" type="button">發送測試</button>
+    </div>
+    <div class="test-row">
+      <span><b>點名提示音測試</b><i>以此裝置目前儲存的音效與音量播放，與控制台及通知頁的提示音設定共用。</i></span>
+      <button id="testSoundBtn" class="tbtn" type="button">播放音效</button>
+    </div>
+    <div id="testNotifyMsg" class="tmsg"></div>
+  </section>
   <section class="card">
     <h1>其他設定</h1>
-    <p class="hint">通知、課表、帳號安全等功能設定在各自的頁面。</p>
+    <p class="hint">通知、推播與帳號安全等功能設定在各自的頁面。</p>
     <div class="links">
       <a href="/admin/notifications">通知設定</a>
-      <a href="/admin/timetable">課表管理（含桌布／海報）</a>
-      <a href="/admin/homework">作業截止追蹤</a>
-      <a href="/admin/files">教材雲端硬碟</a>
       <a href="/admin/push-status">手機推播狀態</a>
       <a href="/admin/password">變更 Dashboard 密碼</a>
       <a href="/admin/passkey">通行密鑰（Passkey）</a>
-      <a href="/admin/health">系統健康狀態</a>
     </div>
     <div class="foot-row">
       <button id="resetBtn" class="ghost" type="button">回復外觀預設值</button>
@@ -145,6 +212,91 @@
     <p class="note">以上外觀偏好僅儲存在此裝置的瀏覽器（localStorage），不會上傳到伺服器，也不會影響其他裝置。清除瀏覽器資料時會一併清除。</p>
   </section>
 </main>
-<script src="/admin/static/app-settings.js?v=20260829settings7"></script>
+<script src="/admin/static/app-settings.js?v=20260829settings9"></script>
+
+<script>
+/* TEST_NOTIFICATION_CARD_V1: 邏輯直接內嵌本頁——HTML no-store 永遠新鮮，不受 static 快取影響 */
+(function () {
+  'use strict';
+  function init() {
+    var discordBtn = document.getElementById('testDiscordBtn');
+    var pushBtn = document.getElementById('testPushBtn');
+    var soundBtn = document.getElementById('testSoundBtn');
+    var msg = document.getElementById('testNotifyMsg');
+    if (!discordBtn && !pushBtn && !soundBtn) return;
+    function show(text, kind) {
+      if (!msg) return;
+      msg.textContent = text || '';
+      msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+    }
+    async function postJson(path) {
+      var res = await fetch(path, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' }
+      });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+      return body;
+    }
+    async function runButton(btn, fn) {
+      if (!btn || btn.disabled) return;
+      var old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '處理中…';
+      try { await fn(); }
+      catch (e) { show('測試失敗：' + (e && e.message ? e.message : e), 'bad'); }
+      finally { btn.disabled = false; btn.textContent = old; }
+    }
+    if (discordBtn) discordBtn.addEventListener('click', function () {
+      runButton(discordBtn, async function () {
+        show('傳送中…');
+        var r = await postJson('/admin/api/homework/test-notification');
+        var sent = Array.isArray(r.channels) ? r.channels : [];
+        var skipped = Array.isArray(r.skipped) ? r.skipped : [];
+        if (sent.length > 0) {
+          show('已發送至：' + sent.join('、') + (skipped.length > 0 ? '\n未發送：' + skipped.join('；') : ''), 'ok');
+        } else {
+          show('沒有任何可用的通知管道' + (skipped.length > 0 ? '：' + skipped.join('；') : ''), 'bad');
+        }
+      });
+    });
+    if (pushBtn) pushBtn.addEventListener('click', function () {
+      runButton(pushBtn, async function () {
+        show('安排測試中…');
+        var r = await postJson('/admin/api/push/test');
+        if (r && r.ok === false) throw new Error(r.error || '無法安排測試');
+        show('已安排 ' + ((r && r.delay_secs) || 10) + ' 秒後發送推播，請立刻把 App 從多工畫面往上滑掉。', 'ok');
+      });
+    });
+    if (soundBtn) soundBtn.addEventListener('click', function () {
+      try {
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) { show('此瀏覽器不支援音效播放', 'bad'); return; }
+        var cfg = {};
+        try { cfg = JSON.parse(localStorage.getItem('tronclass_rollcall_sound_settings_v1')) || {}; } catch (_) { cfg = {}; }
+        var ctx = new Ctx();
+        var gain = ctx.createGain();
+        gain.gain.value = Math.max(0.0001, Number(cfg.volume == null ? 0.35 : cfg.volume));
+        gain.connect(ctx.destination);
+        var notes = cfg.pattern === 'chime' ? [660, 880, 1100] : [880, 880];
+        notes.forEach(function (freq, i) {
+          var osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          osc.connect(gain);
+          var t0 = ctx.currentTime + i * 0.18;
+          osc.start(t0);
+          osc.stop(t0 + 0.15);
+        });
+        setTimeout(function () { ctx.close().catch(function () { }); }, 900);
+        show('已播放：' + (cfg.pattern === 'chime' ? '三音提示' : '雙提示音'), 'ok');
+      } catch (_) { show('播放失敗', 'bad'); }
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
 </body>
 </html>

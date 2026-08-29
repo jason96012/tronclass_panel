@@ -206,10 +206,13 @@
 (function(){
   'use strict';
   var mq=window.matchMedia('(prefers-color-scheme:dark)');
-  function apply(t){document.documentElement.setAttribute('data-theme',t.matches?'dark':'light')}
-  apply(mq);
-  try{mq.addEventListener('change',apply)}catch(e){mq.addListener(apply)}
-  /* 監聽 localStorage 手動切換（未來可擴充） */
+  var THEME_LS='tronclass_app_settings_v1';
+  function themeChoice(){try{var s=JSON.parse(localStorage.getItem(THEME_LS)||'{}');var t=String(s.theme||'auto').toLowerCase();return(t==='light'||t==='dark')?t:'auto'}catch(_){return'auto'}}
+  function applyTheme(){var c=themeChoice();document.documentElement.setAttribute('data-theme',c==='auto'?(mq.matches?'dark':'light'):c)}
+  /* THEME_CHOICE_V1: 使用者設定（外觀設定頁）優先；auto 才跟隨系統，並同步跨分頁變更 */
+  applyTheme();
+  try{mq.addEventListener('change',applyTheme)}catch(e){mq.addListener(applyTheme)}
+  try{window.addEventListener('storage',function(ev){if(!ev||!ev.key||ev.key===THEME_LS)applyTheme()})}catch(_){}
   window.__setTheme=function(t){document.documentElement.setAttribute('data-theme',t||'dark')};
 /* 閃爍防護 failsafe：最多 3 秒後強制顯示 */
 setTimeout(function(){document.documentElement.style.visibility='visible'},3000);
@@ -1251,7 +1254,13 @@ hr, .divider{
   setTimeout(patch, 200);
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb411e18ec4a45',t:'MTc4NzUwMDAzMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb411e18ec4a45',t:'MTc4NzUwMDAzMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><style id="MANUAL_DARK_MIRROR_V1">
+/* DARK_MIRROR_V1: 自動鏡像 prefers-color-scheme:dark → html[data-theme="dark"]；手動深色與系統深色同調色盤 */
+html[data-theme="dark"]{--bg:#0f141d !important;--card:#161d29 !important;--text:#eef2ff !important;--muted:#9aa4b5 !important;--line:#303948 !important;--primary:#60a5fa !important;}
+html[data-theme="dark"]{--bg:#0B0F19!important;--card:#182232!important;--soft:#111827!important;--soft2:#1E293B!important;--text:#F1F5F9!important;--muted:#94A3B8!important;--line:#334155!important;--line2:#1E293B!important;--primary:#3B82F6!important;--primaryText:#FFFFFF!important;--ok:#4ADE80!important;--warn:#FBBF24!important;--bad:#F87171!important;}
+
+</style>
+</body>
 </html>
 
 

@@ -234,6 +234,9 @@
     if (document.getElementById('dashboardPasswordButtonV1')) return;
     var host = document.querySelector('.top-actions, .actions, header .toolbar-right');
     if (!host) return;
+    // TOPBAR_LOGOUT_ONLY_V1: 所有頁面的頂欄 header 一律不注入變更密碼
+    //（變更密碼改由手機更多面板與設定頁進入）。
+    if (host.closest('header')) return;
     var button = document.createElement('button');
     button.id = 'dashboardPasswordButtonV1';
     button.type = 'button';

@@ -1,4 +1,4 @@
-/* APP_SETTINGS_BUILD: 20260829settings7 — fix8 (通知改獨立頁 /admin/notifications;設定分頁錨定在「維護」前) */
+/* APP_SETTINGS_BUILD: 20260829settings9 — fix14 (測試通知卡改內嵌 settings.html 並移至外觀卡之後) */
  /* APP_SETTINGS_V1 — 全站外觀與本地偏好設定
  *
  * 這支腳本被 inject_theme() 放進每個頁面 <head> 的最前面（早於 theme.css），

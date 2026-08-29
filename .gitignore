@@ -44,8 +44,6 @@ frankenphp
 php
 php-fpm
 caddy
-filebrowser
-fb-data/
 filebrowser-runtime/
 cloud/
 config/filebrowser.enable

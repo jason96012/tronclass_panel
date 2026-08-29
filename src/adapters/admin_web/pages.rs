@@ -140,13 +140,13 @@ pub(super) fn inject_theme(html: &str) -> String {
     // （此 inline <style> 由 html_page_response() 統一補上 CSP nonce。）
     // 注意：concat!() 只接受字面值（literal），不能展開 const，因此全部內聯在此。
     const SHARED_ASSETS: &str = concat!(
-        r#"<script src="/admin/static/app-settings.js?v=20260829settings7"></script>"#,
+        r#"<script src="/admin/static/app-settings.js?v=20260829settings9"></script>"#,
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
         r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
-        r#"<link rel="preload" href="/admin/static/session-security.js?v=20260826resumeauth" as="script">"#,
-        r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260826resumeauth"></script>"#,
+        r#"<link rel="preload" href="/admin/static/session-security.js?v=20260829nopwbtn" as="script">"#,
+        r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260829nopwbtn"></script>"#,
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
         r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#,
         r#"<style id="appSettingsDynamicCss">

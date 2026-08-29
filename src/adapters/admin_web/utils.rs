@@ -14,7 +14,7 @@ pub(super) const MATERIALS_MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
 pub(super) const MATERIALS_MAX_LIST_ENTRIES: usize = 5000;
 
 pub(super) const MATERIAL_ALLOWED_EXTENSIONS: &[&str] = &[
-    "pdf", "docx", "pptx", "xlsx", "txt", "md", "jpg", "jpeg", "png", "zip", "mp4",
+    "pdf", "docx", "pptx", "xlsx", "txt", "md", "jpg", "jpeg", "png", "zip", "mp4", "heic", "gif", "mov",
 ];
 
 #[derive(Debug, Clone, Serialize)]

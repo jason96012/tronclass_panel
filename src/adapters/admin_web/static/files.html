@@ -416,10 +416,14 @@
   (function(){
     'use strict';
     var mq=window.matchMedia('(prefers-color-scheme:dark)');
-    function apply(t){document.documentElement.setAttribute('data-theme',t.matches?'dark':'light')}
-    apply(mq);
-    try{mq.addEventListener('change',apply)}catch(e){mq.addListener(apply)}
-    window.__setTheme=function(t){document.documentElement.setAttribute('data-theme',t||'dark')};
+  var THEME_LS='tronclass_app_settings_v1';
+  function themeChoice(){try{var s=JSON.parse(localStorage.getItem(THEME_LS)||'{}');var t=String(s.theme||'auto').toLowerCase();return(t==='light'||t==='dark')?t:'auto'}catch(_){return'auto'}}
+  function applyTheme(){var c=themeChoice();document.documentElement.setAttribute('data-theme',c==='auto'?(mq.matches?'dark':'light'):c)}
+  /* THEME_CHOICE_V1: 使用者設定（外觀設定頁）優先；auto 才跟隨系統，並同步跨分頁變更 */
+  applyTheme();
+  try{mq.addEventListener('change',applyTheme)}catch(e){mq.addListener(applyTheme)}
+  try{window.addEventListener('storage',function(ev){if(!ev||!ev.key||ev.key===THEME_LS)applyTheme()})}catch(_){}
+  window.__setTheme=function(t){document.documentElement.setAttribute('data-theme',t||'dark')};
     document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','mobile-nav-final-auth');
     if(document.body) document.body.classList.add('auth-ok','dash-auth-ok','logged-in');
   })();
@@ -894,7 +898,7 @@
       <div id="uploadProgressText" class="small">準備上傳...</div>
       <div class="progress-line"><span id="uploadProgressBar"></span></div>
     </div>
-    <input id="fileInput" class="hidden-input" type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.jpg,.jpeg,.png,.zip,.mp4">
+    <input id="fileInput" class="hidden-input" type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.jpg,.jpeg,.png,.zip,.mp4,.heic,.gif,.mov">
 
     <!-- 資料夾區域 -->
     <div id="folderSection" class="section-title">
@@ -1249,10 +1253,17 @@
     if (q('uploadProgressText')) q('uploadProgressText').textContent = t || '';
   }
 
-  function hideProgress(){
+  function hideProgress(delay){
     setTimeout(() => {
       if (q('uploadProgress')) q('uploadProgress').classList.remove('visible');
-    }, 1600);
+      if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
+    }, delay || 1600);
+  }
+  function progressError(t){
+    if (q('uploadProgress')) q('uploadProgress').classList.add('visible');
+    if (q('uploadProgressText')) q('uploadProgressText').style.color = 'var(--bad,#b42318)';
+    if (q('uploadProgressText')) q('uploadProgressText').textContent = t || '';
+    if (q('uploadProgressBar')) q('uploadProgressBar').style.width = '0%';
   }
 
   function uploadOne(file, i, total){
@@ -1270,7 +1281,8 @@
           showProgress(30, '上傳 ' + i + '/' + total + '：' + file.name);
         }
       };
-      xhr.onerror = () => reject(new Error('網路連線失敗'));
+      xhr.onerror = () => reject(new Error('網路連線中斷（檔案可能超過伺服器 50 MB 限制，或訊號不穩）'));
+      xhr.onabort = () => reject(new Error('上傳已取消'));
       xhr.onload = () => {
         let body = {};
         try { body = JSON.parse(xhr.responseText || '{}'); } catch(_) {}
@@ -1282,21 +1294,52 @@
     });
   }
 
+  // UPLOAD_ROBUST_V1: 上傳流程強化（手機白畫面/沒上傳修復）
+  // 1) 立即清空 fileInput——失敗後重選同一個檔案仍會觸發 change
+  // 2) 用戶端預先檢查 50 MB 上限（與伺服器 MATERIALS_MAX_FILE_SIZE 一致），
+  //    避免手機大檔上傳到一半被重置（看起來像白畫面/沒反應）
+  // 3) 錯誤訊息停留在進度條 8 秒並標紅，不再一閃即逝
+  const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+  // UPLOAD_TYPE_GUARD_V1: 允許格式清單（與後端 MATERIAL_ALLOWED_EXTENSIONS 一致）
+  const UPLOAD_ALLOWED_EXTS = ['pdf','docx','pptx','xlsx','txt','md','jpg','jpeg','png','zip','mp4','heic','gif','mov'];
+  function uploadExtOf(name){
+    const m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
+    return m ? m[1] : '';
+  }
   async function uploadFiles(fileList){
     const arr = Array.from(fileList || []);
+    if (q('fileInput')) q('fileInput').value = '';
     if (!arr.length) return;
+    // 格式預檢：不在白名單的檔案跳出提示通知，不上傳
+    const badType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadExtOf(f.name)) < 0);
+    const okType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadExtOf(f.name)) >= 0);
+    if (badType.length) {
+      const names = badType.map(f => f.name).join('、');
+      alert('以下檔案格式不支援，未上傳：\n' + names + '\n\n允許的格式：' + UPLOAD_ALLOWED_EXTS.join('、'));
+      progressError('未上傳（格式不支援）：' + names + '｜允許：' + UPLOAD_ALLOWED_EXTS.join('、'));
+      toast('格式不支援，未上傳：' + names, false);
+    }
+    const tooBig = okType.filter(f => f.size > UPLOAD_MAX_BYTES);
+    const will = okType.filter(f => f.size <= UPLOAD_MAX_BYTES);
+    if (tooBig.length) {
+      const names = tooBig.map(f => f.name).join('、');
+      progressError('未上傳（超過 50 MB 限制）：' + names);
+      toast('超過 50 MB 限制，未上傳：' + names, false);
+      if (!will.length) { hideProgress(8000); return; }
+    }
     try {
-      for (let i = 0; i < arr.length; i++) {
-        await uploadOne(arr[i], i + 1, arr.length);
+      for (let i = 0; i < will.length; i++) {
+        await uploadOne(will[i], i + 1, will.length);
       }
-      showProgress(100, '所有檔案上傳完成！');
-      toast('教材上傳成功');
-      if (q('fileInput')) q('fileInput').value = '';
+      if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
+      showProgress(100, will.length === arr.length ? '所有檔案上傳完成！' : '上傳完成（超過限制的檔案未上傳）');
+      toast('教材上傳完成');
       hideProgress();
       await loadFiles();
     } catch(e) {
-      hideProgress();
-      toast(e.message || '上傳失敗', false);
+      progressError('上傳失敗：' + (e.message || e));
+      toast('上傳失敗：' + (e.message || e), false);
+      hideProgress(8000);
     }
   }
 
@@ -1537,7 +1580,18 @@
   setTimeout(ensure, 300);
 })();
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb40c5bd634a45',t:'MTc4NzUwMDAxNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb40c5bd634a45',t:'MTc4NzUwMDAxNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><style id="MANUAL_DARK_MIRROR_V1">
+/* DARK_MIRROR_V1: 自動鏡像 prefers-color-scheme:dark → html[data-theme="dark"]；手動深色與系統深色同調色盤 */
+html[data-theme="dark"]{--bg:#090d16 !important;--surface:#131b2a !important;--surface2:#1c2638 !important;--surface3:#24324a !important;--text:#f1f5f9 !important;--muted:#94a3b8 !important;--line:#223046 !important;--line2:#334155 !important;--primary:#3b82f6 !important;--primarySoft:rgba(59,130,246,.16) !important;--primaryText:#ffffff !important;--ok:#4ade80 !important;--warn:#fbbf24 !important;--bad:#f87171 !important;--shadow:0 4px 24px rgba(0,0,0,.36) !important;}
+html[data-theme="dark"] .topbar{background:rgba(9,13,22,.92) !important;}
+html[data-theme="dark"] .mobilebar{background:rgba(15,23,42,.92) !important;border-color:var(--line) !important;}
+html[data-theme="dark"] .topbar{background: rgba(9, 13, 22, 0.92) !important;border-bottom-color: var(--line, #223046) !important;}
+html[data-theme="dark"] .mobilebar, html[data-theme="dark"] #mobilebar, html[data-theme="dark"] #filesMobileNav{background: rgba(19, 27, 42, 0.94) !important;border-color: var(--line, #334155) !important;box-shadow: 0 16px 45px rgba(0, 0, 0, 0.45) !important;}
+html[data-theme="dark"] .mobilebar a, html[data-theme="dark"] .mobilebar button, html[data-theme="dark"] #mobilebar a, html[data-theme="dark"] #mobilebar button, html[data-theme="dark"] #mDashboard, html[data-theme="dark"] #mDriveHome, html[data-theme="dark"] #mUpload, html[data-theme="dark"] #mFolder, html[data-theme="dark"] #mRefresh{color: var(--muted, #94a3b8) !important;background: transparent !important;}
+html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar button:hover, html[data-theme="dark"] .mobilebar a:active, html[data-theme="dark"] .mobilebar button:active{background: rgba(255, 255, 255, 0.08) !important;color: #ffffff !important;}
+
+</style>
+</body>
 </html>
 
 

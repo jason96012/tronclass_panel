@@ -1921,10 +1921,13 @@ setTimeout(function(){
 (function(){
   'use strict';
   var mq=window.matchMedia('(prefers-color-scheme:dark)');
-  function apply(t){document.documentElement.setAttribute('data-theme',t.matches?'dark':'light')}
-  apply(mq);
-  try{mq.addEventListener('change',apply)}catch(e){mq.addListener(apply)}
-  /* 監聽 localStorage 手動切換（未來可擴充） */
+  var THEME_LS='tronclass_app_settings_v1';
+  function themeChoice(){try{var s=JSON.parse(localStorage.getItem(THEME_LS)||'{}');var t=String(s.theme||'auto').toLowerCase();return(t==='light'||t==='dark')?t:'auto'}catch(_){return'auto'}}
+  function applyTheme(){var c=themeChoice();document.documentElement.setAttribute('data-theme',c==='auto'?(mq.matches?'dark':'light'):c)}
+  /* THEME_CHOICE_V1: 使用者設定（外觀設定頁）優先；auto 才跟隨系統，並同步跨分頁變更 */
+  applyTheme();
+  try{mq.addEventListener('change',applyTheme)}catch(e){mq.addListener(applyTheme)}
+  try{window.addEventListener('storage',function(ev){if(!ev||!ev.key||ev.key===THEME_LS)applyTheme()})}catch(_){}
   window.__setTheme=function(t){document.documentElement.setAttribute('data-theme',t||'dark')};
 })();
 </script>
@@ -2090,6 +2093,8 @@ button.danger,a.danger{background:rgba(248,113,113,.15)!important;font-weight:70
 
 /* ─── 7. 我的頁面隱藏 ─── */
 #meLink,#mMe,#moreMeFinalV2{display:none!important}
+  /* TOPBAR_LOGOUT_ONLY_V2: 頂欄僅顯示登出；任何其他按鈕（含各腳本動態注入者）一律隱藏 */
+  header.topbar .top-actions>*:not(#logoutBtn){display:none!important}
 
 /* ─── 8. 手機課表卡片化 ─── */
 @media(max-width:768px){
@@ -2861,11 +2866,14 @@ hr, .divider{
     if(!grid) return;
     // NOTIFICATIONS_STANDALONE_PAGE_V2: 通知按鈕已自更多面板移除，通知設定請由設定頁或 /admin/notifications 前往。
     addBtn(grid,'moreMaintFinalV2','維護','secondary', function(){ goView('maintenance'); });
-    addBtn(grid,'morePasskeyFinalV2','設定通行密鑰','secondary', function(){
-      closeMore();
-      if(typeof window.tronPasskeyRegister==='function'){window.tronPasskeyRegister();return;}toast('通行密鑰功能尚未就緒，請重整後再試。', false);
-    });
-    addBtn(grid,'moreChangePasswordFinalV2','變更密碼','secondary', function(){ if(window.tronOpenChangePassword) window.tronOpenChangePassword(); });
+    // MORE_SHEET_SETTINGS_V1: 更多面板第一格固定為「設定」；通行密鑰/變更密碼/推播狀態已移除（改由設定頁進入）。
+    (function(){
+      if(document.getElementById('moreSettingsFinalV2')) return;
+      var a=document.createElement('a');
+      a.id='moreSettingsFinalV2'; a.className='button secondary'; a.href='/admin/settings';
+      a.textContent='設定';
+      grid.insertBefore(a, grid.firstChild);
+    })();
     var blacklist=addBtn(grid,'moreBlacklistFinalV2','黑名單','secondary', function(){ location.href='/admin/blacklist'; });
     if(blacklist){ blacklist.setAttribute('data-admin-only','1'); blacklist.onclick=function(){ location.href='/admin/blacklist'; }; }
     var drive=q('moreDriveFinalV2');
@@ -2932,9 +2940,13 @@ hr, .divider{
     b.style.display='';
   }
   function enhance(){
-    document.querySelectorAll('#mobileMoreFinalV2 .more-grid,#mobileMoreFinalV2 .sheet-grid,.more-grid,.sheet-grid').forEach(function(grid){
-      put(grid,'morePasskeyFinalV2','設定通行密鑰','passkey');
-      put(grid,'moreChangePasswordFinalV2','變更密碼','password');
+    // MORE_SHEET_SETTINGS_V1: 不再補通行密鑰/變更密碼按鈕，改為確保「設定」存在。
+    document.querySelectorAll('#mobileMoreFinalV2 .more-grid,.more-grid').forEach(function(grid){
+      if(document.getElementById('moreSettingsFinalV2')) return;
+      var a=document.createElement('a');
+      a.id='moreSettingsFinalV2'; a.className='button secondary'; a.href='/admin/settings';
+      a.textContent='設定';
+      grid.insertBefore(a, grid.firstChild);
     });
   }
   document.addEventListener('click', function(ev){
@@ -3222,8 +3234,8 @@ hr, .divider{
 <body class="animated-login-active">
 <div id="authBootSplash" role="status" aria-live="polite"><span class="spin" aria-hidden="true"></span><span>正在確認登入狀態…</span></div>
 
-<header class="topbar"><div class="brand"><div class="mark">D</div><div><div class="title">Tronclass Dashboard</div><div id="brandSub" class="sub">請先登入</div></div></div><div class="top-actions"><a id="homeworkLink" class="button secondary" href="/admin/homework">作業截止</a><a id="meLink" class="button secondary" href="/admin/me">我的頁面</a><button id="logoutBtn" class="secondary" type="button">登出</button><button id="refreshAll" class="icon" type="button">↻</button></div></header>
-<main><section id="loginCard" class="login-card" data-animated-login-installed="1"><div class="animated-login-card-inner"><div class="animated-login-logo">D</div><div class="animated-login-header"><h1>歡迎回來</h1><p>登入 Tronclass Dashboard，使用與 Tronclass 帳密分離的網站憑證。</p></div><form class="animated-login-form" id="animatedLoginForm"><div class="animated-login-field"><input id="loginUsername" autocomplete="username" required><label for="loginUsername">帳號 ID / 學號</label></div><div class="animated-login-field"><input id="loginPassword" autocomplete="current-password" type="password" required><label for="loginPassword">密碼</label><button id="toggleLoginPassword" class="animated-toggle-password" type="button" aria-label="顯示密碼">👁</button></div><div class="animated-login-options"><label><input id="rememberPassword" type="checkbox" checked> 記住帳號</label><span class="animated-secure-note">Cloudflare HTTPS</span></div><button id="loginBtn" class="animated-login-submit" type="submit">登入</button><div class="animated-login-row"><button id="passkeyLoginBtn" class="animated-passkey-btn" type="button">使用通行密鑰登入</button></div><div id="loginMsg" class="animated-login-message">請先登入。</div></form><div class="animated-login-separator"><span>安全登入</span></div><div class="animated-login-help"><div class="animated-login-chip">首次登入請用 Tronclass 密碼，接著必須設定新的 Dashboard 密碼。</div><div class="animated-login-chip">Passkey：先輸入帳號，再按「使用通行密鑰登入」。</div></div></div></section><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel" style="margin-bottom:14px"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div></div></section><section id="view-rollcall" class="view"><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary" style="display:none">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" style="white-space:pre-wrap;overflow:auto;max-height:360px;background:var(--soft);padding:10px;border-radius:12px">尚未讀取</pre><div class="quick" style="margin-top:12px"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><a id="mPasskey" class="button secondary" href="/admin/passkey" data-more-action="passkey">設定通行密鑰</a><a id="mChangePassword" class="button secondary" href="/admin/password" data-more-action="password">變更密碼</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" style="font-weight:760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
+<header class="topbar"><div class="brand"><div class="mark">D</div><div><div class="title">Tronclass Dashboard</div><div id="brandSub" class="sub">請先登入</div></div></div><div class="top-actions"><!-- TOPBAR_LOGOUT_ONLY_V1: 頂欄僅保留登出（meLink 原已被 CSS 隱藏） --><a id="meLink" class="button secondary" href="/admin/me">我的頁面</a><button id="logoutBtn" class="secondary" type="button">登出</button><button id="refreshAll" class="icon" type="button">↻</button></div></header>
+<main><section id="loginCard" class="login-card" data-animated-login-installed="1"><div class="animated-login-card-inner"><div class="animated-login-logo">D</div><div class="animated-login-header"><h1>歡迎回來</h1><p>登入 Tronclass Dashboard，使用與 Tronclass 帳密分離的網站憑證。</p></div><form class="animated-login-form" id="animatedLoginForm"><div class="animated-login-field"><input id="loginUsername" autocomplete="username" required><label for="loginUsername">帳號 ID / 學號</label></div><div class="animated-login-field"><input id="loginPassword" autocomplete="current-password" type="password" required><label for="loginPassword">密碼</label><button id="toggleLoginPassword" class="animated-toggle-password" type="button" aria-label="顯示密碼">👁</button></div><div class="animated-login-options"><label><input id="rememberPassword" type="checkbox" checked> 記住帳號</label><span class="animated-secure-note">Cloudflare HTTPS</span></div><button id="loginBtn" class="animated-login-submit" type="submit">登入</button><div class="animated-login-row"><button id="passkeyLoginBtn" class="animated-passkey-btn" type="button">使用通行密鑰登入</button></div><div id="loginMsg" class="animated-login-message">請先登入。</div></form><div class="animated-login-separator"><span>安全登入</span></div><div class="animated-login-help"><div class="animated-login-chip">首次登入請用 Tronclass 密碼，接著必須設定新的 Dashboard 密碼。</div><div class="animated-login-chip">Passkey：先輸入帳號，再按「使用通行密鑰登入」。</div></div></div></section><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel" style="margin-bottom:14px"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div></div></section><section id="view-rollcall" class="view"><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary" style="display:none">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" style="white-space:pre-wrap;overflow:auto;max-height:360px;background:var(--soft);padding:10px;border-radius:12px">尚未讀取</pre><div class="quick" style="margin-top:12px"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" style="font-weight:760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
 <div id="addAccountModal" class="modal-backdrop">
   <div class="modal" style="max-width:520px">
     <div class="modal-head"><div style="font-weight:760">新增帳號</div><button id="closeAddAccount" class="icon" type="button">×</button></div>
@@ -3452,7 +3464,7 @@ window.setTimeout(function(){
     if (!q('mobileMoreFinalV2')) {
       var sheet = document.createElement('div');
       sheet.id = 'mobileMoreFinalV2';
-      sheet.innerHTML = '<div class="sheet"><h3>更多功能</h3><div class="more-grid"><a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a><a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a><a id="moreActivityFinalV2" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><a id="morePasskeyFinalV2" class="button secondary" href="/admin/passkey" data-more-action="passkey">設定通行密鑰</a><a id="moreChangePasswordFinalV2" class="button secondary" href="/admin/password" data-more-action="password">變更密碼</a><a id="moreBlacklistFinalV2" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a><button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button><a id="moreDetectionScheduleFinalV2" class="button secondary" data-detection-schedule-entry="1" href="/admin/detection-schedule">點名排程</a><a id="morePushStatusFinalV2" class="button secondary" href="https://dashboard.jasoncloudserver.me/admin/push-status">推播狀態管理</a><button id="moreLogoutFinalV2" class="danger" type="button">登出</button></div></div>';
+      sheet.innerHTML = '<div class="sheet"><h3>更多功能</h3><div class="more-grid"><a id="moreSettingsFinalV2" class="button secondary" href="/admin/settings">設定</a><a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a><a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a><a id="moreActivityFinalV2" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><a id="moreBlacklistFinalV2" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a><button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button><a id="moreDetectionScheduleFinalV2" class="button secondary" data-detection-schedule-entry="1" href="/admin/detection-schedule">點名排程</a><button id="moreLogoutFinalV2" class="danger" type="button">登出</button></div></div>';
       document.body.appendChild(sheet);
       sheet.onclick = function(ev){ if (ev.target === sheet) closeMore(); };
       sheet.querySelectorAll('[data-sheet-view]').forEach(function(btn){ btn.onclick = function(){ closeMore(); switchView(btn.dataset.sheetView); }; });
@@ -3694,8 +3706,9 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 
   var roleState = null;
   var applying = false;
-  var adminOnlyText = /^(系統\s*Log|系統\s*Logs|Logs?|設定|維護)$/i;
-  var adminOnlyViews = {settings:1, maintenance:1, logs:1, health:1};
+  /* SETTINGS_FOR_ALL_V1: 「設定」已改為全民獨立頁 /admin/settings，自 admin 專屬文字移除 */
+  var adminOnlyText = /^(系統\s*Log|系統\s*Logs|Logs?|維護)$/i;
+  var adminOnlyViews = {maintenance:1, logs:1, health:1};
 
   function q(id){ return document.getElementById(id); }
   function token(){
@@ -3767,11 +3780,12 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
   }
 
   function hideAdminOnlyLinks(){
+    // SETTINGS_FOR_ALL_V1: settings 相關選擇器已移除（設定頁全民可用）
     var selectors = [
-      '.tab[data-view="settings"]', '.tab[data-view="maintenance"]',
-      '[data-view="settings"]', '[data-view="maintenance"]',
-      '[data-switch="settings"]', '[data-switch="maintenance"]',
-      '#view-settings', '#view-maintenance',
+      '.tab[data-view="maintenance"]',
+      '[data-view="maintenance"]',
+      '[data-switch="maintenance"]',
+      '#view-maintenance',
       'a[href*="/admin/logs"]', 'a[href*="/admin/health"]', 'a[href*="/admin/activity"]',
       '#moreBlacklistFinalV2', '#mActivity', '#moreActivityFinalV2',
       '[data-admin-only="1"]', '.admin-only', '[data-role-admin-only]'
@@ -4022,13 +4036,13 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
     if(loginBtn.closest('.login-grid')) loginBtn.closest('.login-grid').after(row); else (loginBtn.parentElement||loginBtn).appendChild(row);
   }
   function ensureRegisterButton(){
-    if(q('passkeyRegisterBtn'))return;
-    var top=document.querySelector('.top-actions')||document.querySelector('header .actions')||document.querySelector('header .toolbar-right')||document.querySelector('header');
-    if(!top)return;
-    var b=document.createElement('button');b.id='passkeyRegisterBtn';b.type='button';b.className='secondary';b.textContent='設定通行密鑰';b.onclick=passkeyRegister;
-    top.insertBefore(b,top.firstChild);
+    // TOPBAR_LOGOUT_ONLY_V1: 頂欄僅保留登出，不再注入「設定通行密鑰」；
+    // 通行密鑰入口改由手機更多面板（mPasskey / morePasskeyFinalV2）與設定頁進入。
+    return;
   }
   function ensureMobileSheetButton(){
+    // MORE_SHEET_SETTINGS_V1: 通行密鑰不再注入更多面板（改由設定頁進入）。
+    return;
     if(q('mobilePasskeySheetBtn'))return;
     var host=document.querySelector('#mobileSheet .sheet-grid')||document.querySelector('.mobile-sheet .sheet-grid')||document.querySelector('.sheet-grid');
     if(!host)return;
@@ -4407,8 +4421,30 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
   function bind(){var f=q('animatedLoginForm');if(f)f.onsubmit=doLogin;var u=q('loginUsername'),p=q('loginPassword');[u,p].forEach(function(el){if(el){el.addEventListener('input',updateFields);el.addEventListener('focus',updateFields);el.addEventListener('blur',updateFields);el.addEventListener('keydown',function(e){if(e.key==='Enter')doLogin(e)})}});var t=q('toggleLoginPassword');if(t)t.onclick=function(){var p=q('loginPassword');if(!p)return;p.type=p.type==='password'?'text':'password';t.textContent=p.type==='password'?'👁':'🙈'};var pk=q('passkeyLoginBtn');if(pk)pk.onclick=passkeyLogin}
   function updateFields(){document.querySelectorAll('.animated-login-field').forEach(function(w){var input=w.querySelector('input');w.classList.toggle('active',!!(input&&(input.value||document.activeElement===input)))})}
   function applyActive(){var loggedOut=document.documentElement.classList.contains('tron-auth-logged-out')||window.__tronAuthState==='out';var active=loggedOut&&!isLoggedIn()&&!!loginRoot();document.body.classList.toggle('animated-login-active',active);if(active){ensureCanvas();startParticles()}else stopParticles()}
-  function toggleDark(){document.documentElement.classList.toggle('dark-mode');try{localStorage.setItem('tronclass_login_dark',document.documentElement.classList.contains('dark-mode')?'1':'0')}catch(_){}}
-  function ensureTheme(){if(q('animatedLoginThemeToggle'))return;var b=document.createElement('button');b.id='animatedLoginThemeToggle';b.className='animated-login-theme-toggle';b.type='button';b.textContent='◐';b.onclick=toggleDark;document.body.appendChild(b);try{var saved=localStorage.getItem('tronclass_login_dark');if(saved==='1'||(!saved&&matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.classList.add('dark-mode')}catch(_){}}
+  /* LOGIN_THEME_SYNC_V1: 登入畫面跟隨外觀設定（tronclass_app_settings_v1）；◐ 切換鈕同步回寫統一設定 */
+  function loginThemeChoice(){try{var st=JSON.parse(localStorage.getItem('tronclass_app_settings_v1')||'{}');var t=String(st.theme||'').toLowerCase();return(t==='light'||t==='dark')?t:''}catch(_){return''}}
+  function toggleDark(){
+    var willBeDark=!document.documentElement.classList.contains('dark-mode');
+    document.documentElement.classList.toggle('dark-mode',willBeDark);
+    try{
+      var st={};try{st=JSON.parse(localStorage.getItem('tronclass_app_settings_v1')||'{}')||{}}catch(_){st={}}
+      st.theme=willBeDark?'dark':'light';
+      localStorage.setItem('tronclass_app_settings_v1',JSON.stringify(st));
+      localStorage.setItem('tronclass_login_dark',willBeDark?'1':'0');
+    }catch(_){}
+  }
+  function ensureTheme(){
+    if(q('animatedLoginThemeToggle'))return;
+    var b=document.createElement('button');b.id='animatedLoginThemeToggle';b.className='animated-login-theme-toggle';b.type='button';b.textContent='◐';b.onclick=toggleDark;document.body.appendChild(b);
+    try{
+      var choice=loginThemeChoice();var dark;
+      if(choice==='dark')dark=true;
+      else if(choice==='light')dark=false;
+      else{var saved=localStorage.getItem('tronclass_login_dark');dark=saved==='1'||(!saved&&matchMedia('(prefers-color-scheme: dark)').matches)}
+      document.documentElement.classList.toggle('dark-mode',!!dark);
+    }catch(_){}
+    try{window.addEventListener('storage',function(ev){if(ev&&(!ev.key||ev.key==='tronclass_app_settings_v1')){var c=loginThemeChoice();if(c)document.documentElement.classList.toggle('dark-mode',c==='dark')}})}catch(_){}
+  }
   function ensureCanvas(){if(q('animatedLoginParticles'))return;var c=document.createElement('canvas');c.id='animatedLoginParticles';document.body.prepend(c)}
   function resizeCanvas(c){c.width=innerWidth;c.height=innerHeight}
   function startParticles(){if(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches)return;var c=q('animatedLoginParticles');if(!c||raf)return;var ctx=c.getContext('2d');if(!ctx)return;resizeCanvas(c);particles=[];var count=Math.min(90,Math.floor(c.width*c.height/17000));for(var i=0;i<count;i++)particles.push({x:Math.random()*c.width,y:Math.random()*c.height,s:Math.random()*2.4+1,vx:(Math.random()-.5)*.45,vy:(Math.random()-.5)*.45});function loop(){if(!document.body.classList.contains('animated-login-active')||document.body.classList.contains('logged-in')){raf=0;return}ctx.clearRect(0,0,c.width,c.height);var dark=document.documentElement.classList.contains('dark-mode');particles.forEach(function(p){p.x+=p.vx;p.y+=p.vy;if(p.x<0)p.x=c.width;if(p.x>c.width)p.x=0;if(p.y<0)p.y=c.height;if(p.y>c.height)p.y=0;ctx.fillStyle=dark?'rgba(255,255,255,.16)':'rgba(37,99,235,.14)';ctx.beginPath();ctx.arc(p.x,p.y,p.s,0,Math.PI*2);ctx.fill()});raf=requestAnimationFrame(loop)}raf=requestAnimationFrame(loop);addEventListener('resize',function(){resizeCanvas(c)},{passive:true})}
@@ -4942,19 +4978,32 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
 (function(){'use strict';
   if(window.DETECTION_SCHEDULE_DESKTOP_NAV_V1)return;window.DETECTION_SCHEDULE_DESKTOP_NAV_V1=true;
   function ensure(){
-    if(document.getElementById('detectionScheduleDesktopLink'))return;
     var tabs=document.querySelector('.tabs');
     if(!tabs)return;
-    var link=document.createElement('a');
-    link.id='detectionScheduleDesktopLink';
-    link.className='tab detection-schedule-desktop-link';
-    link.href='/admin/detection-schedule';
-    link.textContent='排程';
-    link.setAttribute('aria-label','前往點名偵測排程');
-    link.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();location.assign('/admin/detection-schedule');});
-    // NOTIFICATIONS_STANDALONE_PAGE_V1: 通知分頁已移除，改錨定在「維護」分頁前。
-    var ref=tabs.querySelector('.tab[data-view="maintenance"]');
-    if(ref)tabs.insertBefore(link,ref); else tabs.appendChild(link);
+    if(!document.getElementById('detectionScheduleDesktopLink')){
+      var link=document.createElement('a');
+      link.id='detectionScheduleDesktopLink';
+      link.className='tab detection-schedule-desktop-link';
+      link.href='/admin/detection-schedule';
+      link.textContent='排程';
+      link.setAttribute('aria-label','前往點名偵測排程');
+      link.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();location.assign('/admin/detection-schedule');});
+      // NOTIFICATIONS_STANDALONE_PAGE_V1: 通知分頁已移除，改錨定在「維護」分頁前。
+      var ref=tabs.querySelector('.tab[data-view="maintenance"]');
+      if(ref)tabs.insertBefore(link,ref); else tabs.appendChild(link);
+    }
+    // HOMEWORK_TAB_V1: 「作業」分頁（課表旁），樣式與排程連結同一顆膠囊 class。
+    if(!document.getElementById('homeworkReminderTab')){
+      var hw=document.createElement('a');
+      hw.id='homeworkReminderTab';
+      hw.className='tab detection-schedule-desktop-link';
+      hw.href='/admin/homework';
+      hw.textContent='作業';
+      hw.setAttribute('aria-label','前往作業提醒（作業截止追蹤）');
+      hw.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();location.assign('/admin/homework');});
+      var tt=tabs.querySelector('.tab[data-view="timetable"]');
+      if(tt)tt.insertAdjacentElement('afterend',hw); else tabs.appendChild(hw);
+    }
   }
   function start(){ensure();try{new MutationObserver(ensure).observe(document.documentElement,{childList:true,subtree:true});}catch(_){}var count=0,timer=setInterval(function(){ensure();if(++count>=20)clearInterval(timer);},500);}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
@@ -4982,5 +5031,45 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',recover);else recover();
 }());
 </script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a303743979179688',t:'MTc4NzU4NjAxMQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><style id="MANUAL_DARK_MIRROR_V1">
+/* DARK_MIRROR_V1: 自動鏡像 prefers-color-scheme:dark → html[data-theme="dark"]；手動深色與系統深色同調色盤 */
+html[data-theme="dark"] #passkeyTapOverlay .pk-card{background:#131b2a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #passkeyTapOverlay p{color:#94a3b8 !important;}
+html[data-theme="dark"] #passkeyTapOverlay #pkTapClose{background:#24324a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #dashPwOverlay .pw-card{background:#131b2a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #dashPwOverlay .pw-hint, html[data-theme="dark"] #dashPwOverlay label{color:#94a3b8 !important;}
+html[data-theme="dark"] #dashPwOverlay input{background:#1c2638 !important;border-color:#334155 !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #dashPwOverlay #dashPwCancel{background:#24324a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] body.dashboard-login-bg-active header, html[data-theme="dark"] body.dashboard-login-bg-active .topbar, html[data-theme="dark"] body.dashboard-login-bg-active .top-bar, html[data-theme="dark"] body.dashboard-login-bg-active .dashboard-header, html[data-theme="dark"] body.dashboard-login-bg-active .app-header{background:rgba(15,23,42,.78)!important;border-bottom-color:rgba(148,163,184,.18)!important;}
+html[data-theme="dark"] body.dashboard-login-bg-active .mobile-nav{background:rgba(15,23,42,.88)!important;border-color:rgba(148,163,184,.22)!important;}
+html[data-theme="dark"] .panel, html[data-theme="dark"] .stat, html[data-theme="dark"] .item, html[data-theme="dark"] .next-card, html[data-theme="dark"] .login-card, html[data-theme="dark"] #loginCard, html[data-theme="dark"] #nextClassCard, html[data-theme="dark"] #mockPanel, html[data-theme="dark"] #mockRollcallPanel{background: rgba(22, 29, 41, 0.74) !important;border-color: rgba(148, 163, 184, 0.16) !important;box-shadow: 0 4px 28px rgba(0, 0, 0, 0.22) !important;}
+html[data-theme="dark"] header.topbar, html[data-theme="dark"] .topbar, html[data-theme="dark"] .app-header, html[data-theme="dark"] .dashboard-header{background: rgba(15, 23, 42, 0.78) !important;border-bottom-color: rgba(148, 163, 184, 0.15) !important;}
+html[data-theme="dark"] .table-wrap{background: rgba(22, 29, 41, 0.65) !important;border-color: rgba(148, 163, 184, 0.14) !important;}
+html[data-theme="dark"] table thead th, html[data-theme="dark"] .tt-stable-table th{background: rgba(30, 41, 59, 0.70) !important;}
+html[data-theme="dark"] .mobile-nav, html[data-theme="dark"] #mobileNav, html[data-theme="dark"] #mobileNavFinalV2{background: rgba(15, 23, 42, 0.88) !important;border-color: rgba(148, 163, 184, 0.18) !important;}
+html[data-theme="dark"] #mobileSheet .sheet, html[data-theme="dark"] #mobileMoreFinalV2 .sheet{background: rgba(22, 29, 41, 0.86) !important;border-color: rgba(148, 163, 184, 0.18) !important;}
+html[data-theme="dark"] .quick button.secondary{background: rgba(30, 41, 59, 0.55) !important;}
+html[data-theme="dark"] .tt-stable-row, html[data-theme="dark"] .tt-edit-row{background: rgba(30, 41, 59, 0.65) !important;border-color: rgba(148, 163, 184, 0.16) !important;}
+html[data-theme="dark"] .notify-pref-item, html[data-theme="dark"] .notify-item{background: rgba(30, 41, 59, 0.58) !important;border-color: rgba(148, 163, 184, 0.14) !important;}
+html[data-theme="dark"] .modal, html[data-theme="dark"] .tt-history-modal{background: rgba(22, 29, 41, 0.88) !important;border-color: rgba(148, 163, 184, 0.18) !important;}
+html[data-theme="dark"] .maint-final-card, html[data-theme="dark"] .maint-final-check{background: rgba(22, 29, 41, 0.66) !important;border-color: rgba(148, 163, 184, 0.16) !important;}
+html[data-theme="dark"] .tt-stable-panel{background: rgba(22, 29, 41, 0.72) !important;}
+html[data-theme="dark"] .mock-account{background: rgba(30, 41, 59, 0.55) !important;}
+html[data-theme="dark"]{--bg:#0B0F19!important;--card:#182232!important;--soft:#111827!important;--soft2:#1E293B!important;--text:#F1F5F9!important;--muted:#94A3B8!important;--line:#334155!important;--line2:#1E293B!important;--primary:#3B82F6!important;--primaryText:#FFFFFF!important;--ok:#4ADE80!important;--warn:#FBBF24!important;--bad:#F87171!important;}
+/* dashboard.css 外部檔的深色僅寫在 prefers media，這裡補手動深色 */
+html[data-theme="dark"] header.topbar,html[data-theme="dark"] .topbar{background:rgba(15,20,29,.92)!important;border-bottom-color:var(--line2)!important}
+html[data-theme="dark"] .next-item{background:rgba(15,23,42,.35)!important}
+html[data-theme="dark"] .mobile-nav{background:rgba(15,23,42,.94)!important}
+
+
+/* MAINT_FINAL_DARK_V1: 維護頁卡片（maintenance-implementation.js + maintenance-components.css）手動深色補齊 */
+html[data-theme="dark"] .maint-final-overall{background:linear-gradient(180deg,rgba(21,128,61,.10),#182232)!important;border-color:#334155!important;color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-overall.warn{background:linear-gradient(180deg,rgba(180,83,9,.14),#182232)!important}
+html[data-theme="dark"] .maint-final-overall.bad{background:linear-gradient(180deg,rgba(180,35,24,.14),#182232)!important}
+html[data-theme="dark"] .maint-final-card{background:#182232!important;border-color:#334155!important;color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-check,html[data-theme="dark"] .maint-final-raw{background:#111827!important;border-color:#334155!important;color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-title,html[data-theme="dark"] .maint-final-k{color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-sub,html[data-theme="dark"] .maint-final-v,html[data-theme="dark"] .maint-final-h{color:#94A3B8!important}
+html[data-theme="dark"] .maint-final-bar{background:#1E293B!important}</style>
+</body>
 </html>
