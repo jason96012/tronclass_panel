@@ -1266,11 +1266,12 @@
     if (q('uploadProgressBar')) q('uploadProgressBar').style.width = '0%';
   }
 
-  function uploadOne(file, i, total){
+  function uploadOne(file, i, total, displayName){
     return new Promise((resolve, reject) => {
       const fd = new FormData();
       fd.append('folder', currentFolder);
-      fd.append('file', file);
+      // UPLOAD_PNG_FIX_V2: 帶上（可能補了副檔名的）檔名，後端以此判斷格式
+      fd.append('file', file, displayName || file.name);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/admin/api/files/upload');
       xhr.withCredentials = true;
@@ -1306,34 +1307,60 @@
     const m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
     return m ? m[1] : '';
   }
+  // UPLOAD_PNG_FIX_V2: iPhone 照片選擇器給的檔名常無副檔名（如 IMG_1234），
+  // 改用 MIME 類型輔助判斷，避免 png/heic 等被誤判為格式不支援。
+  const UPLOAD_MIME_EXT = {
+    'image/png':'png','image/jpeg':'jpg','image/heic':'heic','image/gif':'gif',
+    'application/pdf':'pdf','application/zip':'zip','application/x-zip-compressed':'zip',
+    'video/mp4':'mp4','video/quicktime':'mov',
+    'text/plain':'txt','text/markdown':'md',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation':'pptx',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx'
+  };
+  function uploadMimeToExt(type){
+    return UPLOAD_MIME_EXT[String(type || '').toLowerCase()] || '';
+  }
+  function uploadRealExt(f){
+    return uploadExtOf(f.name) || uploadMimeToExt(f.type);
+  }
   async function uploadFiles(fileList){
     const arr = Array.from(fileList || []);
     if (q('fileInput')) q('fileInput').value = '';
     if (!arr.length) return;
-    // 格式預檢：不在白名單的檔案跳出提示通知，不上傳
-    const badType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadExtOf(f.name)) < 0);
-    const okType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadExtOf(f.name)) >= 0);
+    // 格式預檢：不在白名單的檔案跳出提示通知，不上傳（無副檔名時以 MIME 判斷）
+    const badType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadRealExt(f)) < 0);
+    const okType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadRealExt(f)) >= 0);
     if (badType.length) {
-      const names = badType.map(f => f.name).join('、');
+      const names = badType.map(f => f.name || f.type || '未知檔案').join('、');
       alert('以下檔案格式不支援，未上傳：\n' + names + '\n\n允許的格式：' + UPLOAD_ALLOWED_EXTS.join('、'));
       progressError('未上傳（格式不支援）：' + names + '｜允許：' + UPLOAD_ALLOWED_EXTS.join('、'));
       toast('格式不支援，未上傳：' + names, false);
     }
     const tooBig = okType.filter(f => f.size > UPLOAD_MAX_BYTES);
     const will = okType.filter(f => f.size <= UPLOAD_MAX_BYTES);
+    if (!will.length) {
+      if (!badType.length && !tooBig.length) progressError('沒有可上傳的檔案');
+      hideProgress(8000);
+      return;
+    }
     if (tooBig.length) {
       const names = tooBig.map(f => f.name).join('、');
       progressError('未上傳（超過 50 MB 限制）：' + names);
       toast('超過 50 MB 限制，未上傳：' + names, false);
-      if (!will.length) { hideProgress(8000); return; }
     }
     try {
       for (let i = 0; i < will.length; i++) {
-        await uploadOne(will[i], i + 1, will.length);
+        // 無副檔名的檔案（iPhone 照片）：以 MIME 推得副檔名補在後端要看的檔名上
+        const f = will[i];
+        const realExt = uploadRealExt(f);
+        const sendName = (uploadExtOf(f.name) || !realExt) ? f.name : (f.name + '.' + realExt);
+        await uploadOne(f, i + 1, will.length, sendName);
       }
       if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
-      showProgress(100, will.length === arr.length ? '所有檔案上傳完成！' : '上傳完成（超過限制的檔案未上傳）');
-      toast('教材上傳完成');
+      const skipped = badType.length + tooBig.length;
+      showProgress(100, skipped ? '上傳完成（部分檔案未上傳，詳見提示）' : '所有檔案上傳完成！');
+      toast(skipped ? '上傳完成（部分檔案未上傳）' : '教材上傳完成');
       hideProgress();
       await loadFiles();
     } catch(e) {
