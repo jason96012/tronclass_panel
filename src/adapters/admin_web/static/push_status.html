@@ -45,6 +45,7 @@
           <div class="row"><span class="key">主畫面 App</span><span id="standaloneStatus" class="value">—</span></div>
           <div class="row"><span class="key">通知權限</span><span id="permissionStatus" class="value">—</span></div>
           <div class="row"><span class="key">本機 Push 訂閱</span><span id="localStatus" class="value">—</span></div>
+          <div class="row"><span class="key">上次伺服器推送</span><span id="serverHealth" class="value">—</span></div>
         </div>
       </section>
       <section class="card" style="grid-column:1/-1">
@@ -57,11 +58,58 @@
         <div id="message" class="message" role="status"></div>
         <div class="note">背景測試安排後，請立刻把 Tronclass 從多工畫面往上滑掉。通知聲由 iPhone「設定 → 通知 → Tronclass → 聲音」控制；PWA 無法強制繞過靜音或專注模式。</div>
       </section>
+      <section class="card" id="adminOverviewCard" style="grid-column:1/-1;display:none">
+        <h2>全部帳號綁定狀態</h2>
+        <div id="adminOverviewBody" class="rows"><div class="row"><span class="key">載入中…</span></div></div>
+        <div class="note">管理員專用：列出所有帳號的推播綁定與發送健康。「推播：尚無發送紀錄」代表該帳號最近沒有觸發過通知，不等於失效；裝置被推播服務判定失效（HTTP 410）時會自動移除。「上游輪詢」連續失敗通常是 Tronclass 登入過期，請該帳號重新登入。</div>
+      </section>
     </div>
   </main>
   <script>
   (function(){'use strict';
     function q(id){return document.getElementById(id)}
+    function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+    function ts(v){return v?new Date(Number(v)*1000).toLocaleString():'—'}
+    function healthLine(h,detail){
+      if(!h)return '<span style="font-size:12px;color:var(--muted)">推播：尚無發送紀錄</span>';
+      if(Number(h.consecutive_fails)>0){
+        var extra=detail&&h.last_error?'<br><span style="font-size:12px;color:var(--muted)">'+esc(String(h.last_error).slice(0,90))+'</span>':'';
+        return '<span style="font-size:12px;color:var(--bad)">推播：連續 '+Number(h.consecutive_fails)+' 次失敗'+extra+'</span>';
+      }
+      if(Number(h.ok_total)>0){
+        var extra=detail?'<br><span style="font-size:12px;color:var(--muted)">上次成功：'+ts(h.last_ok_at)+'</span>':'';
+        return '<span style="font-size:12px;color:var(--good)">推播：正常'+extra+'</span>';
+      }
+      return '<span style="font-size:12px;color:var(--muted)">推播：尚無發送紀錄</span>';
+    }
+    // PUSH_HEALTH_V1: 失效偵測（發送結果＋上游輪詢）
+    // PUSH_OVERVIEW_V1 + PUSH_HEALTH_V1: 管理員載入全部帳號的綁定與健康狀態（非管理員 403 時整卡隱藏）
+    async function loadAdminOverview(){
+      var card=q('adminOverviewCard'),body=q('adminOverviewBody');
+      if(!card||!body)return;
+      try{
+        var data=await api('/admin/api/push/overview');
+        var items=data.accounts||[];
+        var html=items.map(function(a){
+          var name=esc(a.account_id)+(a.username&&a.username!==a.account_id?'（'+esc(a.username)+'）':'');
+          var state=a.bound?'<span style="color:var(--good)">已綁定 '+Number(a.bindings)+' 台</span>':'<span style="color:var(--muted)">未綁定</span>';
+          var mon='';
+          if(a.monitor){
+            var mc=Number(a.monitor.consecutive_failures)||0;
+            mon='<br><span style="font-size:12px;color:'+(a.monitor.is_running&&mc>0?'var(--bad)':'var(--muted)')+'">上游輪詢：'+(a.monitor.is_running?(mc>0?'連續 '+mc+' 次失敗（可能太久沒登入）':'正常'):'未執行')+'</span>';
+          }
+          return '<div class="row"><span class="key">'+name+'</span><span class="value">'+state+'<br>'+healthLine(a.health,false)+mon+'<br><span style="font-size:12px;color:var(--muted)">綁定更新：'+ts(a.last_updated)+'</span></span></div>';
+        }).join('');
+        var orphans=data.orphans||[];
+        html+=orphans.map(function(a){
+          return '<div class="row"><span class="key">'+esc(a.account_id)+'（帳號已刪除）</span><span class="value"><span style="color:var(--warn)">殘留 '+Number(a.bindings)+' 筆訂閱</span></span></div>';
+        }).join('');
+        body.innerHTML=html||'<div class="row"><span class="key">沒有帳號</span></div>';
+        card.style.display='';
+      }catch(e){
+        card.style.display='none';
+      }
+    }
     function standalone(){return navigator.standalone===true||(matchMedia&&matchMedia('(display-mode: standalone)').matches)}
     async function readJson(res){var body=await res.json().catch(function(){return{}});if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body}
     async function api(path,options){return fetch(path,Object.assign({credentials:'same-origin',cache:'no-store'},options||{})).then(readJson)}
@@ -77,16 +125,18 @@
         var active=!!(config.subscribed&&localMatches&&permission==='granted');
         q('accountId').textContent=config.account_id||'—';q('serverCount').textContent=String(config.subscription_count||0)+' 台';q('vapidStatus').textContent=config.public_key?'正常':'未初始化';
         q('standaloneStatus').textContent=standalone()?'是':'否';q('permissionStatus').textContent=permission==='granted'?'已允許':permission==='denied'?'已拒絕':'尚未允許';q('localStatus').textContent=(localMatches&&config.subscribed)?'已綁定此帳號':localMatches?'需要重新啟用':local?(boundAccount?'已綁定其他帳號':'尚未明確綁定'):'不存在';
+        var sh=q('serverHealth');
+        if(sh)sh.innerHTML=config.health?healthLine(config.health,true):'尚無發送紀錄';
         q('statusDot').className='dot '+(active?'good':'bad');q('statusTitle').textContent=active?'背景推播已啟用':'背景推播需要處理';q('statusDescription').textContent=active?'此帳號與目前 iPhone 的訂閱均正常':'請使用下方按鈕啟用或修復此手機';
       }catch(error){q('statusDot').className='dot bad';q('statusTitle').textContent='狀態讀取失敗';q('statusDescription').textContent=error.message||'請重新登入';message(error.message||'讀取失敗',false)}
     }
     async function busy(button,fn){var old=button.textContent;button.disabled=true;button.textContent='處理中…';try{await fn()}catch(error){message(error.message||'操作失敗',false)}finally{button.disabled=false;button.textContent=old;await refresh()}}
     document.addEventListener('DOMContentLoaded',function(){
-      q('refreshStatus').onclick=refresh;
+      q('refreshStatus').onclick=function(){refresh();loadAdminOverview()};
       q('enablePush').onclick=function(){busy(this,async function(){if(!window.TronclassWebPush)throw new Error('推播元件尚未載入，請重新整理');var result=await window.TronclassWebPush.subscribe();message('已儲存此手機訂閱；約 '+(result.delaySecs||10)+' 秒後會送出背景測試。',true)})};
       q('testPush').onclick=function(){busy(this,async function(){var result=await api('/admin/api/push/test',{method:'POST'});if(result.ok===false)throw new Error(result.error||'無法安排測試');message('已安排 '+(result.delay_secs||10)+' 秒後發送，請立刻把 App 往上滑掉。',true)})};
       q('disablePush').onclick=function(){var button=this;if(!confirm('確定要停用目前這台 iPhone 的背景推播？'))return;busy(button,async function(){if(!window.TronclassWebPush)throw new Error('推播元件尚未載入');var removed=await window.TronclassWebPush.unsubscribe();message(removed?'已停用目前這台手機。':'此手機沒有可停用的訂閱。',true)})};
-      refresh();
+      refresh();loadAdminOverview();
     });
   }());
   </script>

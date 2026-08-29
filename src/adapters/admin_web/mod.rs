@@ -1229,6 +1229,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(auth::admin_login_activity_handler),
         )
         .route("/admin/api/push/config", get(web_push::config_handler))
+        .route("/admin/api/push/overview", get(web_push::overview_handler))
         .route(
             "/admin/api/push/subscribe",
             post(web_push::subscribe_handler).layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),

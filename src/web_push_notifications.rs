@@ -353,6 +353,8 @@ impl WebPushService {
         subscriptions: Vec<WebPushSubscriptionRow>,
         payload: &[u8],
     ) -> (usize, usize) {
+        // PUSH_HEALTH_V1: 同一批訂閱屬於同一個帳號，發送後記錄結果供管理員查看推播是否失效。
+        let account_id = subscriptions.first().map(|sub| sub.account_id.clone());
         // Fan out in parallel, each send holding one permit from SEND_SEMAPHORE.
         let futures = subscriptions.into_iter().map(|sub| {
             let payload = payload.to_vec();
@@ -364,14 +366,24 @@ impl WebPushService {
         let results = futures::future::join_all(futures).await;
         let mut ok = 0usize;
         let mut failed = 0usize;
+        let mut first_error: Option<String> = None;
         for result in results {
             match result {
                 Ok(()) => ok += 1,
                 Err(error) => {
                     failed += 1;
+                    if first_error.is_none() {
+                        first_error = Some(format!("{error}"));
+                    }
                     warn!(error = %error, "Web Push 單一裝置發送失敗");
                 }
             }
+        }
+        if let Some(account_id) = account_id.as_deref() {
+            let _ = self
+                .db
+                .record_web_push_health(account_id, ok, failed, first_error.as_deref())
+                .await;
         }
         (ok, failed)
     }

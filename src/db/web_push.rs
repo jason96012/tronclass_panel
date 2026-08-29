@@ -13,6 +13,13 @@ pub struct WebPushSubscriptionRow {
     pub auth: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+pub struct WebPushBindingOverviewRow {
+    pub account_id: String,
+    pub bindings: i64,
+    pub last_updated: Option<i64>,
+}
+
 impl AccountsDb {
     pub async fn get_web_push_setting(&self, key: &str) -> Result<Option<String>> {
         let row = sqlx::query_as::<_, (String,)>(
@@ -85,6 +92,109 @@ impl AccountsDb {
         .await
         .into_diagnostic()
         .wrap_err_with(|| format!("讀取 `{account_id}` Web Push 訂閱失敗"))
+    }
+
+    /// PUSH_OVERVIEW_V1：全部帳號的推播綁定統計（管理員總覽用）。
+    pub async fn list_web_push_binding_overview(&self) -> Result<Vec<WebPushBindingOverviewRow>> {
+        sqlx::query_as::<_, WebPushBindingOverviewRow>(
+            "SELECT account_id, COUNT(*) AS bindings, MAX(updated_at) AS last_updated
+             FROM web_push_subscriptions
+             WHERE account_id != ''
+             GROUP BY account_id
+             ORDER BY account_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("讀取 Web Push 綁定總覽失敗")
+    }
+
+    /// PUSH_HEALTH_V1：記錄帳號的推播發送結果（存於 web_push_settings KV）。
+    pub async fn record_web_push_health(
+        &self,
+        account_id: &str,
+        ok_count: usize,
+        fail_count: usize,
+        last_error: Option<&str>,
+    ) -> Result<()> {
+        let key = format!("push_health_v1:{}", account_id.trim());
+        let now = chrono::Local::now().timestamp();
+        let mut entry: serde_json::Value = match self.get_web_push_setting(&key).await? {
+            Some(raw) => serde_json::from_str(&raw).unwrap_or(serde_json::json!({})),
+            None => serde_json::json!({}),
+        };
+        if !entry.is_object() {
+            entry = serde_json::json!({});
+        }
+        let object = entry.as_object_mut().expect("health entry is a json object");
+        let read_u64 = |field: &str| {
+            object
+                .get(field)
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0)
+        };
+        let ok_total = read_u64("ok_total") + ok_count as u64;
+        let fail_total = read_u64("fail_total") + fail_count as u64;
+        let consecutive_fails = if fail_count > 0 {
+            read_u64("consecutive_fails") + fail_count as u64
+        } else {
+            0
+        };
+        object.insert("last_attempt_at".to_string(), serde_json::json!(now));
+        if ok_count > 0 {
+            object.insert("last_ok_at".to_string(), serde_json::json!(now));
+        }
+        if fail_count > 0 {
+            object.insert("last_fail_at".to_string(), serde_json::json!(now));
+        }
+        object.insert("ok_total".to_string(), serde_json::json!(ok_total));
+        object.insert("fail_total".to_string(), serde_json::json!(fail_total));
+        object.insert(
+            "consecutive_fails".to_string(),
+            serde_json::json!(consecutive_fails),
+        );
+        match last_error.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(error) if fail_count > 0 => {
+                object.insert("last_error".to_string(), serde_json::json!(error));
+            }
+            _ if fail_count == 0 => {
+                object.remove("last_error");
+            }
+            _ => {}
+        }
+        self.set_web_push_setting(&key, &entry.to_string()).await
+    }
+
+    /// PUSH_HEALTH_V1：讀取單一帳號的推播發送健康紀錄。
+    pub async fn get_web_push_health(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<serde_json::Value>> {
+        let key = format!("push_health_v1:{}", account_id.trim());
+        let Some(raw) = self.get_web_push_setting(&key).await? else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_str(&raw).ok())
+    }
+
+    /// PUSH_HEALTH_V1：全部帳號的推播發送健康紀錄（管理員總覽用）。
+    pub async fn list_web_push_health(&self) -> Result<Vec<(String, serde_json::Value)>> {
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT key, value FROM web_push_settings
+             WHERE substr(key, 1, 15) = 'push_health_v1:'",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("讀取 Web Push 健康紀錄失敗")?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let account_id = key.strip_prefix("push_health_v1:")?;
+                let parsed = serde_json::from_str(&value).ok()?;
+                Some((account_id.to_string(), parsed))
+            })
+            .collect())
     }
 
     pub async fn count_web_push_subscriptions(&self, account_id: &str) -> Result<i64> {

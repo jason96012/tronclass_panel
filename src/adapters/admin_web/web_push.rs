@@ -85,6 +85,13 @@ pub(super) async fn config_handler(
         )
             .into_response();
     };
+    // PUSH_HEALTH_V1：此帳號最近的推播發送結果（正常／連續失敗／尚無紀錄）。
+    let health = state
+        .accounts_db
+        .get_web_push_health(&account_id)
+        .await
+        .ok()
+        .flatten();
     match state
         .accounts_db
         .count_web_push_subscriptions(&account_id)
@@ -95,6 +102,7 @@ pub(super) async fn config_handler(
             "subscribed": count > 0,
             "subscription_count": count,
             "account_id": account_id,
+            "health": health,
         }))
         .into_response(),
         Err(error) => (
@@ -103,6 +111,99 @@ pub(super) async fn config_handler(
         )
             .into_response(),
     }
+}
+
+/// PUSH_OVERVIEW_V1：管理員查看所有帳號的推播綁定狀態。
+pub(super) async fn overview_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "僅管理員可查看全部帳號的綁定狀態"})),
+        )
+            .into_response();
+    }
+    let accounts = match state.accounts_db.list().await {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("讀取帳號清單失敗：{error}")})),
+            )
+                .into_response()
+        }
+    };
+    let overview = match state.accounts_db.list_web_push_binding_overview().await {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"error": format!("讀取綁定總覽失敗：{error}")})),
+            )
+                .into_response()
+        }
+    };
+    // PUSH_HEALTH_V1：每個帳號的發送健康與上游輪詢狀態（太久沒登入＝輪詢連續失敗）。
+    let health_rows = state
+        .accounts_db
+        .list_web_push_health()
+        .await
+        .unwrap_or_default();
+    let mut health_by_account: std::collections::BTreeMap<String, serde_json::Value> =
+        health_rows.into_iter().collect();
+    let mut monitor_by_account: std::collections::BTreeMap<String, serde_json::Value> =
+        std::collections::BTreeMap::new();
+    for account in super::status::resolve_visible_accounts(&state, &session) {
+        let consecutive_failures = account.monitor_status.lock().await.consecutive_failures;
+        let last_poll_timestamp = account.monitor_status.lock().await.last_poll_timestamp;
+        let is_running = *account.is_running.lock().await;
+        monitor_by_account.insert(
+            account.account_id.clone(),
+            json!({
+                "is_running": is_running,
+                "consecutive_failures": consecutive_failures,
+                "last_poll_timestamp": last_poll_timestamp,
+            }),
+        );
+    }
+    let mut by_account: std::collections::BTreeMap<String, (i64, Option<i64>)> =
+        std::collections::BTreeMap::new();
+    for row in overview {
+        by_account.insert(row.account_id, (row.bindings, row.last_updated));
+    }
+    let mut items = Vec::new();
+    for account in &accounts {
+        let (bindings, last_updated) = by_account
+            .remove(&account.id)
+            .unwrap_or((0, None));
+        let health = health_by_account.remove(&account.id);
+        let monitor = monitor_by_account.get(&account.id).cloned();
+        items.push(json!({
+            "account_id": account.id,
+            "username": account.username,
+            "enabled": account.enabled,
+            "bindings": bindings,
+            "bound": bindings > 0,
+            "last_updated": last_updated,
+            "health": health,
+            "monitor": monitor,
+        }));
+    }
+    // 殘留訂閱：帳號已刪除但裝置訂閱還在（供管理員判斷是否清理）。
+    let orphans: Vec<serde_json::Value> = by_account
+        .into_iter()
+        .map(|(account_id, (bindings, last_updated))| {
+            json!({"account_id": account_id, "bindings": bindings, "last_updated": last_updated})
+        })
+        .collect();
+    Json(json!({"is_admin": true, "accounts": items, "orphans": orphans})).into_response()
 }
 
 pub(super) async fn subscribe_handler(
