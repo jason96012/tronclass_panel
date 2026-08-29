@@ -139,7 +139,7 @@ pub(super) fn inject_theme(html: &str) -> String {
     // （此 inline <style> 由 html_page_response() 統一補上 CSP nonce。）
     // 注意：concat!() 只接受字面值（literal），不能展開 const，因此全部內聯在此。
     const SHARED_ASSETS: &str = concat!(
-        r#"<script src="/admin/static/app-settings.js?v=20260829settings1"></script>"#,
+        r#"<script src="/admin/static/app-settings.js?v=20260829settings2"></script>"#,
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
@@ -171,6 +171,9 @@ html[data-app-settings][data-motion="reduced"] *,html[data-app-settings][data-mo
 .app-settings-gear{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 14px;border-radius:999px;background:var(--soft,#f1f5f9);color:var(--text,#172033);border:1px solid var(--line,#cbd5e1);font:inherit;font-weight:800;font-size:13px;line-height:1;text-decoration:none;cursor:pointer;white-space:nowrap}
 .app-settings-gear:hover{filter:brightness(.96)}
 .app-settings-gear:active{transform:scale(.97)}
+.app-settings-tab.active{background:var(--card)!important;color:var(--text)!important;border-color:var(--line)!important}
+.app-settings-gear.mobile-only{display:none}
+@media(max-width:820px){.app-settings-gear.mobile-only{display:inline-flex}}
 </style>"#
     );
     let assets = SHARED_ASSETS.to_string();

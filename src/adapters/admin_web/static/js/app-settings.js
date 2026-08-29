@@ -6,7 +6,8 @@
  *    data-fontscale / data-motion 掛到 <html>，避免主題閃爍（FOUC）。
  * 2) 「跟隨系統」模式監聽 prefers-color-scheme 變化，即時切換深淺色。
  * 3) 其他分頁變更設定時，透過 storage 事件同步到目前分頁。
- * 4) 在有 .top-actions 的頁面注入「⚙️ 設定」入口（/admin/settings）。
+ * 4) 注入「設定」入口：Dashboard 放進分頁列緊鄰「通知」分頁，其他頁面放
+ *    header 的 top-actions（皆為純文字，無表情符號）。
  * 5) 在 /admin/settings 頁面（有 #appSettingsRoot）掛上互動邏輯。
  *
  * 對應的 CSS 覆蓋規則在 pages.rs 的 APP_SETTINGS_DYNAMIC_CSS（隨 theme.css
@@ -112,19 +113,63 @@
     resolvedTheme: function () { return resolvedTheme(current); }
   };
 
-  // ── 各頁面 header 注入「設定」入口 ────────────────────────────────────────
+  // ── 各頁面注入「設定」入口 ────────────────────────────────────────────────
+  // Dashboard：放進分頁列（.tabs），緊鄰「通知」分頁。「通知」分頁本身由
+  // notifications.js 動態建立，因此以輪詢等它出現後再把設定分頁移到旁邊。
+  // 手機版（≤820px）.tabs 整列隱藏，此時改用 header 的 top-actions 入口
+  // （掛 mobile-only class，僅小螢幕顯示）。其他頁面：一律放 top-actions。
+  var GEAR_POLL_MAX = 25; // 25 × 320ms ≈ 8 秒
+
+  function buildGearTab() {
+    var b = document.createElement('button');
+    b.id = 'appSettingsGearTab';
+    b.type = 'button';
+    b.className = 'tab app-settings-tab';
+    b.setAttribute('aria-label', '設定');
+    b.textContent = '設定';
+    b.addEventListener('click', function () { location.href = '/admin/settings'; });
+    return b;
+  }
+
+  function buildGearLink(mobileOnly) {
+    var a = document.createElement('a');
+    a.id = 'appSettingsGearLink';
+    a.className = 'app-settings-gear' + (mobileOnly ? ' mobile-only' : '');
+    a.href = '/admin/settings';
+    a.setAttribute('aria-label', '設定');
+    a.textContent = '設定';
+    return a;
+  }
+
   function injectGear() {
     if (document.getElementById('appSettingsRoot')) return; // 設定頁本身不需要
+    var tabs = document.querySelector('.tabs');
+    if (tabs) {
+      if (!document.getElementById('appSettingsGearTab')) {
+        tabs.appendChild(buildGearTab());
+        var polls = 0;
+        var timer = setInterval(function () {
+          polls += 1;
+          var gear = document.getElementById('appSettingsGearTab');
+          if (!gear) { clearInterval(timer); return; }
+          var notifyTab = tabs.querySelector('.tab[data-view="notifications"]');
+          if (notifyTab && gear !== notifyTab.nextSibling) {
+            notifyTab.parentNode.insertBefore(gear, notifyTab.nextSibling);
+          }
+          if (notifyTab || polls >= GEAR_POLL_MAX) clearInterval(timer);
+        }, 320);
+      }
+      // 手機版 .tabs 隱藏：補一個僅小螢幕顯示的 header 入口
+      var actions = document.querySelector('.top-actions');
+      if (actions && !document.getElementById('appSettingsGearLink')) {
+        actions.appendChild(buildGearLink(true));
+      }
+      return;
+    }
     if (document.getElementById('appSettingsGearLink')) return;
-    var actions = document.querySelector('.top-actions');
-    if (!actions) return;
-    var link = document.createElement('a');
-    link.id = 'appSettingsGearLink';
-    link.className = 'app-settings-gear';
-    link.href = '/admin/settings';
-    link.setAttribute('aria-label', '外觀與設定');
-    link.textContent = '⚙️ 設定';
-    actions.appendChild(link);
+    var bar = document.querySelector('.top-actions');
+    if (!bar) return;
+    bar.appendChild(buildGearLink(false));
   }
 
   // ── /admin/settings 頁面互動 ─────────────────────────────────────────────
@@ -153,8 +198,8 @@
     var quickToggle = document.getElementById('quickThemeToggle');
     if (quickToggle) {
       quickToggle.textContent = window.TronclassAppSettings.resolvedTheme() === 'dark'
-        ? '☀️ 切換淺色'
-        : '🌙 切換深色';
+        ? '切換淺色'
+        : '切換深色';
     }
   }
 
