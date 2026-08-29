@@ -76,6 +76,8 @@ pub(super) const ADMIN_PASSKEY_HTML: &str = include_str!("static/passkey.html");
 pub(super) const ADMIN_BLACKLIST_HTML: &str = include_str!("static/blacklist.html");
 pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
 pub(super) const ADMIN_HOMEWORK_HTML: &str = include_str!("static/homework.html");
+pub(super) const ADMIN_SETTINGS_HTML: &str = include_str!("static/settings.html");
+pub(super) const APP_SETTINGS_JS: &str = include_str!("static/js/app-settings.js");
 
 /// Add shared frontend assets without copying about 50 KiB of CSS/JavaScript
 /// into every HTML response. The security script intentionally remains
@@ -124,7 +126,20 @@ fn stamp_asset_urls(html: &str) -> String {
 pub(super) fn inject_theme(html: &str) -> String {
     // FAST_PAGE_LOAD_V1: preload + put CSS at the start of <head> so parsing
     // the large inline dashboard scripts does not delay theme.css.
+    //
+    // APP_SETTINGS_BOOT_V1: app-settings.js 排在最前面、先於 theme.css 執行，
+    // 在 body 解析前把 data-theme / data-accent / data-fontscale / data-motion
+    // 掛到 <html>，使用者選的主題不會在載入時閃爍（FOUC）。
+    // 外部 <script src> 為同源 'self'，符合 CSP script-src 'self'。
+    //
+    // APP_SETTINGS_DYNAMIC_CSS_V1: 依 <html data-app-settings> 屬性套用的外觀覆蓋。
+    // 排在 theme.css link 之後：兩者皆為 !important 時，同 specificity 由順序決勝；
+    // accent 規則再用雙屬性選擇器拉高 specificity，穩定壓過 theme.css 的
+    // :root / html[data-theme] 區塊與其手機 media-query 覆蓋。
+    // （此 inline <style> 由 html_page_response() 統一補上 CSP nonce。）
+    // 注意：concat!() 只接受字面值（literal），不能展開 const，因此全部內聯在此。
     const SHARED_ASSETS: &str = concat!(
+        r#"<script src="/admin/static/app-settings.js?v=20260829settings1"></script>"#,
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
@@ -132,7 +147,31 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<link rel="preload" href="/admin/static/session-security.js?v=20260826resumeauth" as="script">"#,
         r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260826resumeauth"></script>"#,
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
-        r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#
+        r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#,
+        r#"<style id="appSettingsDynamicCss">
+html[data-app-settings][data-theme="dark"]{color-scheme:dark!important}
+html[data-app-settings][data-theme="light"]{color-scheme:light!important}
+html[data-app-settings][data-accent="blue"]{--primary:#2563EB!important}
+html[data-app-settings][data-accent="indigo"]{--primary:#6366F1!important}
+html[data-app-settings][data-accent="green"]{--primary:#059669!important}
+html[data-app-settings][data-accent="amber"]{--primary:#D97706!important}
+html[data-app-settings][data-accent="purple"]{--primary:#7C3AED!important}
+html[data-app-settings][data-accent="rose"]{--primary:#E11D48!important}
+html[data-app-settings][data-accent="cyan"]{--primary:#0E7490!important}
+html[data-app-settings][data-theme="dark"][data-accent="blue"]{--primary:#5B9BFF!important}
+html[data-app-settings][data-theme="dark"][data-accent="indigo"]{--primary:#818CF8!important}
+html[data-app-settings][data-theme="dark"][data-accent="green"]{--primary:#34D399!important}
+html[data-app-settings][data-theme="dark"][data-accent="amber"]{--primary:#FBBF24!important}
+html[data-app-settings][data-theme="dark"][data-accent="purple"]{--primary:#A78BFA!important}
+html[data-app-settings][data-theme="dark"][data-accent="rose"]{--primary:#FB7185!important}
+html[data-app-settings][data-theme="dark"][data-accent="cyan"]{--primary:#22D3EE!important}
+html[data-app-settings][data-fontscale="lg"] body{zoom:1.08}
+html[data-app-settings][data-fontscale="xl"] body{zoom:1.16}
+html[data-app-settings][data-motion="reduced"] *,html[data-app-settings][data-motion="reduced"] *::before,html[data-app-settings][data-motion="reduced"] *::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
+.app-settings-gear{display:inline-flex;align-items:center;gap:6px;min-height:36px;padding:0 14px;border-radius:999px;background:var(--soft,#f1f5f9);color:var(--text,#172033);border:1px solid var(--line,#cbd5e1);font:inherit;font-weight:800;font-size:13px;line-height:1;text-decoration:none;cursor:pointer;white-space:nowrap}
+.app-settings-gear:hover{filter:brightness(.96)}
+.app-settings-gear:active{transform:scale(.97)}
+</style>"#
     );
     let assets = SHARED_ASSETS.to_string();
     if let Some(head_at) = html.find("<head") {
@@ -220,6 +259,23 @@ pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Respons
 
 pub(super) async fn admin_password_page_handler(headers: HeaderMap) -> Response {
     html_page_response(&headers, inject_theme(ADMIN_PASSWORD_HTML))
+}
+
+/// /admin/settings — 外觀與本機偏好設定頁。
+/// 比照 dashboard：伺服器端先驗證 session，未登入導回登入頁並帶 next 路徑。
+pub(super) async fn admin_settings_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return admin_login_redirect("/admin/settings");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    html_page_response(&headers, inject_theme(ADMIN_SETTINGS_HTML))
 }
 
 pub(super) async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {

@@ -28,6 +28,13 @@ pub(super) async fn admin_session_security_js_handler() -> Response {
     )
 }
 
+pub(super) async fn admin_app_settings_js_handler() -> Response {
+    admin_static_asset(
+        "application/javascript; charset=utf-8",
+        pages::APP_SETTINGS_JS,
+    )
+}
+
 pub(super) async fn admin_dashboard_css_handler() -> Response {
     admin_static_asset("text/css; charset=utf-8", pages::DASHBOARD_MODULE_CSS)
 }

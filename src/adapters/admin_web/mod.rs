@@ -1003,6 +1003,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/session-security.js",
             get(static_assets::admin_session_security_js_handler),
         )
+        .route(
+            "/admin/static/app-settings.js",
+            get(static_assets::admin_app_settings_js_handler),
+        )
         .route("/admin/static/core-api.js", get(static_assets::admin_core_api_js_handler))
         .route("/admin/static/web-push.js", get(static_assets::admin_web_push_js_handler))
         .route(
@@ -1114,6 +1118,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/oidc/userinfo", get(oidc::userinfo_handler))
         .route("/admin/oidc/jwks", get(oidc::jwks_handler))
         .route("/admin/password", get(pages::admin_password_page_handler))
+        .route("/admin/settings", get(pages::admin_settings_page_handler))
         .route("/admin/passkey", get(pages::admin_passkey_page_handler))
         .route("/admin/logs", get(logs::admin_logs_page_handler))
         .route("/admin/api/public_status", get(status::admin_public_status_handler))

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-Hant" class="tron-auth">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>外觀與設定｜Tronclass Dashboard</title>
+<style>
+  :root{color-scheme:light dark;--bg:#f4f7fb;--card:#fff;--text:#172033;--muted:#64748b;--line:#dbe3ef;--soft:#f1f5f9;--primary:#2563eb;--ok:#15803d}
+  @media(prefers-color-scheme:dark){:root{--bg:#090d16;--card:#131b2a;--text:#f1f5f9;--muted:#94a3b8;--line:#334155;--soft:#1e293b;--primary:#3b82f6}}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif}
+  header{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;position:sticky;top:0;z-index:20;background:rgba(244,247,251,.92);backdrop-filter:blur(12px)}
+  @media(prefers-color-scheme:dark){header{background:rgba(9,13,22,.92)}}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:900}
+  .mark{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;display:grid;place-items:center;font-weight:900}
+  .hbtns{display:flex;gap:8px;flex-wrap:wrap}
+  a.back,button.back{display:inline-flex;align-items:center;justify-content:center;min-height:36px;padding:0 14px;border-radius:999px;background:var(--soft);color:var(--text);text-decoration:none;font-weight:800;font-size:13px;border:1px solid var(--line);cursor:pointer}
+  main{max-width:720px;margin:0 auto;padding:18px 16px 48px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px 18px 18px;box-shadow:0 16px 40px rgba(15,23,42,.08);margin-bottom:16px}
+  h1{margin:0 0 6px;font-size:22px}
+  h2{margin:18px 0 8px;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  p.hint{margin:0 0 6px;color:var(--muted);font-size:13px;line-height:1.55;font-weight:650}
+  /* ── 主題選擇卡 ── */
+  .theme-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:4px}
+  .theme-card{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:16px;border:2px solid var(--line);background:var(--soft);color:var(--text);cursor:pointer;font:inherit;text-align:left}
+  .theme-card:hover{filter:brightness(.98)}
+  .theme-card.active{border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 22%,transparent)}
+  .theme-card b{font-size:14px;font-weight:850}
+  .theme-card i{font-style:normal;font-size:12px;color:var(--muted);font-weight:650}
+  .mini{display:block;height:64px;border-radius:10px;overflow:hidden;border:1px solid var(--line);position:relative;background:#F6F8FC}
+  .mini .bar{position:absolute;top:0;left:0;right:0;height:14px;background:#FFFFFF;border-bottom:1px solid #E2E8F0}
+  .mini .dot{position:absolute;top:4px;left:8px;width:22px;height:6px;border-radius:99px;background:#CBD5E1}
+  .mini .line{position:absolute;width:46%;height:6px;border-radius:99px;background:#E2E8F0}
+  .mini .l1{top:26px;left:10px}.mini .l2{top:38px;left:10px}.mini .l3{top:50px;left:10px}
+  .mini .blk{position:absolute;top:24px;right:10px;bottom:8px;width:32%;border-radius:8px;background:#FFFFFF;border:1px solid #E2E8F0}
+  .mini.dark{background:#0B0F19;border-color:#334155}
+  .mini.dark .bar{background:#182232;border-bottom-color:#334155}
+  .mini.dark .dot{background:#475569}
+  .mini.dark .line{background:#1E293B}
+  .mini.dark .blk{background:#182232;border-color:#334155}
+  .mini.auto .half-l{position:absolute;inset:0;background:#F6F8FC}
+  .mini.auto .half-d{position:absolute;top:0;bottom:0;right:0;width:50%;background:#0B0F19;border-left:2px solid var(--line)}
+  /* ── 強調色 ── */
+  .swatches{display:flex;flex-wrap:wrap;gap:12px;margin-top:4px}
+  .swatch{width:38px;height:38px;border-radius:50%;border:2px solid transparent;background:var(--sw);cursor:pointer;padding:0;position:relative}
+  .swatch:hover{transform:scale(1.06)}
+  .swatch.active{outline:3px solid color-mix(in srgb,var(--sw) 45%,transparent);outline-offset:2px;border-color:var(--text)}
+  /* ── 字體大小分段控制 ── */
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:2px}
+  .seg button{min-width:88px;min-height:42px;border:0;background:var(--soft);color:var(--text);font:inherit;font-weight:800;font-size:14px;cursor:pointer;padding:0 16px}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.active{background:var(--primary);color:#fff}
+  /* ── 減少動畫開關 ── */
+  .switch-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-top:4px;cursor:pointer}
+  .switch-row b{display:block;font-size:14px;font-weight:850}
+  .switch-row i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
+  .switch-wrap{position:relative;width:52px;height:30px;flex:0 0 auto}
+  .switch-wrap input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+  .slider{position:absolute;inset:0;border-radius:99px;background:var(--line);transition:background .15s;pointer-events:none}
+  .slider::after{content:'';position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.3);transition:transform .15s}
+  .switch-wrap input:checked+.slider{background:var(--primary)}
+  .switch-wrap input:checked+.slider::after{transform:translateX(22px)}
+  /* ── 其他設定連結 ── */
+  .links{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin-top:4px}
+  .links a{display:flex;align-items:center;gap:8px;min-height:46px;padding:0 14px;border-radius:14px;border:1px solid var(--line);background:var(--soft);color:var(--text);text-decoration:none;font-weight:750;font-size:14px}
+  .links a:hover{filter:brightness(.97)}
+  .foot-row{margin-top:14px;display:flex;justify-content:flex-end}
+  button.ghost{min-height:40px;padding:0 16px;border-radius:12px;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-weight:800;font-size:13px;cursor:pointer}
+  button.ghost:hover{color:var(--text);filter:brightness(.98)}
+  p.note{margin:14px 0 0;color:var(--muted);font-size:12px;line-height:1.6;font-weight:650}
+  @media(max-width:560px){.links{grid-template-columns:1fr}.seg{width:100%}.seg button{flex:1;min-width:0}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><div class="mark">D</div><span>外觀與設定</span></div>
+  <div class="hbtns">
+    <button id="quickThemeToggle" class="back" type="button">🌙 切換深色</button>
+    <a class="back" href="/admin#overview">返回控制台</a>
+  </div>
+</header>
+<main id="appSettingsRoot">
+  <section class="card">
+    <h1>外觀</h1>
+    <p class="hint">變更立即套用，並自動套用到此裝置上的所有 Dashboard 頁面。</p>
+
+    <h2>主題</h2>
+    <div class="theme-grid">
+      <button class="theme-card" data-set-theme="auto" type="button">
+        <span class="mini auto" aria-hidden="true"><span class="half-l"></span><span class="half-d"></span></span>
+        <b>跟隨系統</b><i>自動切換深淺色</i>
+      </button>
+      <button class="theme-card" data-set-theme="light" type="button">
+        <span class="mini" aria-hidden="true"><span class="bar"><span class="dot"></span></span><span class="line l1"></span><span class="line l2"></span><span class="line l3"></span><span class="blk"></span></span>
+        <b>淺色</b><i>明亮背景</i>
+      </button>
+      <button class="theme-card" data-set-theme="dark" type="button">
+        <span class="mini dark" aria-hidden="true"><span class="bar"><span class="dot"></span></span><span class="line l1"></span><span class="line l2"></span><span class="line l3"></span><span class="blk"></span></span>
+        <b>深色</b><i>暗夜背景</i>
+      </button>
+    </div>
+
+    <h2>強調色</h2>
+    <div class="swatches">
+      <button class="swatch" data-set-accent="blue"   type="button" style="--sw:#2563EB" aria-label="藍色（預設）" title="藍色（預設）"></button>
+      <button class="swatch" data-set-accent="indigo" type="button" style="--sw:#6366F1" aria-label="靛色" title="靛色"></button>
+      <button class="swatch" data-set-accent="green"  type="button" style="--sw:#059669" aria-label="綠色" title="綠色"></button>
+      <button class="swatch" data-set-accent="amber"  type="button" style="--sw:#D97706" aria-label="琥珀色" title="琥珀色"></button>
+      <button class="swatch" data-set-accent="purple" type="button" style="--sw:#7C3AED" aria-label="紫色" title="紫色"></button>
+      <button class="swatch" data-set-accent="rose"   type="button" style="--sw:#E11D48" aria-label="玫瑰色" title="玫瑰色"></button>
+      <button class="swatch" data-set-accent="cyan"   type="button" style="--sw:#0E7490" aria-label="青色" title="青色"></button>
+    </div>
+
+    <h2>字體大小</h2>
+    <div class="seg">
+      <button data-set-fontscale="std" type="button">標準</button>
+      <button data-set-fontscale="lg" type="button">大</button>
+      <button data-set-fontscale="xl" type="button">特大</button>
+    </div>
+
+    <h2>動畫</h2>
+    <label class="switch-row">
+      <span><b>減少動畫</b><i>停用轉場與動畫效果，適合容易暈眩或偏好靜態介面的使用者。</i></span>
+      <span class="switch-wrap">
+        <input id="motionToggle" type="checkbox" role="switch">
+        <span class="slider"></span>
+      </span>
+    </label>
+  </section>
+
+  <section class="card">
+    <h1>其他設定</h1>
+    <p class="hint">通知、課表、帳號安全等功能設定在各自的頁面。</p>
+    <div class="links">
+      <a href="/admin#notifications">🔔 通知偏好設定</a>
+      <a href="/admin/timetable">🗓️ 課表管理（含桌布／海報）</a>
+      <a href="/admin/homework">📚 作業截止追蹤</a>
+      <a href="/admin/files">📁 教材雲端硬碟</a>
+      <a href="/admin/push-status">📱 手機推播狀態</a>
+      <a href="/admin/password">🔑 變更 Dashboard 密碼</a>
+      <a href="/admin/passkey">🗝️ 通行密鑰（Passkey）</a>
+      <a href="/admin/health">🩺 系統健康狀態</a>
+    </div>
+    <div class="foot-row">
+      <button id="resetBtn" class="ghost" type="button">回復外觀預設值</button>
+    </div>
+    <p class="note">以上外觀偏好僅儲存在此裝置的瀏覽器（localStorage），不會上傳到伺服器，也不會影響其他裝置。清除瀏覽器資料時會一併清除。</p>
+  </section>
+</main>
+<script src="/admin/static/app-settings.js?v=20260829settings1"></script>
+</body>
+</html>
