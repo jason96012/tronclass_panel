@@ -101,6 +101,9 @@ pub use sessions::DashboardSessionRow;
 pub use timetable::{TimetableEntryInput, TimetableEntryRow, TimetableTemplateRow};
 
 // TIMETABLE_AUTO_SYNC_V1
+// 與相鄰的 re-export 一致：對外提供便利路徑，本 crate 內未直接使用，
+// 因此比照 TimetableEntryRow 等加上 allow，避免無意義的編譯警告。
+#[allow(unused_imports)]
 pub use timetable_sync::TimetableSyncStateRow;
 #[allow(unused_imports)]
 pub use web_push::WebPushSubscriptionRow;

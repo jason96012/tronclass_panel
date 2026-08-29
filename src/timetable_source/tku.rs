@@ -1688,14 +1688,17 @@ mod tests {
         // EMIS_LINK_DISCOVERY_V1 迴歸測試：
         // 應從選單中選出「依上課星期、節次列表」，而非其他相似的查詢功能。
         let base = Url::parse("https://sso.tku.edu.tw/aissinfo/emis/TMW0000.aspx").unwrap();
-        let menu = r#"
+        // 注意：這段 HTML 內含 `href="#"`。若用 r#"..."# 包裝，
+        // 其中的 `"#` 會**提前終止** raw string 而導致編譯失敗。
+        // 因此改用 r##"..."##（分隔符加長一層），內容就不會被誤判為結束。
+        let menu = r##"
         <a href="TMWC010.aspx">學籍資料查詢</a>
         <a href="TMWC080.aspx">歷年成績查詢</a>
         <a href="TMWC090.aspx">選課資料(依上課星期、節次列表)</a>
         <a href="TMWC091.aspx">選課資料(依課號列表)</a>
         <a href="TMWC200.aspx">繳費資料查詢</a>
         <a href="#">離開</a>
-        "#;
+        "##;
         let links = extract_page_links(menu, &base);
         assert!(links.len() >= 5, "應抓到選單連結：{links:?}");
 
