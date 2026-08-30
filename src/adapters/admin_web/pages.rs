@@ -34,6 +34,8 @@ pub(super) fn theme_css() -> String {
 
 pub(super) const DOMPURIFY_JS: &str = include_str!("static/js/dompurify.min.js");
 pub(super) const TRUSTED_TYPES_INIT_JS: &str = include_str!("static/js/trusted-types-init.js");
+pub(super) const JSZIP_MIN_JS: &str = include_str!("static/js/jszip.min.js");
+pub(super) const OFFICE_VIEW_JS: &str = include_str!("static/js/office-view.js");
 pub(super) const SESSION_SECURITY_JS: &str = include_str!("static/js/session-security.js");
 pub(super) const CORE_API_JS: &str = include_str!("static/js/core-api.js");
 pub(super) const WEB_PUSH_JS: &str = include_str!("static/js/web-push.js");

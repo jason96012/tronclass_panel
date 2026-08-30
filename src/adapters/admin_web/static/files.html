@@ -426,6 +426,15 @@
     .modal-body img,.modal-body video{max-width:100%;max-height:100%;display:block}
     .modal-body iframe,.modal-body object{width:100%;height:100%;border:0}
     .modal-body pre{width:100%;height:100%;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;background:var(--surface);color:var(--text);font-family:monospace;font-size:12px}
+    /* OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Word/PPT（modal-body 為 grid 置中，用自我覆蓋寬高撐滿） */
+    .modal-body .tron-docx{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:20px 24px;box-sizing:border-box;background:var(--surface);color:var(--text);line-height:1.5;font-size:14px}
+    .modal-body .tron-docx p,.modal-body .tron-docx h2,.modal-body .tron-docx h3,.modal-body .tron-docx h4,.modal-body .tron-docx h5{margin:0 0 6px 0}
+    .modal-body .tron-docx table{max-width:100%}
+    .modal-body .tron-slides{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:16px;box-sizing:border-box;background:var(--surface)}
+    .tron-slide{position:relative;width:100%;max-width:960px;margin:0 auto 16px auto;background:#fff;border:1px solid var(--line2);border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.10);overflow:hidden}
+    .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
+    .tron-slide-img{position:absolute}
+    .tron-office-error{padding:36px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px;background:var(--surface);font-size:13px}
 
     /* 手機版排版 (≤ 820px) */
     @media(max-width:820px){
@@ -1146,9 +1155,11 @@
   }
 
   // PREVIEW_FORMATS_V1: 雲端硬碟可預覽的格式。
-  // 照片/PDF/文字/影片走原生；PPT/Word 由後端用 LibreOffice 轉成 PDF 串流，一樣用 <object>/<iframe> 檢視。
+  // 照片/PDF/文字/影片走原生；Office(.docx/.pptx)改為前端本機解析渲染（OFFICE_PREVIEW_CLIENT_V1），
+  // 資料不離開瀏覽器、不佔伺服器磁碟。舊二進位 .doc/.ppt 無法在瀏覽器解析，僅顯示下載提示。
   const INLINE_PREVIEW_EXTS = ['pdf','jpg','jpeg','png','gif','bmp','webp','txt','md','mp4'];
-  const OFFICE_PREVIEW_EXTS = ['ppt','pptx','doc','docx','rtf','odt'];
+  const OFFICE_PREVIEW_EXTS = ['docx','pptx']; // 前端可渲染的新格式
+  const OFFICE_LEGACY_EXTS = ['doc','ppt','rtf','odt']; // 僅下載
   function canPreview(e){ return INLINE_PREVIEW_EXTS.includes(e) || OFFICE_PREVIEW_EXTS.includes(e); }
   function isOfficePreview(e){ return OFFICE_PREVIEW_EXTS.includes(e); }
 
@@ -1547,6 +1558,26 @@
   }
 
 
+  // OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Word/PPT。抓原始位元組 -> office-view.js 解析 -> 注入 HTML。
+  async function renderOfficePreview(url, ext){
+    const body = q('previewBody');
+    if (window.TronOfficeView && window.JSZip) {
+      body.innerHTML = '<div class="empty">正在載入 Office 預覽…</div>';
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        if (!res.ok) throw new Error('http ' + res.status);
+        const buf = await res.arrayBuffer();
+        const html = await window.TronOfficeView.preview(buf, ext);
+        if (!html) throw new Error('empty');
+        body.innerHTML = html;
+        return;
+      } catch(_) {
+        // fallthrough 到後端訊息
+      }
+    }
+    body.innerHTML = '<div class="empty">此 Office 檔案可能為舊版格式（.doc/.ppt 等），無法在瀏覽器解析，請按上方「下載」查看。</div>';
+  }
+
   async function preview(path){
     const f = files.find(x => x.path === path) || { path, name: path };
     const e = ext(f);
@@ -1557,9 +1588,12 @@
 
     if (['jpg','jpeg','png','gif','bmp','webp'].includes(e)) {
       q('previewBody').innerHTML = '<img src="' + url + '">';
-    } else if (e === 'pdf' || isOfficePreview(e)) {
-      // PPDF_PREVIEW_WORD_V1: PDF 與 PPT/Word(後端轉 PDF) 一律用內嵌 <object>/<iframe> 檢視。
+    } else if (e === 'pdf') {
+      // PPDF_PREVIEW_WORD_V1: PDF 用內嵌 <object>/<iframe> 檢視。
       q('previewBody').innerHTML = '<object data="' + url + '#toolbar=1" type="application/pdf"><iframe src="' + url + '#toolbar=1"></iframe></object>';
+    } else if (isOfficePreview(e)) {
+      // OFFICE_PREVIEW_CLIENT_V1: 抓取原始位元組，用 office-view.js 本機解析 .docx/.pptx 渲染。
+      await renderOfficePreview(url, e);
     } else if (e === 'mp4') {
       q('previewBody').innerHTML = '<video src="' + url + '" controls autoplay></video>';
     } else if (['txt','md'].includes(e)) {

@@ -151,3 +151,11 @@ pub(super) async fn admin_trusted_types_init_js_handler() -> Response {
         pages::TRUSTED_TYPES_INIT_JS,
     )
 }
+
+pub(super) async fn admin_jszip_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::JSZIP_MIN_JS)
+}
+
+pub(super) async fn admin_office_view_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::OFFICE_VIEW_JS)
+}

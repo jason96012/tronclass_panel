@@ -696,7 +696,9 @@ fn inject_filebrowser_trusted_types_assets(html: &mut String) {
     }
     let assets = concat!(
         "<script src=\"/admin/static/js/dompurify.min.js?v=20260826dompurify3414\"></script>",
-        "<script src=\"/admin/static/js/trusted-types-init.js?v=20260823trustedtypes\"></script>"
+        "<script src=\"/admin/static/js/trusted-types-init.js?v=20260823trustedtypes\"></script>",
+        "<script src=\"/admin/static/js/jszip.min.js?v=officeview1\"></script>",
+        "<script src=\"/admin/static/js/office-view.js?v=officeview1\"></script>"
     );
     let lower = html.to_ascii_lowercase();
     if let Some(index) = lower.rfind("</head>") {
@@ -976,20 +978,15 @@ pub(super) async fn admin_files_preview_handler(
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    let response_path_buf;
     let response_path: &std::path::Path = if matches!(
         ext.as_str(),
         "ppt" | "pptx" | "doc" | "docx" | "rtf" | "odt"
     ) {
-        // OFFICE_PREVIEW_WORD_V1: PDF/照片/PPT/Word 都能以 inline 預覽。
-        // PPTX/Word 等交由 LibreOffice 轉成 PDF 串流，瀏覽器原生即可檢視。
-        match ensure_office_pdf_preview(&full_path).await {
-            Ok(path) => {
-                response_path_buf = path;
-                response_path_buf.as_path()
-            }
-            Err(resp) => return resp,
-        }
+        // OFFICE_PREVIEW_CLIENT_V1: 不再用 LibreOffice 轉 PDF。改由前端以同源的
+        // JSZip + office-view.js 本機解析 .docx / .pptx，直接串流「原始檔案」位元組
+        // 給前端，資料不離開使用者瀏覽器、不佔伺服器磁碟。舊二進位 .doc/.ppt 前端
+        // 無法解析，會顯示「請下載查看」。`inline` 讓瀏覽器當作可讀取資源。
+        full_path.as_path()
     } else if matches!(
         ext.as_str(),
         "pdf" | "jpg" | "jpeg" | "png" | "txt" | "md" | "mp4"
