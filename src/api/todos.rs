@@ -616,6 +616,9 @@ pub struct CourseBrief {
     pub name: String,
     /// 課程是否仍在進行中。無法判斷時為 `None`（視為保留）。
     pub is_current: Option<bool>,
+    /// 系所／班級名稱，來自 `/api/my-courses` 的 `department.name`。
+    /// 用於教材匯入時的「分班資料夾」。無法取得時為 `None`。
+    pub department: Option<String>,
 }
 
 /// 從 `/api/my-courses` 回應中解析課程清單 `(course_id, course_name)`
@@ -658,10 +661,16 @@ pub fn parse_course_briefs(root: &serde_json::Value) -> Vec<CourseBrief> {
                         .unwrap_or("未命名課程")
                         .trim()
                         .to_string();
+                    let department = obj
+                        .get("department")
+                        .and_then(|v| v.as_object())
+                        .and_then(|d| d.get("name").and_then(extract_scalar_text))
+                        .filter(|s| !s.trim().is_empty());
                     courses.push(CourseBrief {
                         id,
                         name,
                         is_current: detect_course_is_current(obj),
+                        department,
                     });
                 }
             }

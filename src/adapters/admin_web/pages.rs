@@ -75,6 +75,7 @@ pub(super) const ADMIN_PASSKEY_HTML: &str = include_str!("static/passkey.html");
 pub(super) const ADMIN_BLACKLIST_HTML: &str = include_str!("static/blacklist.html");
 pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
 pub(super) const ADMIN_HOMEWORK_HTML: &str = include_str!("static/homework.html");
+pub(super) const ADMIN_FILES_HTML: &str = include_str!("static/files.html");
 pub(super) const ADMIN_SETTINGS_HTML: &str = include_str!("static/settings.html");
 pub(super) const ADMIN_NOTIFICATIONS_HTML: &str = include_str!("static/notifications.html");
 pub(super) const APP_SETTINGS_JS: &str = include_str!("static/js/app-settings.js");
@@ -227,6 +228,25 @@ pub(super) async fn admin_homework_page_handler(
         return must_change_password_redirect();
     }
     html_page_response(&headers, inject_theme(ADMIN_HOMEWORK_HTML))
+}
+
+// FILES_NATIVE_V1
+// 廢除 FileBrowser：/admin/files 改為直接服務同源的「教材雲端硬碟」頁
+// （static/files.html），不再重導向到外部 files 主機。教材存取一律走
+// /admin/api/files/* 的原有端點，因此網路與 Dashboard 同源、不需跨 app。
+pub(super) async fn admin_files_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return admin_login_redirect("/admin/files");
+    };
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    html_page_response(&headers, inject_theme(ADMIN_FILES_HTML))
 }
 
 const ADMIN_CLEAN_TIMETABLE_HTML: &str = include_str!("static/timetable.html");

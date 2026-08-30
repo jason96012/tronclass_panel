@@ -51,6 +51,7 @@ mod blacklist;
 mod class_reminder;
 mod detection_schedule;
 mod files;
+mod materials_import;
 mod homework;
 mod notifications;
 mod pages;
@@ -1104,7 +1105,8 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
-        .route("/admin/files", get(files::admin_files_page_handler))
+        // FILES_NATIVE_V1: 廢除 FileBrowser，/admin/files 改服務同源教材雲端硬碟頁。
+        .route("/admin/files", get(pages::admin_files_page_handler))
         .route(
             "/.well-known/openid-configuration",
             get(oidc::discovery_handler),
@@ -1141,18 +1143,9 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         // Caddy uses this authenticated GET route only for Filebrowser's
         // initial HTML shell, allowing the Rust Dashboard to add a return link.
-        .route(
-            "/admin/api/filebrowser-shell",
-            get(files::admin_filebrowser_shell_handler),
-        )
-        .route(
-            "/admin/api/filebrowser/ready",
-            get(files::admin_filebrowser_ready_handler),
-        )
-        .route(
-            "/share/{*path}",
-            get(files::admin_filebrowser_share_shell_handler),
-        )
+        // FILES_NATIVE_V1: FileBrowser shell / share 代理路由已廢除。
+        // 教材改走同源 /admin/api/files/* 端點；如需重新啟用 FileBrowser，
+        // 可在此恢復下方三條路由（並保留 fb_sso / materials_webdav 模組）。
         .route(
             "/admin/api/files/list",
             get(files::admin_files_list_handler),
@@ -1189,8 +1182,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             post(files::admin_files_delete_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
+        // MATERIALS_IMPORT_V1: 自動從 iClass 匯入教材到教材雲端硬碟。
+        .route(
+            "/admin/api/files/import",
+            get(materials_import::admin_materials_import_handler),
+        )
         .route("/admin/api/logs", get(logs::admin_logs_api_handler))
-        .route("/admin/api/fb-sso-check", get(fb_sso::fb_sso_check_handler))
+        // FILES_NATIVE_V1: FileBrowser 的 forward_auth 檢查點已廢除。
         .route(
             "/admin/api/login",
             post(auth::admin_login_handler).layer(DefaultBodyLimit::max(ADMIN_LOGIN_BODY_LIMIT)),
@@ -1739,7 +1737,6 @@ fn bootstrap_allowed_api_path(path: &str) -> bool {
         path,
         "/admin/api/login"
             | "/admin/api/logout"
-            | "/admin/api/fb-sso-check"
             | "/admin/api/password"
             | "/admin/api/status"
             | "/admin/api/public_status"

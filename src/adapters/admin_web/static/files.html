@@ -870,6 +870,7 @@
         <div id="breadcrumb" class="breadcrumb"></div>
       </div>
       <div class="toolbar-right">
+        <button id="importHere" class="button secondary" type="button" title="從 iClass 自動下載當學期教材">⬇️ 匯入 iClass 教材</button>
         <button id="uploadHere" class="button primary" type="button">上傳檔案</button>
         <button id="mkdirHere" class="button secondary" type="button">新增資料夾</button>
       </div>
@@ -1068,6 +1069,31 @@
       return body;
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  // MATERIALS_IMPORT_V1: 從 iClass 自動匯入當學期教材。
+  async function importMaterials(){
+    const btn = q('importHere');
+    const old = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '匯入中…'; }
+    try {
+      // 匯入可能耗時(逐門課下載),給較長逾時;用 session 帳號。
+      const body = await api('/admin/api/files/import', {}, 600000);
+      const msg = '匯入完成：\n' +
+        '課程 ' + (body.courses_scanned||0) + ' 門\n' +
+        '教材 ' + (body.materials_found||0) + ' 項\n' +
+        '已儲存 ' + (body.files_saved||0) + '、已跳過 ' + (body.files_skipped||0) +
+        '、連結 ' + (body.links_created||0) + '、失敗 ' + (body.failed||0);
+      if (Array.isArray(body.errors) && body.errors.length){
+        msg += '\n\n錯誤：\n' + body.errors.slice(0,10).join('\n');
+      }
+      alert(msg);
+      loadFiles();
+    } catch (e) {
+      alert('匯入失敗：' + e.message);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = old; }
     }
   }
 
@@ -1445,6 +1471,7 @@
     if (q('newUpload')) q('newUpload').onclick = () => { q('newMenu').classList.remove('open'); q('fileInput').click(); };
     if (q('newFolder')) q('newFolder').onclick = () => { q('newMenu').classList.remove('open'); mkdir(); };
     if (q('uploadHere')) q('uploadHere').onclick = () => q('fileInput').click();
+    if (q('importHere')) q('importHere').onclick = importMaterials;
     if (q('mkdirHere')) q('mkdirHere').onclick = mkdir;
     if (q('refresh')) q('refresh').onclick = loadFiles;
     if (q('mRefresh')) q('mRefresh').onclick = loadFiles;
