@@ -286,6 +286,18 @@ pub async fn evaluate_and_send_reminders(
         .unwrap_or_default();
 
     for todo in todos.iter() {
+        // HOMEWORK_TRACKED_TYPES_V1
+        // 截止提醒只針對「作業」與「測驗/考試」。其餘課程項目（教材 material、
+        // 連結 web_link、頁面 page、影片 online_video、討論 forum、問卷 questionnaire…）
+        // 即使帶截止時間也不發送，避免誤報。
+        let is_tracked_type = matches!(
+            todo.item_type.trim().to_ascii_lowercase().as_str(),
+            "homework" | "quiz" | "exam"
+        );
+        if !is_tracked_type {
+            continue;
+        }
+
         if !todo.is_active_pending(now_utc) {
             continue;
         }

@@ -11,7 +11,7 @@ use futures::stream::StreamExt;
 use miette::Result;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tracing::{debug, instrument};
 
 // ─── 常數 ─────────────────────────────────────────────────────────────────────
@@ -26,6 +26,15 @@ const SEMESTER_START_GRACE_DAYS: i64 = 14;
 /// 設為 8：足以把 20 次往返壓進 3 波，又不會像爆破那樣打爆學校 WAF。
 /// 背景排程器仍會在帳號之間 sleep 1 秒，整體流量依舊平緩。
 const COURSE_FETCH_CONCURRENCY: usize = 8;
+
+/// 單次抓取 `/homework-activities` 的分頁大小。
+///
+/// SUBMISSION_PAGINATION_V1
+/// 淡江 iClass 的 `/homework-activities` 是分頁的（預設 page_size = 10），
+/// 而且「個別學生的繳交狀態 `submitted`」只在這個端點提供（`/activities`
+/// 的 homework 項目 submitted 一律為 null）。因此必須做大分頁抓取，否則
+/// 只拿到第 1 頁，絕大多數作業會因缺少繳交旗標而被誤判成「未繳交」。
+const HOMEWORK_ACTIVITIES_PAGE_SIZE: u64 = 300;
 
 // ─── 資料模型 ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +101,16 @@ impl super::ApiClient {
         let mut results: Vec<TronclassTodoItem> = Vec::new();
         let mut seen_ids = HashSet::new();
 
+        // HOMEWORK_INCLUDE_ALL_SEMESTERS_V1
+        // 放寬旗標：若 homework.include_all_semesters = true，
+        // 則「第一道防線（課程清單過濾）」與「第二道防線（學期起點）」
+        // 都會被跳過，保留所有學期的作業與測驗（含上學期、已過期），
+        // 供測試確認測驗（/exams）與舊作業是否被正確解析、圖示是否正確。
+        // 預設 false 維持原行為。
+        let include_all_semesters = crate::config::try_get_config()
+            .map(|config| config.homework.include_all_semesters)
+            .unwrap_or(false);
+
         // ─────────────────────────────────────────────────────────────────────
         // 步驟 1: 查詢全域待辦清單 GET /api/todos
         // ─────────────────────────────────────────────────────────────────────
@@ -134,12 +153,22 @@ impl super::ApiClient {
                         // CURRENT_SEMESTER_ONLY_V1
                         // 只保留當前學期仍在進行的課程，避免作業頁混入上學期／已封存
                         // 課程的舊作業。無法判斷學期的課程一律保留（寧可多顯示）。
+                        //
+                        // HOMEWORK_INCLUDE_ALL_SEMESTERS_V1
+                        // 放寬時**跳過**這個課程過濾，讓所有課程（含非當前學期的舊課）
+                        // 的作業與測驗都會被抓取——這是讓「舊作業/測驗」出現的
+                        // 關鍵，否則那些含測驗/舊作業的課程會先被整門剔除，
+                        // 它們的 /activities、/exams 根本不會被抓。
                         let all_courses = parse_course_briefs(&json_val);
                         let total_courses = all_courses.len();
-                        let courses: Vec<_> = all_courses
-                            .into_iter()
-                            .filter(|course| course.is_current != Some(false))
-                            .collect();
+                        let courses: Vec<_> = if include_all_semesters {
+                            all_courses
+                        } else {
+                            all_courses
+                                .into_iter()
+                                .filter(|course| course.is_current != Some(false))
+                                .collect()
+                        };
                         if courses.len() < total_courses {
                             debug!(
                                 total = total_courses,
@@ -160,6 +189,11 @@ impl super::ApiClient {
                         // 不會有測驗；若漏抓 exams，測驗就永遠進不了待辦、也不會發截止提醒。
                         // 因此每門課多抓一筆 /exams。
                         let course_list: Vec<CourseBrief> = courses.into_iter().take(25).collect();
+                        // SUBMISSION_PAGINATION_V1
+                        // 第三個布林 = 是否要做分頁抓取。只有 `/homework-activities`
+                        // 需要分頁（因為它帶正確的 submitted 旗標且預設只有 10 筆／頁）；
+                        // `/activities` 的 homework 雖然也會回傳，但 submitted 一律為
+                        // null（無法判斷繳交）——它只提供「項目存在」而非「是否已繳」。
                         let mut request_urls = Vec::with_capacity(course_list.len() * 3);
                         for course in &course_list {
                             request_urls.push((
@@ -169,53 +203,102 @@ impl super::ApiClient {
                                 ),
                                 course.id,
                                 course.name.clone(),
+                                true,
                             ));
                             request_urls.push((
                                 format!("{}/api/courses/{}/activities", self.base_url, course.id),
                                 course.id,
                                 course.name.clone(),
+                                false,
                             ));
                             request_urls.push((
                                 format!("{}/api/courses/{}/exams", self.base_url, course.id),
                                 course.id,
                                 course.name.clone(),
+                                false,
                             ));
                         }
 
+                        // SUBMISSION_PAGINATION_V1
+                        // paginate = true 的端點（homework-activities）會依 `pages` 遍歷所有頁，
+                        // 確保拿到每一個 homework 及其正確的 submitted 旗標。
                         let fetched: Vec<Vec<TronclassTodoItem>> =
                             futures::stream::iter(request_urls.into_iter().map(
-                                |(url, course_id, course_name)| async move {
-                                    let Ok(resp) = self.client.get(&url).send().await else {
-                                        return Vec::new();
-                                    };
-                                    if !resp.status().is_success() {
-                                        return Vec::new();
+                                |(url, course_id, course_name, paginate)| async move {
+                                    let mut all_items = Vec::new();
+                                    let mut page: u64 = 1;
+                                    loop {
+                                        let effective_url = format!(
+                                            "{url}?page={page}&page_size={HOMEWORK_ACTIVITIES_PAGE_SIZE}"
+                                        );
+                                        let Ok(resp) = self.client.get(&effective_url).send().await else {
+                                            break;
+                                        };
+                                        if !resp.status().is_success() {
+                                            break;
+                                        }
+                                        let Ok(bytes) = resp.bytes().await else {
+                                            break;
+                                        };
+                                        let Ok(json) =
+                                            serde_json::from_slice::<serde_json::Value>(&bytes)
+                                        else {
+                                            break;
+                                        };
+                                        all_items.extend(parse_todos_json(
+                                            &json,
+                                            Some(course_name.as_str()),
+                                            Some(course_id),
+                                        ));
+                                        if !paginate {
+                                            break;
+                                        }
+                                        // 依回傳的 pages 決定是否繼續下一頁（安全上限 200 頁）。
+                                        let pages = json
+                                            .get("pages")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(1);
+                                        if page >= pages.max(1) || page >= 200 {
+                                            break;
+                                        }
+                                        page += 1;
                                     }
-                                    let Ok(bytes) = resp.bytes().await else {
-                                        return Vec::new();
-                                    };
-                                    let Ok(json) =
-                                        serde_json::from_slice::<serde_json::Value>(&bytes)
-                                    else {
-                                        return Vec::new();
-                                    };
-                                    parse_todos_json(
-                                        &json,
-                                        Some(course_name.as_str()),
-                                        Some(course_id),
-                                    )
+                                    all_items
                                 },
                             ))
                             .buffer_unordered(COURSE_FETCH_CONCURRENCY)
                             .collect()
                             .await;
 
-                        // buffer_unordered 的完成順序不固定，這裡統一去重後收攏。
+                        // SUBMISSION_PAGINATION_V1
+                        // buffer_unordered 的完成順序不固定，而且同一份作業會同時出現在
+                        // homework-activities（submitted 正確）與 activities（submitted=null）
+                        // 兩個端點。合併時**優先採用「已繳交」版本**：因為 activities 的
+                        // 版本永遠是 submitted=false（欄位為 null），若任由它覆蓋，就會把
+                        // 其實已繳交的作業誤判成未繳交。
+                        let mut merged: HashMap<u64, TronclassTodoItem> = HashMap::new();
                         for items in fetched {
                             for item in items {
-                                if seen_ids.insert(item.id) {
-                                    results.push(item);
+                                // SUBMISSION_PAGINATION_V1
+                                // 用 Entry 的互斥分支，避免把 item 同時移動進 and_modify 閉包與
+                                // or_insert（否則觸發 E0382）。occupied 分支只有在「新版本已繳交
+                                // 且舊版未繳」時才用新版本覆蓋，否則保留舊版。
+                                // （item 只在互斥的其中一個分支被移動，借用檢查器接受。）
+                                match merged.entry(item.id) {
+                                    std::collections::hash_map::Entry::Occupied(mut e) => {
+                                        if item.is_submitted && !e.get().is_submitted {
+                                            e.insert(item);
+                                        }
+                                    }
+                                    std::collections::hash_map::Entry::Vacant(v) => {
+                                        v.insert(item);
+                                    }
                                 }
+                            }
+                        }
+                        for (_, item) in merged {
+                            if seen_ids.insert(item.id) {
+                                results.push(item);
                             }
                         }
                     }
@@ -232,14 +315,8 @@ impl super::ApiClient {
         // 整個學期內的作業都看得到，跨學期才會被濾掉。
         // 沒有截止時間的項目一律保留，避免誤刪長期開放的作業。
         //
-        // HOMEWORK_INCLUDE_ALL_SEMESTERS_V1
-        // 若設定 homework.include_all_semesters = true，則**跳過**這個學期過濾，
-        // 讓所有學期的作業與測驗（含上學期、已過期的）都保留在結果中——供測試
-        // 確認測驗（/exams）是否被正確解析、圖示是否正確。預設 false 維持原行為。
-        let include_all_semesters = crate::config::try_get_config()
-            .map(|config| config.homework.include_all_semesters)
-            .unwrap_or(false);
-
+        // 放寬旗標（include_all_semesters）已在函式開頭讀取，並同時作用於
+        // 第一道（課程清單）與此處第二道（學期起點）防線。
         if include_all_semesters {
             debug!("作業截止追蹤已放寬：包含所有學期（測試模式）");
         } else {

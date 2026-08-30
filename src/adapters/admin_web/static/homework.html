@@ -404,7 +404,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         <b class="hw-row-val warn" id="statWeek">—</b>
       </div>
       <div class="hw-row">
-        <span class="hw-row-key">全部未繳交作業</span>
+        <span class="hw-row-key">未繳交作業（尚未逾期）</span>
         <b class="hw-row-val pending" id="statPending">—</b>
       </div>
       <div class="hw-row">
@@ -424,6 +424,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       <button class="filter-tab" data-filter="all" type="button">📋 全部 <span class="badge-count" id="countAll">0</span></button>
       <button class="filter-tab" data-filter="submitted" type="button">✅ 已繳交 <span class="badge-count" id="countSubmitted">0</span></button>
       <button class="filter-tab" data-filter="overdue" type="button">🚫 已逾期 <span class="badge-count" id="countOverdue">0</span></button>
+      <button class="filter-tab" data-filter="nolimit" type="button">🔓 無期限 <span class="badge-count" id="countNolimit">0</span></button>
     </div>
 
     <div class="filter-dropdowns">
@@ -583,7 +584,8 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     const rem = getRemainingMs(item.end_time);
 
     if (isSubmitted) return 'submitted';
-    if (rem == null) return 'pending';
+    // HOMEWORK_NOLIMIT_V1: 無截止時間的素材單獨歸類，不混入未繳交。
+    if (rem == null) return 'nolimit';
     if (rem <= 0) return 'overdue';
     if (rem <= 24 * 3600 * 1000) return 'urgent';
     return 'pending';
@@ -595,6 +597,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     let countPending = 0;
     let countSubmitted = 0;
     let countOverdue = 0;
+    let countNolimit = 0;
     const now = Date.now();
     const weekMs = 7 * 86400 * 1000;
     const dayMs = 24 * 3600 * 1000;
@@ -608,16 +611,17 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 
       if (isSubmitted) {
         countSubmitted++;
+      } else if (rem == null) {
+        // HOMEWORK_NOLIMIT_V1
+        // 無截止時間的課程素材（material / web_link / page 等）不算「未繳交」，
+        // 而是單獨歸類為「無期限素材」，避免塞進 ⏳未繳交 灌高數字。
+        countNolimit++;
+      } else if (rem <= 0) {
+        countOverdue++;
       } else {
         countPending++;
-        if (rem != null) {
-          if (rem <= 0) {
-            countOverdue++;
-          } else {
-            if (rem <= dayMs) countUrgent++;
-            if (rem <= weekMs) countWeek++;
-          }
-        }
+        if (rem <= dayMs) countUrgent++;
+        if (rem <= weekMs) countWeek++;
       }
     });
 
@@ -631,6 +635,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     q('countUrgent').textContent = countUrgent;
     q('countSubmitted').textContent = countSubmitted;
     q('countOverdue').textContent = countOverdue;
+    q('countNolimit').textContent = countNolimit;
 
     // Update Course Filter options
     const courseSelect = q('courseFilter');
@@ -656,10 +661,11 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     let filtered = allItems.filter(item => {
       const state = getItemState(item);
 
-      if (currentFilter === 'pending' && (state === 'submitted' || state === 'overdue')) return false;
+      if (currentFilter === 'pending' && (state === 'submitted' || state === 'overdue' || state === 'nolimit')) return false;
       if (currentFilter === 'urgent' && state !== 'urgent') return false;
       if (currentFilter === 'submitted' && state !== 'submitted') return false;
       if (currentFilter === 'overdue' && state !== 'overdue') return false;
+      if (currentFilter === 'nolimit' && state !== 'nolimit') return false;
 
       if (courseVal && item.course_name !== courseVal) return false;
 
@@ -692,6 +698,13 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
             <button class="button" onclick="document.querySelector('[data-filter=all]').click()">查看全部作業紀錄</button>
           </div>
         `;
+      } else if (currentFilter === 'nolimit') {
+        container.innerHTML = `
+          <div class="empty-box">
+            <h3>🔓 目前沒有無期限的作業／測驗</h3>
+            <p>這裡顯示無截止時間、長期開放繳交的作業或測驗。</p>
+          </div>
+        `;
       } else {
         container.innerHTML = `
           <div class="empty-box">
@@ -717,7 +730,17 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         quiz: '⏱️ 測驗',
         exam: '🧪 測驗/考試',
         discussion: '💬 討論',
-        questionnaire: '📊 問卷'
+        questionnaire: '📊 問卷',
+        // HOMEWORK_NOLIMIT_V1: 無截止時間的課程素材各自對應正確圖示，
+        // 才不會被誤顯示成「📝 作業」。
+        material: '📄 教材',
+        web_link: '🔗 連結',
+        link: '🔗 連結',
+        page: '📃 頁面',
+        online_video: '🎬 影片',
+        video: '🎬 影片',
+        forum: '💬 討論',
+        file: '📎 檔案'
       }[item.item_type] || '📝 作業';
 
       const statusText = userDone
@@ -820,7 +843,14 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       if (force === true) params.set('refresh', 'true');
       const queryParam = params.toString() ? `?${params.toString()}` : '';
       const data = await api(`/admin/api/homework${queryParam}`);
-      allItems = Array.isArray(data.items) ? data.items : [];
+      // HOMEWORK_TRACKED_TYPES_V1
+      // 這個作業提醒畫面只保留「作業」與「測驗/考試」兩類。
+      // 其餘課程項目（教材 material、連結 web_link、頁面 page、影片 online_video、
+      // 討論 forum、問卷 questionnaire…）一律不在這裡顯示。
+      const trackedTypes = /^(homework|quiz|exam)$/i;
+      allItems = Array.isArray(data.items)
+        ? data.items.filter(it => trackedTypes.test((it.item_type || '').trim()))
+        : [];
       userCompleted = new Set(Array.isArray(data.user_completed) ? data.user_completed : []);
       loadedAccountId = data.account_id || targetAccount || '';
       if (data.user_name) {
