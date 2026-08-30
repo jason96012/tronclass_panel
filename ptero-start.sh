@@ -959,10 +959,11 @@ ensure_libreoffice() {
     local workdir; workdir="$(mktemp -d)" || exit 1
     trap 'rm -rf "$workdir"' EXIT
     cd "$workdir" || exit 1
-    local ok=0 url ver dir
-    for ver in 24.2.0 7.6.7.2 7.6.6.3 7.6.4.1; do
-      dir="${ver%.*}"
-      url="https://download.documentfoundation.org/libreoffice/stable/${dir}/deb/x86_64/LibreOffice_${ver}_Linux_x86-64_deb.tar.gz"
+    local ok=0 url ver
+    # 注意：URL 的目录名与文件名都用「三段」版本号(如 26.2.2)，
+    # 不是内部四段版号；且旧版会从 mirror 移除，因此用当前仍存在的版本(+一点后备)。
+    for ver in 26.2.4 26.2.3 26.2.2 25.8.0 24.8.5; do
+      url="https://download.documentfoundation.org/libreoffice/stable/${ver}/deb/x86_64/LibreOffice_${ver}_Linux_x86-64_deb.tar.gz"
       echo "[ptero-start] 尝试下载 LibreOffice ${ver} ..." >&2
       if dl "$url" lo.tar.gz; then ok=1; break; fi
       rm -f lo.tar.gz
