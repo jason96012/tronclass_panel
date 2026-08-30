@@ -60,6 +60,9 @@ pub struct AppConfig {
     /// 時區設定
     #[serde(default)]
     pub time: TimeConfig,
+    /// 作業截止追蹤設定
+    #[serde(default)]
+    pub homework: HomeworkConfig,
     /// 日誌設定
     pub logging: LoggingConfig,
     /// 監控設定
@@ -425,6 +428,26 @@ impl Default for TimeConfig {
             timezone: default_timezone(),
         }
     }
+}
+
+// ======== Homework ========
+/// 作業截止追蹤設定。
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct HomeworkConfig {
+    /// 是否放寬為「包含所有學期」的作業/測驗。
+    ///
+    /// 預設 `false`：作業頁只顯示「當學期」的項目（正式使用時的預期行為，
+    /// 讓作業頁與截止提醒維持乾淨的被定義內容）。
+    ///
+    /// 設為 `true` 可「暫時放寬」以供測試：所有學期的作業與測驗
+    /// （含上學期、已過期）都會出現在作業頁的「全部 / 已逾期」分頁，
+    /// 方便確認測驗（`type=exam`，來自 `/api/courses/{id}/exams`）確實被解析、
+    /// 圖示顯示「🧪 測驗/考試」是否正確。
+    ///
+    /// 注意：已過期的項目**不會**觸發 24h/6h/1h 截止提醒（那需要 `end_time` 仍在未來）。
+    /// 過期項目只會顯示在「全部 / 已逾期」分頁，提醒仍以未來截止者為準。
+    #[serde(default)]
+    pub include_all_semesters: bool,
 }
 
 // ======== Logging ========

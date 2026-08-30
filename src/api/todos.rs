@@ -152,8 +152,15 @@ impl super::ApiClient {
                         // 原本是循序 for 迴圈，每門課要等 2 個請求依序回來；
                         // 9 門課 = 18 次往返，網路稍慢就要 5～10 秒，作業頁一直轉圈。
                         // 改用 buffer_unordered 同時發送，耗時由「總和」變成「最慢的那批」。
+                        //
+                        // EXAM_ENDPOINT_V1
+                        // 淡江 iClass 的「測驗/考試」只透過 `/api/courses/{id}/exams` 提供
+                        // （type = "exam"，含 QUIZ / Mid-Term / Final 等，皆帶 end_time）。
+                        // 「作業/活動」端點只會回 homework/material/web_link/page/...，
+                        // 不會有測驗；若漏抓 exams，測驗就永遠進不了待辦、也不會發截止提醒。
+                        // 因此每門課多抓一筆 /exams。
                         let course_list: Vec<CourseBrief> = courses.into_iter().take(25).collect();
-                        let mut request_urls = Vec::with_capacity(course_list.len() * 2);
+                        let mut request_urls = Vec::with_capacity(course_list.len() * 3);
                         for course in &course_list {
                             request_urls.push((
                                 format!(
@@ -165,6 +172,11 @@ impl super::ApiClient {
                             ));
                             request_urls.push((
                                 format!("{}/api/courses/{}/activities", self.base_url, course.id),
+                                course.id,
+                                course.name.clone(),
+                            ));
+                            request_urls.push((
+                                format!("{}/api/courses/{}/exams", self.base_url, course.id),
                                 course.id,
                                 course.name.clone(),
                             ));
@@ -219,20 +231,33 @@ impl super::ApiClient {
         // 逾期作業（例如 12 月時把 9 月的作業藏起來）。改用固定的學期起點，
         // 整個學期內的作業都看得到，跨學期才會被濾掉。
         // 沒有截止時間的項目一律保留，避免誤刪長期開放的作業。
-        let cutoff = current_semester_start(Utc::now());
-        let before = results.len();
-        results.retain(|item| match item.end_time {
-            Some(end) => end >= cutoff,
-            None => true,
-        });
-        if results.len() < before {
-            debug!(
-                total = before,
-                kept = results.len(),
-                skipped = before - results.len(),
-                cutoff = %cutoff,
-                "已略過上一學期的舊作業"
-            );
+        //
+        // HOMEWORK_INCLUDE_ALL_SEMESTERS_V1
+        // 若設定 homework.include_all_semesters = true，則**跳過**這個學期過濾，
+        // 讓所有學期的作業與測驗（含上學期、已過期的）都保留在結果中——供測試
+        // 確認測驗（/exams）是否被正確解析、圖示是否正確。預設 false 維持原行為。
+        let include_all_semesters = crate::config::try_get_config()
+            .map(|config| config.homework.include_all_semesters)
+            .unwrap_or(false);
+
+        if include_all_semesters {
+            debug!("作業截止追蹤已放寬：包含所有學期（測試模式）");
+        } else {
+            let cutoff = current_semester_start(Utc::now());
+            let before = results.len();
+            results.retain(|item| match item.end_time {
+                Some(end) => end >= cutoff,
+                None => true,
+            });
+            if results.len() < before {
+                debug!(
+                    total = before,
+                    kept = results.len(),
+                    skipped = before - results.len(),
+                    cutoff = %cutoff,
+                    "已略過上一學期的舊作業"
+                );
+            }
         }
 
         Ok(results)
@@ -260,11 +285,13 @@ pub fn parse_todos_json(
     }
 
     // 2. 若為物件，搜尋標準 Key
+    // EXAM_ENDPOINT_V1: "exams" 是測驗/考試端點的回應包裹鍵
     if let Some(obj) = root.as_object() {
         for key in [
             "todo_list",
             "homework_activities",
             "activities",
+            "exams",
             "todos",
             "assignments",
             "items",
@@ -298,6 +325,7 @@ pub fn parse_todos_json(
                     "todo_list",
                     "homework_activities",
                     "activities",
+                    "exams",
                     "todos",
                     "assignments",
                     "items",
@@ -440,6 +468,20 @@ pub fn parse_single_todo(
         }
         if let Some(sub_b) = sub_obj.get("is_submitted").and_then(parse_bool) {
             is_submitted = is_submitted || sub_b;
+        }
+    }
+
+    // EXAM_ENDPOINT_V1
+    // 測驗（/exams）的項目不含 is_submitted / status；它的繳交紀錄統整在
+    // `exam_submissions` 這個陣列裡：非空 = 該生已繳交（含 id），空 = 未繳交。
+    // 收到幾筆已繳的測驗若判成未繳交，會反覆觸發 24h/6h/1h 提醒造成誤報，
+    // 所以這裡把「非空 exam_submissions」視為已繳交。
+    if let Some(exam_submissions) = obj.get("exam_submissions") {
+        if matches!(exam_submissions, serde_json::Value::Array(arr) if !arr.is_empty()) {
+            is_submitted = true;
+            if submission_status.trim().is_empty() {
+                submission_status = "submitted".to_string();
+            }
         }
     }
 
