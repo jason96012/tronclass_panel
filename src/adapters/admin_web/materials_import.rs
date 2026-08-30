@@ -22,7 +22,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // MATERIALS_IMPORT_SHARED_V1
 // 雲端硬碟是共用的，因此：
-// - 匯入寫入**共用** `materials_root()`（非 admin 用 `root/教材`，所有帳號共享同一份）。
+// - 匯入寫入**共用** `materials_root()`（管理員與一般帳號共用同一棵樹，所有人可看全部資料夾）。
 // - 同一門課的教材只寫一次（冪等：檔存在即跳過），不重複佔用硬碟。
 // - 匯入改為背景 job（立即回 202），避免占住 HTTP request 直到 proxy 逾時 → 502。
 
@@ -201,14 +201,10 @@ pub(super) async fn admin_materials_import_handler(
         .map(|s| s.split(',').filter_map(|p| p.trim().parse::<u64>().ok()).collect())
         .filter(|v: &Vec<u64>| !v.is_empty());
 
-    // MATERIALS_IMPORT_SHARED_V1: 共用硬碟 → 寫進共用的 materials_root()。
-    // 非 admin 一律放到 root/教材(與原本 session_materials_root 一致)，大家共享，
-    // 同一門課教材只寫一份。
-    let root = if session.is_admin {
-        materials_root()
-    } else {
-        materials_root().join("教材")
-    };
+    // MATERIALS_IMPORT_SHARED_V2: 共用硬碟 → 一律寫進共用的 materials_root()。
+    // 管理員與一般帳號共用同一棵 <root>/<分班>/<課程>/<檔名> 樹；不再替非 admin 額外
+    // 開 root/教材，避免出現與「全班可看全部資料夾」不一致的兩棵樹。同一門課只寫一份(冪等)。
+    let root = materials_root();
 
     // 背景執行：立即回 202，避免佔住 HTTP request 直到 proxy 逾時 → 502。
     // 若已有匯入正在跑，直接回 409 以免重複。

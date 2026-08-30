@@ -1145,6 +1145,13 @@
     return '/admin/api/files/preview?path=' + encodeURIComponent(path);
   }
 
+  // PREVIEW_FORMATS_V1: 雲端硬碟可預覽的格式。
+  // 照片/PDF/文字/影片走原生；PPT/Word 由後端用 LibreOffice 轉成 PDF 串流，一樣用 <object>/<iframe> 檢視。
+  const INLINE_PREVIEW_EXTS = ['pdf','jpg','jpeg','png','gif','bmp','webp','txt','md','mp4'];
+  const OFFICE_PREVIEW_EXTS = ['ppt','pptx','doc','docx','rtf','odt'];
+  function canPreview(e){ return INLINE_PREVIEW_EXTS.includes(e) || OFFICE_PREVIEW_EXTS.includes(e); }
+  function isOfficePreview(e){ return OFFICE_PREVIEW_EXTS.includes(e); }
+
   async function api(path, opts={}, timeout=12000){
     const t = token();
     const c = new AbortController();
@@ -1301,7 +1308,7 @@
       '</div>' +
       '<div class="file-actions">' +
         '<a class="button secondary download-link" href="' + dl(f.path) + '">下載</a>' +
-        (['pdf','jpg','jpeg','png','txt','md','mp4'].includes(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
+        (canPreview(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
         '<button class="button danger remove-btn" data-delete-file="' + esc(f.path) + '" title="刪除檔案">🗑</button>' +
       '</div>' +
     '</div>';
@@ -1313,7 +1320,7 @@
     tbody.innerHTML = folds.map(f => 
       '<tr><td><button class="button secondary" style="min-height:30px;padding:0 8px" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td><td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td><td><button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button></td></tr>'
     ).concat(fList.map(f => 
-      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '">下載</a><button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
+      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '">下載</a>' + (canPreview(ext(f)) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') + '<button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
     )).join('') || '<tr><td colspan="5" class="empty">目前資料夾為空</td></tr>';
   }
 
@@ -1548,9 +1555,10 @@
     if (q('previewDownload')) q('previewDownload').href = dl(path);
     if (q('previewModal')) q('previewModal').classList.add('visible');
 
-    if (['jpg','jpeg','png'].includes(e)) {
+    if (['jpg','jpeg','png','gif','bmp','webp'].includes(e)) {
       q('previewBody').innerHTML = '<img src="' + url + '">';
-    } else if (e === 'pdf') {
+    } else if (e === 'pdf' || isOfficePreview(e)) {
+      // PPDF_PREVIEW_WORD_V1: PDF 與 PPT/Word(後端轉 PDF) 一律用內嵌 <object>/<iframe> 檢視。
       q('previewBody').innerHTML = '<object data="' + url + '#toolbar=1" type="application/pdf"><iframe src="' + url + '#toolbar=1"></iframe></object>';
     } else if (e === 'mp4') {
       q('previewBody').innerHTML = '<video src="' + url + '" controls autoplay></video>';

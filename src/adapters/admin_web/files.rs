@@ -86,13 +86,12 @@ struct MaterialsListSnapshot {
 
 fn session_materials_root(session: &AdminSession) -> PathBuf {
     let root = materials_root();
-    if session.is_admin {
-        root
-    } else {
-        // Keep regular Dashboard users inside the shared教材 directory, in
-        // line with the Filebrowser `/教材` scope.
-        root.join("教材")
-    }
+    // MATERIALS_EVERYONE_FULL_TREE_V1: 一般人(非 admin)也能看到全部資料夾。
+    // 教材統一存於 materials_root()/<分班>/<課程>/<檔名>，管理員與一般帳號共用同一棵
+    // 檔案樹；不再把一般帳號窄化到 root/教材，否則他們只看得到空的子目錄。
+    // 若要再收緊(例：一般人只能讀、只能看自己分班)，請在各自的 handler 加 is_admin 判斷。
+    let _ = session.is_admin;
+    root
 }
 
 static MATERIALS_LIST_CACHE: once_cell::sync::Lazy<
@@ -978,7 +977,12 @@ pub(super) async fn admin_files_preview_handler(
         .to_ascii_lowercase();
 
     let response_path_buf;
-    let response_path: &std::path::Path = if matches!(ext.as_str(), "ppt" | "pptx") {
+    let response_path: &std::path::Path = if matches!(
+        ext.as_str(),
+        "ppt" | "pptx" | "doc" | "docx" | "rtf" | "odt"
+    ) {
+        // OFFICE_PREVIEW_WORD_V1: PDF/照片/PPT/Word 都能以 inline 預覽。
+        // PPTX/Word 等交由 LibreOffice 轉成 PDF 串流，瀏覽器原生即可檢視。
         match ensure_office_pdf_preview(&full_path).await {
             Ok(path) => {
                 response_path_buf = path;
@@ -1115,9 +1119,32 @@ async fn ensure_office_pdf_preview(source: &Path) -> Result<PathBuf, Response> {
             .into_response());
     }
 
-    let programs = ["/usr/bin/libreoffice", "libreoffice", "soffice"];
+    // LIBREOFFICE_AUTODETECT_V1: 依序嘗試系統路徑、PATH、以及「免 root 裝在使用者家目錄」
+    // 的版本(見 install-libreoffice-user.sh)。用 TRONCLASS_LIBREOFFICE 可直接指定絕對路徑，
+    // 這樣在 Pterodactyl 容器內不必動 egg/映像、不必 sudo 也能用 LibreOffice 預覽。
+    let mut office_candidates: Vec<String> = vec![
+        "/usr/bin/libreoffice".to_string(),
+        "/usr/bin/soffice".to_string(),
+        "libreoffice".to_string(),
+        "soffice".to_string(),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.trim().is_empty() {
+            let base = std::path::Path::new(&home).join(".local/libreoffice");
+            office_candidates.push(base.join("usr/lib/libreoffice/program/soffice").to_string_lossy().into_owned());
+            office_candidates.push(base.join("opt/libreoffice/program/soffice").to_string_lossy().into_owned());
+            office_candidates.push(format!("{home}/.local/libreoffice/program/soffice"));
+        }
+    }
+    if let Ok(override_path) = std::env::var("TRONCLASS_LIBREOFFICE") {
+        let override_path = override_path.trim().to_string();
+        if !override_path.is_empty() {
+            office_candidates.insert(0, override_path);
+        }
+    }
+    let programs = office_candidates;
     let mut last_error = String::new();
-    for (attempt, program) in programs.into_iter().enumerate() {
+    for (attempt, program) in programs.iter().enumerate() {
         let out_dir = conversion_root.join(format!("attempt-{attempt}"));
         let profile_dir = out_dir.join("profile");
         if let Err(e) = tokio::fs::create_dir_all(&profile_dir).await {
@@ -1219,7 +1246,7 @@ async fn ensure_office_pdf_preview(source: &Path) -> Result<PathBuf, Response> {
     Err((
         StatusCode::BAD_REQUEST,
         Json(json!({
-            "error": format!("PPT/PPTX 預覽需要 LibreOffice 轉 PDF，轉檔失敗：{last_error}。可先執行 sudo apt install -y libreoffice")
+            "error": format!("PPT/Word 預覽需要 LibreOffice 轉 PDF，但找不到可用的 soffice：{last_error}。請執行 install-libreoffice-user.sh 裝到使用者家目錄，或設定環境變數 TRONCLASS_LIBREOFFICE=/絕對路徑/soffice")
         })),
     )
         .into_response())

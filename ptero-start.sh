@@ -927,6 +927,76 @@ run_bin() {
   done
 }
 
+# ─── LibreOffice（免 root，裝到使用者家目錄）─────────────────────────────
+# 讓雲端硬碟的 PPT/Word 預覽能轉 PDF。Pterodactyl 容器內一般沒有 sudo，也
+# 不想動 egg/映像，所以用官方 .deb + dpkg-deb -x 解壓到 ~/.local/libreoffice，
+# 直接跑那裡的 soffice。重啟時會自動確保已安裝(已存在就跳過)。
+ensure_libreoffice() {
+  local prefix="${LIBREOFFICE_PREFIX:-$HOME/.local/libreoffice}"
+  local found=""
+  for c in \
+    "$prefix/usr/lib/libreoffice/program/soffice" \
+    "$prefix/opt/libreoffice/program/soffice" \
+    "$prefix/usr/lib/libreoffice/program/soffice.bin"; do
+    if [[ -x "$c" ]]; then found="$c"; break; fi
+  done
+  if [[ -z "$found" && -x /usr/bin/soffice ]]; then found="/usr/bin/soffice"; fi
+  if [[ -z "$found" && -x /usr/bin/libreoffice ]]; then found="/usr/bin/libreoffice"; fi
+  if [[ -z "$found" ]]; then
+    found="$(command -v soffice 2>/dev/null || command -v libreoffice 2>/dev/null || true)"
+  fi
+  if [[ -n "$found" ]]; then
+    export TRONCLASS_LIBREOFFICE="$found"
+    echo "[ptero-start] 已找到 LibreOffice：$found"
+    return 0
+  fi
+
+  echo "[ptero-start] 找不到 LibreOffice，开始下載安裝到 $prefix（免 root）..."
+  mkdir -p "$prefix"
+  # 用子 shell 处理下载/解包，避免污染主 shell 的 cwd / trap；结果通过回显路径带出。
+  local result
+  result="$( \
+    local workdir; workdir="$(mktemp -d)" || exit 1
+    trap 'rm -rf "$workdir"' EXIT
+    cd "$workdir" || exit 1
+    local ok=0 url ver dir
+    for ver in 24.2.0 7.6.7.2 7.6.6.3 7.6.4.1; do
+      dir="${ver%.*}"
+      url="https://download.documentfoundation.org/libreoffice/stable/${dir}/deb/x86_64/LibreOffice_${ver}_Linux_x86-64_deb.tar.gz"
+      echo "[ptero-start] 尝试下载 LibreOffice ${ver} ..." >&2
+      if dl "$url" lo.tar.gz; then ok=1; break; fi
+      rm -f lo.tar.gz
+    done
+    [[ "$ok" == "1" ]] || { echo "LibreOffice 下载失败" >&2; exit 1; }
+    tar -xzf lo.tar.gz || exit 1
+    local debs; debs="$(find . -maxdepth 2 -type d -name DEBS | head -n1)"
+    [[ -n "$debs" ]] || exit 1
+    local deb n=0
+    for deb in "$debs"/*.deb; do
+      [[ -f "$deb" ]] || continue
+      dpkg-deb -x "$deb" "$prefix" || exit 1
+      n=$((n+1))
+    done
+    for c in \
+      "$prefix/usr/lib/libreoffice/program/soffice" \
+      "$prefix/opt/libreoffice/program/soffice"; do
+      if [[ -x "$c" ]]; then echo "$c"; exit 0; fi
+    done
+    local f; f="$(find "$prefix" -type f -name soffice -perm -u+x 2>/dev/null | head -n1)"
+    [[ -n "$f" ]] && echo "$f" && exit 0
+    echo "找不到 soffice（可能缺系统函式库）" >&2
+    exit 1
+  )" || { echo "[ptero-start] LibreOffice 安装失败，跳过(PPT/Word 预览暂不可用)。"; return 1; }
+
+  chmod +x "$result" 2>/dev/null || true
+  export TRONCLASS_LIBREOFFICE="$result"
+  echo "[ptero-start] LibreOffice 安装完成：$result"
+  echo "[ptero-start] 自检："
+  ( "$result" --headless --version 2>&1 | head -n1 ) || true
+  return 0
+}
+ensure_libreoffice || true
+
 # 已編譯過就直接跑。原本只認 FORCE_REBUILD，改了 .rs / static 檔卻忘了設，
 # 就會一直跑舊 binary，看起來像「修了沒效」。改成自動比對「內容 hash」
 # （src_hash），不靠 mtime，避免 zip 上傳保留舊時間戳造成誤判。

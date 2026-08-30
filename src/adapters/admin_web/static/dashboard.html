@@ -5102,8 +5102,13 @@ html[data-theme="dark"] .maint-final-bar{background:#1E293B!important}</style>
 <script id="LOGIN_PASSWORD_TOGGLE_FIX_V3">
 (function(){
   'use strict';
-  if(window.LOGIN_PASSWORD_TOGGLE_FIX_V3) return;
-  window.LOGIN_PASSWORD_TOGGLE_FIX_V3 = true;
+  // 重要：此旗標名稱「絕對不能」等於本 <script> 的 id。瀏覽器會把任何有 id 的元素
+  // 以「window 具名屬性」暴露成 window.<id> = 該元素(即這個 <script> 節點)，它是 truthy。
+  // 若旗標名 = script id，則 `if(window.同名) return;` 會在解析時就撞到這個節點而直接提早
+  // return，導致監聽根本沒註冊——這正是之前 V1/V2/V3 全都沒修好的真正原因。
+  // 現改用不會與任何元素 id 相撞的私有旗標。
+  if(window.__LOGIN_PASSWORD_TOGGLE_INSTALLED__) return;
+  window.__LOGIN_PASSWORD_TOGGLE_INSTALLED__ = true;
 
   function passwordInput(){
     return document.getElementById('loginPassword')
