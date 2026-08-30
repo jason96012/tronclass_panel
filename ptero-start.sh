@@ -953,10 +953,20 @@ ensure_libreoffice() {
 
   echo "[ptero-start] 找不到 LibreOffice，开始下載安裝到 $prefix（免 root）..."
   mkdir -p "$prefix"
+  # 磁碟空间预检：LibreOffice tar 约 216MB，解压后约 700MB+，HOME 至少要留约 1.2GB。
+  # 之前用 mktemp -d(落到 /tmp)而 /tmp 只剩 ~100MB，导致下载 48% 就 curl(23) 写文件失败。
+  local free_kb
+  free_kb="$(df -Pk "$HOME" 2>/dev/null | awk 'NR==2{print $4}')"
+  if [[ -n "$free_kb" && "$free_kb" -lt 1200000 ]]; then
+    echo "[ptero-start] HOME 可用空间只有约 $((free_kb/1024)) MB，不足以装 LibreOffice（需要约 1200 MB+）。"
+    echo "[ptero-start] 请先释放磁盘空间，或手动装到有空间的目录再设定 TRONCLASS_LIBREOFFICE。跳过安装。"
+    return 1
+  fi
   # 用子 shell 处理下载/解包，避免污染主 shell 的 cwd / trap；结果通过回显路径带出。
+  # 工作目录放在 $HOME（Pterodactyl 的大容量持久卷），不要用 /tmp（空间往往很小）。
   local result
   result="$( \
-    local workdir; workdir="$(mktemp -d)" || exit 1
+    local workdir; workdir="$(mktemp -d "$HOME/.lo-install.XXXXXX")" || exit 1
     trap 'rm -rf "$workdir"' EXIT
     cd "$workdir" || exit 1
     local ok=0 url ver
