@@ -425,6 +425,8 @@
     .modal-body{background:var(--surface2);display:grid;place-items:center;overflow:auto}
     .modal-body img,.modal-body video{max-width:100%;max-height:100%;display:block}
     .modal-body iframe,.modal-body object{width:100%;height:100%;border:0}
+    /* PDF_PREVIEW_IFRAME_V1: 讓 PDF 檢視器的 <iframe> 真正撐滿 modal（grid 置中下需自我覆蓋） */
+    .modal-body iframe[src^="/admin/api/files/preview"]{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;background:var(--surface)}
     .modal-body pre{width:100%;height:100%;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;background:var(--surface);color:var(--text);font-family:monospace;font-size:12px}
     /* OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Word/PPT（modal-body 為 grid 置中，用自我覆蓋寬高撐滿） */
     .modal-body .tron-docx{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:20px 24px;box-sizing:border-box;background:var(--surface);color:var(--text);line-height:1.5;font-size:14px}
@@ -1158,8 +1160,7 @@
   // 照片/PDF/文字/影片走原生；Office(.docx/.pptx)改為前端本機解析渲染（OFFICE_PREVIEW_CLIENT_V1），
   // 資料不離開瀏覽器、不佔伺服器磁碟。舊二進位 .doc/.ppt 無法在瀏覽器解析，僅顯示下載提示。
   const INLINE_PREVIEW_EXTS = ['pdf','jpg','jpeg','png','gif','bmp','webp','txt','md','mp4'];
-  const OFFICE_PREVIEW_EXTS = ['docx','pptx']; // 前端可渲染的新格式
-  const OFFICE_LEGACY_EXTS = ['doc','ppt','rtf','odt']; // 僅下載
+  const OFFICE_PREVIEW_EXTS = ['docx','pptx']; // 前端可解析排版的新格式（OOXML）
   function canPreview(e){ return INLINE_PREVIEW_EXTS.includes(e) || OFFICE_PREVIEW_EXTS.includes(e); }
   function isOfficePreview(e){ return OFFICE_PREVIEW_EXTS.includes(e); }
 
@@ -1575,7 +1576,7 @@
         // fallthrough 到後端訊息
       }
     }
-    body.innerHTML = '<div class="empty">此 Office 檔案可能為舊版格式（.doc/.ppt 等），無法在瀏覽器解析，請按上方「下載」查看。</div>';
+    body.innerHTML = '<div class="empty">此 Office 檔案無法解析，請按上方「下載」查看。</div>';
   }
 
   async function preview(path){
@@ -1589,8 +1590,9 @@
     if (['jpg','jpeg','png','gif','bmp','webp'].includes(e)) {
       q('previewBody').innerHTML = '<img src="' + url + '">';
     } else if (e === 'pdf') {
-      // PPDF_PREVIEW_WORD_V1: PDF 用內嵌 <object>/<iframe> 檢視。
-      q('previewBody').innerHTML = '<object data="' + url + '#toolbar=1" type="application/pdf"><iframe src="' + url + '#toolbar=1"></iframe></object>';
+      // PDF_PREVIEW_IFRAME_V1: 直接用 <iframe> 內嵌（CSP 的 object-src 'none' 會擋掉 <object>，
+      // 而 <iframe> 是 frame-src 'self' 允許的）。瀏覽器原生 PDF 檢視器會載入。
+      q('previewBody').innerHTML = '<iframe src="' + url + '#toolbar=1" type="application/pdf"></iframe>';
     } else if (isOfficePreview(e)) {
       // OFFICE_PREVIEW_CLIENT_V1: 抓取原始位元組，用 office-view.js 本機解析 .docx/.pptx 渲染。
       await renderOfficePreview(url, e);

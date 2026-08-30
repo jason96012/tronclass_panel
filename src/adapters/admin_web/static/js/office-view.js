@@ -338,11 +338,20 @@
     return '<div class="tron-docx">' + html + '</div>';
   }
 
+  // OFFICE_LEGACY_V1: 舊二進位 OLE（.doc / .ppt / .rtf / .odt）無法在瀏覽器「可靠解析排版」
+  // （它們不是 OOXML zip，沒有可依賴的字元邊界；硬掃描會混出亂碼）。因此不提供「預覽」，
+  // 一律退回「下載查看」。僅 OOXML 的 .docx / .pptx 由本檔前端預覽。
+  function legacyOfficeUnsupported() {
+    return '<div class="tron-office-error">此為舊版二進位 Office 格式（.doc/.ppt 等），瀏覽器無法解析其排版。請按上方「下載」查看。</div>';
+  }
+
   var api = {
-    // 依副檔名分流：docx -> renderWord；pptx/ppt -> render（自製）。
+    // 依副檔名分流：docx -> renderWord；pptx -> render；其餘舊二進位 -> 「請下載」。
     preview: async function (arrayBuffer, ext) {
-      if (/^docx$/i.test(ext || '')) return renderWord(arrayBuffer);
-      return api.render(arrayBuffer);
+      var e = String(ext || '').toLowerCase();
+      if (e === 'docx') return renderWord(arrayBuffer);
+      if (e === 'pptx') return api.render(arrayBuffer);
+      return legacyOfficeUnsupported();
     },
     // 產生一個垂直堆疊的「投影片」；回傳 Promise<HTML 字串>（由呼叫端設定，走 innerHTML/trusted-types）。
     render: async function (arrayBuffer) {

@@ -248,7 +248,27 @@ pub(super) async fn admin_files_page_handler(
     if session.must_change_password {
         return must_change_password_redirect();
     }
-    html_page_response(&headers, inject_theme(ADMIN_FILES_HTML))
+    let html = inject_theme(ADMIN_FILES_HTML);
+    html_page_response(&headers, inject_files_office_assets(&html))
+}
+
+// OFFICE_PREVIEW_CLIENT_V1: 只在「雲端硬碟」頁注入 Office 前端渲染腳本（同源 'self'，
+// 合法於 CSP）。因為 JSZip 較大，不要無差別注入到每個 admin 頁面。
+pub(super) fn inject_files_office_assets(html: &str) -> String {
+    const OFFICE_ASSETS: &str =
+        r#"<script src="/admin/static/js/jszip.min.js?v=officeview1"></script><script src="/admin/static/js/office-view.js?v=officeview1"></script>"#;
+    if html.contains("office-view.js") {
+        return html.to_string();
+    }
+    if let Some(head_at) = html.find("</head>") {
+        let mut out = String::with_capacity(html.len() + OFFICE_ASSETS.len());
+        out.push_str(&html[..head_at]);
+        out.push_str(OFFICE_ASSETS);
+        out.push_str(&html[head_at..]);
+        out
+    } else {
+        html.replacen("<head>", &format!("<head>{OFFICE_ASSETS}"), 1)
+    }
 }
 
 const ADMIN_CLEAN_TIMETABLE_HTML: &str = include_str!("static/timetable.html");
