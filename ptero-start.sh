@@ -1000,10 +1000,35 @@ ensure_libreoffice() {
   )" || { echo "[ptero-start] LibreOffice 安装失败，跳过(PPT/Word 预览暂不可用)。"; return 1; }
 
   chmod +x "$result" 2>/dev/null || true
+  # LIBREOFFICE_SELFHEAL_LIBS_V1: Debian 13(及部分新发行版)把 OpenSSL 档名命名为
+  # libssl.so.3 / libcrypto.so.3（套件 libssl3t64），而 LibreOffice 26.x 的 binary 找的是
+  # libssl3.so / libcrypto3.so。档名对不上 → `error while loading shared libraries: libssl3.so`。
+  # 我们用 symlink 把「缺的档名」指向「系统已有的档名」，并加进 LD_LIBRARY_PATH，免 root 解决。
+  local libdir="$prefix/.libs"
+  mkdir -p "$libdir"
+  local ssl_src crypto_src
+  ssl_src="$(ls /usr/lib/x86_64-linux-gnu/libssl.so.3 2>/dev/null || ls /usr/lib/x86_64-linux-gnu/libssl.so 2>/dev/null || true)"
+  crypto_src="$(ls /usr/lib/x86_64-linux-gnu/libcrypto.so.3 2>/dev/null || ls /usr/lib/x86_64-linux-gnu/libcrypto.so 2>/dev/null || true)"
+  if [[ -n "$ssl_src" ]]; then ln -sf "$ssl_src" "$libdir/libssl3.so" 2>/dev/null || true; fi
+  if [[ -n "$crypto_src" ]]; then ln -sf "$crypto_src" "$libdir/libcrypto3.so" 2>/dev/null || true; fi
+  if [[ -d "$libdir" && -n "$(ls -A "$libdir" 2>/dev/null)" ]]; then
+    LD_LIBRARY_PATH="$libdir${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    export LD_LIBRARY_PATH
+    echo "[ptero-start] 已建立函数库 symlink 并加入 LD_LIBRARY_PATH：$libdir"
+  fi
   export TRONCLASS_LIBREOFFICE="$result"
   echo "[ptero-start] LibreOffice 安装完成：$result"
   echo "[ptero-start] 自检："
   ( "$result" --headless --version 2>&1 | head -n1 ) || true
+  # 若仍缺其它函数库，列出缺失项以便后续处理。
+  if command -v ldd >/dev/null 2>&1; then
+    local missing
+    missing="$(ldd "$result.bin" 2>/dev/null | grep -i 'not found' || true)"
+    if [[ -n "$missing" ]]; then
+      echo "[ptero-start] 仍缺少以下函数库（需在 egg/映像层或本脚本额外补）："
+      echo "$missing"
+    fi
+  fi
   return 0
 }
 ensure_libreoffice || true
