@@ -94,7 +94,11 @@ pub(super) const ADMIN_MAX_NOTIFICATION_PREFERENCES: usize = 32;
 /// Short-lived access token lifetime (30 min). A long-lived refresh token is
 /// used to mint a new access token, so a stolen access cookie is only usable
 /// briefly.
-const ACCESS_TOKEN_TTL: Duration = Duration::from_secs(30 * 60);
+// DASHBOARD_ACCESS_TTL_V1: 原 30 分鐘太短，使用者工作常態超過 30 分鐘後第一次
+// 請求會先收到 401 才觸發 refresh（前端顯示「Unauth」，再點一次才成功）。
+// 延長到 12 小時：白天工作期間不易過期，仍保留 7 天的 refresh token 作長效保障。
+// 純延長時間，不設定 cookie 資料、不改安全性質（仍 HttpOnly / SameSite=Lax）。
+const ACCESS_TOKEN_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 /// Long-lived refresh token lifetime (7 days). Each refresh rotates it.
 const REFRESH_TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const MAX_SESSIONS: usize = 500;
@@ -112,7 +116,8 @@ const SESSION_COOKIE_MARKER: &str = "cookie";
 const SECURE_SESSION_COOKIE: &str = "__Host-tronclass_admin_session";
 const LOCAL_SESSION_COOKIE: &str = "tronclass_admin_session";
 /// HttpOnly access-token cookie lifetime (matches ACCESS_TOKEN_TTL).
-const SESSION_COOKIE_MAX_AGE: u64 = 30 * 60;
+// DASHBOARD_ACCESS_TTL_V1: HttpOnly access-token cookie 壽命對齊 ACCESS_TOKEN_TTL。
+const SESSION_COOKIE_MAX_AGE: u64 = 12 * 60 * 60;
 /// HttpOnly refresh-token cookie name and lifetime.
 const SECURE_REFRESH_COOKIE: &str = "__Host-tronclass_admin_refresh";
 const LOCAL_REFRESH_COOKIE: &str = "tronclass_admin_refresh";
@@ -1183,9 +1188,15 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         // MATERIALS_IMPORT_V1: 自動從 iClass 匯入教材到教材雲端硬碟。
+        // MATERIALS_IMPORT_SHARED_V1: 匯入核心改為背景 job（立即回 202，
+        // 避免佔住 HTTP request 直到 proxy 逾時 → 502）；另提供進度查詢。
         .route(
             "/admin/api/files/import",
             get(materials_import::admin_materials_import_handler),
+        )
+        .route(
+            "/admin/api/files/import/status",
+            get(materials_import::admin_materials_import_status_handler),
         )
         .route("/admin/api/logs", get(logs::admin_logs_api_handler))
         // FILES_NATIVE_V1: FileBrowser 的 forward_auth 檢查點已廢除。

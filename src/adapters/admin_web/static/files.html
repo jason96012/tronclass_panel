@@ -227,6 +227,42 @@
       -webkit-text-size-adjust:100%;
     }
     html.tron-auth-ok,html.dash-auth-ok,html.tron-auth-pending,body.auth-ok,body.dash-auth-ok,body.logged-in{visibility:visible!important}
+
+    /* MATERIALS_DASH_BG_V1: 複製 dashboard 的藍色光暈漸層背景到教材頁。 */
+    body{isolation:isolate}
+    body::before{
+      content:'';
+      position:fixed;
+      inset:0;
+      z-index:-1;
+      pointer-events:none;
+      background:
+        radial-gradient(circle at 18% 18%, rgba(96,165,250,.16), transparent 34%),
+        radial-gradient(circle at 78% 28%, rgba(37,99,235,.14), transparent 30%),
+        radial-gradient(circle at 50% 115%, rgba(59,130,246,.10), transparent 38%),
+        linear-gradient(135deg,#f8fafc 0%,#eef2ff 50%,#eff6ff 100%);
+    }
+    @media(prefers-color-scheme:dark){
+      body::before{
+        background:
+          radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+          radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+          radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
+          linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%);
+      }
+    }
+    html[data-theme="dark"] body::before{
+      background:
+        radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+        radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+        radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
+        linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%);
+    }
+    /* MATERIALS_PARTICLES_V1: 粒子畫布在漸層之上、內容之下 */
+    #filesBgParticlesV1{
+      position:fixed;inset:0;width:100vw;height:100vh;
+      z-index:0;pointer-events:none;display:block;
+    }
     
     button,input,select{font:inherit}
     button,a.button{
@@ -278,7 +314,8 @@
       background:rgba(248,250,252,.92);
       backdrop-filter:blur(14px);
     }
-    @media(prefers-color-scheme:dark){.topbar{background:rgba(9,13,22,.92)}}
+    /* MATERIALS_DASH_BG_V1: 頂欄改玻璃半透明，讓光暈透出 */
+    @media(prefers-color-scheme:dark){.topbar{background:rgba(15,23,42,.70);border-bottom-color:rgba(148,163,184,.16)}}
     
     .brand-wrap{display:flex;align-items:center;gap:10px}
     .brand-mark{
@@ -303,8 +340,9 @@
     
     .top-actions{display:flex;align-items:center;gap:8px;justify-content:flex-end}
 
-    .main{display:grid;grid-template-columns:240px minmax(0,1fr);min-height:calc(100vh - 61px)}
-    .sidebar{padding:14px 12px;border-right:1px solid var(--line);background:var(--bg)}
+    .main{display:grid;grid-template-columns:minmax(0,1fr);min-height:calc(100vh - 61px);position:relative;z-index:1}
+    /* MATERIALS_SIDEBAR_REMOVED_V1: 移除左側欄，內容佔滿全寬 */
+    .sidebar{display:none}
     .new-btn{width:100%;min-height:44px;border-radius:14px;background:var(--surface);color:var(--text);border:1px solid var(--line2);box-shadow:var(--shadow);font-weight:800}
     .new-btn:hover{background:var(--surface2)}
     .new-wrap{position:relative;margin-bottom:12px}
@@ -401,7 +439,7 @@
       
       .mobilebar{
         position:fixed;left:10px;right:10px;bottom:calc(10px + var(--safe));z-index:70;
-        display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:6px;
+        display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px;
         border:1px solid var(--line);border-radius:20px;
         background:rgba(255,255,255,.94);box-shadow:0 12px 36px rgba(15,23,42,.18);backdrop-filter:blur(16px);
       }
@@ -690,6 +728,33 @@
     }
   }
 </style>
+<style id="MOBILE_IMPORT_TOP_CSS_V1">
+  /* MOBILE_IMPORT_TOP_V1: 僅手機頂欄顯示「匯入 iClass」；桌面隱藏 */
+  #mImportTop{display:none!important}
+  @media (max-width:820px){
+    #mImportTop{
+      display:inline-flex!important;
+      visibility:visible!important;
+      opacity:1!important;
+      pointer-events:auto!important;
+      flex:0 0 auto!important;
+      margin-left:6px!important;
+      min-height:34px!important;
+      height:34px!important;
+      padding:0 12px!important;
+      border-radius:999px!important;
+      border:1px solid rgba(148,163,184,.42)!important;
+      background:rgba(255,255,255,.08)!important;
+      color:var(--text)!important;
+      font-size:12px!important;
+      font-weight:800!important;
+      white-space:nowrap!important;
+      align-items:center!important;
+      justify-content:center!important;
+    }
+    html[data-theme="dark"] #mImportTop{background:rgba(15,23,42,.6)!important;color:#e5eefb!important}
+  }
+</style>
 <style id="MOBILE_FILES_UX_V1">
 @media (max-width:820px){
   .search-wrap{
@@ -816,6 +881,29 @@
     border-radius:0!important;
   }
 }
+
+/* MATERIALS_UI_V1: 雲端硬碟介面優化 —— 資料夾/檔案操作改為精簡小按鈕 */
+.folder-grid .folder-card{position:relative}
+.folder-grid .folder-card .folder-del{
+  width:38px!important;min-width:38px!important;min-height:38px!important;max-height:38px!important;
+  padding:0!important;flex-shrink:0;justify-content:center!important;border-radius:10px!important;
+  background:rgba(239,68,68,.12)!important;color:var(--bad)!important;border:1px solid transparent!important;
+  font-size:15px!important;line-height:1!important;
+}
+.folder-grid .folder-card .folder-del:hover{background:rgba(239,68,68,.9)!important;color:#fff!important}
+@media(hover:hover){
+  .folder-grid .folder-card .folder-del{opacity:0;visibility:hidden;transition:opacity .15s ease}
+  .folder-grid .folder-card:hover .folder-del{opacity:1;visibility:visible}
+}
+.file-actions .download-link{background:var(--primary)!important;color:var(--primaryText)!important;border-color:transparent!important}
+.file-actions .download-link:hover{opacity:.9!important}
+.file-actions .remove-btn{
+  flex:0 0 auto;width:38px!important;min-width:38px!important;min-height:38px!important;max-height:38px!important;
+  padding:0!important;justify-content:center!important;border-radius:10px!important;
+  background:rgba(239,68,68,.12)!important;color:var(--bad)!important;border:1px solid transparent!important;
+  font-size:15px!important;line-height:1!important;
+}
+.file-actions .remove-btn:hover{background:rgba(239,68,68,.9)!important;color:#fff!important}
 </style>
 
 </head>
@@ -838,7 +926,16 @@
     <a id="dashboardLink" class="button primary" href="/admin">回控制台</a>
     <button id="refresh" class="button secondary" type="button">重新整理</button>
   </div>
-  <a id="filesBackDashboardBtn" class="button primary" href="/admin#overview">返回控制台</a>
+  <!-- MOBILE_IMPORT_TOP_V1: 手機版頂欄「匯入 iClass」按鈕 (僅手機顯示) -->
+  <button id="mImportTop" class="button secondary" type="button" title="從 iClass 自動下載當學期教材">
+    <svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>
+    匯入<span class="m-import-full"> iClass</span>
+  </button>
+  <!-- MOBILE_UP_TOP_V2: 「回上一頁」移到匯入右側 -->
+  <button id="filesBackDashboardBtn" class="button primary" type="button" title="回上一層資料夾">
+    <svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>
+    回上一頁
+  </button>
 </header>
 
 <div class="main">
@@ -945,9 +1042,9 @@
 
 <!-- 手機底部功能列 -->
 <nav id="mobilebar" class="mobilebar">
-  <button id="mDriveHome" type="button" aria-label="回到雲端硬碟首頁">
-    <svg viewBox="0 0 24 24"><path d="M19 12H5"></path><path d="m12 5-7 7 7 7"></path></svg>
-    <span>硬碟首頁</span>
+  <button id="mDriveHome" type="button" aria-label="返回控制台">
+    <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"></path><path d="M5 9.5V21h14V9.5"></path></svg>
+    <span>返回控制台</span>
   </button>
   <button id="mUpload" type="button">
     <svg viewBox="0 0 24 24"><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M5 20h14"></path></svg>
@@ -1072,24 +1169,39 @@
     }
   }
 
-  // MATERIALS_IMPORT_V1: 從 iClass 自動匯入當學期教材。
+  // MATERIALS_IMPORT_V1 + SHARED: 從 iClass 自動匯入當學期教材(共用雲端硬碟)。
+  // 後端改為背景 job：這端立即發起，再輪詢 /import/status 顯示進度，避免 502。
   async function importMaterials(){
     const btn = q('importHere');
     const old = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '匯入中…'; }
     try {
-      // 匯入可能耗時(逐門課下載),給較長逾時;用 session 帳號。
-      const body = await api('/admin/api/files/import', {}, 600000);
-      const msg = '匯入完成：\n' +
-        '課程 ' + (body.courses_scanned||0) + ' 門\n' +
-        '教材 ' + (body.materials_found||0) + ' 項\n' +
-        '已儲存 ' + (body.files_saved||0) + '、已跳過 ' + (body.files_skipped||0) +
-        '、連結 ' + (body.links_created||0) + '、失敗 ' + (body.failed||0);
-      if (Array.isArray(body.errors) && body.errors.length){
-        msg += '\n\n錯誤：\n' + body.errors.slice(0,10).join('\n');
+      const start = await api('/admin/api/files/import', {}, 60000);
+      if (!start.ok){ alert(start.error || start.message || '匯入無法開始'); return; }
+      if (start.accepted === false){ alert(start.error || start.message || '匯入無法開始'); return; }
+      // 輪詢進度(最多約 10 分鐘)。
+      const maxWait = 600000;
+      const began = Date.now();
+      let lastMsg = '';
+      while (Date.now() - began < maxWait) {
+        await new Promise(r => setTimeout(r, 2500));
+        const st = await api('/admin/api/files/import/status', {}, 60000);
+        if (st && st.message && st.message !== lastMsg) { lastMsg = st.message; if (btn) btn.textContent = st.message.slice(0, 24); }
+        if (st && st.done) {
+          const msg = '匯入完成：\n' +
+            '課程 ' + (st.courses_scanned||0) + ' 門\n' +
+            '教材 ' + (st.materials_found||0) + ' 項\n' +
+            '已儲存 ' + (st.files_saved||0) + '、已跳過 ' + (st.files_skipped||0) +
+            '、連結 ' + (st.links_created||0) + '、失敗 ' + (st.failed||0);
+          if (Array.isArray(st.errors) && st.errors.length){
+            msg += '\n\n錯誤：\n' + st.errors.slice(0,10).join('\n');
+          }
+          alert(msg);
+          loadFiles();
+          return;
+        }
       }
-      alert(msg);
-      loadFiles();
+      alert('匯入仍在背景執行中，請稍後回到此頁查看「全部教材」');
     } catch (e) {
       alert('匯入失敗：' + e.message);
     } finally {
@@ -1175,7 +1287,7 @@
     return '<div class="folder-card" data-open-folder="' + esc(f) + '">' +
       '<div class="folder-icon"></div>' +
       '<div class="folder-name">' + esc(base(f)) + '</div>' +
-      '<button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button>' +
+      '<button class="button danger folder-del" data-delete-folder="' + esc(f) + '" title="刪除資料夾">🗑</button>' +
     '</div>';
   }
 
@@ -1188,9 +1300,9 @@
         '<div class="file-meta">' + esc(f.modified || '-') + ' ｜ ' + esc(f.size_label || sizeLabel(f.size)) + '</div>' +
       '</div>' +
       '<div class="file-actions">' +
-        '<a class="button secondary" href="' + dl(f.path) + '">下載</a>' +
+        '<a class="button secondary download-link" href="' + dl(f.path) + '">下載</a>' +
         (['pdf','jpg','jpeg','png','txt','md','mp4'].includes(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
-        '<button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button>' +
+        '<button class="button danger remove-btn" data-delete-file="' + esc(f.path) + '" title="刪除檔案">🗑</button>' +
       '</div>' +
     '</div>';
   }
@@ -1460,8 +1572,10 @@
   }
 
   function driveHome(){
-    // MOBILE_FILES_DRIVE_HOME_BUTTON_V1: 手機版雲端硬碟回到根目錄 / 全部教材。
-    setFolder('');
+    // MOBILE_FILES_BACK_BUTTON_V1: 手機版改為「回上一層」資料夾(而非硬碟首頁)。
+    const parts = (currentFolder || '').split('/').filter(Boolean);
+    parts.pop();
+    setFolder(parts.join('/'));
   }
 
   function init(){
@@ -1472,10 +1586,13 @@
     if (q('newFolder')) q('newFolder').onclick = () => { q('newMenu').classList.remove('open'); mkdir(); };
     if (q('uploadHere')) q('uploadHere').onclick = () => q('fileInput').click();
     if (q('importHere')) q('importHere').onclick = importMaterials;
+    if (q('mImportTop')) q('mImportTop').onclick = importMaterials; // MOBILE_IMPORT_TOP_V1
     if (q('mkdirHere')) q('mkdirHere').onclick = mkdir;
     if (q('refresh')) q('refresh').onclick = loadFiles;
     if (q('mRefresh')) q('mRefresh').onclick = loadFiles;
-    if (q('mDriveHome')) q('mDriveHome').onclick = driveHome;
+    // MOBILE_FILES_BACK_BUTTON_V2: 頂欄「回上一頁」→ 上一層資料夾；底部「返回控制台」→ 控制台
+    if (q('filesBackDashboardBtn')) q('filesBackDashboardBtn').onclick = driveHome;
+    if (q('mDriveHome')) q('mDriveHome').onclick = () => location.href = withToken('/admin');
     if (q('mUpload')) q('mUpload').onclick = () => q('fileInput').click();
     if (q('mFolder')) q('mFolder').onclick = mkdir;
 
@@ -1600,33 +1717,26 @@
       return ''; // F-03: token removed
     }catch(_){ return ''; }
   }
-  function href(){
-    var t = tok();
-    return '/admin#overview';
-  }
   function ensure(){
     var header = document.querySelector('header.topbar, header, .topbar');
     if(!header) return;
     var btn = document.getElementById('filesBackDashboardBtn');
     if(!btn){
-      btn = document.createElement('a');
+      btn = document.createElement('button');
       btn.id = 'filesBackDashboardBtn';
+      btn.type = 'button';
       header.appendChild(btn);
     }else if(btn.parentElement !== header){
       header.appendChild(btn);
     }
+    // MOBILE_FILES_BACK_BUTTON_V2: 頂欄這顆改為「回上一頁」資料夾(非回控制台)。
     btn.className = 'button primary';
-    btn.textContent = '返回控制台';
-    btn.setAttribute('href', href());
+    btn.setAttribute('type','button');
+    btn.title = '回上一層資料夾';
+    btn.innerHTML = '<svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>回上一頁';
+    btn.removeAttribute('href');
     btn.removeAttribute('hidden');
     btn.style.display = '';
-    // 手機避免跟舊的 #dashboardLink 重複兩顆
-    try{
-      if(window.matchMedia && window.matchMedia('(max-width:820px)').matches){
-        var old = document.getElementById('dashboardLink');
-        if(old && old !== btn) old.style.display = 'none';
-      }
-    }catch(_){}
   }
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensure);
   else ensure();
@@ -1637,14 +1747,153 @@
 <script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f11aa2abc64a46',t:'MTc4NzM5MzU5Nw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2f87daeef93825e',t:'MTc4NzQ3MTA1NQ=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb40c5bd634a45',t:'MTc4NzUwMDAxNw=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><style id="MANUAL_DARK_MIRROR_V1">
 /* DARK_MIRROR_V1: 自動鏡像 prefers-color-scheme:dark → html[data-theme="dark"]；手動深色與系統深色同調色盤 */
 html[data-theme="dark"]{--bg:#090d16 !important;--surface:#131b2a !important;--surface2:#1c2638 !important;--surface3:#24324a !important;--text:#f1f5f9 !important;--muted:#94a3b8 !important;--line:#223046 !important;--line2:#334155 !important;--primary:#3b82f6 !important;--primarySoft:rgba(59,130,246,.16) !important;--primaryText:#ffffff !important;--ok:#4ade80 !important;--warn:#fbbf24 !important;--bad:#f87171 !important;--shadow:0 4px 24px rgba(0,0,0,.36) !important;}
-html[data-theme="dark"] .topbar{background:rgba(9,13,22,.92) !important;}
+html[data-theme="dark"] .topbar{background:rgba(15,23,42,.70) !important;}
 html[data-theme="dark"] .mobilebar{background:rgba(15,23,42,.92) !important;border-color:var(--line) !important;}
-html[data-theme="dark"] .topbar{background: rgba(9, 13, 22, 0.92) !important;border-bottom-color: var(--line, #223046) !important;}
+html[data-theme="dark"] .topbar{background: rgba(15, 23, 42, 0.70) !important;border-bottom-color: rgba(148,163,184,.16) !important;}
 html[data-theme="dark"] .mobilebar, html[data-theme="dark"] #mobilebar, html[data-theme="dark"] #filesMobileNav{background: rgba(19, 27, 42, 0.94) !important;border-color: var(--line, #334155) !important;box-shadow: 0 16px 45px rgba(0, 0, 0, 0.45) !important;}
 html[data-theme="dark"] .mobilebar a, html[data-theme="dark"] .mobilebar button, html[data-theme="dark"] #mobilebar a, html[data-theme="dark"] #mobilebar button, html[data-theme="dark"] #mDashboard, html[data-theme="dark"] #mDriveHome, html[data-theme="dark"] #mUpload, html[data-theme="dark"] #mFolder, html[data-theme="dark"] #mRefresh{color: var(--muted, #94a3b8) !important;background: transparent !important;}
 html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar button:hover, html[data-theme="dark"] .mobilebar a:active, html[data-theme="dark"] .mobilebar button:active{background: rgba(255, 255, 255, 0.08) !important;color: #ffffff !important;}
 
 </style>
+<style id="MOBILE_TOPBAR_TALLER_V1">
+  /* 手機版把頂欄做高一點、按鈕放大，看起來不再侷促 */
+  @media (max-width:820px){
+    header.topbar, header, .topbar{
+      padding:13px 16px!important;
+      min-height:64px!important;
+      row-gap:9px!important;
+      align-items:center!important;
+    }
+    .brand-wrap{gap:13px!important}
+    .brand-mark{width:48px!important;height:48px!important;border-radius:14px!important;font-size:24px!important}
+    .brand-title{font-size:19px!important}
+    .brand-sub{font-size:12px!important}
+    #filesBackDashboardBtn,
+    a#filesBackDashboardBtn{
+      min-height:46px!important;height:46px!important;
+      padding:0 20px!important;font-size:14px!important;
+      border-radius:999px!important;
+    }
+    #mImportTop{
+      min-height:46px!important;height:46px!important;
+      padding:0 20px!important;font-size:14px!important;
+      border-radius:999px!important;
+    }
+  }
+</style>
+<style id="MATERIALS_HEADER_BLACKLIST_V1">
+  /* MOBILE_ICONS_NOT_EMOJI_V1: 按鈕內 SVG 圖示 */
+  .btn-ico{width:16px;height:16px;flex:0 0 auto;color:currentColor;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+  /* 頂欄改為「IP 黑名單管理」那種：品牌icon + 主/副標題 + 右側膠囊按鈕 */
+  header.topbar, .topbar{
+    position:sticky;top:0;z-index:40;
+    display:flex!important;align-items:center!important;justify-content:space-between!important;gap:16px!important;
+    min-height:76px!important;padding:14px 24px!important;flex-wrap:nowrap!important;
+    background:rgba(246,248,252,.94)!important;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+    border-bottom:1px solid var(--line2)!important;
+  }
+  @media(prefers-color-scheme:dark){header.topbar,.topbar{background:rgba(15,20,29,.94)!important}}
+  html[data-theme="dark"] header.topbar,html[data-theme="dark"] .topbar{background:rgba(15,20,29,.94)!important}
+  .brand-wrap{display:flex!important;align-items:center!important;gap:14px!important;min-width:0;flex:0 0 auto!important}
+  .brand-mark{width:42px!important;height:42px!important;flex:0 0 auto!important;border-radius:14px!important;background:linear-gradient(135deg,#3b82f6,#6366f1)!important;color:#fff!important;font-size:19px!important;font-weight:950!important;box-shadow:0 0 20px rgba(59,130,246,.25)!important;display:grid!important;place-items:center!important}
+  .brand-title{font-size:18px!important;font-weight:850!important;letter-spacing:-.025em!important;line-height:1.1!important;white-space:nowrap!important;color:var(--text)!important}
+  .brand-sub{margin-top:4px!important;color:var(--muted)!important;font-size:12px!important;line-height:1.2!important;white-space:nowrap!important;overflow:hidden;text-overflow:ellipsis}
+  .search-wrap{flex:1 1 auto!important;min-width:0!important;max-width:520px!important;margin-left:auto!important}
+  .top-actions{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:10px!important;margin-left:0!important;flex:0 0 auto!important}
+  .topbar .button,header.topbar .button,.top-actions .button,.top-actions a,.top-actions button{
+    min-height:40px!important;border-radius:999px!important;padding:0 16px!important;font-weight:750!important;white-space:nowrap!important;
+  }
+  /* 手機(≤820px)：保持品牌+標題+副標題，右側兩顆膠囊按鈕 */
+  /* 手機(≤820px)：品牌+標題+副標題可收縮，兩顆膠囊按鈕改小、不擠壓文字 */
+  @media(max-width:820px){
+    header.topbar,.topbar{min-height:86px!important;padding:16px 16px!important;gap:10px!important}
+    .brand-wrap{flex:1 1 auto!important;min-width:0!important;gap:14px!important}
+    .brand-wrap > div{min-width:0!important;overflow:hidden!important}
+    .brand-mark{width:52px!important;height:52px!important;flex:0 0 auto!important;font-size:23px!important;border-radius:16px!important}
+    .brand-title{font-size:18px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+    .brand-sub{display:block!important;font-size:12px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
+    .search-wrap{display:none!important}
+    /* MOBILE_TOPBAR_BIGGER_V1: 手機頂欄做大 */
+    #filesBackDashboardBtn,a#filesBackDashboardBtn{
+      display:inline-flex!important;visibility:visible!important;opacity:1!important;pointer-events:auto!important;
+      min-height:46px!important;height:46px!important;padding:0 16px!important;font-size:14px!important;flex:0 0 auto!important;
+      margin-left:0!important;
+    }
+    #mImportTop{
+      min-height:46px!important;height:46px!important;padding:0 14px!important;font-size:14px!important;flex:0 0 auto!important;
+    }
+    .m-import-full{display:none!important}
+  }
+</style>
+<script id="filesParticlesScriptV1">
+/* MATERIALS_PARTICLES_V1: 複製 dashboard 的粒子光點動畫 */
+(function(){
+  'use strict';
+  if(window.FILES_PARTICLES_V1) return;
+  window.FILES_PARTICLES_V1 = true;
+  var raf = 0, particles = [];
+  function q(id){ return document.getElementById(id); }
+  function darkMode(){
+    return document.documentElement.getAttribute('data-theme')==='dark' ||
+      document.documentElement.classList.contains('dark-mode') ||
+      (window.matchMedia && matchMedia('(prefers-color-scheme:dark)').matches);
+  }
+  function resize(c){
+    var dpr = Math.min(window.devicePixelRatio||1, 2);
+    c.width = Math.floor(window.innerWidth*dpr);
+    c.height = Math.floor(window.innerHeight*dpr);
+    c.style.width = window.innerWidth+'px';
+    c.style.height = window.innerHeight+'px';
+    var ctx = c.getContext('2d'); if(ctx) ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  function init(c){
+    particles = [];
+    var count = Math.min(90, Math.floor((window.innerWidth*window.innerHeight)/16000));
+    for(var i=0;i<count;i++){
+      particles.push({
+        x: Math.random()*window.innerWidth,
+        y: Math.random()*window.innerHeight,
+        s: Math.random()*2.2+.8,
+        vx: (Math.random()-.5)*.36,
+        vy: (Math.random()-.5)*.36,
+        a: Math.random()*.18+.05
+      });
+    }
+  }
+  function loop(){
+    var c = q('filesBgParticlesV1');
+    if(!c){ raf = 0; return; }
+    var ctx = c.getContext('2d');
+    ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+    var fill = darkMode() ? 'rgba(226,239,255,' : 'rgba(37,99,235,';
+    for(var i=0;i<particles.length;i++){
+      var p = particles[i];
+      p.x += p.vx; p.y += p.vy;
+      if(p.x<0) p.x=window.innerWidth; if(p.x>window.innerWidth) p.x=0;
+      if(p.y<0) p.y=window.innerHeight; if(p.y>window.innerHeight) p.y=0;
+      ctx.fillStyle = fill + p.a + ')';
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.s,0,Math.PI*2); ctx.fill();
+    }
+    raf = requestAnimationFrame(loop);
+  }
+  function start(){
+    if(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var c = q('filesBgParticlesV1');
+    if(!c){
+      c = document.createElement('canvas');
+      c.id = 'filesBgParticlesV1';
+      c.setAttribute('aria-hidden','true');
+      document.body.prepend(c);
+    }
+    var ctx = c.getContext('2d'); if(!ctx || raf) return;
+    resize(c); init(c);
+    raf = requestAnimationFrame(loop);
+    window.addEventListener('resize', function(){ if(c){ resize(c); init(c); } }, {passive:true});
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+</script>
 </body>
 </html>
 

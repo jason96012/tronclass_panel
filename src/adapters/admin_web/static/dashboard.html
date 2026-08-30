@@ -5099,5 +5099,63 @@ html[data-theme="dark"] .maint-final-check,html[data-theme="dark"] .maint-final-
 html[data-theme="dark"] .maint-final-title,html[data-theme="dark"] .maint-final-k{color:#F1F5F9!important}
 html[data-theme="dark"] .maint-final-sub,html[data-theme="dark"] .maint-final-v,html[data-theme="dark"] .maint-final-h{color:#94A3B8!important}
 html[data-theme="dark"] .maint-final-bar{background:#1E293B!important}</style>
+<script id="LOGIN_PASSWORD_TOGGLE_FIX_V2">
+(function(){
+  'use strict';
+  if(window.LOGIN_PASSWORD_TOGGLE_FIX_V2) return;
+  window.LOGIN_PASSWORD_TOGGLE_FIX_V2 = true;
+
+  // 找出密碼輸入框（以 id 優先，找不到再退而求其次看登入卡片內的密碼框）。
+  function passwordInput(){
+    return document.getElementById('loginPassword')
+      || document.querySelector('#loginCard input[type="password"], #loginPanel input[type="password"], .login-card input[type="password"]');
+  }
+  function isToggle(target){
+    if(!target) return false;
+    var el = target.nodeType === 3 ? target.parentElement : target;
+    if(!el || !el.closest) return false;
+    var b = el.closest('#toggleLoginPassword,.animated-toggle-password,[aria-label*="顯示密碼"],[aria-label*="顯示"]');
+    if(!b) return false;
+    // 只看登入卡片裡的那顆眼睛，避免影響其它頁面同名元素。
+    return !!(b.closest('#loginCard,.login-card,#loginPanel,.animated-login-form'));
+  }
+
+  // 單一 capture 監聽（事件委派）：在目標階段之前攔截並 stopImmediatePropagation，
+  // 這樣其它舊腳本綁到同一顆按鈕上的 onclick/addEventListener 通通不會再執行，
+  // 不會再發生「兩個 handler 同一次點擊把 type 翻回 password」造成的沒作用問題。
+  document.addEventListener('click', function(ev){
+    if(!isToggle(ev.target)) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+    var p = passwordInput();
+    if(!p) return;
+    var show = p.type === 'password';
+    p.type = show ? 'text' : 'password';
+    var btn = ev.target && ev.target.nodeType === 3 ? ev.target.parentElement : ev.target;
+    if(btn && btn.closest){ btn = btn.closest('#toggleLoginPassword,.animated-toggle-password') || btn; }
+    if(btn){ btn.textContent = show ? '🙈' : '👁'; }
+    if(show){ try{ p.focus(); }catch(_){ } }
+  }, true);
+
+  // 若按鈕文字被其它腳本設回「顯示密碼」圖示，負責在重新繪製時維持與真實狀態一致。
+  function sync(force){
+    var p = passwordInput();
+    if(!p) return;
+    var reveal = p.type === 'text';
+    document.querySelectorAll('#toggleLoginPassword,.animated-toggle-password').forEach(function(btn){
+      if(!(btn.closest && btn.closest('#loginCard,.login-card,#loginPanel,.animated-login-form'))) return;
+      var want = reveal ? '🙈' : '👁';
+      if(force || btn.textContent !== want) btn.textContent = want;
+    });
+  }
+  function boot(){
+    sync(true);
+    var n=0; var t=setInterval(function(){ sync(); if(++n>=25) clearInterval(t); }, 400);
+    try{ new MutationObserver(function(){ sync(); }).observe(document.documentElement, {childList:true, subtree:true}); }catch(_){ }
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', boot); else boot();
+})();
+</script>
 </body>
 </html>
