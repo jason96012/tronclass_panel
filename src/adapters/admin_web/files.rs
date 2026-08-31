@@ -1305,7 +1305,7 @@ pub(super) async fn public_share_preview_handler(
         .replace("__RAWATTR__", &esc_attr(&raw_url))
         .replace("__OFFICEATTR__", &esc_attr(&office_src))
         .replace("__DLATTR__", &esc_attr(&dl_url));
-    tracing::info!(path = %path, ext = %ext, raw_url = %raw_url, "pub share page served");
+    tracing::info!(path = %path, ext = %ext, raw_url = %raw_url, office_src = %office_src, "pub share page served");
     let mut res = Response::new(page.into());
     *res.status_mut() = StatusCode::OK;
     let h = res.headers_mut();

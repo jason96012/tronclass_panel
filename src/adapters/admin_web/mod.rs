@@ -2074,6 +2074,10 @@ async fn admin_security_headers_middleware(
     // `frame-ancestors 'none'`，瀏覽器會拒絕在框內顯示這份 PDF，預覽只剩空白。
     // 這裡只放寬到 same-origin：跨站仍然無法內嵌我們的預覽回應。
     let is_framable_preview = path == "/admin/api/files/preview";
+    // SHARE_V1c: /pub/ 是公開分享/串流端點，需被「跨域」檢視器（Microsoft Office
+    // Online、外部 <img>/<iframe>）載入。若沿用 same-origin 的 CORP 與 X-Frame-Options
+    // DENY，跨域檢視器會直接拒絕載入 → Office Online 顯示 "An error occurred"。
+    let is_pub = path.starts_with("/pub/");
     let mut response = next.run(request).await;
 
     // This middleware covers the whole Admin Web router, including `/` and
@@ -2089,14 +2093,17 @@ async fn admin_security_headers_middleware(
         HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
     );
-    headers.insert(
-        HeaderName::from_static("x-frame-options"),
-        HeaderValue::from_static(if is_framable_preview {
-            "SAMEORIGIN"
-        } else {
-            "DENY"
-        }),
-    );
+    // SHARE_V1c: /pub/ 需可被跨域載入 → 不送 X-Frame-Options DENY。
+    if !is_pub {
+        headers.insert(
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static(if is_framable_preview {
+                "SAMEORIGIN"
+            } else {
+                "DENY"
+            }),
+        );
+    }
     headers.insert(
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("no-referrer"),
@@ -2105,13 +2112,15 @@ async fn admin_security_headers_middleware(
         HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("camera=(self), geolocation=(), microphone=()"),
     );
-    headers.insert(
-        HeaderName::from_static("cross-origin-opener-policy"),
-        HeaderValue::from_static("same-origin"),
-    );
+    if !is_pub {
+        headers.insert(
+            HeaderName::from_static("cross-origin-opener-policy"),
+            HeaderValue::from_static("same-origin"),
+        );
+    }
     headers.insert(
         HeaderName::from_static("cross-origin-resource-policy"),
-        HeaderValue::from_static("same-origin"),
+        HeaderValue::from_static(if is_pub { "cross-origin" } else { "same-origin" }),
     );
     headers.insert(
         HeaderName::from_static("strict-transport-security"),
