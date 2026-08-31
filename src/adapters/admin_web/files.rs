@@ -936,7 +936,8 @@ fn material_total_size_for_upload(root: &std::path::Path) -> std::io::Result<u64
 /// | 文件 | pdf | PDF.js（Firefox 同款，canvas 逐頁） |
 /// | 影音 | mp4/webm/mov/m4v、mp3/wav/ogg/m4a/flac | 瀏覽器原生 `<video>`/`<audio>` |
 /// | 純文字 | txt/md/log/csv/json/yaml/… | 前端 `<pre>` 或表格（經 `esc()` 跳脫） |
-/// | Office | doc/ppt/xls/docx/pptx/xlsx/odf/rtf | GOTENBERG_PDF_V1：Gotenberg 轉 PDF→PDF.js；未設→MS 走 Office Online、其餘下載 |
+/// | Office 現代 | docx/pptx/xlsx/odf/rtf | 前端 office-view.js 本機解析（單一 container、無 LibreOffice） |
+/// | Office 舊二進位 | doc/ppt/xls | 無純 JS 解析器→Office Online（需對外可達）或下載 |
 pub(super) const PREVIEWABLE_EXTS: &[&str] = &[
     // 圖片
     "jpg", "jpeg", "png", "gif", "bmp", "webp", "avif", "ico", "svg",
@@ -1099,71 +1100,9 @@ pub(super) async fn public_office_file_handler(
     .await
 }
 
-// ─── GOTENBERG_PDF_V1：伺服器端 Office→PDF（獨立 Docker 服務）────────────
-// Gotenberg 把 LibreOffice/Chromium 包成獨立 HTTP 服務；本程式只呼叫它的轉換
-// API，把 Office（含舊版 .ppt/.doc/.xls）轉成 PDF 再交給 PDF.js 顯示。
-// → 應用程式本身不裝 LibreOffice、不需外網可達、比 Office Online 穩定。
-// 設 TRONCLASS_GOTENBERG_URL（例 http://127.0.0.1:3000）即啟用；未設走原路徑。
-static GOTENBERG_URL: once_cell::sync::Lazy<Option<String>> = once_cell::sync::Lazy::new(|| {
-    std::env::var("TRONCLASS_GOTENBERG_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-});
-
-/// 可送 Gotenberg 轉 PDF 的副檔名（含舊版與 ODF/RTF）。
-const OFFICE_CONVERT_EXTS: &[&str] = &[
-    "doc", "ppt", "xls", "docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf",
-];
-
-fn gotenberg_enabled() -> bool {
-    GOTENBERG_URL.is_some()
-}
-
-/// 呼叫 Gotenberg 把 Office 位元組轉成 PDF；失敗回 None（呼叫端自行 fallback）。
-async fn convert_office_to_pdf(bytes: Vec<u8>, file_name: &str) -> Option<Vec<u8>> {
-    let base = GOTENBERG_URL.as_deref()?;
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(90))
-        .build()
-        .ok()?;
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(file_name.to_string())
-        .mime_str("application/octet-stream")
-        .ok()?;
-    let form = reqwest::multipart::Form::new().part("files", part);
-    let resp = client
-        .post(format!("{base}/forms/libreoffice/convert"))
-        .multipart(form)
-        .send()
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        tracing::warn!(status = %resp.status(), "gotenberg convert failed");
-        return None;
-    }
-    let pdf = resp.bytes().await.ok()?;
-    if pdf.len() >= 4 && &pdf[0..4] == b"%PDF" {
-        Some(pdf.to_vec())
-    } else {
-        None
-    }
-}
-
-/// 把轉好的 PDF 位元組作為預覽回應（PDF.js 會接手渲染）。
-fn pdf_bytes_response(pdf: Vec<u8>) -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/pdf")
-        .header(header::CONTENT_DISPOSITION, "inline")
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(header::CONTENT_LENGTH, pdf.len().to_string())
-        .body(axum::body::Body::from(pdf))
-        .unwrap_or_else(|_| {
-            (StatusCode::INTERNAL_SERVER_ERROR, "pdf response").into_response()
-        })
-}
-
+// SINGLE_CONTAINER_V1: 單一 container、無 LibreOffice、無 Gotenberg。
+// Office 預覽改由前端本機解析（office-view.js）；舊版二進位（doc/ppt/xls）
+// 無純 JS 解析器，走 Office Online（需對外可達）或下載。
 pub(super) async fn admin_files_preview_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
@@ -1219,20 +1158,6 @@ pub(super) async fn admin_files_preview_handler(
             Json(json!({ "error": "此檔案格式不支援預覽，請下載查看" })),
         )
             .into_response();
-    }
-
-    // GOTENBERG_PDF_V1: Office 檔（含舊版 .ppt）優先轉成 PDF 再預覽；
-    // 轉換失敗或未設 Gotenberg 時 fall through 回原始位元組（前端自行處理）。
-    if OFFICE_CONVERT_EXTS.contains(&ext.as_str()) && gotenberg_enabled() {
-        if let Ok(raw) = tokio::fs::read(&full_path).await {
-            let name = full_path
-                .file_name()
-                .and_then(|v| v.to_str())
-                .unwrap_or("file");
-            if let Some(pdf) = convert_office_to_pdf(raw, name).await {
-                return pdf_bytes_response(pdf);
-            }
-        }
     }
 
     stream_material_file_response(

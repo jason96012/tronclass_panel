@@ -466,7 +466,7 @@ pub(super) fn material_content_type(path: &Path) -> &'static str {
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        // ODF 家族（odt/ods/odp）與 RTF：由 Gotenberg 轉 PDF 預覽；瀏覽器本身不需要認得。
+        // ODF 家族（odt/ods/odp）與 RTF：前端 office-view.js 本機解析；瀏覽器本身不需要認得。
         "odt" => "application/vnd.oasis.opendocument.text",
         "ods" => "application/vnd.oasis.opendocument.spreadsheet",
         "odp" => "application/vnd.oasis.opendocument.presentation",

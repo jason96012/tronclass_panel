@@ -1677,9 +1677,20 @@
     } catch(err) { fallbackIframe(); }
   }
 
-  // GOTENBERG_PDF_V1: Office 預覽智能分流。
-  //  伺服器已用 Gotenberg 轉成 PDF → 用 PDF.js 渲染（最穩，含舊版 .ppt）。
-  //  未設 Gotenberg（回原始 Office 位元組）→ MS 格式走 Office Online；其餘提示下載。
+  // SINGLE_CONTAINER_V1: Office 預覽智能分流。
+  //  回應是 PDF（未來若接轉換服務）→ PDF.js；舊版二進位→Office Online；
+  //  現代格式→office-view.js 本機解析（單一 container、無 LibreOffice 下最穩）。
+  // SINGLE_CONTAINER_V1: 本機解析（office-view.js）。單一 container、無 LibreOffice
+  // 時，現代格式（docx/pptx/xlsx/odf/rtf）唯一可靠的預覽方式。
+  async function renderOfficeLocal(buf, ext){
+    const body = q('previewBody');
+    const html = await window.TronOfficeView.preview(buf, ext);
+    if (!html) throw new Error('empty');
+    if (window.TronOfficeView.mount) window.TronOfficeView.mount(body, html);
+    else body.innerHTML = html;
+  }
+
+  // 預覽分流：PDF→PDF.js；舊版二進位→Office Online；現代→本機解析。
   async function renderOfficeSmart(url, path, ext){
     const body = q('previewBody');
     body.innerHTML = '<div class="empty">正在載入…</div>';
@@ -1689,6 +1700,8 @@
       const buf = new Uint8Array(await res.arrayBuffer());
       const isPdf = buf.length > 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46; // %PDF
       if (isPdf) { await renderPdfData(buf); return; }
+      if (LEGACY_OFFICE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
+      if (window.TronOfficeView && window.JSZip) { await renderOfficeLocal(buf, ext); return; }
       if (OFFICE_ONLINE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
       body.innerHTML = '<div class="empty">此格式（.' + esc(ext) + '）不支援線上預覽，請按上方「下載」查看。</div>';
     } catch(err) {
@@ -1748,7 +1761,7 @@
       // 若 PDF.js 未載入或解析失敗，退回原生 <iframe>。
       await renderPdfPreview(url);
     } else if (isOfficePreview(e)) {
-      // GOTENBERG_PDF_V1: 伺服器轉成 PDF→PDF.js；未設→MS 走 Office Online、其餘下載。
+      // SINGLE_CONTAINER_V1: PDF→PDF.js；舊版→Office Online；現代→本機解析。
       await renderOfficeSmart(url, path, e);
     } else if (VIDEO_PREVIEW_EXTS.includes(e)) {
       q('previewBody').innerHTML = '<video src="' + url + '" controls autoplay></video>';

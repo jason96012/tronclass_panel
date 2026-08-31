@@ -152,6 +152,14 @@ pub(super) async fn admin_trusted_types_init_js_handler() -> Response {
     )
 }
 
+pub(super) async fn admin_jszip_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::JSZIP_MIN_JS)
+}
+
+pub(super) async fn admin_office_view_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::OFFICE_VIEW_JS)
+}
+
 // PDFJS_PREVIEW_V1: PDF.js 主程式與 worker。worker 由 pdf.js 在執行期以
 // workerSrc 同源載入（worker-src 'self' 合法）。
 pub(super) async fn admin_pdf_js_handler() -> Response {
