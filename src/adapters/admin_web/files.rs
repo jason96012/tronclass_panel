@@ -686,9 +686,7 @@ fn inject_filebrowser_trusted_types_assets(html: &mut String) {
     }
     let assets = concat!(
         "<script src=\"/admin/static/js/dompurify.min.js?v=20260826dompurify3414\"></script>",
-        "<script src=\"/admin/static/js/trusted-types-init.js?v=20260823trustedtypes\"></script>",
-        "<script src=\"/admin/static/js/jszip.min.js?v=officeview1\"></script>",
-        "<script src=\"/admin/static/js/office-view.js?v=officeview1\"></script>"
+        "<script src=\"/admin/static/js/trusted-types-init.js?v=20260823trustedtypes\"></script>"
     );
     let lower = html.to_ascii_lowercase();
     if let Some(index) = lower.rfind("</head>") {
@@ -935,13 +933,10 @@ fn material_total_size_for_upload(root: &std::path::Path) -> std::io::Result<u64
 /// | 類別 | 格式 | 渲染方式 |
 /// |---|---|---|
 /// | 圖片 | jpg/png/gif/bmp/webp/avif/ico/svg | 瀏覽器原生 `<img>` |
-/// | 文件 | pdf | 瀏覽器原生 `<iframe>` |
+/// | 文件 | pdf | PDF.js（Firefox 同款，canvas 逐頁） |
 /// | 影音 | mp4/webm/mov/m4v、mp3/wav/ogg/m4a/flac | 瀏覽器原生 `<video>`/`<audio>` |
 /// | 純文字 | txt/md/log/csv/json/yaml/… | 前端 `<pre>` 或表格（經 `esc()` 跳脫） |
-/// | OOXML | docx/pptx/xlsx | 前端 JSZip 解 zip → 解析 XML → HTML |
-/// | ODF | odt/ods/odp | 前端 JSZip 解 zip → 解析 `content.xml` |
-/// | RTF | rtf | 前端純文字控制字解析 |
-/// | 舊二進位 | doc/ppt/xls | 無法可靠解析，前端顯示「請下載查看」 |
+/// | Office | doc/ppt/xls/docx/pptx/xlsx/odf/rtf | GOTENBERG_PDF_V1：Gotenberg 轉 PDF→PDF.js；未設→MS 走 Office Online、其餘下載 |
 pub(super) const PREVIEWABLE_EXTS: &[&str] = &[
     // 圖片
     "jpg", "jpeg", "png", "gif", "bmp", "webp", "avif", "ico", "svg",
@@ -1015,27 +1010,12 @@ fn pct(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
 }
 
-/// 以瀏覽器看到的 host 組出絕對公開 URL（微軟伺服器需 https 絕對位址）。
-fn absolute_public_url(headers: &HeaderMap, path_and_query: &str) -> String {
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
-        .filter(|s| s == "http" || s == "https")
-        .unwrap_or_else(|| "https".to_string());
-    let host = headers
-        .get("x-forwarded-host")
-        .or_else(|| headers.get(header::HOST))
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("localhost")
-        .trim();
-    format!("{scheme}://{host}{path_and_query}")
-}
-
-/// 已登入後台：為單一檔案核發「限時簽章公開連結」並包成 Office Online 嵌入 URL。
+/// 已登入後台：為單一檔案核發「限時簽章公開連結」（相對路徑）。
+/// 絕對 URL 由前端以 `location.origin` 組出（後台 Host header 在 Pterodactyl/
+/// Tunnel 後是容器內部位址，後端猜的 host 微軟抓不到 → 空白）。簽章只綁
+/// path+exp，不含 host，故前端組 host 不影響安全。
 pub(super) async fn admin_files_office_embed_handler(
     State(state): State<AdminWebState>,
-    headers: HeaderMap,
     Query(query): Query<AdminFilesQuery>,
 ) -> Response {
     let Some(_session) = state.authorize(&query.token).await else {
@@ -1064,13 +1044,8 @@ pub(super) async fn admin_files_office_embed_handler(
     }
     let exp = office_now_secs() + OFFICE_EMBED_TTL_SECS;
     let sig = office_sig(&rel_str, exp);
-    let public_url = format!("/pub/office?path={}&exp={exp}&sig={sig}", pct(&rel_str));
-    let absolute = absolute_public_url(&headers, &public_url);
-    let embed = format!(
-        "https://view.officeapps.live.com/op/embed.aspx?src={}",
-        pct(&absolute)
-    );
-    (StatusCode::OK, Json(json!({ "embed": embed, "public_url": absolute }))).into_response()
+    let public_path = format!("/pub/office?path={}&exp={exp}&sig={sig}", pct(&rel_str));
+    (StatusCode::OK, Json(json!({ "public_path": public_path }))).into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1124,6 +1099,71 @@ pub(super) async fn public_office_file_handler(
     .await
 }
 
+// ─── GOTENBERG_PDF_V1：伺服器端 Office→PDF（獨立 Docker 服務）────────────
+// Gotenberg 把 LibreOffice/Chromium 包成獨立 HTTP 服務；本程式只呼叫它的轉換
+// API，把 Office（含舊版 .ppt/.doc/.xls）轉成 PDF 再交給 PDF.js 顯示。
+// → 應用程式本身不裝 LibreOffice、不需外網可達、比 Office Online 穩定。
+// 設 TRONCLASS_GOTENBERG_URL（例 http://127.0.0.1:3000）即啟用；未設走原路徑。
+static GOTENBERG_URL: once_cell::sync::Lazy<Option<String>> = once_cell::sync::Lazy::new(|| {
+    std::env::var("TRONCLASS_GOTENBERG_URL")
+        .ok()
+        .map(|v| v.trim().trim_end_matches('/').to_string())
+        .filter(|v| !v.is_empty())
+});
+
+/// 可送 Gotenberg 轉 PDF 的副檔名（含舊版與 ODF/RTF）。
+const OFFICE_CONVERT_EXTS: &[&str] = &[
+    "doc", "ppt", "xls", "docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf",
+];
+
+fn gotenberg_enabled() -> bool {
+    GOTENBERG_URL.is_some()
+}
+
+/// 呼叫 Gotenberg 把 Office 位元組轉成 PDF；失敗回 None（呼叫端自行 fallback）。
+async fn convert_office_to_pdf(bytes: Vec<u8>, file_name: &str) -> Option<Vec<u8>> {
+    let base = GOTENBERG_URL.as_deref()?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()
+        .ok()?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(file_name.to_string())
+        .mime_str("application/octet-stream")
+        .ok()?;
+    let form = reqwest::multipart::Form::new().part("files", part);
+    let resp = client
+        .post(format!("{base}/forms/libreoffice/convert"))
+        .multipart(form)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::warn!(status = %resp.status(), "gotenberg convert failed");
+        return None;
+    }
+    let pdf = resp.bytes().await.ok()?;
+    if pdf.len() >= 4 && &pdf[0..4] == b"%PDF" {
+        Some(pdf.to_vec())
+    } else {
+        None
+    }
+}
+
+/// 把轉好的 PDF 位元組作為預覽回應（PDF.js 會接手渲染）。
+fn pdf_bytes_response(pdf: Vec<u8>) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/pdf")
+        .header(header::CONTENT_DISPOSITION, "inline")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(header::CONTENT_LENGTH, pdf.len().to_string())
+        .body(axum::body::Body::from(pdf))
+        .unwrap_or_else(|_| {
+            (StatusCode::INTERNAL_SERVER_ERROR, "pdf response").into_response()
+        })
+}
+
 pub(super) async fn admin_files_preview_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
@@ -1169,16 +1209,30 @@ pub(super) async fn admin_files_preview_handler(
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    // NO_LIBREOFFICE_PREVIEW_V1
+    // NO_LIBREOFFICE_PREVIEW_V1 / PREVIEW_ENGINES_V1
     // 一律串流「原始檔案」位元組，伺服器不呼叫任何外部轉檔程式。
-    // 渲染工作全部落在瀏覽器：原生（圖片/PDF/影音）或 office-view.js 本機解析
-    // （OOXML / ODF / RTF）。`inline` 讓瀏覽器把它當成可讀取資源。
+    // 渲染落在瀏覽器外部引擎：PDF→PDF.js；Office→Microsoft Office Online。
+    // `inline` 讓瀏覽器把它當成可讀取資源。
     if !is_previewable_ext(&ext) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "此檔案格式不支援預覽，請下載查看" })),
         )
             .into_response();
+    }
+
+    // GOTENBERG_PDF_V1: Office 檔（含舊版 .ppt）優先轉成 PDF 再預覽；
+    // 轉換失敗或未設 Gotenberg 時 fall through 回原始位元組（前端自行處理）。
+    if OFFICE_CONVERT_EXTS.contains(&ext.as_str()) && gotenberg_enabled() {
+        if let Ok(raw) = tokio::fs::read(&full_path).await {
+            let name = full_path
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or("file");
+            if let Some(pdf) = convert_office_to_pdf(raw, name).await {
+                return pdf_bytes_response(pdf);
+            }
+        }
     }
 
     stream_material_file_response(

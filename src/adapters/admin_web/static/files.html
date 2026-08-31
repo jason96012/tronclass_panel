@@ -1616,11 +1616,15 @@
       const res = await fetch('/admin/api/files/office-embed?path=' + encodeURIComponent(path), { cache: 'no-store' });
       if (!res.ok) throw new Error('http ' + res.status);
       const data = await res.json();
-      if (!data.embed) throw new Error('no embed url');
+      if (!data.public_path) throw new Error('no public path');
+      // OFFICE_ONLINE_HOST_V1: 絕對 URL 用瀏覽器實際 origin 組（後端猜的 host
+      // 在 Pterodactyl/Tunnel 後是內部位址，微軟抓不到）。簽章不含 host，安全不變。
+      const absolute = location.origin + data.public_path;
+      const embed = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(absolute);
       body.innerHTML =
         '<div class="tron-online-wrap">' +
-          '<div class="tron-online-note">線上檢視由 Microsoft Office Online 提供（連結 15 分鐘內有效）。若無法載入，請改用上方「下載」。</div>' +
-          '<iframe class="tron-online" src="' + esc(data.embed) + '" allowfullscreen></iframe>' +
+          '<div class="tron-online-note">線上檢視由 Microsoft Office Online 提供（連結 15 分鐘內有效）。若持續空白，代表外網抓不到此連結，請改用上方「下載」。</div>' +
+          '<iframe class="tron-online" src="' + esc(embed) + '" allowfullscreen></iframe>' +
         '</div>';
     } catch(err) {
       body.innerHTML = '<div class="empty">無法啟動線上檢視（' + esc((err && err.message) || String(err)) + '），請按上方「下載」查看。</div>';
@@ -1629,6 +1633,36 @@
 
   // PDFJS_PREVIEW_V1: 用 PDF.js 把 PDF 逐頁渲染成 canvas（同 Firefox 內建檢視器核心）。
   // 失敗時退回原生 <iframe>，再失敗給明確訊息。
+  // PDFJS_PREVIEW_V1: 把「已取得的 PDF 位元組」逐頁渲染成 canvas（fit-width 堆疊）。
+  async function renderPdfData(data){
+    const body = q('previewBody');
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+    const doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    const wrap = document.createElement('div');
+    wrap.className = 'tron-pdf';
+    body.innerHTML = '';
+    body.appendChild(wrap);
+    const targetWidth = Math.max(320, (body.clientWidth || 800) - 28);
+    for (let p = 1; p <= doc.numPages; p++) {
+      const page = await doc.getPage(p);
+      const base = page.getViewport({ scale: 1 });
+      const scale = targetWidth / base.width;
+      const vp = page.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      const ratio = window.devicePixelRatio || 1;
+      canvas.width = Math.floor(vp.width * ratio);
+      canvas.height = Math.floor(vp.height * ratio);
+      canvas.style.width = Math.floor(vp.width) + 'px';
+      canvas.style.height = 'auto';
+      wrap.appendChild(canvas);
+      await page.render({
+        canvasContext: canvas.getContext('2d'),
+        viewport: vp,
+        transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null
+      }).promise;
+    }
+  }
+
   async function renderPdfPreview(url){
     const body = q('previewBody');
     const fallbackIframe = () => {
@@ -1637,73 +1671,28 @@
     if (!window.pdfjsLib) { fallbackIframe(); return; }
     body.innerHTML = '<div class="empty">正在載入 PDF…</div>';
     try {
-      // worker 同源載入（CSP worker-src 'self' 合法）。
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error('http ' + res.status);
-      const data = new Uint8Array(await res.arrayBuffer());
-      // isEvalSupported:false → 不用 new Function/eval，符合 CSP（無 unsafe-eval）。
-      const doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
-
-      const wrap = document.createElement('div');
-      wrap.className = 'tron-pdf';
-      body.innerHTML = '';
-      body.appendChild(wrap);
-
-      // 依容器寬度逐頁渲染（fit-width），堆疊捲動，最接近一般閱讀體驗。
-      const targetWidth = Math.max(320, (body.clientWidth || 800) - 28);
-      for (let p = 1; p <= doc.numPages; p++) {
-        const page = await doc.getPage(p);
-        const base = page.getViewport({ scale: 1 });
-        const scale = targetWidth / base.width;
-        const vp = page.getViewport({ scale });
-        const canvas = document.createElement('canvas');
-        const ratio = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(vp.width * ratio);
-        canvas.height = Math.floor(vp.height * ratio);
-        canvas.style.width = Math.floor(vp.width) + 'px';
-        canvas.style.height = 'auto';
-        wrap.appendChild(canvas);
-        await page.render({
-          canvasContext: canvas.getContext('2d'),
-          viewport: vp,
-          transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null
-        }).promise;
-      }
-    } catch(err) {
-      // 渲染失敗（壞檔/外掛）→ 退回原生 iframe；若 iframe 也空白，使用者仍可下載。
-      fallbackIframe();
-    }
+      await renderPdfData(new Uint8Array(await res.arrayBuffer()));
+    } catch(err) { fallbackIframe(); }
   }
 
-  // OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Office。抓原始位元組 -> office-view.js 解析 -> 注入 HTML。
-  async function renderOfficePreview(url, ext){
+  // GOTENBERG_PDF_V1: Office 預覽智能分流。
+  //  伺服器已用 Gotenberg 轉成 PDF → 用 PDF.js 渲染（最穩，含舊版 .ppt）。
+  //  未設 Gotenberg（回原始 Office 位元組）→ MS 格式走 Office Online；其餘提示下載。
+  async function renderOfficeSmart(url, path, ext){
     const body = q('previewBody');
-    // 先確認解析元件真的有載進來；沒載到就直接說，而不是顯示籠統的「無法解析」。
-    if (!window.JSZip || !window.TronOfficeView) {
-      body.innerHTML = '<div class="empty">預覽元件未載入（JSZip / OfficeView）。請按 Ctrl+Shift+R 強制重新整理後再試。</div>';
-      return;
-    }
-    body.innerHTML = '<div class="empty">正在載入 Office 預覽…</div>';
+    body.innerHTML = '<div class="empty">正在載入…</div>';
     try {
       const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) {
-        // 把真實的 HTTP 狀態顯示出來（401/403 = 登入過期、400 = 格式不支援）。
-        body.innerHTML = '<div class="empty">預覽請求失敗（HTTP ' + res.status + '）。若為 401/403 請重新登入；若持續發生請下載查看。</div>';
-        return;
-      }
-      const buf = await res.arrayBuffer();
-      const html = await window.TronOfficeView.preview(buf, ext);
-      if (!html) throw new Error('empty');
-      // 走 mount() 而非直接賦值 innerHTML：Excel 的工作表分頁需要在節點
-      // 放進 DOM 之後才能綁定切換事件（賦值本身仍會經過 Trusted Types）。
-      if (window.TronOfficeView.mount) window.TronOfficeView.mount(body, html);
-      else body.innerHTML = html;
-      return;
+      if (!res.ok) throw new Error('http ' + res.status);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      const isPdf = buf.length > 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46; // %PDF
+      if (isPdf) { await renderPdfData(buf); return; }
+      if (OFFICE_ONLINE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
+      body.innerHTML = '<div class="empty">此格式（.' + esc(ext) + '）不支援線上預覽，請按上方「下載」查看。</div>';
     } catch(err) {
-      // OFFICE_DEBUG_V1: 顯示真實例外訊息，方便定位是哪一步壞掉。
-      const msg = (err && err.message) ? err.message : String(err);
-      body.innerHTML = '<div class="empty">此 Office 檔案無法解析（' + esc(msg) + '），請按上方「下載」查看。</div>';
+      body.innerHTML = '<div class="empty">無法預覽（' + esc((err && err.message) || String(err)) + '），請按上方「下載」。</div>';
     }
   }
 
@@ -1759,13 +1748,8 @@
       // 若 PDF.js 未載入或解析失敗，退回原生 <iframe>。
       await renderPdfPreview(url);
     } else if (isOfficePreview(e)) {
-      if (LEGACY_OFFICE_EXTS.includes(e)) {
-        // OFFICE_ONLINE_V1: 舊版 .doc/.ppt/.xls 本機無法解析 → OneDrive 同款線上檢視。
-        await renderOfficeOnline(path, e);
-      } else {
-        // 抓取原始位元組，用 office-view.js 本機解析（不需要 LibreOffice）。
-        await renderOfficePreview(url, e);
-      }
+      // GOTENBERG_PDF_V1: 伺服器轉成 PDF→PDF.js；未設→MS 走 Office Online、其餘下載。
+      await renderOfficeSmart(url, path, e);
     } else if (VIDEO_PREVIEW_EXTS.includes(e)) {
       q('previewBody').innerHTML = '<video src="' + url + '" controls autoplay></video>';
     } else if (AUDIO_PREVIEW_EXTS.includes(e)) {

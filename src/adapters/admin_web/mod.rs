@@ -1027,14 +1027,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/js/trusted-types-init.js",
             get(static_assets::admin_trusted_types_init_js_handler),
         )
-        .route(
-            "/admin/static/js/jszip.min.js",
-            get(static_assets::admin_jszip_js_handler),
-        )
-        .route(
-            "/admin/static/js/office-view.js",
-            get(static_assets::admin_office_view_js_handler),
-        )
         // PDFJS_PREVIEW_V1
         .route(
             "/admin/static/js/pdf.min.js",

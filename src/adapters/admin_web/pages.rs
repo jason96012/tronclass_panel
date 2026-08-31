@@ -34,8 +34,6 @@ pub(super) fn theme_css() -> String {
 
 pub(super) const DOMPURIFY_JS: &str = include_str!("static/js/dompurify.min.js");
 pub(super) const TRUSTED_TYPES_INIT_JS: &str = include_str!("static/js/trusted-types-init.js");
-pub(super) const JSZIP_MIN_JS: &str = include_str!("static/js/jszip.min.js");
-pub(super) const OFFICE_VIEW_JS: &str = include_str!("static/js/office-view.js");
 // PDFJS_PREVIEW_V1: 套用 Firefox 同款 PDF.js 檢視器（純 JS canvas 渲染，
 // 不靠瀏覽器原生外掛，所有瀏覽器一致，解決 iframe 空白）。
 pub(super) const PDF_MIN_JS: &str = include_str!("static/js/pdf.min.js");
@@ -256,23 +254,17 @@ pub(super) async fn admin_files_page_handler(
     html_page_response(&headers, inject_files_office_assets(&html))
 }
 
-// OFFICE_PREVIEW_CLIENT_V1: 只在「雲端硬碟」頁注入 Office 前端渲染腳本（同源 'self'，
-// 合法於 CSP）。因為 JSZip 較大，不要無差別注入到每個 admin 頁面。
+// PREVIEW_ENGINES_V1: 只在「雲端硬碟」頁注入 PDF.js（同源 'self'，合法於 CSP），
+// 不要無差別注入到每個 admin 頁面。
+// 預覽引擎：PDF/Office(轉PDF後) → PDF.js；Office 未轉時 → Microsoft Office Online。
 pub(super) fn inject_files_office_assets(html: &str) -> String {
     const OFFICE_ASSETS: &str =
-        // office-view.js 的版本號必須隨內容更新：static_assets.rs 對靜態檔下
+        // pdf.min.js 的版本號必須隨內容更新：static_assets.rs 對靜態檔下
         // `max-age=604800, immutable`，不換 query string 瀏覽器會沿用舊檔一週。
-        // （officeview2 = 新增 xlsx / ODF / RTF 前端解析，移除 LibreOffice 依賴）
-        // （officeview3 = 強化真實檔案容錯 OFFICE_ROBUST_V1 + 顯示真實錯誤）
-        // （officeview4 = OFFICE_SNIFF_V1 魔數嗅探：OLE2/HTML 偽裝檔給清楚說明）
-        // （pdfjs1 = PDFJS_PREVIEW_V1：PDF.js 檢視器，同 Firefox 內建）
-        r#"<script src="/admin/static/js/jszip.min.js?v=officeview1"></script><script src="/admin/static/js/office-view.js?v=officeview4"></script><script src="/admin/static/js/pdf.min.js?v=pdfjs1"></script>"#;
-    // OFFICE_INJECT_GUARD_V1: 防重複注入的判斷必須用「真正的 <script src> 標籤」，
-    // 不能用 `office-view.js` 這種子字串 —— files.html 的註解也會提到
-    // office-view.js，舊判斷會永遠成立，導致 JSZip/office-view 從沒被注入，
-    // 前端 `window.JSZip`/`window.TronOfficeView` 一直是 undefined，
-    // 所有 Office 預覽都掉進「元件未載入」。
-    if html.contains(r#"src="/admin/static/js/office-view.js"#) {
+        r#"<script src="/admin/static/js/pdf.min.js?v=pdfjs1"></script>"#;
+    // OFFICE_INJECT_GUARD_V1: 防重複注入必須用「真正的 <script src> 標籤」，
+    // 不能用裸檔名子字串（files.html 註解也會提到檔名，會讓 guard 永遠成立）。
+    if html.contains(r#"src="/admin/static/js/pdf.min.js"#) {
         return html.to_string();
     }
     if let Some(head_at) = html.find("</head>") {
