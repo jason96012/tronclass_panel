@@ -1,8 +1,8 @@
 //! Materials file-manager page/API handlers for Admin Web.
 
 use super::*;
-use std::process::Stdio;
-use std::sync::Weak;
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 
@@ -36,9 +36,6 @@ const MATERIALS_LIST_CACHE_TTL: Duration = Duration::from_secs(3);
 const MAX_MULTIPART_FIELDS: usize = 32;
 const MAX_UPLOAD_FILES: usize = 16;
 const MAX_MATERIAL_FILENAME_BYTES: usize = 255;
-const OFFICE_PREVIEW_CONCURRENCY: usize = 2;
-const OFFICE_PREVIEW_MAX_PENDING: usize = 64;
-const OFFICE_PREVIEW_TIMEOUT: Duration = Duration::from_secs(90);
 // Serialize uploads so the 10 GiB quota check cannot be bypassed by two
 // simultaneous requests observing the same pre-upload size.
 const MATERIAL_UPLOAD_CONCURRENCY: usize = 1;
@@ -68,13 +65,6 @@ static FILEBROWSER_HEALTH_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
 
 static MATERIAL_UPLOAD_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
     once_cell::sync::Lazy::new(|| Semaphore::new(MATERIAL_UPLOAD_CONCURRENCY));
-static OFFICE_PREVIEW_PENDING_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
-    once_cell::sync::Lazy::new(|| Semaphore::new(OFFICE_PREVIEW_MAX_PENDING));
-static OFFICE_PREVIEW_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
-    once_cell::sync::Lazy::new(|| Semaphore::new(OFFICE_PREVIEW_CONCURRENCY));
-static OFFICE_PREVIEW_LOCKS: once_cell::sync::Lazy<
-    tokio::sync::Mutex<HashMap<PathBuf, Weak<tokio::sync::Mutex<()>>>>,
-> = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
 
 #[derive(Clone)]
 struct MaterialsListSnapshot {
@@ -933,6 +923,207 @@ fn material_total_size_for_upload(root: &std::path::Path) -> std::io::Result<u64
     Ok(total)
 }
 
+/// 可在瀏覽器內直接預覽的副檔名 —— **單一來源**。
+///
+/// 前端 `static/files.html` 的 `IMAGE_/VIDEO_/AUDIO_/TEXT_/OFFICE_/LEGACY_OFFICE_PREVIEW_EXTS`
+/// 六份清單聯集必須與這裡一致；兩邊不同步時會出現「按了預覽卻收到 400」
+/// （舊版 gif/bmp/webp 就是這樣壞掉的）。`tools/check_src.py` 會自動比對兩者。
+///
+/// # NO_LIBREOFFICE_PREVIEW_V1
+/// 這裡的每一種格式都不需要伺服器轉檔，因此系統完全不依賴 LibreOffice：
+///
+/// | 類別 | 格式 | 渲染方式 |
+/// |---|---|---|
+/// | 圖片 | jpg/png/gif/bmp/webp/avif/ico/svg | 瀏覽器原生 `<img>` |
+/// | 文件 | pdf | 瀏覽器原生 `<iframe>` |
+/// | 影音 | mp4/webm/mov/m4v、mp3/wav/ogg/m4a/flac | 瀏覽器原生 `<video>`/`<audio>` |
+/// | 純文字 | txt/md/log/csv/json/yaml/… | 前端 `<pre>` 或表格（經 `esc()` 跳脫） |
+/// | OOXML | docx/pptx/xlsx | 前端 JSZip 解 zip → 解析 XML → HTML |
+/// | ODF | odt/ods/odp | 前端 JSZip 解 zip → 解析 `content.xml` |
+/// | RTF | rtf | 前端純文字控制字解析 |
+/// | 舊二進位 | doc/ppt/xls | 無法可靠解析，前端顯示「請下載查看」 |
+pub(super) const PREVIEWABLE_EXTS: &[&str] = &[
+    // 圖片
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "avif", "ico", "svg",
+    // 文件
+    "pdf",
+    // 影片
+    "mp4", "webm", "mov", "m4v",
+    // 音訊
+    "mp3", "wav", "ogg", "m4a", "flac",
+    // 純文字 / 資料 / 程式碼
+    "txt", "text", "md", "markdown", "log", "csv", "tsv", "json", "xml", "yaml",
+    "yml", "ini", "conf", "cfg", "srt", "vtt", "toml", "sql", "sh", "rs", "js",
+    "ts", "jsx", "tsx", "css", "py", "java", "c", "h", "cpp", "hpp", "go", "php",
+    // HTML 原始碼：只當純文字顯示，見 material_content_type 的說明
+    "html", "htm",
+    // Office（前端本機解析）
+    "docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf",
+    // 舊二進位 Office：僅回原始位元組，前端顯示下載提示
+    "doc", "ppt", "xls",
+];
+
+/// 副檔名是否可預覽。傳入值須已轉小寫。
+pub(super) fn is_previewable_ext(ext: &str) -> bool {
+    PREVIEWABLE_EXTS.contains(&ext)
+}
+
+// ─── OFFICE_ONLINE_V1（OneDrive 同款線上檢視）─────────────────────────────
+// 舊版二進位 Office（.doc/.ppt/.xls）本機無法解析，改交給 Microsoft Office
+// Online 檢視器。檢視器會「從微軟伺服器」抓取 src URL，因此檔案必須有一個
+// 公開、有時效、防竄改的 URL。我們用 HMAC-SHA256 簽 {path|exp} 產生
+// `/pub/office?path=&exp=&sig=`，過期或竄改即失效。不碰 LibreOffice。
+//
+// 安全模型：
+// - 連結 TTL 僅 15 分鐘，且只簽「特定 path」，不能列舉其他檔案。
+// - `/pub/office` 不帶任何 session/cookie 驗證，純靠簽章；黑名單 IP 仍會在外層
+//   middleware 被擋。
+// - 未設環境變數時用进程內隨機金鑰：重啟後舊連結失效（可接受，TTL 很短）。
+const OFFICE_EMBED_TTL_SECS: u64 = 15 * 60;
+
+/// 可交給 Office Online 的副檔名（微軟檢視器支援舊版與 OOXML）。
+const OFFICE_ONLINE_EXTS: &[&str] = &["doc", "ppt", "xls", "docx", "pptx", "xlsx"];
+
+static OFFICE_PREVIEW_SECRET: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
+    // .ok() 把 Result 轉 Option，才能接 map/filter/unwrap_or_else。
+    std::env::var("TRONCLASS_OFFICE_PREVIEW_SECRET")
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| {
+            let mut b = [0u8; 32];
+            getrandom::getrandom(&mut b).expect("getrandom");
+            hex::encode(b)
+        })
+});
+
+fn office_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn office_sig(path: &str, exp: u64) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(OFFICE_PREVIEW_SECRET.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(format!("office-preview|{path}|{exp}").as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn pct(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// 以瀏覽器看到的 host 組出絕對公開 URL（微軟伺服器需 https 絕對位址）。
+fn absolute_public_url(headers: &HeaderMap, path_and_query: &str) -> String {
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.split(',').next().unwrap_or(s).trim().to_string())
+        .filter(|s| s == "http" || s == "https")
+        .unwrap_or_else(|| "https".to_string());
+    let host = headers
+        .get("x-forwarded-host")
+        .or_else(|| headers.get(header::HOST))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("localhost")
+        .trim();
+    format!("{scheme}://{host}{path_and_query}")
+}
+
+/// 已登入後台：為單一檔案核發「限時簽章公開連結」並包成 Office Online 嵌入 URL。
+pub(super) async fn admin_files_office_embed_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminFilesQuery>,
+) -> Response {
+    let Some(_session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    let Some(rel) = query
+        .path
+        .as_deref()
+        .and_then(safe_relative_path)
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid path" }))).into_response();
+    };
+    let rel_str = rel.to_string_lossy().into_owned();
+    let ext = rel
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if !OFFICE_ONLINE_EXTS.contains(&ext.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "此格式不支援線上 Office 檢視" })),
+        )
+            .into_response();
+    }
+    let exp = office_now_secs() + OFFICE_EMBED_TTL_SECS;
+    let sig = office_sig(&rel_str, exp);
+    let public_url = format!("/pub/office?path={}&exp={exp}&sig={sig}", pct(&rel_str));
+    let absolute = absolute_public_url(&headers, &public_url);
+    let embed = format!(
+        "https://view.officeapps.live.com/op/embed.aspx?src={}",
+        pct(&absolute)
+    );
+    (StatusCode::OK, Json(json!({ "embed": embed, "public_url": absolute }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct PublicOfficeQuery {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    exp: Option<u64>,
+    #[serde(default)]
+    sig: Option<String>,
+}
+
+/// 公開端點：驗證簽章與時效後串流原始檔案（供微軟檢視器抓取）。不驗證 session。
+pub(super) async fn public_office_file_handler(
+    Query(query): Query<PublicOfficeQuery>,
+) -> Response {
+    let (Some(path), Some(exp), Some(sig)) =
+        (query.path.clone(), query.exp, query.sig.clone())
+    else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "missing params" }))).into_response();
+    };
+    if office_now_secs() > exp {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "link expired" }))).into_response();
+    }
+    // 常數時間驗證：重新計算 HMAC 並比對簽章位元組。
+    let sig_ok = hex::decode(&sig)
+        .map(|raw| {
+            let mut mac = Hmac::<Sha256>::new_from_slice(OFFICE_PREVIEW_SECRET.as_bytes())
+                .expect("HMAC accepts any key length");
+            mac.update(format!("office-preview|{path}|{exp}").as_bytes());
+            mac.verify_slice(&raw).is_ok()
+        })
+        .unwrap_or(false);
+    if !sig_ok {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "bad signature" }))).into_response();
+    }
+    let Some(rel) = safe_relative_path(&path).filter(|p| !p.as_os_str().is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid path" }))).into_response();
+    };
+    let full = materials_root().join(&rel);
+    if !full.is_file() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
+    }
+    stream_material_file_response(
+        full,
+        "inline",
+        Some("no-store"),
+        "讀取預覽檔失敗",
+        "建立預覽回應失敗",
+    )
+    .await
+}
+
 pub(super) async fn admin_files_preview_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
@@ -978,275 +1169,26 @@ pub(super) async fn admin_files_preview_handler(
         .unwrap_or_default()
         .to_ascii_lowercase();
 
-    let response_path: &std::path::Path = if matches!(
-        ext.as_str(),
-        "ppt" | "pptx" | "doc" | "docx" | "rtf" | "odt"
-    ) {
-        // OFFICE_PREVIEW_CLIENT_V1: 不再用 LibreOffice 轉 PDF。改由前端以同源的
-        // JSZip + office-view.js 本機解析 .docx / .pptx，直接串流「原始檔案」位元組
-        // 給前端，資料不離開使用者瀏覽器、不佔伺服器磁碟。舊二進位 .doc/.ppt 前端
-        // 無法解析，會顯示「請下載查看」。`inline` 讓瀏覽器當作可讀取資源。
-        full_path.as_path()
-    } else if matches!(
-        ext.as_str(),
-        "pdf" | "jpg" | "jpeg" | "png" | "txt" | "md" | "mp4"
-    ) {
-        full_path.as_path()
-    } else {
+    // NO_LIBREOFFICE_PREVIEW_V1
+    // 一律串流「原始檔案」位元組，伺服器不呼叫任何外部轉檔程式。
+    // 渲染工作全部落在瀏覽器：原生（圖片/PDF/影音）或 office-view.js 本機解析
+    // （OOXML / ODF / RTF）。`inline` 讓瀏覽器把它當成可讀取資源。
+    if !is_previewable_ext(&ext) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "此檔案格式不支援預覽，請下載查看" })),
         )
             .into_response();
-    };
+    }
 
     stream_material_file_response(
-        response_path.to_path_buf(),
+        full_path,
         "inline",
         Some("no-store"),
         "讀取預覽檔失敗",
         "建立預覽回應失敗",
     )
     .await
-}
-
-async fn office_preview_lock(cache_path: &Path) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = OFFICE_PREVIEW_LOCKS.lock().await;
-    locks.retain(|_, weak| weak.strong_count() > 0);
-    if let Some(lock) = locks.get(cache_path).and_then(Weak::upgrade) {
-        return lock;
-    }
-    let lock = Arc::new(tokio::sync::Mutex::new(()));
-    locks.insert(cache_path.to_path_buf(), Arc::downgrade(&lock));
-    lock
-}
-
-async fn ensure_office_pdf_preview(source: &Path) -> Result<PathBuf, Response> {
-    let cache_dir = materials_preview_cache_root();
-    if let Err(e) = tokio::fs::create_dir_all(&cache_dir).await {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("建立預覽快取失敗：{e}") })),
-        )
-            .into_response());
-    }
-
-    let meta = match tokio::fs::metadata(source).await {
-        Ok(meta) => meta,
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取原始檔資訊失敗：{e}") })),
-            )
-                .into_response());
-        }
-    };
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let stem = source
-        .file_stem()
-        .and_then(|v| v.to_str())
-        .unwrap_or("preview")
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .take(80)
-        .collect::<String>();
-    let mut cache_hasher = Sha256::new();
-    cache_hasher.update(source.to_string_lossy().as_bytes());
-    cache_hasher.update(meta.len().to_le_bytes());
-    cache_hasher.update(modified.to_le_bytes());
-    let cache_key = hex::encode(cache_hasher.finalize());
-    let cache_path = cache_dir.join(format!("{stem}_{}.pdf", &cache_key[..32]));
-    if cache_path.is_file() {
-        return Ok(cache_path);
-    }
-
-    // Bound both converters and same-key waiters. A semaphore by itself limits
-    // child processes but otherwise has an unbounded FIFO of waiting requests.
-    let _pending_permit = OFFICE_PREVIEW_PENDING_SEMAPHORE
-        .try_acquire()
-        .map_err(|_| {
-            (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(json!({ "error": "too many pending Office preview requests" })),
-            )
-                .into_response()
-        })?;
-
-    // Requests for the same exact source revision share one conversion. The
-    // waiter rechecks the cache after acquiring the key lock.
-    let key_lock = office_preview_lock(&cache_path).await;
-    let _key_guard = key_lock.lock().await;
-    if cache_path.is_file() {
-        return Ok(cache_path);
-    }
-
-    // Different documents may convert concurrently, but only up to this global
-    // process budget. Waiting requests do not spawn LibreOffice processes.
-    let _permit = OFFICE_PREVIEW_SEMAPHORE.acquire().await.map_err(|_| {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "Office preview service is shutting down" })),
-        )
-            .into_response()
-    })?;
-    if cache_path.is_file() {
-        return Ok(cache_path);
-    }
-
-    let conversion_root =
-        cache_dir
-            .join(".work")
-            .join(format!("{}-{}", &cache_key[..16], Uuid::new_v4().simple()));
-    if let Err(e) = tokio::fs::create_dir_all(&conversion_root).await {
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("建立隔離轉檔目錄失敗：{e}") })),
-        )
-            .into_response());
-    }
-
-    // LIBREOFFICE_AUTODETECT_V1: 依序嘗試系統路徑、PATH、以及「免 root 裝在使用者家目錄」
-    // 的版本(見 install-libreoffice-user.sh)。用 TRONCLASS_LIBREOFFICE 可直接指定絕對路徑，
-    // 這樣在 Pterodactyl 容器內不必動 egg/映像、不必 sudo 也能用 LibreOffice 預覽。
-    let mut office_candidates: Vec<String> = vec![
-        "/usr/bin/libreoffice".to_string(),
-        "/usr/bin/soffice".to_string(),
-        "libreoffice".to_string(),
-        "soffice".to_string(),
-    ];
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.trim().is_empty() {
-            let base = std::path::Path::new(&home).join(".local/libreoffice");
-            office_candidates.push(base.join("usr/lib/libreoffice/program/soffice").to_string_lossy().into_owned());
-            office_candidates.push(base.join("opt/libreoffice/program/soffice").to_string_lossy().into_owned());
-            office_candidates.push(format!("{home}/.local/libreoffice/program/soffice"));
-        }
-    }
-    if let Ok(override_path) = std::env::var("TRONCLASS_LIBREOFFICE") {
-        let override_path = override_path.trim().to_string();
-        if !override_path.is_empty() {
-            office_candidates.insert(0, override_path);
-        }
-    }
-    let programs = office_candidates;
-    let mut last_error = String::new();
-    for (attempt, program) in programs.iter().enumerate() {
-        let out_dir = conversion_root.join(format!("attempt-{attempt}"));
-        let profile_dir = out_dir.join("profile");
-        if let Err(e) = tokio::fs::create_dir_all(&profile_dir).await {
-            last_error = format!("建立 LibreOffice 隔離目錄失敗：{e}");
-            continue;
-        }
-        let Some(profile_url) = url::Url::from_directory_path(&profile_dir).ok() else {
-            last_error = "無法建立 LibreOffice 隔離設定路徑".to_string();
-            continue;
-        };
-
-        let mut command = tokio::process::Command::new(program);
-        command
-            .arg("--headless")
-            .arg(format!("-env:UserInstallation={profile_url}"))
-            .arg("--convert-to")
-            .arg("pdf")
-            .arg("--outdir")
-            .arg(&out_dir)
-            .arg(source)
-            // Never retain potentially unbounded child output in memory.
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            // Cancellation of this handler must not orphan LibreOffice.
-            .kill_on_drop(true);
-
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                last_error = format!("{program}: {e}");
-                continue;
-            }
-        };
-
-        let status = match tokio::time::timeout(OFFICE_PREVIEW_TIMEOUT, child.wait()).await {
-            Ok(Ok(status)) => Some(status),
-            Ok(Err(e)) => {
-                let kill_error = child.start_kill().err();
-                let reap_error = child.wait().await.err();
-                last_error = format!(
-                    "{program}: wait failed: {e}; kill={}; reap={}",
-                    kill_error
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "ok".to_string()),
-                    reap_error
-                        .map(|e| e.to_string())
-                        .unwrap_or_else(|| "ok".to_string())
-                );
-                None
-            }
-            Err(_) => {
-                // timeout() cancels only the wait future. Explicitly kill and
-                // then wait again so the OS process is always reaped.
-                let kill_error = child.start_kill().err();
-                let reap_error = child.wait().await.err();
-                last_error = match (kill_error, reap_error) {
-                    (None, None) => format!("{program}: timeout after 90 seconds"),
-                    (kill, reap) => format!(
-                        "{program}: timeout; kill={}; reap={}",
-                        kill.map(|e| e.to_string())
-                            .unwrap_or_else(|| "ok".to_string()),
-                        reap.map(|e| e.to_string())
-                            .unwrap_or_else(|| "ok".to_string())
-                    ),
-                };
-                None
-            }
-        };
-
-        if status.as_ref().is_some_and(|status| status.success()) {
-            let produced = out_dir.join(format!(
-                "{}.pdf",
-                source
-                    .file_stem()
-                    .and_then(|v| v.to_str())
-                    .unwrap_or("preview")
-            ));
-            if produced.is_file() {
-                match tokio::fs::rename(&produced, &cache_path).await {
-                    Ok(()) => {
-                        let _ = tokio::fs::remove_dir_all(&conversion_root).await;
-                        return Ok(cache_path);
-                    }
-                    Err(_) if cache_path.is_file() => {
-                        let _ = tokio::fs::remove_dir_all(&conversion_root).await;
-                        return Ok(cache_path);
-                    }
-                    Err(e) => last_error = format!("移動 LibreOffice 預覽輸出失敗：{e}"),
-                }
-            } else {
-                last_error = "LibreOffice 轉檔完成但找不到 PDF 輸出".to_string();
-            }
-        } else if let Some(status) = status {
-            last_error = format!("{program} exit status {status}");
-        }
-    }
-
-    let _ = tokio::fs::remove_dir_all(&conversion_root).await;
-    Err((
-        StatusCode::BAD_REQUEST,
-        Json(json!({
-            "error": format!("PPT/Word 預覽需要 LibreOffice 轉 PDF，但找不到可用的 soffice：{last_error}。請執行 install-libreoffice-user.sh 裝到使用者家目錄，或設定環境變數 TRONCLASS_LIBREOFFICE=/絕對路徑/soffice")
-        })),
-    )
-        .into_response())
 }
 
 pub(super) async fn admin_files_upload_handler(

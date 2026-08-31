@@ -1035,6 +1035,15 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/js/office-view.js",
             get(static_assets::admin_office_view_js_handler),
         )
+        // PDFJS_PREVIEW_V1
+        .route(
+            "/admin/static/js/pdf.min.js",
+            get(static_assets::admin_pdf_js_handler),
+        )
+        .route(
+            "/admin/static/js/pdf.worker.min.js",
+            get(static_assets::admin_pdf_worker_js_handler),
+        )
         .route(
             "/admin/static/accounts.js",
             get(static_assets::admin_accounts_module_js_handler),
@@ -1175,6 +1184,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/files/preview",
             get(files::admin_files_preview_handler),
         )
+        // OFFICE_ONLINE_V1: 核發限時簽章公開連結（已登入）。
+        .route(
+            "/admin/api/files/office-embed",
+            get(files::admin_files_office_embed_handler),
+        )
+        // OFFICE_ONLINE_V1: 公開、限時、簽章驗證的檔案串流（供微軟檢視器抓取）。
+        .route("/pub/office", get(files::public_office_file_handler))
         .route(
             "/admin/api/files/upload",
             post(files::admin_files_upload_handler)
@@ -1945,7 +1961,7 @@ fn csp_header_value(nonce: Option<&str>) -> String {
         .map(|value| format!(" 'nonce-{value}'"))
         .unwrap_or_default();
     format!(
-        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self'; worker-src 'self' blob:; upgrade-insecure-requests"
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com https://docs.google.com; worker-src 'self' blob:; upgrade-insecure-requests"
     )
 }
 
@@ -2025,6 +2041,11 @@ async fn admin_security_headers_middleware(
         || path == "/manifest.webmanifest"
         || path == "/service-worker.js";
     let cache_static = path.starts_with("/admin/static/") || path == "/admin/pwa/icon.svg";
+    // PDF_FRAME_PREVIEW_V1: 預覽端點的回應會被 Dashboard 自己的 <iframe> 內嵌
+    // （PDF 走瀏覽器原生檢視器）。若沿用全站 `X-Frame-Options: DENY` +
+    // `frame-ancestors 'none'`，瀏覽器會拒絕在框內顯示這份 PDF，預覽只剩空白。
+    // 這裡只放寬到 same-origin：跨站仍然無法內嵌我們的預覽回應。
+    let is_framable_preview = path == "/admin/api/files/preview";
     let mut response = next.run(request).await;
 
     // This middleware covers the whole Admin Web router, including `/` and
@@ -2042,7 +2063,11 @@ async fn admin_security_headers_middleware(
     );
     headers.insert(
         HeaderName::from_static("x-frame-options"),
-        HeaderValue::from_static("DENY"),
+        HeaderValue::from_static(if is_framable_preview {
+            "SAMEORIGIN"
+        } else {
+            "DENY"
+        }),
     );
     headers.insert(
         HeaderName::from_static("referrer-policy"),
@@ -2067,7 +2092,14 @@ async fn admin_security_headers_middleware(
     // Page handlers install a nonce-bearing CSP. Use the strict no-inline
     // fallback only for JSON/static responses that do not contain inline code.
     if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
-        if let Ok(value) = csp_header_value(None).parse::<HeaderValue>() {
+        // PDF_FRAME_PREVIEW_V1: 預覽回應需要能被同源 <iframe> 內嵌，把
+        // frame-ancestors 從 'none' 放寬為 'self'（跨站仍被擋）。
+        let csp = if is_framable_preview {
+            csp_header_value(None).replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+        } else {
+            csp_header_value(None)
+        };
+        if let Ok(value) = csp.parse::<HeaderValue>() {
             headers.insert(header::CONTENT_SECURITY_POLICY, value);
         }
     }

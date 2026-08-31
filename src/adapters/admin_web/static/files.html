@@ -428,6 +428,13 @@
     /* PDF_PREVIEW_IFRAME_V1: 讓 PDF 檢視器的 <iframe> 真正撐滿 modal（grid 置中下需自我覆蓋） */
     .modal-body iframe[src^="/admin/api/files/preview"]{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;background:var(--surface)}
     .modal-body pre{width:100%;height:100%;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;background:var(--surface);color:var(--text);font-family:monospace;font-size:12px}
+    /* PDFJS_PREVIEW_V1: PDF.js 逐頁 canvas 容器（深灰底、白頁、置中、可捲動） */
+    .modal-body .tron-pdf{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;background:#40444a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px;box-sizing:border-box}
+    .tron-pdf canvas{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.45);border-radius:2px;max-width:100%}
+    /* OFFICE_ONLINE_V1: Office Online 嵌入檢視器（OneDrive 同款） */
+    .modal-body .tron-online-wrap{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;display:flex;flex-direction:column;overflow:hidden}
+    .tron-online-wrap .tron-online{flex:1;width:100%;border:0;background:#fff}
+    .tron-online-note{padding:8px 12px;font-size:12px;color:var(--muted);background:var(--surface2);border-bottom:1px solid var(--line)}
     /* OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Word/PPT（modal-body 為 grid 置中，用自我覆蓋寬高撐滿） */
     .modal-body .tron-docx{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:20px 24px;box-sizing:border-box;background:var(--surface);color:var(--text);line-height:1.5;font-size:14px}
     .modal-body .tron-docx p,.modal-body .tron-docx h2,.modal-body .tron-docx h3,.modal-body .tron-docx h4,.modal-body .tron-docx h5{margin:0 0 6px 0}
@@ -437,6 +444,26 @@
     .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
     .tron-slide-img{position:absolute}
     .tron-office-error{padding:36px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px;background:var(--surface);font-size:13px}
+    /* NO_LIBREOFFICE_PREVIEW_V1: Excel / ODF / RTF 前端渲染樣式 */
+    .modal-body .tron-xlsx,.modal-body .tron-odf{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:0;box-sizing:border-box;background:var(--surface);color:var(--text)}
+    .tron-odf{padding:20px 24px!important;line-height:1.5;font-size:14px}
+    .tron-odf-p{margin:0 0 6px 0}
+    .tron-odf-sheet{margin:18px 0 8px 0;font-size:13px;color:var(--muted);font-weight:700}
+    .tron-xlsx-tabs{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;gap:4px;padding:8px 10px;background:var(--card,var(--surface));border-bottom:1px solid var(--line2)}
+    .tron-xlsx-tab{padding:5px 12px;font-size:12px;border:1px solid var(--line2);border-radius:8px;cursor:pointer;color:var(--muted);background:transparent;user-select:none}
+    .tron-xlsx-tab:hover{color:var(--text)}
+    .tron-xlsx-tab.active{background:var(--primary,#2563EB);border-color:var(--primary,#2563EB);color:#fff;font-weight:650}
+    .tron-xlsx-sheet{padding:10px}
+    .tron-xlsx-table{border-collapse:collapse;font-size:12.5px;min-width:100%;background:var(--surface)}
+    .tron-xlsx-table th,.tron-xlsx-table td{border:1px solid var(--line2);padding:4px 8px;text-align:left;vertical-align:top;white-space:pre-wrap;word-break:break-word;max-width:340px}
+    .tron-xlsx-table thead th{position:sticky;top:0;background:var(--card,var(--surface));color:var(--muted);font-weight:650;text-align:center}
+    .tron-xlsx-rowhead{background:var(--card,var(--surface));color:var(--muted);font-weight:600;text-align:center!important;width:44px}
+    .tron-office-note{padding:10px 12px;font-size:12px;color:var(--muted);background:var(--card,var(--surface));border-top:1px solid var(--line2)}
+    .tron-rtf{width:100%!important;height:100%!important;overflow:auto;margin:0;padding:20px 24px;box-sizing:border-box;background:var(--surface);color:var(--text);white-space:pre-wrap;word-break:break-word;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+    .modal-body audio{width:100%;margin:auto 0}
+    .tron-csv-table{border-collapse:collapse;font-size:12.5px;width:100%}
+    .tron-csv-table th,.tron-csv-table td{border:1px solid var(--line2);padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word}
+    .tron-csv-table thead th{background:var(--card,var(--surface));color:var(--muted)}
 
     /* 手機版排版 (≤ 820px) */
     @media(max-width:820px){
@@ -1156,13 +1183,33 @@
     return '/admin/api/files/preview?path=' + encodeURIComponent(path);
   }
 
-  // PREVIEW_FORMATS_V1: 雲端硬碟可預覽的格式。
-  // 照片/PDF/文字/影片走原生；Office(.docx/.pptx)改為前端本機解析渲染（OFFICE_PREVIEW_CLIENT_V1），
-  // 資料不離開瀏覽器、不佔伺服器磁碟。舊二進位 .doc/.ppt 無法在瀏覽器解析，僅顯示下載提示。
-  const INLINE_PREVIEW_EXTS = ['pdf','jpg','jpeg','png','gif','bmp','webp','txt','md','mp4'];
-  const OFFICE_PREVIEW_EXTS = ['docx','pptx']; // 前端可解析排版的新格式（OOXML）
-  function canPreview(e){ return INLINE_PREVIEW_EXTS.includes(e) || OFFICE_PREVIEW_EXTS.includes(e); }
-  function isOfficePreview(e){ return OFFICE_PREVIEW_EXTS.includes(e); }
+  // NO_LIBREOFFICE_PREVIEW_V1: 雲端硬碟可預覽的格式。
+  // ⚠️ 這幾份清單必須與後端 files.rs 的 `PREVIEWABLE_EXTS` 完全一致。
+  //    兩邊不同步時會出現「按了預覽卻收到 400」——舊版的 gif/bmp/webp 就是這樣壞的。
+  // 全部走瀏覽器原生或前端本機解析，伺服器不呼叫 LibreOffice 等任何轉檔程式。
+  const IMAGE_PREVIEW_EXTS  = ['jpg','jpeg','png','gif','bmp','webp','avif','ico','svg'];
+  const VIDEO_PREVIEW_EXTS  = ['mp4','webm','mov','m4v'];
+  const AUDIO_PREVIEW_EXTS  = ['mp3','wav','ogg','m4a','flac'];
+  // 純文字類：抓回來後一律經 esc() 跳脫再顯示，絕不當成 HTML 執行。
+  const TEXT_PREVIEW_EXTS   = ['txt','text','md','markdown','log','json','xml','yaml','yml',
+                               'ini','conf','cfg','toml','sql','sh','rs','js','ts','jsx','tsx',
+                               'css','py','java','c','h','cpp','hpp','go','php','html','htm',
+                               'srt','vtt'];
+  // 前端本機解析的 Office 格式（OOXML / ODF / RTF）
+  const OFFICE_PREVIEW_EXTS = ['docx','pptx','xlsx','odt','ods','odp','rtf'];
+  // 舊二進位：伺服器會回原始位元組，前端顯示「請下載查看」
+  const LEGACY_OFFICE_EXTS  = ['doc','ppt','xls'];
+  // OFFICE_ONLINE_V1: 這些格式可交給 Microsoft Office Online 檢視器（OneDrive 同款）。
+  // 舊版 .doc/.ppt/.xls 本機無法解析，一律走線上；新版則本機優先、可切線上。
+  const OFFICE_ONLINE_EXTS  = ['doc','ppt','xls','docx','pptx','xlsx'];
+
+  function canPreview(e){
+    return IMAGE_PREVIEW_EXTS.includes(e) || e === 'pdf' ||
+           VIDEO_PREVIEW_EXTS.includes(e) || AUDIO_PREVIEW_EXTS.includes(e) ||
+           TEXT_PREVIEW_EXTS.includes(e) || e === 'csv' || e === 'tsv' ||
+           OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e);
+  }
+  function isOfficePreview(e){ return OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e); }
 
   async function api(path, opts={}, timeout=12000){
     const t = token();
@@ -1559,24 +1606,140 @@
   }
 
 
-  // OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Word/PPT。抓原始位元組 -> office-view.js 解析 -> 注入 HTML。
+  // OFFICE_ONLINE_V1: OneDrive 同款。向後端索取「限時簽章公開連結」包成的
+  // Office Online 嵌入 URL，用 <iframe> 顯示。微軟伺服器會自行抓取該連結。
+  // 用於本機無法解析的舊版 .doc/.ppt/.xls。失敗時給明確訊息＋下載。
+  async function renderOfficeOnline(path, ext){
+    const body = q('previewBody');
+    body.innerHTML = '<div class="empty">正在準備線上檢視…</div>';
+    try {
+      const res = await fetch('/admin/api/files/office-embed?path=' + encodeURIComponent(path), { cache: 'no-store' });
+      if (!res.ok) throw new Error('http ' + res.status);
+      const data = await res.json();
+      if (!data.embed) throw new Error('no embed url');
+      body.innerHTML =
+        '<div class="tron-online-wrap">' +
+          '<div class="tron-online-note">線上檢視由 Microsoft Office Online 提供（連結 15 分鐘內有效）。若無法載入，請改用上方「下載」。</div>' +
+          '<iframe class="tron-online" src="' + esc(data.embed) + '" allowfullscreen></iframe>' +
+        '</div>';
+    } catch(err) {
+      body.innerHTML = '<div class="empty">無法啟動線上檢視（' + esc((err && err.message) || String(err)) + '），請按上方「下載」查看。</div>';
+    }
+  }
+
+  // PDFJS_PREVIEW_V1: 用 PDF.js 把 PDF 逐頁渲染成 canvas（同 Firefox 內建檢視器核心）。
+  // 失敗時退回原生 <iframe>，再失敗給明確訊息。
+  async function renderPdfPreview(url){
+    const body = q('previewBody');
+    const fallbackIframe = () => {
+      body.innerHTML = '<iframe src="' + url + '#toolbar=1" type="application/pdf"></iframe>';
+    };
+    if (!window.pdfjsLib) { fallbackIframe(); return; }
+    body.innerHTML = '<div class="empty">正在載入 PDF…</div>';
+    try {
+      // worker 同源載入（CSP worker-src 'self' 合法）。
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error('http ' + res.status);
+      const data = new Uint8Array(await res.arrayBuffer());
+      // isEvalSupported:false → 不用 new Function/eval，符合 CSP（無 unsafe-eval）。
+      const doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+
+      const wrap = document.createElement('div');
+      wrap.className = 'tron-pdf';
+      body.innerHTML = '';
+      body.appendChild(wrap);
+
+      // 依容器寬度逐頁渲染（fit-width），堆疊捲動，最接近一般閱讀體驗。
+      const targetWidth = Math.max(320, (body.clientWidth || 800) - 28);
+      for (let p = 1; p <= doc.numPages; p++) {
+        const page = await doc.getPage(p);
+        const base = page.getViewport({ scale: 1 });
+        const scale = targetWidth / base.width;
+        const vp = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(vp.width * ratio);
+        canvas.height = Math.floor(vp.height * ratio);
+        canvas.style.width = Math.floor(vp.width) + 'px';
+        canvas.style.height = 'auto';
+        wrap.appendChild(canvas);
+        await page.render({
+          canvasContext: canvas.getContext('2d'),
+          viewport: vp,
+          transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null
+        }).promise;
+      }
+    } catch(err) {
+      // 渲染失敗（壞檔/外掛）→ 退回原生 iframe；若 iframe 也空白，使用者仍可下載。
+      fallbackIframe();
+    }
+  }
+
+  // OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Office。抓原始位元組 -> office-view.js 解析 -> 注入 HTML。
   async function renderOfficePreview(url, ext){
     const body = q('previewBody');
-    if (window.TronOfficeView && window.JSZip) {
-      body.innerHTML = '<div class="empty">正在載入 Office 預覽…</div>';
-      try {
-        const res = await fetch(url, { cache: 'no-store' });
-        if (!res.ok) throw new Error('http ' + res.status);
-        const buf = await res.arrayBuffer();
-        const html = await window.TronOfficeView.preview(buf, ext);
-        if (!html) throw new Error('empty');
-        body.innerHTML = html;
-        return;
-      } catch(_) {
-        // fallthrough 到後端訊息
-      }
+    // 先確認解析元件真的有載進來；沒載到就直接說，而不是顯示籠統的「無法解析」。
+    if (!window.JSZip || !window.TronOfficeView) {
+      body.innerHTML = '<div class="empty">預覽元件未載入（JSZip / OfficeView）。請按 Ctrl+Shift+R 強制重新整理後再試。</div>';
+      return;
     }
-    body.innerHTML = '<div class="empty">此 Office 檔案無法解析，請按上方「下載」查看。</div>';
+    body.innerHTML = '<div class="empty">正在載入 Office 預覽…</div>';
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) {
+        // 把真實的 HTTP 狀態顯示出來（401/403 = 登入過期、400 = 格式不支援）。
+        body.innerHTML = '<div class="empty">預覽請求失敗（HTTP ' + res.status + '）。若為 401/403 請重新登入；若持續發生請下載查看。</div>';
+        return;
+      }
+      const buf = await res.arrayBuffer();
+      const html = await window.TronOfficeView.preview(buf, ext);
+      if (!html) throw new Error('empty');
+      // 走 mount() 而非直接賦值 innerHTML：Excel 的工作表分頁需要在節點
+      // 放進 DOM 之後才能綁定切換事件（賦值本身仍會經過 Trusted Types）。
+      if (window.TronOfficeView.mount) window.TronOfficeView.mount(body, html);
+      else body.innerHTML = html;
+      return;
+    } catch(err) {
+      // OFFICE_DEBUG_V1: 顯示真實例外訊息，方便定位是哪一步壞掉。
+      const msg = (err && err.message) ? err.message : String(err);
+      body.innerHTML = '<div class="empty">此 Office 檔案無法解析（' + esc(msg) + '），請按上方「下載」查看。</div>';
+    }
+  }
+
+  // CSV/TSV 轉成表格顯示。純前端 split，所有字串都經 esc() 跳脫。
+  function csvToTable(text, sep){
+    const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    if (!lines.length) return '';
+    const rows = lines.map(line => {
+      const cells = []; let cur = '', quoted = false;
+      for (let i = 0; i < line.length; i++){
+        const ch = line[i];
+        if (quoted){
+          if (ch === '"' && line[i + 1] === '"'){ cur += '"'; i++; }
+          else if (ch === '"'){ quoted = false; }
+          else cur += ch;
+        } else if (ch === '"') quoted = true;
+        else if (ch === sep) { cells.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      cells.push(cur);
+      return cells;
+    });
+    const MAX = 300;
+    const head = rows[0];
+    let html = '<table class="tron-csv-table"><thead><tr>';
+    for (let c = 0; c < head.length; c++) html += '<th>' + esc(head[c]) + '</th>';
+    html += '</tr></thead><tbody>';
+    for (let r = 1; r < Math.min(rows.length, MAX); r++){
+      html += '<tr>';
+      for (let c = 0; c < head.length; c++) html += '<td>' + esc(rows[r][c] || '') + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    if (rows.length > MAX) html += '<div class="tron-office-note">檔案過大，僅顯示前 ' + MAX + ' 列。完整內容請下載。</div>';
+    return html;
   }
 
   async function preview(path){
@@ -1587,24 +1750,45 @@
     if (q('previewDownload')) q('previewDownload').href = dl(path);
     if (q('previewModal')) q('previewModal').classList.add('visible');
 
-    if (['jpg','jpeg','png','gif','bmp','webp'].includes(e)) {
+    if (IMAGE_PREVIEW_EXTS.includes(e)) {
+      // SVG 只透過 <img> 載入：img 上下文不會執行 script，即使檔案內含腳本也無效。
       q('previewBody').innerHTML = '<img src="' + url + '">';
     } else if (e === 'pdf') {
-      // PDF_PREVIEW_IFRAME_V1: 直接用 <iframe> 內嵌（CSP 的 object-src 'none' 會擋掉 <object>，
-      // 而 <iframe> 是 frame-src 'self' 允許的）。瀏覽器原生 PDF 檢視器會載入。
-      q('previewBody').innerHTML = '<iframe src="' + url + '#toolbar=1" type="application/pdf"></iframe>';
+      // PDFJS_PREVIEW_V1: 用 PDF.js（Firefox 同款）本機渲染，canvas 逐頁畫出，
+      // 不靠瀏覽器原生 PDF 外掛 → 所有瀏覽器/手機一致，解決 iframe 空白。
+      // 若 PDF.js 未載入或解析失敗，退回原生 <iframe>。
+      await renderPdfPreview(url);
     } else if (isOfficePreview(e)) {
-      // OFFICE_PREVIEW_CLIENT_V1: 抓取原始位元組，用 office-view.js 本機解析 .docx/.pptx 渲染。
-      await renderOfficePreview(url, e);
-    } else if (e === 'mp4') {
+      if (LEGACY_OFFICE_EXTS.includes(e)) {
+        // OFFICE_ONLINE_V1: 舊版 .doc/.ppt/.xls 本機無法解析 → OneDrive 同款線上檢視。
+        await renderOfficeOnline(path, e);
+      } else {
+        // 抓取原始位元組，用 office-view.js 本機解析（不需要 LibreOffice）。
+        await renderOfficePreview(url, e);
+      }
+    } else if (VIDEO_PREVIEW_EXTS.includes(e)) {
       q('previewBody').innerHTML = '<video src="' + url + '" controls autoplay></video>';
-    } else if (['txt','md'].includes(e)) {
+    } else if (AUDIO_PREVIEW_EXTS.includes(e)) {
+      q('previewBody').innerHTML = '<audio src="' + url + '" controls autoplay></audio>';
+    } else if (e === 'csv' || e === 'tsv') {
       try {
         const res = await fetch(url, { cache: 'no-store' });
+        const table = csvToTable(await res.text(), e === 'tsv' ? '\t' : ',');
+        q('previewBody').innerHTML = table || '<div class="empty">此檔案沒有內容</div>';
+      } catch(_) {
+        q('previewBody').innerHTML = '<div class="empty">無法預覽此檔案</div>';
+      }
+    } else if (TEXT_PREVIEW_EXTS.includes(e)) {
+      try {
+        const res = await fetch(url, { cache: 'no-store' });
+        // 一律以純文字顯示：html/xml 等格式也只看原始碼，不會被執行。
         q('previewBody').innerHTML = '<pre>' + esc(await res.text()) + '</pre>';
       } catch(_) {
         q('previewBody').innerHTML = '<div class="empty">無法預覽此檔案</div>';
       }
+    } else {
+      // 理論上不會走到（canPreview 已擋掉），但留個明確訊息而不是空白彈窗。
+      q('previewBody').innerHTML = '<div class="empty">此檔案格式不支援預覽，請按上方「下載」查看。</div>';
     }
   }
 

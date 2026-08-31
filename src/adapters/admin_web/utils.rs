@@ -463,12 +463,52 @@ pub(super) fn material_content_type(path: &Path) -> &'static str {
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "txt" => "text/plain; charset=utf-8",
-        "md" => "text/markdown; charset=utf-8",
+        // ODF 家族（odt/ods/odp）與 RTF：前端 JSZip / 純文字解析，瀏覽器不需要認得。
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        "rtf" => "application/rtf",
+        // 舊二進位 Office：只供下載／前端顯示提示。
+        "doc" => "application/msword",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "xls" => "application/vnd.ms-excel",
+        "txt" | "text" | "log" => "text/plain; charset=utf-8",
+        "md" | "markdown" => "text/markdown; charset=utf-8",
+        // PREVIEW_TEXT_PLAIN_V1
+        // HTML / XML 刻意回 text/plain：預覽端點是同源且帶 session cookie 的，
+        // 若以 text/html 或 application/xml 串流，使用者上傳的檔案就能在同一個
+        // origin 上被當成文件執行（stored XSS）。這裡只把它們當「原始碼」給前端
+        // 以 <pre> + esc() 顯示。CSP 之外多一道防線。
+        "html" | "htm" | "xml" | "xhtml" => "text/plain; charset=utf-8",
+        "csv" | "tsv" => "text/csv; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "yaml" | "yml" | "ini" | "conf" | "cfg" | "toml" | "sql" | "sh" | "rs"
+        | "js" | "ts" | "jsx" | "tsx" | "css" | "py" | "java" | "c" | "h" | "cpp"
+        | "hpp" | "go" | "php" => "text/plain; charset=utf-8",
+        "srt" => "application/x-subrip; charset=utf-8",
+        "vtt" => "text/vtt; charset=utf-8",
         "jpg" | "jpeg" => "image/jpeg",
         "png" => "image/png",
+        // PREVIEW_IMAGE_TYPES_V1: 原本這些全部落到 application/octet-stream，
+        // 導致 <img>／<audio>／<video> 無法渲染（gif/bmp/webp 的預覽按鈕按下去
+        // 只會拿到 400 或空白）。
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "ico" => "image/x-icon",
+        // SVG 只允許被 <img> 載入（img 上下文不會執行 script）；前端不提供
+        // 把它當文件渲染的途徑。
+        "svg" => "image/svg+xml",
         "zip" => "application/zip",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "wav" => "audio/wav",
+        "ogg" => "audio/ogg",
+        "m4a" => "audio/mp4",
+        "flac" => "audio/flac",
         _ => "application/octet-stream",
     }
 }
