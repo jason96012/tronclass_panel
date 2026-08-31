@@ -160,6 +160,14 @@ pub(super) async fn admin_office_view_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::OFFICE_VIEW_JS)
 }
 
+// SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS。
+pub(super) async fn admin_share_preview_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::SHARE_PREVIEW_JS)
+}
+pub(super) async fn admin_share_css_handler() -> Response {
+    admin_static_asset("text/css; charset=utf-8", pages::SHARE_CSS)
+}
+
 // PDFJS_PREVIEW_V1: PDF.js 主程式與 worker。worker 由 pdf.js 在執行期以
 // workerSrc 同源載入（worker-src 'self' 合法）。
 pub(super) async fn admin_pdf_js_handler() -> Response {

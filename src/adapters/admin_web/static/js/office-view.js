@@ -176,7 +176,14 @@
   var NS_R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
   function xml(str) {
-    return new DOMParser().parseFromString(str, 'application/xml');
+    // XML_PARSER_TOLERANT_V1: 部分匯出檔帶 BOM 或前導空白，會讓 DOMParser
+    // 直接回 parsererror；先剝掉再解析，parsererror 時再試一次乾淨版。
+    if (typeof str === 'string') str = str.replace(/^\uFEFF+/, '').replace(/\u0000/g, '').replace(/^\s+/, '');
+    var doc = new DOMParser().parseFromString(str, 'application/xml');
+    if (doc.getElementsByTagName('parsererror').length) {
+      doc = new DOMParser().parseFromString(str.trim(), 'application/xml');
+    }
+    return doc;
   }
 
   // 讀取 slideN.xml.rels 的 rId -> 媒體路徑 對照。
@@ -317,9 +324,31 @@
   // OFFICE_ROBUST_V1: 真實檔案（Word/PowerPoint/LibreOffice/線上轉檔工具產出）
   // 不一定有齊全的 parts。所有 zip.file(...) 都可能回 null，任何一步缺失都
   // 要「優雅降級」（少圖、少一頁），而不是整份丟出例外變成「無法解析」。
+  // XML_ENCODING_V1: 部分 pptx/docx 的 XML part 實為 UTF-16（每個字元夾一個
+  // 0x00），但 JSZip 的 .async('text') 一律當 UTF-8 解，結果字串裡塞滿 \u0000，
+  // DOMParser 直接報 "Document is empty / line 1 column 1"。改為先取 bytes，
+  // 依 BOM 或 NUL 交錯判斷編碼再解，才能正確還原。
+  function decodeXmlBytes(u) {
+    if (!u || !u.length) return '';
+    if (u.length >= 3 && u[0] === 0xEF && u[1] === 0xBB && u[2] === 0xBF) {
+      return new TextDecoder('utf-8').decode(u.subarray(3)); // UTF-8 BOM
+    }
+    if (u.length >= 2 && u[0] === 0xFF && u[1] === 0xFE) {
+      return new TextDecoder('utf-16le').decode(u.subarray(2)); // UTF-16LE BOM
+    }
+    if (u.length >= 2 && u[0] === 0xFE && u[1] === 0xFF) {
+      return new TextDecoder('utf-16be').decode(u.subarray(2)); // UTF-16BE BOM
+    }
+    // 無 BOM：統計前 256 bytes 奇數位元的 0x00，判定是否 UTF-16LE。
+    var nul = 0, n = Math.min(u.length, 256);
+    for (var i = 1; i < n; i += 2) if (u[i] === 0x00) nul++;
+    if (nul > 8) return new TextDecoder('utf-16le').decode(u);
+    return new TextDecoder('utf-8').decode(u);
+  }
+
   function zipText(zip, part) {
     var f = zip.file(part);
-    return f ? f.async('text') : Promise.resolve(null);
+    return f ? f.async('uint8array').then(decodeXmlBytes) : Promise.resolve(null);
   }
 
   // OFFICE_SNIFF_V1: 在丟給 JSZip 之前先看魔數，分辨「真 zip / OLE2 舊格式 /
@@ -894,6 +923,7 @@
 
       var html = '';
       var count = 0;
+      var slideErrors = [];
       for (var s = 0; s < slideIds.length; s++) {
         // OFFICE_ROBUST_V1: 單一投影片解析失敗（壞 XML、缺節點）只跳過那一頁，
         // 不讓整份簡報變成「無法解析」。
@@ -939,7 +969,8 @@
             (doc.cx / doc.cy).toFixed(4) + ';">' + slideHtml + '</div>';
           count++;
         } catch (slideErr) {
-          // 跳過這一頁，繼續下一頁。
+          // 記下被跳過的原因，count==0 時附在錯誤卡片裡送進後台日誌。
+          slideErrors.push('slide: ' + (slideErr && slideErr.message));
           continue;
         }
       }
@@ -969,11 +1000,36 @@
               html += '<div class="tron-slide" style="aspect-ratio:' + (doc.cx / doc.cy).toFixed(4) + ';">' + inner + '</div>';
               count++;
             }
-          } catch (e2) { continue; }
+          } catch (e2) { slideErrors.push('fallback: ' + (e2 && e2.message)); continue; }
+        }
+      }
+      // LAST_RESORT_TEXT_V1: 若 DOMParser 路徑全數失敗（例如瀏覽器對這份 XML
+      // 回 parsererror），改用 regex 直接抓 <a:t> 文字，保證「至少看得到內容」，
+      // 而不是丟「無法解析」。空白頁也渲染一個框，避免整份被判為失敗。
+      if (!count) {
+        var rnames = [];
+        zip.forEach(function (rel) { if (/^ppt\/slides\/[^/]+\.xml$/.test(rel)) rnames.push(rel); });
+        rnames.sort(function (a, b) {
+          return parseInt(a.replace(/\D+/g, ''), 10) - parseInt(b.replace(/\D+/g, ''), 10);
+        });
+        for (var r = 0; r < rnames.length; r++) {
+          try {
+            var rt = await zipText(zip, rnames[r]);
+            if (!rt) continue;
+            var texts = [], m, re = /<a:t[^>]*>([\s\S]*?)<\/a:t>/g;
+            while ((m = re.exec(rt)) !== null) { if (m[1]) texts.push(m[1]); }
+            var body = texts.length
+              ? texts.map(function (t) { return '<p style="margin:0 0 6px;">' + t + '</p>'; }).join('')
+              : '<p style="margin:0;opacity:.6;">（此頁無可解析文字）</p>';
+            html += '<div class="tron-slide" style="aspect-ratio:' + (doc.cx / doc.cy).toFixed(4) +
+              ';padding:24px;box-sizing:border-box;overflow:auto;">' + body + '</div>';
+            count++;
+          } catch (e3) { slideErrors.push('lastresort: ' + (e3 && e3.message)); }
         }
       }
       if (!count) {
-        return '<div class="tron-office-error">此簡報無法解析（可能是舊版 .ppt 二進位格式）。請按上方「下載」查看。</div>';
+        var why = slideErrors.length ? '（內部例外：' + slideErrors[0] + '）' : '';
+        return '<div class="tron-office-error">此簡報無法解析' + why + '。請按上方「下載」查看。</div>';
       }
       return '<div class="tron-slides">' + html + '</div>';
     }

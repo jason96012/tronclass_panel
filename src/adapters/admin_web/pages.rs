@@ -36,6 +36,9 @@ pub(super) const DOMPURIFY_JS: &str = include_str!("static/js/dompurify.min.js")
 pub(super) const TRUSTED_TYPES_INIT_JS: &str = include_str!("static/js/trusted-types-init.js");
 pub(super) const JSZIP_MIN_JS: &str = include_str!("static/js/jszip.min.js");
 pub(super) const OFFICE_VIEW_JS: &str = include_str!("static/js/office-view.js");
+// SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS（符合 CSP，不用 inline）。
+pub(super) const SHARE_PREVIEW_JS: &str = include_str!("static/js/share-preview.js");
+pub(super) const SHARE_CSS: &str = include_str!("static/css/share.css");
 // PDFJS_PREVIEW_V1: 套用 Firefox 同款 PDF.js 檢視器（純 JS canvas 渲染，
 // 不靠瀏覽器原生外掛，所有瀏覽器一致，解決 iframe 空白）。
 pub(super) const PDF_MIN_JS: &str = include_str!("static/js/pdf.min.js");
@@ -263,7 +266,7 @@ pub(super) fn inject_files_office_assets(html: &str) -> String {
     const OFFICE_ASSETS: &str =
         // 版本號必須隨內容更新：static_assets.rs 對靜態檔下
         // `max-age=604800, immutable`，不換 query string 瀏覽器會沿用舊檔一週。
-        r#"<script src="/admin/static/js/jszip.min.js?v=officeview6"></script><script src="/admin/static/js/office-view.js?v=officeview6"></script><script src="/admin/static/js/pdf.min.js?v=pdfjs1"></script>"#;
+        r#"<script src="/admin/static/js/jszip.min.js?v=officeview6"></script><script src="/admin/static/js/office-view.js?v=officeview10"></script><script src="/admin/static/js/pdf.min.js?v=pdfjs1"></script>"#;
     // OFFICE_INJECT_GUARD_V1: 防重複注入必須用「真正的 <script src> 標籤」，
     // 不能用裸檔名子字串（files.html 註解也會提到檔名，會讓 guard 永遠成立）。
     if html.contains(r#"src="/admin/static/js/jszip.min.js"#) {

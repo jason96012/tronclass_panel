@@ -395,8 +395,15 @@
     .file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
     .file-card{border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden;transition:all .15s ease;display:flex;flex-direction:column}
     .file-card:hover{box-shadow:var(--shadow);transform:translateY(-1px);border-color:var(--line2)}
-    .file-thumb{height:88px;background:linear-gradient(180deg,var(--surface2),var(--surface));border-bottom:1px solid var(--line);display:grid;place-items:center}
+    .file-thumb{height:88px;background:linear-gradient(180deg,var(--surface2),var(--surface));border-bottom:1px solid var(--line);display:grid;place-items:center;overflow:hidden;position:relative}
     .file-badge{padding:4px 10px;border-radius:6px;background:var(--surface3);color:var(--text);font-weight:800;font-size:12px;text-transform:uppercase}
+    /* THUMB_IMG_V1: 圖片檔直接顯示真實縮圖（object-fit 裁切），不再只放文字徽章，
+       解決手機版圖示「跑掉」的問題。 */
+    .file-thumb-img{width:100%;height:100%;object-fit:cover;display:block}
+    /* PREVIEW_HIDE_NAV_V1: 預覽彈窗開啟時隱藏手機底部導覽列（其 z-index 高於 modal）。 */
+    body.tron-preview-open #mobilebar,
+    body.tron-preview-open .mobilebar,
+    body.tron-preview-open #filesMobileNav{display:none!important}
     .file-info{padding:10px 12px;flex:1}
     .file-name{font-weight:750;font-size:13px;line-height:1.35;min-height:36px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
     .file-meta{margin-top:4px;color:var(--muted);font-size:11px;line-height:1.4}
@@ -1204,10 +1211,47 @@
   const OFFICE_ONLINE_EXTS  = ['doc','ppt','xls','docx','pptx','xlsx'];
 
   function canPreview(e){
-    return IMAGE_PREVIEW_EXTS.includes(e) || e === 'pdf' ||
+    return IMAGE_PREVIEW_EXTS.includes(e) || e === 'pdf' || e === 'url' ||
            VIDEO_PREVIEW_EXTS.includes(e) || AUDIO_PREVIEW_EXTS.includes(e) ||
            TEXT_PREVIEW_EXTS.includes(e) || e === 'csv' || e === 'tsv' ||
            OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e);
+  }
+  // URL_SHORTCUT_V1: 解析 Internet Shortcut（.url）內容，取出目標網址。
+  // 支援 [InternetShortcut] 區的 URL= 行，或整份內容就是一個 http(s) 連結。
+  function parseShortcutUrl(txt){
+    txt = txt || '';
+    let m = /(?:^|[\r\n])\s*URL\s*=\s*([^\s\r\n]+)/i.exec(txt);
+    let u = m ? m[1].trim() : '';
+    if (!u) {
+      const t = txt.trim();
+      if (/^https?:\/\//i.test(t)) u = t.split(/\s+/)[0];
+    }
+    if (!u) return null;
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    return u;
+  }
+  // URL_SHORTCUT_V1: .url 的「預覽」＝跳轉到該網站。先同步開新分頁（about:blank）
+  // 以避免被浏览器的彈窗阻擋器擋下，fetch 完再把位址指過去；若新分頁開不成，
+  // 退為同分頁跳轉。解析失敗才退回彈窗顯示原始內容。
+  async function previewUrlFile(path, f){
+    const win = window.open('about:blank', '_blank');
+    let txt = '';
+    try {
+      const res = await fetch(pv(path), { cache: 'no-store' });
+      txt = await res.text();
+      const target = parseShortcutUrl(txt);
+      if (!target) throw new Error('找不到 URL=');
+      if (win) win.location.replace(target);
+      else window.location.href = target;
+      return;
+    } catch (err) {
+      if (win) win.close();
+      reportPreview(path, 'url', 'url', 'shortcut jump failed: ' + (err && err.message));
+      if (q('previewTitle')) q('previewTitle').textContent = f.name || path;
+      if (q('previewDownload')) q('previewDownload').href = dl(path);
+      setPreviewOpen(true);
+      q('previewBody').innerHTML = '<div class="empty">此 .url 檔沒有可跳轉的網址，原始內容如下：</div><pre>' + esc(txt) + '</pre>';
+    }
   }
   function isOfficePreview(e){ return OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e); }
 
@@ -1359,8 +1403,11 @@
 
   function fileCard(f){
     const e = ext(f);
+    const thumb = IMAGE_PREVIEW_EXTS.includes(e)
+      ? '<img class="file-thumb-img" src="' + pv(f.path) + '" alt="" loading="lazy">'
+      : '<div class="file-badge">' + esc(e || 'FILE') + '</div>';
     return '<div class="file-card">' +
-      '<div class="file-thumb"><div class="file-badge">' + esc(e || 'FILE') + '</div></div>' +
+      '<div class="file-thumb">' + thumb + '</div>' +
       '<div class="file-info">' +
         '<div class="file-name">' + esc(f.name || f.path) + '</div>' +
         '<div class="file-meta">' + esc(f.modified || '-') + ' ｜ ' + esc(f.size_label || sizeLabel(f.size)) + '</div>' +
@@ -1368,6 +1415,7 @@
       '<div class="file-actions">' +
         '<a class="button secondary download-link" href="' + dl(f.path) + '">下載</a>' +
         (canPreview(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
+        '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button>' +
         '<button class="button danger remove-btn" data-delete-file="' + esc(f.path) + '" title="刪除檔案">🗑</button>' +
       '</div>' +
     '</div>';
@@ -1379,7 +1427,7 @@
     tbody.innerHTML = folds.map(f => 
       '<tr><td><button class="button secondary" style="min-height:30px;padding:0 8px" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td><td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td><td><button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button></td></tr>'
     ).concat(fList.map(f => 
-      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '">下載</a>' + (canPreview(ext(f)) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') + '<button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
+      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '">下載</a>' + (canPreview(ext(f)) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') + '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button><button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
     )).join('') || '<tr><td colspan="5" class="empty">目前資料夾為空</td></tr>';
   }
 
@@ -1606,6 +1654,19 @@
   }
 
 
+  // PREVIEW_LOG_V1: 把前端預覽/解析錯誤回報到後台日誌（fire-and-forget），
+  // 讓管理者在 Pterodactyl console 看到「哪個檔、哪一步、什麼錯」。
+  function reportPreview(path, ext, stage, msg){
+    try {
+      fetch('/admin/api/files/preview-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path, ext: ext, stage: stage, message: String(msg || '').slice(0, 2000) }),
+        cache: 'no-store'
+      }).catch(function(){});
+    } catch(_) {}
+  }
+
   // OFFICE_ONLINE_V1: OneDrive 同款。向後端索取「限時簽章公開連結」包成的
   // Office Online 嵌入 URL，用 <iframe> 顯示。微軟伺服器會自行抓取該連結。
   // 用於本機無法解析的舊版 .doc/.ppt/.xls。失敗時給明確訊息＋下載。
@@ -1627,6 +1688,7 @@
           '<iframe class="tron-online" src="' + esc(embed) + '" allowfullscreen></iframe>' +
         '</div>';
     } catch(err) {
+      reportPreview(path, ext, 'office-online', err && err.message);
       body.innerHTML = '<div class="empty">無法啟動線上檢視（' + esc((err && err.message) || String(err)) + '），請按上方「下載」查看。</div>';
     }
   }
@@ -1663,18 +1725,21 @@
     }
   }
 
-  async function renderPdfPreview(url){
+  async function renderPdfPreview(url, path, ext){
     const body = q('previewBody');
     const fallbackIframe = () => {
       body.innerHTML = '<iframe src="' + url + '#toolbar=1" type="application/pdf"></iframe>';
     };
-    if (!window.pdfjsLib) { fallbackIframe(); return; }
+    if (!window.pdfjsLib) { reportPreview(path, ext, 'pdf-noengine', 'pdfjsLib missing'); fallbackIframe(); return; }
     body.innerHTML = '<div class="empty">正在載入 PDF…</div>';
     try {
       const res = await fetch(url, { cache: 'no-store' });
       if (!res.ok) throw new Error('http ' + res.status);
       await renderPdfData(new Uint8Array(await res.arrayBuffer()));
-    } catch(err) { fallbackIframe(); }
+    } catch(err) {
+      reportPreview(path, ext, 'pdf', err && err.message);
+      fallbackIframe();
+    }
   }
 
   // SINGLE_CONTAINER_V1: Office 預覽智能分流。
@@ -1682,10 +1747,36 @@
   //  現代格式→office-view.js 本機解析（單一 container、無 LibreOffice 下最穩）。
   // SINGLE_CONTAINER_V1: 本機解析（office-view.js）。單一 container、無 LibreOffice
   // 時，現代格式（docx/pptx/xlsx/odf/rtf）唯一可靠的預覽方式。
-  async function renderOfficeLocal(buf, ext){
+  async function renderOfficeLocal(buf, ext, path){
     const body = q('previewBody');
     const html = await window.TronOfficeView.preview(buf, ext);
     if (!html) throw new Error('empty');
+    // 解析器回傳「錯誤卡片」時，把卡片文字＋zip 零件清單送進後台日誌，
+    // 讓後台能直接看到這個 Office 檔的內部結構，一次定位問題。
+    if (html.indexOf('tron-office-error') !== -1) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      let diag = '';
+      try {
+        const z = await JSZip.loadAsync(buf);
+        const names = Object.keys(z.files).filter(n => !z.files[n].dir);
+        diag = ' | parts(' + names.length + '): ' + names.slice(0, 15).join(', ');
+        // 深入診斷：XML 是否被 DOMParser 接受、關鍵節點是否存在。
+        const PNS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+        // XML_ENCODING_V1 驗證：直接讀 bytes，回報十六進位開頭與 NUL 數量，
+        // 確認 XML part 是否為 UTF-16（夾 0x00）導致 DOMParser "Document is empty"。
+        const hex = (u) => Array.from(u.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        const nulCount = (u) => { let c = 0; const n = Math.min(u.length, 256); for (let i = 1; i < n; i += 2) if (u[i] === 0) c++; return c; };
+        const pbytes = z.file('ppt/presentation.xml') ? await z.file('ppt/presentation.xml').async('uint8array') : new Uint8Array(0);
+        diag += ' | presHex[' + hex(pbytes) + '] presNul:' + nulCount(pbytes) + ' len:' + pbytes.length;
+        const sfile = z.file('ppt/slides/slide1.xml');
+        if (sfile) {
+          const sbytes = await sfile.async('uint8array');
+          diag += ' | slideHex[' + hex(sbytes) + '] slideNul:' + nulCount(sbytes) + ' len:' + sbytes.length;
+        }
+      } catch(e) { diag = ' | zip reload failed: ' + (e && e.message); }
+      reportPreview(path, ext, 'office-parse', (tmp.textContent || '').trim() + diag);
+    }
     if (window.TronOfficeView.mount) window.TronOfficeView.mount(body, html);
     else body.innerHTML = html;
   }
@@ -1701,10 +1792,12 @@
       const isPdf = buf.length > 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46; // %PDF
       if (isPdf) { await renderPdfData(buf); return; }
       if (LEGACY_OFFICE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
-      if (window.TronOfficeView && window.JSZip) { await renderOfficeLocal(buf, ext); return; }
+      if (window.TronOfficeView && window.JSZip) { await renderOfficeLocal(buf, ext, path); return; }
       if (OFFICE_ONLINE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
+      reportPreview(path, ext, 'unsupported', 'no engine for ext');
       body.innerHTML = '<div class="empty">此格式（.' + esc(ext) + '）不支援線上預覽，請按上方「下載」查看。</div>';
     } catch(err) {
+      reportPreview(path, ext, 'office', err && err.message);
       body.innerHTML = '<div class="empty">無法預覽（' + esc((err && err.message) || String(err)) + '），請按上方「下載」。</div>';
     }
   }
@@ -1744,13 +1837,42 @@
     return html;
   }
 
+  // PREVIEW_HIDE_NAV_V1: 預覽彈窗開/關時同步切換 body class，隱藏手機導覽列。
+  function setPreviewOpen(open){
+    if (q('previewModal')) q('previewModal').classList.toggle('visible', open);
+    document.body.classList.toggle('tron-preview-open', open);
+  }
+
+  // SHARE_V1: 分享按鈕＝向後端核發「免登入、可預覽」的公開連結（7 天時效），
+  // 優先用 Web Share API 分享該連結（手機可傳 LINE/訊息），否則複製到剪貼簿。
+  // 連結指向 /pub/share 預覽頁，不是下載頁；對方不用登入即可預覽。
+  async function shareFile(path){
+    const f = files.find(x => x.path === path) || { path, name: path };
+    const name = f.name || path;
+    let link = null;
+    try {
+      const res = await fetch('/admin/api/files/share-link?path=' + encodeURIComponent(path), { cache: 'no-store' });
+      if (res.ok) { const j = await res.json(); if (j && j.public_path) link = location.origin + j.public_path; }
+    } catch (_) {}
+    if (!link) { toast('無法產生分享連結'); return; }
+    try {
+      if (navigator.share) { await navigator.share({ title: name, text: name, url: link }); return; }
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // 使用者取消
+    }
+    try { await navigator.clipboard.writeText(link); toast('已複製分享連結（免登入可預覽，7 天有效）'); }
+    catch (_) { window.prompt('複製分享連結：', link); }
+  }
+
   async function preview(path){
     const f = files.find(x => x.path === path) || { path, name: path };
     const e = ext(f);
     const url = pv(path);
+    // URL_SHORTCUT_V1: .url 不開彈窗，直接跳轉到檔案內的網址。
+    if (e === 'url') { await previewUrlFile(path, f); return; }
     if (q('previewTitle')) q('previewTitle').textContent = f.name || path;
     if (q('previewDownload')) q('previewDownload').href = dl(path);
-    if (q('previewModal')) q('previewModal').classList.add('visible');
+    setPreviewOpen(true);
 
     if (IMAGE_PREVIEW_EXTS.includes(e)) {
       // SVG 只透過 <img> 載入：img 上下文不會執行 script，即使檔案內含腳本也無效。
@@ -1759,7 +1881,7 @@
       // PDFJS_PREVIEW_V1: 用 PDF.js（Firefox 同款）本機渲染，canvas 逐頁畫出，
       // 不靠瀏覽器原生 PDF 外掛 → 所有瀏覽器/手機一致，解決 iframe 空白。
       // 若 PDF.js 未載入或解析失敗，退回原生 <iframe>。
-      await renderPdfPreview(url);
+      await renderPdfPreview(url, path, e);
     } else if (isOfficePreview(e)) {
       // SINGLE_CONTAINER_V1: PDF→PDF.js；舊版→Office Online；現代→本機解析。
       await renderOfficeSmart(url, path, e);
@@ -1832,18 +1954,19 @@
     };
     if (q('fileInput')) q('fileInput').onchange = e => uploadFiles(e.target.files);
 
-    if (q('previewClose')) q('previewClose').onclick = () => q('previewModal').classList.remove('visible');
-    if (q('previewModal')) q('previewModal').onclick = e => { if (e.target === q('previewModal')) q('previewModal').classList.remove('visible'); };
+    if (q('previewClose')) q('previewClose').onclick = () => setPreviewOpen(false);
+    if (q('previewModal')) q('previewModal').onclick = e => { if (e.target === q('previewModal')) setPreviewOpen(false); };
 
     document.body.addEventListener('click', e => {
       const open = e.target.closest('[data-open-folder]');
       if (open && !e.target.closest('button,a')) return setFolder(open.dataset.openFolder);
-      const btn = e.target.closest('[data-folder],[data-delete-file],[data-delete-folder],[data-preview]');
+      const btn = e.target.closest('[data-folder],[data-delete-file],[data-delete-folder],[data-preview],[data-share]');
       if (!btn) return;
       if (btn.dataset.folder !== undefined) return setFolder(btn.dataset.folder);
       if (btn.dataset.deleteFile) return delFile(btn.dataset.deleteFile);
       if (btn.dataset.deleteFolder) return delFolder(btn.dataset.deleteFolder);
       if (btn.dataset.preview) return preview(btn.dataset.preview);
+      if (btn.dataset.share) return shareFile(btn.dataset.share);
     });
 
     const drop = q('dropzone');

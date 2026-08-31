@@ -1189,8 +1189,36 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/files/office-embed",
             get(files::admin_files_office_embed_handler),
         )
+        // SHARE_V1: 核發免登入可預覽分享連結
+        .route(
+            "/admin/api/files/share-link",
+            get(files::admin_files_share_link_handler),
+        )
+        // PREVIEW_LOG_V1: 前端預覽報錯回報（後台日誌可見）。
+        .route(
+            "/admin/api/files/preview-log",
+            post(files::admin_files_preview_log_handler),
+        )
         // OFFICE_ONLINE_V1: 公開、限時、簽章驗證的檔案串流（供微軟檢視器抓取）。
         .route("/pub/office", get(files::public_office_file_handler))
+        // SHARE_V1: 免登入分享預覽頁＋其所需的公開 viewer 靜態檔。
+        .route("/pub/share", get(files::public_share_preview_handler))
+        .route(
+            "/pub/static/js/jszip.min.js",
+            get(static_assets::admin_jszip_js_handler),
+        )
+        .route(
+            "/pub/static/js/office-view.js",
+            get(static_assets::admin_office_view_js_handler),
+        )
+        .route(
+            "/pub/static/js/share-preview.js",
+            get(static_assets::admin_share_preview_js_handler),
+        )
+        .route(
+            "/pub/static/css/share.css",
+            get(static_assets::admin_share_css_handler),
+        )
         .route(
             "/admin/api/files/upload",
             post(files::admin_files_upload_handler)

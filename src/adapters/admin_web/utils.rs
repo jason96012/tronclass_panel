@@ -475,6 +475,8 @@ pub(super) fn material_content_type(path: &Path) -> &'static str {
         "doc" => "application/msword",
         "ppt" => "application/vnd.ms-powerpoint",
         "xls" => "application/vnd.ms-excel",
+        // URL_SHORTCUT_V1: .url（Internet Shortcut）為純文字，前端讀取後跳轉。
+        "url" => "text/x-uri; charset=utf-8",
         "txt" | "text" | "log" => "text/plain; charset=utf-8",
         "md" | "markdown" => "text/markdown; charset=utf-8",
         // PREVIEW_TEXT_PLAIN_V1

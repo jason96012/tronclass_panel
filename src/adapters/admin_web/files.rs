@@ -953,6 +953,8 @@ pub(super) const PREVIEWABLE_EXTS: &[&str] = &[
     "ts", "jsx", "tsx", "css", "py", "java", "c", "h", "cpp", "hpp", "go", "php",
     // HTML 原始碼：只當純文字顯示，見 material_content_type 的說明
     "html", "htm",
+    // Internet Shortcut：前端讀取內容的 URL= 後直接跳轉（URL_SHORTCUT_V1）
+    "url",
     // Office（前端本機解析）
     "docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf",
     // 舊二進位 Office：僅回原始位元組，前端顯示下載提示
@@ -982,15 +984,32 @@ const OFFICE_ONLINE_EXTS: &[&str] = &["doc", "ppt", "xls", "docx", "pptx", "xlsx
 
 static OFFICE_PREVIEW_SECRET: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
     // .ok() 把 Result 轉 Option，才能接 map/filter/unwrap_or_else。
-    std::env::var("TRONCLASS_OFFICE_PREVIEW_SECRET")
-        .ok()
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| {
-            let mut b = [0u8; 32];
-            getrandom::getrandom(&mut b).expect("getrandom");
-            hex::encode(b)
-        })
+    if let Ok(v) = std::env::var("TRONCLASS_OFFICE_PREVIEW_SECRET") {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return v;
+        }
+    }
+    // SHARE_SECRET_PERSIST_V1: 沒環境變數時把隨機金鑰「持久化到 config/」，
+    // 否則每次部署/重啟會換金鑰，導致先前核發的分享連結（含 Office Online 的
+    // src 簽章）全部失效（微軟抓 /pub/office 拿 403 → 「An error occurred」）。
+    let path = std::path::Path::new("config/office_preview.secret");
+    if let Ok(existing) = std::fs::read_to_string(path) {
+        let existing = existing.trim().to_string();
+        if !existing.is_empty() {
+            return existing;
+        }
+    }
+    let mut b = [0u8; 32];
+    getrandom::getrandom(&mut b).expect("getrandom");
+    let secret = hex::encode(b);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(path, &secret) {
+        tracing::warn!("無法持久化 office preview 金鑰，重啟後舊分享連結將失效：{e}");
+    }
+    secret
 });
 
 fn office_now_secs() -> u64 {
@@ -1009,6 +1028,18 @@ fn office_sig(path: &str, exp: u64) -> String {
 
 fn pct(value: &str) -> String {
     url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// SHARE_V1: 常數時間驗證 {path|exp} 的 HMAC 簽章（/pub/office 與 /pub/share 共用）。
+fn verify_office_sig(path: &str, exp: u64, sig: &str) -> bool {
+    hex::decode(sig)
+        .map(|raw| {
+            let mut mac = Hmac::<Sha256>::new_from_slice(OFFICE_PREVIEW_SECRET.as_bytes())
+                .expect("HMAC accepts any key length");
+            mac.update(format!("office-preview|{path}|{exp}").as_bytes());
+            mac.verify_slice(&raw).is_ok()
+        })
+        .unwrap_or(false)
 }
 
 /// 已登入後台：為單一檔案核發「限時簽章公開連結」（相對路徑）。
@@ -1049,6 +1080,65 @@ pub(super) async fn admin_files_office_embed_handler(
     (StatusCode::OK, Json(json!({ "public_path": public_path }))).into_response()
 }
 
+// SHARE_V1: 分享連結時效 7 天（比 Office 內嵌的 15 分鐘長，適合給人點開預覽）。
+const SHARE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// 已登入後台：核發「免登入、可預覽」的公開分享連結（/pub/share?path=&exp=&sig=）。
+/// 簽章只綁 path+exp，時效內任何人點開都能預覽、不能列舉其他檔案。
+pub(super) async fn admin_files_share_link_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminFilesQuery>,
+) -> Response {
+    let Some(_session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    let Some(rel) = query
+        .path
+        .as_deref()
+        .and_then(safe_relative_path)
+        .filter(|p| !p.as_os_str().is_empty())
+    else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid path" }))).into_response();
+    };
+    let rel_str = rel.to_string_lossy().into_owned();
+    let exp = office_now_secs() + SHARE_TTL_SECS;
+    let sig = office_sig(&rel_str, exp);
+    let public_path = format!("/pub/share?path={}&exp={exp}&sig={sig}", pct(&rel_str));
+    (StatusCode::OK, Json(json!({ "public_path": public_path }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct PreviewLogRequest {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    ext: String,
+    #[serde(default)]
+    stage: String,
+    #[serde(default)]
+    message: String,
+}
+
+// PREVIEW_LOG_V1: 前端預覽/解析失敗時呼叫，伺服器以 warn 寫入日誌，
+// 讓管理者在 Pterodactyl console 直接看到「哪個檔、哪一步、什麼錯」。
+pub(super) async fn admin_files_preview_log_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    Json(body): Json<PreviewLogRequest>,
+) -> Response {
+    let Some(_session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    tracing::warn!(
+        path = %body.path,
+        ext = %body.ext,
+        stage = %body.stage,
+        message = %body.message,
+        "files preview client error"
+    );
+    (StatusCode::NO_CONTENT, ()).into_response()
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct PublicOfficeQuery {
     #[serde(default)]
@@ -1057,6 +1147,13 @@ pub(super) struct PublicOfficeQuery {
     exp: Option<u64>,
     #[serde(default)]
     sig: Option<String>,
+    // SHARE_V1: dl=1 時改以 attachment 下載（分享頁右上「下載」按鈕），預設 inline 預覽。
+    #[serde(default)]
+    dl: Option<String>,
+    // SHARE_V1b: raw=1 時 /pub/share 直接串流原始檔案（同一簽章驗證），
+    // 讓分享頁 fetch 與 Office Online 的 src 都指向「已驗證有效」的同一端點。
+    #[serde(default)]
+    raw: Option<String>,
 }
 
 /// 公開端點：驗證簽章與時效後串流原始檔案（供微軟檢視器抓取）。不驗證 session。
@@ -1069,6 +1166,7 @@ pub(super) async fn public_office_file_handler(
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "missing params" }))).into_response();
     };
     if office_now_secs() > exp {
+        tracing::warn!(path = %path, exp, "pub office rejected: link expired");
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "link expired" }))).into_response();
     }
     // 常數時間驗證：重新計算 HMAC 並比對簽章位元組。
@@ -1081,6 +1179,7 @@ pub(super) async fn public_office_file_handler(
         })
         .unwrap_or(false);
     if !sig_ok {
+        tracing::warn!(path = %path, exp, "pub office rejected: bad signature");
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "bad signature" }))).into_response();
     }
     let Some(rel) = safe_relative_path(&path).filter(|p| !p.as_os_str().is_empty()) else {
@@ -1090,14 +1189,132 @@ pub(super) async fn public_office_file_handler(
     if !full.is_file() {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
+    // SHARE_V1: dl=1 → attachment（下載）；否則 inline（預覽/供檢視器抓取）。
+    let disposition = if query.dl.as_deref() == Some("1") { "attachment" } else { "inline" };
+    tracing::info!(path = %path, disposition, "pub office streaming file");
     stream_material_file_response(
         full,
-        "inline",
+        disposition,
         Some("no-store"),
         "讀取預覽檔失敗",
         "建立預覽回應失敗",
     )
     .await
+}
+
+// SHARE_V1: 免登入「可預覽」分享頁。
+// 分享連結 = /pub/share?path=&exp=&sig=，純靠 HMAC 簽章＋時效驗證（與 /pub/office
+// 同一套金鑰），不帶任何 session/cookie。頁面本身不串流檔案內容，而是讓瀏覽器
+// 再去抓同一簽章的 /pub/office 原始位元組，在前端本機渲染（圖片/影音/PDF/文字/
+// Office），因此拿到連結的人「不用登入就能預覽」，且不是直接下載頁。
+const SHARE_PAGE: &str = r#"<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<link rel="stylesheet" href="/pub/static/css/share.css?v=sharev3">
+<meta id="share-ext" content="__EXTATTR__">
+<meta id="share-raw" content="__RAWATTR__">
+__SCRIPTS__
+</head>
+<body>
+<header><span class="t">__TITLE__</span><a class="dl" href="__DLATTR__">下載</a></header>
+<div id="stage"><div class="msg">載入中…</div></div>
+<script src="/pub/static/js/share-preview.js?v=sharev3"></script>
+</body>
+</html>"#;
+
+/// 公開分享預覽頁：驗證簽章與時效後回傳一個免登入的預覽 HTML。不驗證 session。
+pub(super) async fn public_share_preview_handler(
+    Query(query): Query<PublicOfficeQuery>,
+) -> Response {
+    let (Some(path), Some(exp), Some(sig)) =
+        (query.path.clone(), query.exp, query.sig.clone())
+    else {
+        return (StatusCode::BAD_REQUEST, "missing params").into_response();
+    };
+    if office_now_secs() > exp {
+        tracing::warn!(path = %path, exp, "pub share rejected: link expired");
+        return (StatusCode::FORBIDDEN, "分享連結已過期").into_response();
+    }
+    if !verify_office_sig(&path, exp, &sig) {
+        tracing::warn!(path = %path, exp, "pub share rejected: bad signature");
+        return (StatusCode::FORBIDDEN, "分享連結無效").into_response();
+    }
+    let Some(rel) = safe_relative_path(&path).filter(|p| !p.as_os_str().is_empty()) else {
+        return (StatusCode::BAD_REQUEST, "invalid path").into_response();
+    };
+    let full = materials_root().join(&rel);
+    if !full.is_file() {
+        return (StatusCode::NOT_FOUND, "檔案不存在").into_response();
+    }
+    // SHARE_V1b: raw=1 → 同一簽章驗證後直接串流原始檔（分享頁 fetch 與
+    // Office Online 的 src 都用這個），不再依賴 /pub/office，避免兩端點差異。
+    if query.raw.as_deref() == Some("1") {
+        let disposition = if query.dl.as_deref() == Some("1") { "attachment" } else { "inline" };
+        tracing::info!(path = %path, disposition, "pub share streaming raw file");
+        return stream_material_file_response(
+            full,
+            disposition,
+            Some("no-store"),
+            "讀取分享檔失敗",
+            "建立分享回應失敗",
+        )
+        .await;
+    }
+    let rel_str = rel.to_string_lossy().into_owned();
+    let ext = rel
+        .extension()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let title = rel
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or("分享檔案")
+        .to_string();
+    // 原始位元組與下載都用 proven 的 /pub/office（app 內 .ppt 線上檢視即靠它，
+    // 微軟檢視器可正常抓取）；簽章只綁 path+exp，加 dl 不影響。
+    let raw_url = format!("/pub/office?path={}&exp={exp}&sig={sig}", pct(&rel_str));
+    let dl_url = format!("{raw_url}&dl=1");
+    let is_modern_office = ["docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf"].contains(&ext.as_str());
+    let scripts = if is_modern_office {
+        "<script src=\"/pub/static/js/jszip.min.js?v=sharev3\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev3\"></script>"
+    } else {
+        ""
+    };
+    let esc = |s: &str| {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+    };
+    let esc_attr = |s: &str| {
+        s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+    };
+    let page = SHARE_PAGE
+        .replace("__TITLE__", &esc(&title))
+        .replace("__EXT__", &esc(&ext))
+        .replace("__SCRIPTS__", scripts)
+        .replace("__EXTATTR__", &esc_attr(&ext))
+        .replace("__RAWATTR__", &esc_attr(&raw_url))
+        .replace("__DLATTR__", &esc_attr(&dl_url));
+    tracing::info!(path = %path, ext = %ext, "pub share page served");
+    let mut res = Response::new(page.into());
+    *res.status_mut() = StatusCode::OK;
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    // SHARE_CSP_V1: 自訂 CSP（不帶 nonce/Trusted Types），允許外掛 'self' 資源與
+    // data:/blob: 圖片（office 內嵌圖為 data URI）。middleware 見已有 CSP 就不覆蓋。
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com; connect-src 'self'; font-src 'self'",
+        ),
+    );
+    res
 }
 
 // SINGLE_CONTAINER_V1: 單一 container、無 LibreOffice、無 Gotenberg。
@@ -1147,6 +1364,11 @@ pub(super) async fn admin_files_preview_handler(
         .and_then(|v| v.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
+
+    // PREVIEW_LOG_V1: 在後台 console 留下預覽請求紀錄（path/ext/大小），
+    // 搭配前端 preview-log 端點，方便從 Pterodactyl 日誌排查預覽問題。
+    let size = tokio::fs::metadata(&full_path).await.map(|m| m.len()).unwrap_or(0);
+    tracing::info!(path = %rel.display(), ext = %ext, size = size, "files preview requested");
 
     // NO_LIBREOFFICE_PREVIEW_V1 / PREVIEW_ENGINES_V1
     // 一律串流「原始檔案」位元組，伺服器不呼叫任何外部轉檔程式。
