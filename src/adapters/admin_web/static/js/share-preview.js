@@ -19,9 +19,11 @@
   else if (AUDIO.indexOf(EXT) >= 0) stage.innerHTML = '<audio src="' + RAW + '" controls autoplay></audio>';
   else if (EXT === 'pdf') stage.innerHTML = '<iframe src="' + RAW + '"></iframe>';
   else if (['doc', 'ppt', 'xls'].indexOf(EXT) >= 0) {
-    // 舊版二進位 Office 無純 JS 解析器 → 交給 Microsoft Office Online 內嵌
-    // （src 用同一簽章的公開 /pub/office URL，微軟伺服器可直接抓取）。
-    var absolute = location.origin + RAW;
+    // 舊版二進位 Office 無純 JS 解析器 → 交給 Microsoft Office Online 內嵌。
+    // src 用伺服器現簽的 15 分鐘 /pub/office（與 app 內 office-embed 同款）。
+    var offMeta = document.getElementById('share-office');
+    var src = (offMeta && offMeta.content) || RAW;
+    var absolute = location.origin + src;
     stage.innerHTML = '<iframe src="https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(absolute) + '"></iframe>';
   }
   else if (TEXT.indexOf(EXT) >= 0) {

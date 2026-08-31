@@ -1163,8 +1163,10 @@ pub(super) async fn public_office_file_handler(
     let (Some(path), Some(exp), Some(sig)) =
         (query.path.clone(), query.exp, query.sig.clone())
     else {
+        tracing::warn!("pub office request missing params");
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "missing params" }))).into_response();
     };
+    tracing::info!(path = %path, exp, "pub office request received");
     if office_now_secs() > exp {
         tracing::warn!(path = %path, exp, "pub office rejected: link expired");
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "link expired" }))).into_response();
@@ -1216,6 +1218,7 @@ const SHARE_PAGE: &str = r#"<!doctype html>
 <link rel="stylesheet" href="/pub/static/css/share.css?v=sharev3">
 <meta id="share-ext" content="__EXTATTR__">
 <meta id="share-raw" content="__RAWATTR__">
+<meta id="share-office" content="__OFFICEATTR__">
 __SCRIPTS__
 </head>
 <body>
@@ -1274,10 +1277,14 @@ pub(super) async fn public_share_preview_handler(
         .and_then(|v| v.to_str())
         .unwrap_or("分享檔案")
         .to_string();
-    // 原始位元組與下載都用 proven 的 /pub/office（app 內 .ppt 線上檢視即靠它，
-    // 微軟檢視器可正常抓取）；簽章只綁 path+exp，加 dl 不影響。
-    let raw_url = format!("/pub/office?path={}&exp={exp}&sig={sig}", pct(&rel_str));
+    // 現代格式本機解析：fetch 用與頁面「同一已驗證簽章」的 /pub/share?raw=1。
+    let raw_url = format!("/pub/share?path={}&exp={exp}&sig={sig}&raw=1", pct(&rel_str));
     let dl_url = format!("{raw_url}&dl=1");
+    // 舊版格式：給 Office Online 一條與 app 內 office-embed「完全相同」的
+    // 現簽 15 分鐘 /pub/office 連結（proven 可被微軟抓取）。
+    let embed_exp = office_now_secs() + OFFICE_EMBED_TTL_SECS;
+    let embed_sig = office_sig(&rel_str, embed_exp);
+    let office_src = format!("/pub/office?path={}&exp={embed_exp}&sig={embed_sig}", pct(&rel_str));
     let is_modern_office = ["docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf"].contains(&ext.as_str());
     let scripts = if is_modern_office {
         "<script src=\"/pub/static/js/jszip.min.js?v=sharev3\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev3\"></script>"
@@ -1296,8 +1303,9 @@ pub(super) async fn public_share_preview_handler(
         .replace("__SCRIPTS__", scripts)
         .replace("__EXTATTR__", &esc_attr(&ext))
         .replace("__RAWATTR__", &esc_attr(&raw_url))
+        .replace("__OFFICEATTR__", &esc_attr(&office_src))
         .replace("__DLATTR__", &esc_attr(&dl_url));
-    tracing::info!(path = %path, ext = %ext, "pub share page served");
+    tracing::info!(path = %path, ext = %ext, raw_url = %raw_url, "pub share page served");
     let mut res = Response::new(page.into());
     *res.status_mut() = StatusCode::OK;
     let h = res.headers_mut();
