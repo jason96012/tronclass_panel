@@ -160,6 +160,16 @@ pub(super) async fn admin_office_view_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::OFFICE_VIEW_JS)
 }
 
+// QR_SHARE_V1: 分享彈窗的 QR code 產生函式庫（離線內建）。
+pub(super) async fn admin_qrcode_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::QR_CODE_MIN_JS)
+}
+
+// SHARE_ADMIN_V1: 分享連結管理頁前端。
+pub(super) async fn admin_shares_admin_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::SHARES_ADMIN_JS)
+}
+
 // SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS。
 pub(super) async fn admin_share_preview_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::SHARE_PREVIEW_JS)

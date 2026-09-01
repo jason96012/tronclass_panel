@@ -140,6 +140,20 @@ async fn cached_materials_list(
 
 const MATERIAL_STREAM_CHUNK_SIZE: usize = 64 * 1024;
 
+// SNIFF_CONTENT_TYPE_V1: 副檔名與內容不符時（例如「.ppt」其實是 PDF），依真實
+// 魔數回 Content-Type，否則 <iframe> 的 PDF 檢視器認不出內容類型→全白。
+async fn sniff_content_type(path: &std::path::Path) -> &'static str {
+    let mut head = [0u8; 8];
+    if let Ok(mut f) = tokio::fs::File::open(path).await {
+        if let Ok(n) = f.read(&mut head).await {
+            if n >= 4 && &head[0..4] == b"%PDF" {
+                return "application/pdf";
+            }
+        }
+    }
+    material_content_type(path)
+}
+
 async fn stream_material_file_response(
     path: PathBuf,
     disposition_prefix: &str,
@@ -161,7 +175,8 @@ async fn stream_material_file_response(
         }
     };
     let content_len = file.metadata().await.ok().map(|meta| meta.len());
-    let content_type = material_content_type(&path);
+    // SNIFF_CONTENT_TYPE_V1: 以真實魔數決定 Content-Type（.ppt 實為 PDF 時回 application/pdf）。
+    let content_type = sniff_content_type(&path).await;
     let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("file");
     let disposition = format!(
         "{}; filename=\"{}\"",
@@ -1027,7 +1042,11 @@ fn office_sig(path: &str, exp: u64) -> String {
 }
 
 fn pct(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+    // SHARE_LINK_MOBILE_V1: 空格用 %20 而非 '+'。form 編碼的 '+' 在手機訊息
+    // App（LINE 等）點按/轉傳時常被轉成空格或截斷，導致 path 與簽章對不上。
+    url::form_urlencoded::byte_serialize(value.as_bytes())
+        .collect::<String>()
+        .replace('+', "%20")
 }
 
 /// SHARE_V1: 常數時間驗證 {path|exp} 的 HMAC 簽章（/pub/office 與 /pub/share 共用）。
@@ -1085,6 +1104,153 @@ const SHARE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// 已登入後台：核發「免登入、可預覽」的公開分享連結（/pub/share?path=&exp=&sig=）。
 /// 簽章只綁 path+exp，時效內任何人點開都能預覽、不能列舉其他檔案。
+// SHARE_ADMIN_V1: 已發出分享連結的記錄（檔案型 config/share_links.jsonl，免改 DB schema）。
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub(super) struct ShareLinkRecord {
+    pub path: String,
+    pub exp: i64,
+    pub created: i64,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+fn share_links_file() -> std::path::PathBuf {
+    std::path::Path::new("config/share_links.jsonl").to_path_buf()
+}
+
+static SHARE_LINKS: once_cell::sync::Lazy<std::sync::Mutex<Vec<ShareLinkRecord>>> =
+    once_cell::sync::Lazy::new(|| {
+        let mut v = Vec::new();
+        if let Ok(text) = std::fs::read_to_string(share_links_file()) {
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(rec) = serde_json::from_str::<ShareLinkRecord>(line) {
+                    v.push(rec);
+                }
+            }
+        }
+        std::sync::Mutex::new(v)
+    });
+
+fn persist_share_links(list: &[ShareLinkRecord]) {
+    let mut out = String::new();
+    for r in list {
+        if let Ok(s) = serde_json::to_string(r) {
+            out.push_str(&s);
+            out.push('\n');
+        }
+    }
+    let path = share_links_file();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Err(e) = std::fs::write(path, out) {
+        tracing::warn!("無法寫入 share_links.jsonl：{e}");
+    }
+}
+
+fn record_share_link(path: &str, exp: i64) {
+    if let Ok(mut list) = SHARE_LINKS.lock() {
+        if list.iter().any(|r| r.path == path && r.exp == exp) {
+            return;
+        }
+        list.push(ShareLinkRecord {
+            path: path.to_string(),
+            exp,
+            created: office_now_secs() as i64,
+            revoked: false,
+        });
+        persist_share_links(&list);
+    }
+}
+
+fn revoke_share_link(path: &str, exp: i64) -> bool {
+    if let Ok(mut list) = SHARE_LINKS.lock() {
+        let mut changed = false;
+        for r in list.iter_mut() {
+            if r.path == path && r.exp == exp && !r.revoked {
+                r.revoked = true;
+                changed = true;
+            }
+        }
+        if changed {
+            persist_share_links(&list);
+        }
+        changed
+    } else {
+        false
+    }
+}
+
+fn is_share_revoked(path: &str, exp: i64) -> bool {
+    SHARE_LINKS
+        .lock()
+        .map(|l| l.iter().any(|r| r.path == path && r.exp == exp && r.revoked))
+        .unwrap_or(false)
+}
+
+// 管理員：列出所有分享連結（含伺服器端重算的 sig，前端組出完整網址 + QR）。
+// SHARE_ADMIN_V1: 以 session_token(headers+query) 認證，支援 HttpOnly cookie。
+pub(super) async fn admin_shares_list_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "admin only" }))).into_response();
+    }
+    let items: Vec<serde_json::Value> = SHARE_LINKS
+        .lock()
+        .map(|list| {
+            list.iter()
+                .map(|r| {
+                    json!({
+                        "path": r.path,
+                        "exp": r.exp,
+                        "created": r.created,
+                        "revoked": r.revoked,
+                        "sig": office_sig(&r.path, r.exp as u64),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (StatusCode::OK, Json(json!({ "items": items }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct RevokeShareRequest {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    exp: i64,
+}
+
+// 管理員：撤銷指定分享連結。
+pub(super) async fn admin_shares_revoke_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(body): Json<RevokeShareRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "admin only" }))).into_response();
+    }
+    let changed = revoke_share_link(&body.path, body.exp);
+    (StatusCode::OK, Json(json!({ "revoked": changed }))).into_response()
+}
+
 pub(super) async fn admin_files_share_link_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
@@ -1103,6 +1269,7 @@ pub(super) async fn admin_files_share_link_handler(
     let rel_str = rel.to_string_lossy().into_owned();
     let exp = office_now_secs() + SHARE_TTL_SECS;
     let sig = office_sig(&rel_str, exp);
+    record_share_link(&rel_str, exp as i64);
     let public_path = format!("/pub/share?path={}&exp={exp}&sig={sig}", pct(&rel_str));
     (StatusCode::OK, Json(json!({ "public_path": public_path }))).into_response()
 }
@@ -1135,6 +1302,21 @@ pub(super) async fn admin_files_preview_log_handler(
         stage = %body.stage,
         message = %body.message,
         "files preview client error"
+    );
+    (StatusCode::NO_CONTENT, ()).into_response()
+}
+
+// SHARE_V1d: 公開分享頁的用戶端回報端點（免登入）。分享頁把「魔數、分支、錯誤」
+// POST 進來，後台以 warn 顯示，用於一次性定位預覽問題。不驗證 session。
+pub(super) async fn public_share_log_handler(
+    Json(body): Json<PreviewLogRequest>,
+) -> Response {
+    tracing::warn!(
+        path = %body.path,
+        ext = %body.ext,
+        stage = %body.stage,
+        message = %body.message,
+        "share page client report"
     );
     (StatusCode::NO_CONTENT, ()).into_response()
 }
@@ -1215,7 +1397,7 @@ const SHARE_PAGE: &str = r#"<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
-<link rel="stylesheet" href="/pub/static/css/share.css?v=sharev3">
+<link rel="stylesheet" href="/pub/static/css/share.css?v=sharev6">
 <meta id="share-ext" content="__EXTATTR__">
 <meta id="share-raw" content="__RAWATTR__">
 <meta id="share-office" content="__OFFICEATTR__">
@@ -1224,7 +1406,8 @@ __SCRIPTS__
 <body>
 <header><span class="t">__TITLE__</span><a class="dl" href="__DLATTR__">下載</a></header>
 <div id="stage"><div class="msg">載入中…</div></div>
-<script src="/pub/static/js/share-preview.js?v=sharev3"></script>
+<script src="/pub/static/js/pdf.min.js?v=sharev6"></script>
+<script src="/pub/static/js/share-preview.js?v=sharev6"></script>
 </body>
 </html>"#;
 
@@ -1244,6 +1427,10 @@ pub(super) async fn public_share_preview_handler(
     if !verify_office_sig(&path, exp, &sig) {
         tracing::warn!(path = %path, exp, "pub share rejected: bad signature");
         return (StatusCode::FORBIDDEN, "分享連結無效").into_response();
+    }
+    if is_share_revoked(&path, exp as i64) {
+        tracing::warn!(path = %path, exp, "pub share rejected: revoked");
+        return (StatusCode::FORBIDDEN, "分享連結已撤銷").into_response();
     }
     let Some(rel) = safe_relative_path(&path).filter(|p| !p.as_os_str().is_empty()) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
@@ -1287,7 +1474,7 @@ pub(super) async fn public_share_preview_handler(
     let office_src = format!("/pub/office?path={}&exp={embed_exp}&sig={embed_sig}", pct(&rel_str));
     let is_modern_office = ["docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf"].contains(&ext.as_str());
     let scripts = if is_modern_office {
-        "<script src=\"/pub/static/js/jszip.min.js?v=sharev3\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev3\"></script>"
+        "<script src=\"/pub/static/js/jszip.min.js?v=sharev6\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev6\"></script>"
     } else {
         ""
     };
@@ -1319,7 +1506,7 @@ pub(super) async fn public_share_preview_handler(
     h.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
-            "default-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com; connect-src 'self'; font-src 'self'",
+            "default-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com; connect-src 'self'; font-src 'self'; worker-src 'self' blob:",
         ),
     );
     res

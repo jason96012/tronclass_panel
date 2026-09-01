@@ -36,6 +36,10 @@ pub(super) const DOMPURIFY_JS: &str = include_str!("static/js/dompurify.min.js")
 pub(super) const TRUSTED_TYPES_INIT_JS: &str = include_str!("static/js/trusted-types-init.js");
 pub(super) const JSZIP_MIN_JS: &str = include_str!("static/js/jszip.min.js");
 pub(super) const OFFICE_VIEW_JS: &str = include_str!("static/js/office-view.js");
+pub(super) const QR_CODE_MIN_JS: &str = include_str!("static/js/qrcode.min.js");
+// SHARE_ADMIN_V1: 分享連結管理頁（管理員專用）與其前端。
+pub(super) const SHARES_HTML: &str = include_str!("static/shares.html");
+pub(super) const SHARES_ADMIN_JS: &str = include_str!("static/js/shares-admin.js");
 // SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS（符合 CSP，不用 inline）。
 pub(super) const SHARE_PREVIEW_JS: &str = include_str!("static/js/share-preview.js");
 pub(super) const SHARE_CSS: &str = include_str!("static/css/share.css");
@@ -259,6 +263,25 @@ pub(super) async fn admin_files_page_handler(
     html_page_response(&headers, inject_files_office_assets(&html))
 }
 
+// SHARE_ADMIN_V1: 分享連結管理頁（僅管理員）。列出所有已發連結、可撤銷。
+pub(super) async fn admin_shares_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return admin_login_redirect("/admin/shares");
+    };
+    if !session.is_admin {
+        return (StatusCode::FORBIDDEN, "僅管理員可存取").into_response();
+    }
+    if session.must_change_password {
+        return must_change_password_redirect();
+    }
+    html_page_response(&headers, SHARES_HTML.to_string())
+}
+
 // PREVIEW_ENGINES_V1: 只在「雲端硬碟」頁注入 PDF.js（同源 'self'，合法於 CSP），
 // 不要無差別注入到每個 admin 頁面。
 // 預覽引擎：PDF/Office(轉PDF後) → PDF.js；Office 未轉時 → Microsoft Office Online。
@@ -266,7 +289,7 @@ pub(super) fn inject_files_office_assets(html: &str) -> String {
     const OFFICE_ASSETS: &str =
         // 版本號必須隨內容更新：static_assets.rs 對靜態檔下
         // `max-age=604800, immutable`，不換 query string 瀏覽器會沿用舊檔一週。
-        r#"<script src="/admin/static/js/jszip.min.js?v=officeview6"></script><script src="/admin/static/js/office-view.js?v=officeview10"></script><script src="/admin/static/js/pdf.min.js?v=pdfjs1"></script>"#;
+        r#"<script src="/admin/static/js/jszip.min.js?v=officeview6"></script><script src="/admin/static/js/office-view.js?v=officeview10"></script><script src="/admin/static/js/pdf.min.js?v=pdfjs1"></script><script src="/admin/static/js/qrcode.min.js?v=qrshare1"></script>"#;
     // OFFICE_INJECT_GUARD_V1: 防重複注入必須用「真正的 <script src> 標籤」，
     // 不能用裸檔名子字串（files.html 註解也會提到檔名，會讓 guard 永遠成立）。
     if html.contains(r#"src="/admin/static/js/jszip.min.js"#) {

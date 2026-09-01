@@ -1035,6 +1035,16 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/js/office-view.js",
             get(static_assets::admin_office_view_js_handler),
         )
+        // QR_SHARE_V1
+        .route(
+            "/admin/static/js/qrcode.min.js",
+            get(static_assets::admin_qrcode_js_handler),
+        )
+        // SHARE_ADMIN_V1
+        .route(
+            "/admin/static/js/shares-admin.js",
+            get(static_assets::admin_shares_admin_js_handler),
+        )
         // PDFJS_PREVIEW_V1
         .route(
             "/admin/static/js/pdf.min.js",
@@ -1129,6 +1139,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/mock", get(mock::admin_mock_page_handler))
         // FILES_NATIVE_V1: 廢除 FileBrowser，/admin/files 改服務同源教材雲端硬碟頁。
         .route("/admin/files", get(pages::admin_files_page_handler))
+        // SHARE_ADMIN_V1
+        .route("/admin/shares", get(pages::admin_shares_page_handler))
+        .route("/admin/api/shares", get(files::admin_shares_list_handler))
+        .route("/admin/api/shares/revoke", post(files::admin_shares_revoke_handler))
         .route(
             "/.well-known/openid-configuration",
             get(oidc::discovery_handler),
@@ -1203,6 +1217,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/pub/office", get(files::public_office_file_handler))
         // SHARE_V1: 免登入分享預覽頁＋其所需的公開 viewer 靜態檔。
         .route("/pub/share", get(files::public_share_preview_handler))
+        .route("/pub/preview-log", post(files::public_share_log_handler))
         .route(
             "/pub/static/js/jszip.min.js",
             get(static_assets::admin_jszip_js_handler),
@@ -1218,6 +1233,14 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/pub/static/css/share.css",
             get(static_assets::admin_share_css_handler),
+        )
+        .route(
+            "/pub/static/js/pdf.min.js",
+            get(static_assets::admin_pdf_js_handler),
+        )
+        .route(
+            "/pub/static/js/pdf.worker.min.js",
+            get(static_assets::admin_pdf_worker_js_handler),
         )
         .route(
             "/admin/api/files/upload",

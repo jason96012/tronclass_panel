@@ -1015,6 +1015,7 @@
         <button id="importHere" class="button secondary" type="button" title="從 iClass 自動下載當學期教材">⬇️ 匯入 iClass 教材</button>
         <button id="uploadHere" class="button primary" type="button">上傳檔案</button>
         <button id="mkdirHere" class="button secondary" type="button">新增資料夾</button>
+        <button id="manageShares" class="button secondary manage-shares-btn" type="button" title="管理所有分享連結" style="display:none">🔗 管理分享連結</button>
       </div>
     </div>
 
@@ -1846,22 +1847,55 @@
   // SHARE_V1: 分享按鈕＝向後端核發「免登入、可預覽」的公開連結（7 天時效），
   // 優先用 Web Share API 分享該連結（手機可傳 LINE/訊息），否則複製到剪貼簿。
   // 連結指向 /pub/share 預覽頁，不是下載頁；對方不用登入即可預覽。
+  // QR_SHARE_V1: 按「分享」→ 彈窗顯示「分享連結 + QR code」，可複製或掃描。
   async function shareFile(path){
-    const f = files.find(x => x.path === path) || { path, name: path };
-    const name = f.name || path;
     let link = null;
     try {
       const res = await fetch('/admin/api/files/share-link?path=' + encodeURIComponent(path), { cache: 'no-store' });
       if (res.ok) { const j = await res.json(); if (j && j.public_path) link = location.origin + j.public_path; }
     } catch (_) {}
     if (!link) { toast('無法產生分享連結'); return; }
+    openShareModal(link);
+  }
+
+  // TRUSTED_TYPES_V1: 後台 CSP require-trusted-types-for 'script'，innerHTML 需經
+  // 允許清單內的 'default' policy，否則拋錯。
+  var __TT = null;
+  try { if (window.trustedTypes) __TT = trustedTypes.createPolicy('default', { createHTML: function(s){return s;} }); } catch (e) { __TT = null; }
+  function setHTMLSafe(el, html) { if (__TT) el.innerHTML = __TT.createHTML(html); else el.innerHTML = html; }
+
+  function openShareModal(link){
+    const old = document.getElementById('share-modal'); if (old) old.remove();
+    const ov = document.createElement('div'); ov.id = 'share-modal';
+    ov.setAttribute('style','position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99999;padding:16px;');
+    const box = document.createElement('div');
+    box.setAttribute('style','background:#fff;color:#111;border-radius:14px;max-width:420px;width:100%;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.35);text-align:center;');
+    setHTMLSafe(box,
+      '<div style="font-size:16px;font-weight:600;margin-bottom:6px;">分享連結</div>'
+      + '<div id="share-qr" style="display:flex;justify-content:center;margin:10px 0;"></div>'
+      + '<div style="font-size:11px;color:#888;margin-bottom:6px;">免登入可預覽 · 7 天有效</div>'
+      + '<div id="share-link" style="word-break:break-all;font-size:12px;color:#555;max-height:84px;overflow:auto;background:#f5f5f5;border-radius:8px;padding:8px;text-align:left;"></div>'
+      + '<div style="display:flex;gap:8px;justify-content:center;margin-top:14px;">'
+      + '<button id="share-copy" type="button" style="padding:8px 16px;border:none;border-radius:8px;background:#2563eb;color:#fff;font-size:13px;cursor:pointer;">複製連結</button>'
+      + '<button id="share-close" type="button" style="padding:8px 16px;border:1px solid #ccc;border-radius:8px;background:#fff;color:#333;font-size:13px;cursor:pointer;">關閉</button>'
+      + '</div>');
+    ov.appendChild(box);
+    document.body.appendChild(ov);
+    document.getElementById('share-link').textContent = link;
+    const qrBox = document.getElementById('share-qr');
     try {
-      if (navigator.share) { await navigator.share({ title: name, text: name, url: link }); return; }
-    } catch (err) {
-      if (err && err.name === 'AbortError') return; // 使用者取消
-    }
-    try { await navigator.clipboard.writeText(link); toast('已複製分享連結（免登入可預覽，7 天有效）'); }
-    catch (_) { window.prompt('複製分享連結：', link); }
+      if (typeof qrcode === 'function') {
+        const qr = qrcode(0, 'M'); qr.addData(link); qr.make();
+        setHTMLSafe(qrBox, qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true }));
+        const svg = qrBox.querySelector('svg'); if (svg) { svg.style.width = '220px'; svg.style.height = '220px'; }
+      } else { qrBox.textContent = '（QR 需 qrcode.min.js）'; }
+    } catch (_) { qrBox.textContent = 'QR 產生失敗'; }
+    document.getElementById('share-copy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(link); toast('已複製分享連結'); }
+      catch (_) { window.prompt('複製分享連結：', link); }
+    });
+    document.getElementById('share-close').addEventListener('click', () => ov.remove());
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
   }
 
   async function preview(path){
@@ -2240,6 +2274,21 @@ html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar b
   }
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
+})();
+</script>
+<!-- SHARE_ADMIN_V1: 電腦版「管理分享連結」按鈕（僅管理員可見，手機隱藏） -->
+<style id="manageSharesCss">@media (max-width:768px){.manage-shares-btn{display:none!important}}</style>
+<script id="manageSharesInit">
+(function(){
+  function init(){
+    var btn = document.getElementById('manageShares'); if(!btn) return;
+    btn.addEventListener('click', function(){ location.href = '/admin/shares'; });
+    fetch('/admin/api/shares', { credentials:'same-origin', cache:'no-store' })
+      .then(function(r){ if(r.ok){ btn.style.display = ''; } })
+      .catch(function(){});
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
 })();
 </script>
 </body>
