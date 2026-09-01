@@ -395,8 +395,13 @@
     .file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
     .file-card{border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden;transition:all .15s ease;display:flex;flex-direction:column}
     .file-card:hover{box-shadow:var(--shadow);transform:translateY(-1px);border-color:var(--line2)}
-    .file-thumb{height:88px;background:linear-gradient(180deg,var(--surface2),var(--surface));border-bottom:1px solid var(--line);display:grid;place-items:center;overflow:hidden;position:relative}
+    /* CARD_CLEAN_V1: 卡片頭部＝縮圖(48px)+資訊橫排，動作列整行於下，互不重疊。 */
+    .file-head{display:flex;align-items:center;gap:12px;padding:12px;flex:1;min-width:0}
+    .file-thumb{flex:0 0 48px;width:48px;height:48px;background:linear-gradient(180deg,var(--surface2),var(--surface));display:grid;place-items:center;overflow:hidden;position:relative;border-radius:12px}
     .file-badge{padding:4px 10px;border-radius:6px;background:var(--surface3);color:var(--text);font-weight:800;font-size:12px;text-transform:uppercase}
+    /* BADGE_INLINE_V1: 左側色塊縮圖 + 檔名欄內的小副檔名標籤。 */
+    .file-thumb-ph{width:100%;height:100%;background:linear-gradient(135deg,var(--soft),var(--soft2));border-radius:12px;display:block}
+    .file-chip{display:inline-block;margin:0 0 4px;padding:2px 8px;border-radius:6px;background:var(--soft2);color:var(--muted);font-weight:800;font-size:10px;text-transform:uppercase;letter-spacing:.02em}
     /* THUMB_IMG_V1: 圖片檔直接顯示真實縮圖（object-fit 裁切），不再只放文字徽章，
        解決手機版圖示「跑掉」的問題。 */
     .file-thumb-img{width:100%;height:100%;object-fit:cover;display:block}
@@ -404,7 +409,7 @@
     body.tron-preview-open #mobilebar,
     body.tron-preview-open .mobilebar,
     body.tron-preview-open #filesMobileNav{display:none!important}
-    .file-info{padding:10px 12px;flex:1}
+    .file-info{flex:1;min-width:0;padding:0}
     .file-name{font-weight:750;font-size:13px;line-height:1.35;min-height:36px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
     .file-meta{margin-top:4px;color:var(--muted);font-size:11px;line-height:1.4}
     .file-actions{display:flex;align-items:center;gap:4px;padding:8px 10px;border-top:1px solid var(--line);background:var(--surface2);overflow:auto}
@@ -478,7 +483,7 @@
       .brand-sub{display:none}
       .main{grid-template-columns:1fr;min-height:auto}
       .sidebar{display:none}
-      .content{padding:12px 10px calc(80px + var(--safe))}
+      .content{padding:12px 10px calc(120px + var(--safe))}
       .folder-grid,.file-grid{grid-template-columns:1fr}
       .file-thumb{height:64px}
       
@@ -820,7 +825,8 @@
   #refresh{display:none!important}
   #dashboardLink{min-height:40px!important;padding:0 14px!important;border-radius:14px!important}
 
-  .content{padding:12px 12px calc(118px + env(safe-area-inset-bottom,0px))!important}
+  /* MOBILE_NAV_CLEAR_V1: 底部留白大於 floating 導覽列高度，最後卡片按鈕可捲到其上方。 */
+  .content{padding:12px 12px calc(150px + env(safe-area-inset-bottom,0px))!important}
   .content-head{
     display:grid!important;
     gap:8px!important;
@@ -865,50 +871,29 @@
     grid-template-columns:1fr!important;
     gap:10px!important;
   }
-  .file-card{
-    display:grid!important;
-    grid-template-columns:56px 1fr!important;
-    grid-template-rows:auto auto!important;
-    align-items:center;
-    border-radius:18px!important;
-    overflow:hidden;
-  }
-  .file-thumb{
-    grid-row:1;
-    height:56px!important;
-    width:56px!important;
-    border:0!important;
-    border-radius:14px;
-    margin:10px 0 10px 10px;
-  }
-  .file-info{
-    grid-row:1;
-    padding:10px 12px 6px 8px!important;
-    min-width:0;
-  }
-  .file-name{
-    font-size:16px!important;
-    font-weight:800!important;
-    line-height:1.35!important;
-    min-height:0!important;
-    -webkit-line-clamp:2;
-  }
-  .file-meta{font-size:12px!important;margin-top:4px}
+  /* CARD_CLEAN_V1（mobile）：頭部橫排、動作列整行，四個按鈕同一行。 */
+  .file-card{display:flex!important;flex-direction:column!important;border-radius:18px!important}
+  .file-head{padding:14px 14px 10px!important}
+  .file-thumb{flex:0 0 48px!important;width:48px!important;height:48px!important;border-radius:14px!important;margin:0!important}
+  .file-info{padding:0!important}
+  .file-name{font-size:16px!important;font-weight:800!important;line-height:1.35!important;min-height:0!important}
+  .file-meta{font-size:12px!important;margin-top:4px;color:var(--muted)}
   .file-actions{
-    grid-column:1/-1;
     display:grid!important;
-    grid-template-columns:repeat(auto-fit,minmax(88px,1fr))!important;
-    gap:8px!important;
-    padding:8px 10px 10px!important;
-    overflow:visible!important;
+    grid-template-columns:repeat(auto-fit,minmax(72px,1fr))!important;
+    gap:6px!important;
+    padding:4px 12px 12px!important;
+    border-top:1px solid var(--line);
   }
   .file-actions a,.file-actions button{
     min-height:44px!important;
-    font-size:14px!important;
+    font-size:13px!important;
     font-weight:800!important;
     border-radius:12px!important;
-    padding:0 8px!important;
+    padding:0 4px!important;
     width:100%;
+    min-width:0;
+    white-space:nowrap;
     justify-content:center;
   }
   .empty{
@@ -1404,14 +1389,20 @@
 
   function fileCard(f){
     const e = ext(f);
-    const thumb = IMAGE_PREVIEW_EXTS.includes(e)
+    const isImg = IMAGE_PREVIEW_EXTS.includes(e);
+    // BADGE_INLINE_V1: 非圖片檔左側只放色塊縮圖，副檔名改以小標籤放在檔名欄內，
+    // 不再用左側大格放徽章，徹底避免遮擋檔名。
+    const thumb = isImg
       ? '<img class="file-thumb-img" src="' + pv(f.path) + '" alt="" loading="lazy">'
-      : '<div class="file-badge">' + esc(e || 'FILE') + '</div>';
+      : '<div class="file-thumb-ph"></div>';
+    const chip = isImg ? '' : '<span class="file-chip">' + esc(e || 'FILE') + '</span>';
     return '<div class="file-card">' +
-      '<div class="file-thumb">' + thumb + '</div>' +
-      '<div class="file-info">' +
-        '<div class="file-name">' + esc(f.name || f.path) + '</div>' +
-        '<div class="file-meta">' + esc(f.modified || '-') + ' ｜ ' + esc(f.size_label || sizeLabel(f.size)) + '</div>' +
+      '<div class="file-head">' +
+        '<div class="file-thumb">' + thumb + '</div>' +
+        '<div class="file-info">' + chip +
+          '<div class="file-name">' + esc(f.name || f.path) + '</div>' +
+          '<div class="file-meta">' + esc(f.modified || '-') + ' ｜ ' + esc(f.size_label || sizeLabel(f.size)) + '</div>' +
+        '</div>' +
       '</div>' +
       '<div class="file-actions">' +
         '<a class="button secondary download-link" href="' + dl(f.path) + '">下載</a>' +
@@ -2297,6 +2288,36 @@ html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar b
   else init();
 })();
 </script>
+<!-- MOBILE_NAV_AUTOHIDE_V1: 往下捲自動收起底部導覽列、往上捲出現，
+     避免 floating 導覽列永遠蓋住卡片操作按鈕。 -->
+<script id="mobileNavAutoHideV1">
+(function(){
+  function setup(){
+    var bar = document.getElementById('mobilebar'); if(!bar) return;
+    bar.style.transition = 'transform .25s ease';
+    var last = 0;
+    function apply(y){
+      var down = y > last + 4;
+      var up = y < last - 4;
+      if(down && y > 80){ bar.style.transform = 'translateY(calc(100% + 24px))'; }
+      else if(up){ bar.style.transform = ''; }
+      if(down || up) last = y;
+    }
+    window.addEventListener('scroll', function(){ apply(window.scrollY || document.documentElement.scrollTop); }, {passive:true});
+    var c = document.querySelector('.content');
+    if(c) c.addEventListener('scroll', function(){ apply(c.scrollTop); }, {passive:true});
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setup);
+  else setup();
+})();
+</script>
+<!-- MOBILE_BOTTOM_CLEAR_V2: 放在最後、最高優先，底部留白大於導覽列+操作列高度，
+     捲到底時「下載/預覽/分享/刪除」剛好落在導覽列上方、不被擋。 -->
+<style id="mobileBottomClearV2">
+@media(max-width:820px){
+  .content{padding-bottom:calc(230px + env(safe-area-inset-bottom,0px))!important}
+}
+</style>
 </body>
 </html>
 
