@@ -137,11 +137,11 @@ async fn get_client(
     let (auth_client, session) = match crate::auth::AuthClient::new(account).await {
         Ok(v) => v,
         Err(e) => {
-            return (
+            return Err((
                 StatusCode::BAD_GATEWAY,
                 Json(json!({ "error": format!("Tronclass 登入失敗：{e}") })),
             )
-                .into_response();
+                .into_response());
         }
     };
     let _ = state
@@ -274,7 +274,7 @@ pub(super) async fn list_handler(
         Ok(c) => c,
         Err(resp) => return resp,
     };
-    let base_url = account.base_url();
+    let base_url = account.base_url().to_string();
 
     let courses_url = format!("{base_url}/api/my-courses");
     let Ok(resp) = client.get(&courses_url).send().await else {
