@@ -170,6 +170,52 @@ pub(super) async fn admin_shares_admin_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::SHARES_ADMIN_JS)
 }
 
+// DASH_ASSET_V1: dashboard 資產化模組。
+pub(super) async fn admin_dashboard_particles_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_PARTICLES_JS)
+}
+pub(super) async fn admin_dashboard_login_card_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_LOGIN_CARD_JS)
+}
+pub(super) async fn admin_dashboard_live_alerts_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_LIVE_ALERTS_JS)
+}
+// DASH_ASSET_V2
+pub(super) async fn admin_dashboard_permissions_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_PERMISSIONS_JS)
+}
+pub(super) async fn admin_dashboard_cookie_badge_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_COOKIE_BADGE_JS)
+}
+pub(super) async fn admin_dashboard_modal_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_MODAL_JS)
+}
+// DASH_ASSET_V3
+pub(super) async fn admin_dashboard_header_more_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_HEADER_MORE_JS)
+}
+pub(super) async fn admin_dashboard_more_buttons_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_MORE_BUTTONS_JS)
+}
+pub(super) async fn admin_dashboard_more_links_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_MORE_LINKS_JS)
+}
+pub(super) async fn admin_dashboard_more_pages_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_MORE_PAGES_JS)
+}
+pub(super) async fn admin_dashboard_notify_purge_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_NOTIFY_PURGE_JS)
+}
+pub(super) async fn admin_dashboard_desktop_size_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_DESKTOP_SIZE_JS)
+}
+pub(super) async fn admin_dashboard_header_spacious_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_HEADER_SPACIOUS_JS)
+}
+pub(super) async fn admin_dashboard_more_actions_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_MORE_ACTIONS_JS)
+}
+
 // SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS。
 pub(super) async fn admin_share_preview_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::SHARE_PREVIEW_JS)

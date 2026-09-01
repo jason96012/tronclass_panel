@@ -831,25 +831,70 @@ pub(super) async fn admin_files_preview_log_handler(
         return unauthorized_response();
     };
     tracing::warn!(
-        path = %body.path,
-        ext = %body.ext,
-        stage = %body.stage,
-        message = %body.message,
+        path = %sanitize_log_field(&body.path, 300),
+        ext = %sanitize_log_field(&body.ext, 16),
+        stage = %sanitize_log_field(&body.stage, 64),
+        message = %sanitize_log_field(&body.message, 500),
         "files preview client error"
     );
     (StatusCode::NO_CONTENT, ()).into_response()
 }
 
+// PUB_RATE_LIMIT_V1: 公開端點（/pub/share、/pub/office、/pub/preview-log）每 IP
+// 固定窗限流，純防灌爆/DoS；HMAC 簽章本身無法暴力破解。
+static PUB_RATE_LIMIT: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, (u64, u32)>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn pub_rate_exceeded(ip: &str, limit: u32, window_secs: u64) -> bool {
+    let now = office_now_secs();
+    let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
+        return false;
+    };
+    if map.len() > 4096 {
+        map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
+    }
+    let entry = map.entry(ip.to_string()).or_insert((now, 0));
+    if now.saturating_sub(entry.0) >= window_secs {
+        *entry = (now, 1);
+        false
+    } else {
+        entry.1 += 1;
+        entry.1 > limit
+    }
+}
+
+fn too_many_requests_response() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(json!({ "error": "too many requests" })),
+    )
+        .into_response()
+}
+
+// LOG_SANITIZE_V1: 日誌欄位過濾控制字元（含 \n \r \t）並截斷，防 console 注入/灌爆。
+fn sanitize_log_field(value: &str, max_chars: usize) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(max_chars)
+        .collect()
+}
+
 // SHARE_V1d: 公開分享頁的用戶端回報端點（免登入）。分享頁把「魔數、分支、錯誤」
 // POST 進來，後台以 warn 顯示，用於一次性定位預覽問題。不驗證 session。
 pub(super) async fn public_share_log_handler(
+    ClientIp(ip): ClientIp,
     Json(body): Json<PreviewLogRequest>,
 ) -> Response {
+    if pub_rate_exceeded(&ip, 10, 60) {
+        return too_many_requests_response();
+    }
     tracing::warn!(
-        path = %body.path,
-        ext = %body.ext,
-        stage = %body.stage,
-        message = %body.message,
+        path = %sanitize_log_field(&body.path, 300),
+        ext = %sanitize_log_field(&body.ext, 16),
+        stage = %sanitize_log_field(&body.stage, 64),
+        message = %sanitize_log_field(&body.message, 500),
         "share page client report"
     );
     (StatusCode::NO_CONTENT, ()).into_response()
@@ -874,8 +919,12 @@ pub(super) struct PublicOfficeQuery {
 
 /// 公開端點：驗證簽章與時效後串流原始檔案（供微軟檢視器抓取）。不驗證 session。
 pub(super) async fn public_office_file_handler(
+    ClientIp(ip): ClientIp,
     Query(query): Query<PublicOfficeQuery>,
 ) -> Response {
+    if pub_rate_exceeded(&ip, 120, 60) {
+        return too_many_requests_response();
+    }
     let (Some(path), Some(exp), Some(sig)) =
         (query.path.clone(), query.exp, query.sig.clone())
     else {
@@ -947,8 +996,12 @@ __SCRIPTS__
 
 /// 公開分享預覽頁：驗證簽章與時效後回傳一個免登入的預覽 HTML。不驗證 session。
 pub(super) async fn public_share_preview_handler(
+    ClientIp(ip): ClientIp,
     Query(query): Query<PublicOfficeQuery>,
 ) -> Response {
+    if pub_rate_exceeded(&ip, 120, 60) {
+        return too_many_requests_response();
+    }
     let (Some(path), Some(exp), Some(sig)) =
         (query.path.clone(), query.exp, query.sig.clone())
     else {

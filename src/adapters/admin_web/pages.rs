@@ -40,6 +40,23 @@ pub(super) const QR_CODE_MIN_JS: &str = include_str!("static/js/qrcode.min.js");
 // SHARE_ADMIN_V1: 分享連結管理頁（管理員專用）與其前端。
 pub(super) const SHARES_HTML: &str = include_str!("static/shares.html");
 pub(super) const SHARES_ADMIN_JS: &str = include_str!("static/js/shares-admin.js");
+// DASH_ASSET_V1: dashboard 單體 inline JS 資產化（粒子/登入卡/SSE+提示音）。
+pub(super) const DASHBOARD_PARTICLES_JS: &str = include_str!("static/js/dashboard-particles.js");
+pub(super) const DASHBOARD_LOGIN_CARD_JS: &str = include_str!("static/js/dashboard-login-card.js");
+pub(super) const DASHBOARD_LIVE_ALERTS_JS: &str = include_str!("static/js/dashboard-live-alerts.js");
+// DASH_ASSET_V2: 第二批（行動端權限／校務 Cookie 徽章／彈窗顯示）。
+pub(super) const DASHBOARD_PERMISSIONS_JS: &str = include_str!("static/js/dashboard-permissions.js");
+pub(super) const DASHBOARD_COOKIE_BADGE_JS: &str = include_str!("static/js/dashboard-cookie-badge.js");
+pub(super) const DASHBOARD_MODAL_JS: &str = include_str!("static/js/dashboard-modal.js");
+// DASH_ASSET_V3: 第三批（標頭／MORE 選單系列）。
+pub(super) const DASHBOARD_HEADER_MORE_JS: &str = include_str!("static/js/dashboard-header-more.js");
+pub(super) const DASHBOARD_MORE_BUTTONS_JS: &str = include_str!("static/js/dashboard-more-buttons.js");
+pub(super) const DASHBOARD_MORE_LINKS_JS: &str = include_str!("static/js/dashboard-more-links.js");
+pub(super) const DASHBOARD_MORE_PAGES_JS: &str = include_str!("static/js/dashboard-more-pages.js");
+pub(super) const DASHBOARD_NOTIFY_PURGE_JS: &str = include_str!("static/js/dashboard-notify-purge.js");
+pub(super) const DASHBOARD_DESKTOP_SIZE_JS: &str = include_str!("static/js/dashboard-desktop-size.js");
+pub(super) const DASHBOARD_HEADER_SPACIOUS_JS: &str = include_str!("static/js/dashboard-header-spacious.js");
+pub(super) const DASHBOARD_MORE_ACTIONS_JS: &str = include_str!("static/js/dashboard-more-actions.js");
 // SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS（符合 CSP，不用 inline）。
 pub(super) const SHARE_PREVIEW_JS: &str = include_str!("static/js/share-preview.js");
 pub(super) const SHARE_CSS: &str = include_str!("static/css/share.css");

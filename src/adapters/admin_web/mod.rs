@@ -17,7 +17,7 @@ use axum::{
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
     response::{
         sse::{Event as SseEvent, KeepAlive, Sse},
-        Html, IntoResponse, Redirect, Response,
+        Html, IntoResponse, Response,
     },
     routing::{get, post},
     Json, Router,
@@ -49,6 +49,7 @@ mod actions;
 mod auth;
 mod blacklist;
 mod class_reminder;
+mod bulletins;
 mod detection_schedule;
 mod files;
 mod materials_import;
@@ -1045,6 +1046,65 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/js/shares-admin.js",
             get(static_assets::admin_shares_admin_js_handler),
         )
+        // DASH_ASSET_V1
+        .route(
+            "/admin/static/js/dashboard-particles.js",
+            get(static_assets::admin_dashboard_particles_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-login-card.js",
+            get(static_assets::admin_dashboard_login_card_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-live-alerts.js",
+            get(static_assets::admin_dashboard_live_alerts_js_handler),
+        )
+        // DASH_ASSET_V2
+        .route(
+            "/admin/static/js/dashboard-permissions.js",
+            get(static_assets::admin_dashboard_permissions_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-cookie-badge.js",
+            get(static_assets::admin_dashboard_cookie_badge_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-modal.js",
+            get(static_assets::admin_dashboard_modal_js_handler),
+        )
+        // DASH_ASSET_V3
+        .route(
+            "/admin/static/js/dashboard-header-more.js",
+            get(static_assets::admin_dashboard_header_more_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-more-buttons.js",
+            get(static_assets::admin_dashboard_more_buttons_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-more-links.js",
+            get(static_assets::admin_dashboard_more_links_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-more-pages.js",
+            get(static_assets::admin_dashboard_more_pages_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-notify-purge.js",
+            get(static_assets::admin_dashboard_notify_purge_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-desktop-size.js",
+            get(static_assets::admin_dashboard_desktop_size_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-header-spacious.js",
+            get(static_assets::admin_dashboard_header_spacious_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-more-actions.js",
+            get(static_assets::admin_dashboard_more_actions_js_handler),
+        )
         // PDFJS_PREVIEW_V1
         .route(
             "/admin/static/js/pdf.min.js",
@@ -1134,6 +1194,9 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/detection-schedule",
             get(detection_schedule::page_handler),
         )
+        // BULLETINS_V1: 課程公告頁＋API。
+        .route("/admin/bulletins", get(bulletins::page_handler))
+        .route("/admin/api/bulletins", get(bulletins::list_handler))
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
