@@ -279,7 +279,9 @@ pub(super) async fn admin_shares_page_handler(
     if session.must_change_password {
         return must_change_password_redirect();
     }
-    html_page_response(&headers, SHARES_HTML.to_string())
+    // THEME_AWARE_V1: 套用與 dashboard 相同的主題資產（theme.css + app-settings.js），
+    // 讓分享管理頁背景與深淺色設定與主介面一致。
+    html_page_response(&headers, inject_theme(SHARES_HTML))
 }
 
 // PREVIEW_ENGINES_V1: 只在「雲端硬碟」頁注入 PDF.js（同源 'self'，合法於 CSP），

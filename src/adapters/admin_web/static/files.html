@@ -1100,9 +1100,9 @@
     <svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z"></path></svg>
     <span>資料夾</span>
   </button>
-  <button id="mRefresh" type="button">
-    <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-14.6 4.6"></path><path d="M4 12A8 8 0 0 1 18.6 7.4"></path><path d="M18 3v5h-5"></path><path d="M6 21v-5h5"></path></svg>
-    <span>重新整理</span>
+  <button id="mRefresh" type="button" aria-label="連結管理">
+    <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+    <span>連結管理</span>
   </button>
 </nav>
 
@@ -1970,7 +1970,13 @@
     if (q('mImportTop')) q('mImportTop').onclick = importMaterials; // MOBILE_IMPORT_TOP_V1
     if (q('mkdirHere')) q('mkdirHere').onclick = mkdir;
     if (q('refresh')) q('refresh').onclick = loadFiles;
-    if (q('mRefresh')) q('mRefresh').onclick = loadFiles;
+    // SHARE_ADMIN_V1（手機）：底部「連結管理」→ /admin/shares，僅管理員顯示。
+    if (q('mRefresh')) {
+      q('mRefresh').onclick = function(){ location.href = withToken('/admin/shares'); };
+      fetch('/admin/api/shares', { credentials:'same-origin', cache:'no-store' })
+        .then(function(r){ if(!r.ok) q('mRefresh').style.display = 'none'; })
+        .catch(function(){ q('mRefresh').style.display = 'none'; });
+    }
     // MOBILE_FILES_BACK_BUTTON_V2: 頂欄「回上一頁」→ 上一層資料夾；底部「返回控制台」→ 控制台
     if (q('filesBackDashboardBtn')) q('filesBackDashboardBtn').onclick = driveHome;
     if (q('mDriveHome')) q('mDriveHome').onclick = () => location.href = withToken('/admin');
