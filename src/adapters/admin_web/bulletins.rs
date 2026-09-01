@@ -229,6 +229,7 @@ async fn fetch_all_bulletins(
                 .map(|mut b| {
                     if let Some(obj) = b.as_object_mut() {
                         obj.insert("_course_name".into(), json!(name));
+                        obj.insert("_course_id".into(), json!(id));
                     }
                     b
                 })
@@ -245,6 +246,62 @@ async fn fetch_all_bulletins(
 static BULLETINS_CACHE: once_cell::sync::Lazy<
     std::sync::Mutex<Option<(String, u64, Vec<Value>)>>,
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+// BULLETIN_READ_V1: 「已閱讀」每人獨立、全部帳號都讀過則全域刪除。
+// 存於 config/bulletin_reads.json（免改 DB schema）。
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct BulletinReadStore {
+    #[serde(default)]
+    reads: std::collections::HashMap<String, Vec<String>>,
+    #[serde(default)]
+    deleted: Vec<String>,
+}
+
+fn bulletin_reads_file() -> std::path::PathBuf {
+    std::path::Path::new("config/bulletin_reads.json").to_path_buf()
+}
+
+static BULLETIN_READ_STORE: once_cell::sync::Lazy<
+    std::sync::Mutex<BulletinReadStore>,
+> = once_cell::sync::Lazy::new(|| {
+    let mut store = BulletinReadStore::default();
+    if let Ok(text) = std::fs::read_to_string(bulletin_reads_file()) {
+        if let Ok(parsed) = serde_json::from_str::<BulletinReadStore>(&text) {
+            store = parsed;
+        }
+    }
+    std::sync::Mutex::new(store)
+});
+
+fn persist_bulletin_reads(store: &BulletinReadStore) {
+    let path = bulletin_reads_file();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string(store) {
+        if let Err(e) = std::fs::write(path, s) {
+            tracing::warn!("無法寫入 bulletin_reads.json：{e}");
+        }
+    }
+}
+
+/// 穩定 key：優先 Tronclass bulletin id，否則用 course+title+time 雜湊。
+fn bulletin_key(b: &Value) -> String {
+    let course_id = b.get("_course_id").and_then(|v| v.as_u64()).unwrap_or(0);
+    if let Some(id) = b
+        .get("id")
+        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+    {
+        return format!("c{course_id}-b{id}");
+    }
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    pick_str(b, &["title", "name", "subject"]).hash(&mut h);
+    pick_str(b, &["content", "body", "text", "description"]).hash(&mut h);
+    pick_ts(b).hash(&mut h);
+    format!("c{course_id}-h{}", h.finish())
+}
 
 pub(super) async fn list_handler(
     State(state): State<AdminWebState>,
@@ -309,15 +366,28 @@ pub(super) async fn list_handler(
 
     let raw = fetch_all_bulletins(client, base_url, courses).await;
 
+    let (deleted_set, read_by_me) = {
+        let store = BULLETIN_READ_STORE.lock().unwrap();
+        let me = session.account_id.clone();
+        let reads = store
+            .reads
+            .iter()
+            .map(|(k, v)| (k.clone(), v.contains(&me)))
+            .collect::<std::collections::HashMap<String, bool>>();
+        (store.deleted.clone(), reads)
+    };
+
     let items: Vec<Value> = raw
         .into_iter()
         .map(|b| {
+            let key = bulletin_key(&b);
             let course_name = b
                 .get("_course_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
             json!({
+                "key": key,
                 "course_name": course_name,
                 "title": pick_str(&b, &["title", "name", "subject"]),
                 "content": pick_str(&b, &["content", "body", "text", "description"]),
@@ -325,7 +395,12 @@ pub(super) async fn list_handler(
                 "time": pick_str(&b, &["publish_time", "published_at", "created_at", "create_time", "updated_at", "created"]),
                 "pinned": b.get("is_top").or_else(|| b.get("top")).or_else(|| b.get("pinned")).and_then(|v| v.as_bool()).unwrap_or(false),
                 "ts": pick_ts(&b),
+                "read": read_by_me.get(&key).copied().unwrap_or(false),
             })
+        })
+        .filter(|it| {
+            let k = it.get("key").and_then(|v| v.as_str()).unwrap_or_default();
+            !deleted_set.iter().any(|d| d.as_str() == k)
         })
         .collect();
 
@@ -334,4 +409,56 @@ pub(super) async fn list_handler(
     }
 
     (StatusCode::OK, Json(json!({ "items": items }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct BulletinReadRequest {
+    #[serde(default)]
+    key: String,
+}
+
+// BULLETIN_READ_V1: 標記已閱讀（每人獨立）；全部啟用帳號都讀過則全域刪除。
+pub(super) async fn read_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(body): Json<BulletinReadRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    let key = body.key.trim().to_string();
+    if key.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid key" })),
+        )
+            .into_response();
+    }
+
+    let enabled: Vec<String> = state
+        .accounts_db
+        .list()
+        .await
+        .map(|l| l.into_iter().filter(|a| a.enabled).map(|a| a.id).collect())
+        .unwrap_or_default();
+
+    let mut deleted_now = false;
+    if let Ok(mut store) = BULLETIN_READ_STORE.lock() {
+        let entry = store.reads.entry(key.clone()).or_insert_with(Vec::new);
+        if !entry.contains(&session.account_id) {
+            entry.push(session.account_id.clone());
+        }
+        if !enabled.is_empty()
+            && enabled.iter().all(|id| entry.contains(id))
+            && !store.deleted.contains(&key)
+        {
+            store.deleted.push(key.clone());
+            deleted_now = true;
+        }
+        persist_bulletin_reads(&store);
+    }
+
+    (StatusCode::OK, Json(json!({ "ok": true, "deleted": deleted_now }))).into_response()
 }

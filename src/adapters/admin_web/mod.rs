@@ -1197,6 +1197,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // BULLETINS_V1: 課程公告頁＋API。
         .route("/admin/bulletins", get(bulletins::page_handler))
         .route("/admin/api/bulletins", get(bulletins::list_handler))
+        .route(
+            "/admin/api/bulletins/read",
+            post(bulletins::read_handler),
+        )
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))

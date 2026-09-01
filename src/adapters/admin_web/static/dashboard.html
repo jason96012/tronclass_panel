@@ -3627,6 +3627,18 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
       var tt=tabs.querySelector('.tab[data-view="timetable"]');
       if(tt)tt.insertAdjacentElement('afterend',hw); else tabs.appendChild(hw);
     }
+    // BULLETINS_TAB_V1: 「公告」分頁（教材旁），樣式同排程膠囊。
+    if(!document.getElementById('bulletinsTab')){
+      var bl=document.createElement('a');
+      bl.id='bulletinsTab';
+      bl.className='tab detection-schedule-desktop-link';
+      bl.href='/admin/bulletins';
+      bl.textContent='公告';
+      bl.setAttribute('aria-label','前往課程公告');
+      bl.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();location.assign('/admin/bulletins');});
+      var mt=tabs.querySelector('.tab[data-view="materials"]');
+      if(mt)mt.insertAdjacentElement('afterend',bl); else tabs.appendChild(bl);
+    }
   }
   function start(){ensure();try{new MutationObserver(ensure).observe(document.documentElement,{childList:true,subtree:true});}catch(_){}var count=0,timer=setInterval(function(){ensure();if(++count>=20)clearInterval(timer);},500);}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',start);else start();
