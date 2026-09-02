@@ -185,12 +185,24 @@ start_tunnel() {
   fi
 
   echo "[ptero-start] 啟動 Cloudflare Tunnel"
-  nohup ./cloudflared tunnel --no-autoupdate run --token "$token" > logs/cloudflared.log 2>&1 &
+  # CLOUDFLARED_LOG_APPEND_V1：這裡以前是 `> logs/cloudflared.log`（截斷）。
+  # watchdog 重啟時舊的 cloudflared 可能還活著且持有 offset 很大的 fd，
+  # 檔案一被截斷，舊行程接著在原 offset 寫入就會留下一段 NUL 空洞，
+  # 之後 `$(tail ...)` 就會噴「ignored null byte in input」。
+  # 改用 >>（O_APPEND）：多個寫入端都只會往檔尾追加，不會產生空洞。
+  # 檔案過大時才輪替，而且只在沒有存活的寫入端時才做。
+  if [[ -f logs/cloudflared.log ]]; then
+    _log_bytes="$(stat -c%s logs/cloudflared.log 2>/dev/null || echo 0)"
+    if [[ "$_log_bytes" =~ ^[0-9]+$ ]] && (( _log_bytes > ${CLOUDFLARE_LOG_MAX_BYTES:-5242880} )); then
+      mv -f logs/cloudflared.log logs/cloudflared.log.1 2>/dev/null || true
+    fi
+  fi
+  nohup ./cloudflared tunnel --no-autoupdate run --token "$token" >> logs/cloudflared.log 2>&1 &
   echo $! > logs/cloudflared.pid
   disown || true
   sleep 2
   echo "[ptero-start] cloudflared 最近 log："
-  tail -n 15 logs/cloudflared.log 2>/dev/null || true
+  tail -n 15 logs/cloudflared.log 2>/dev/null | tr -d '\000' || true
 }
 
 start_tunnel
@@ -754,7 +766,20 @@ watchdog_restart_tunnel() {
   if (( now - last < ${CLOUDFLARE_RESTART_BACKOFF_SECS:-30} )); then return; fi
   printf '%s\n' "$now" > logs/cloudflared-watchdog.last
   pid="$(cat logs/cloudflared.pid 2>/dev/null || true)"
-  [[ "$pid" =~ ^[0-9]+$ ]] && kill "$pid" 2>/dev/null || true
+  # CLOUDFLARED_LOG_APPEND_V1：一定要等舊行程真的結束再啟新的。
+  # 否則會有兩個 connector 同時跑，而且舊的還會繼續寫 log。
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.25
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "[watchdog] cloudflared $pid 未在 5 秒內結束，強制終止" >> logs/cloudflared-watchdog.log
+      kill -9 "$pid" 2>/dev/null || true
+      sleep 0.5
+    fi
+  fi
   echo "[watchdog] Cloudflare Tunnel connector 異常，重新啟動（$(date -Iseconds)）" >> logs/cloudflared-watchdog.log
   rm -f logs/cloudflared.pid
   start_tunnel
@@ -763,7 +788,8 @@ watchdog_restart_tunnel() {
 watchdog_check_tunnel_connector() {
   watchdog_pid_alive logs/cloudflared.pid || return 0
   local recent public_url
-  recent="$(tail -n 80 logs/cloudflared.log 2>/dev/null || true)"
+  # 舊檔案可能已經含有 NUL 空洞，讀取時直接濾掉，避免 bash 一直噴警告。
+  recent="$(tail -n 80 logs/cloudflared.log 2>/dev/null | tr -d '\000' || true)"
   if printf '%s\n' "$recent" | grep -Eiq 'connection refused|no connection|failed to serve|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error'; then
     watchdog_restart_tunnel
     return

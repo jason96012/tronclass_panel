@@ -317,9 +317,9 @@
       </div>
       <div class="btnrow">
         <button class="btn primary" id="addModelBtn" type="button">新增模型</button>
-        <button class="btn" id="adoptModelBtn" type="button">依現有密鑰自動建立</button>
         <button class="btn" id="cleanModelBtn" type="button">整理並合併重複</button>
-        <button class="btn danger" id="resetModelBtn" type="button">改回自動</button>
+        <button class="btn" id="orphanModelBtn" type="button">移除沒有密鑰的模型</button>
+        <button class="btn danger" id="resetModelBtn" type="button">全部清空</button>
       </div>
     </div>
 
@@ -566,7 +566,9 @@
           tip='目前使用 '+(picked?picked.name:'預設模型')+'，可在右上角切換。';
         }
       }else if(STATE.is_admin){
-        tip='尚未有可用的模型，先到左下角「API 密鑰」新增一把。';
+        tip=(STATE.models&&STATE.models.length)
+          ? '有模型但都不可用，請到「對話設定 → 使用者可選的模型」看每一項的原因。'
+          : '尚未設定任何模型：先到左下角「API 密鑰」新增金鑰，並在「可用模型」欄位填入模型代號。';
       }else{
         tip='系統尚未設定可用的 AI 模型，請聯絡管理員。';
       }
@@ -614,7 +616,7 @@
       // 只列出管理員填過、且名稱有效的模型。名稱有問題的不該出現在
       // 使用者面前 —— 開機時會自動正規化，理論上也不會有。
       if(!m.enabled||m.valid===false)return;
-      var suffix=m.available?'':'（無可用密鑰）';
+      var suffix=m.available?'':'（'+(m.unavailable_reason||'無可用密鑰')+'）';
       var option=el('option',null,m.name+suffix);
       option.value=m.id;
       option.disabled=!m.available;
@@ -948,9 +950,9 @@
   function renderModelAdmin(){
     var list=q('mdlList');
     clear(list);
-    q('mdlDesc').textContent=(STATE.models_customized
-      ? '使用者只會看到這裡列出的模型。'
-      : '目前未自訂：系統直接依現有密鑰自動列出模型。按「依現有密鑰自動建立」後即可逐項增減。')
+    q('mdlDesc').textContent=(STATE.models&&STATE.models.length
+      ? '使用者只會看到這裡列出的模型。系統不會自己新增任何模型 —— 這份清單完全等於你填過的內容。'
+      : '目前沒有任何模型。請在密鑰的「可用模型」欄位或下方「批次貼上模型名稱」填入你要開放的模型。')
       +'名稱會自動正規化成官方代號（「GPT-4o mini」→「gpt-4o-mini」），同一個模型只會留一筆。'
       +'「分級」與「擅長」會決定自動模式派哪個模型出場：快速＝短問題，強力＝長文與推理。';
     (STATE.models||[]).forEach(function(m,index){
@@ -963,7 +965,8 @@
       if(m.valid===false){
         head.appendChild(el('span','chip dead','名稱不合法'));
       }else{
-        head.appendChild(el('span','chip '+(m.available?'ok':'dead'),m.available?('可用 · '+m.usable_keys+' 把密鑰'):'無可用密鑰'));
+        head.appendChild(el('span','chip '+(m.available?'ok':'dead'),
+          m.available?('可用 · '+m.usable_keys+' 把密鑰'):(m.unavailable_reason||'無可用密鑰')));
       }
       card.appendChild(head);
       card.appendChild(el('div','mdlmeta',m.provider_label+' · '+m.model));
@@ -1033,7 +1036,7 @@
       dot.className='dot'+(r.usable_models>0?'':' off');
       if(r.page_version){
         var ver=q('verTag');
-        ver.textContent=r.page_version;
+        ver.textContent=r.page_version+(r.build&&r.build!=='dev'?(' · '+String(r.build).slice(5,16)):'');
         ver.title='版面 '+r.page_version+'｜編譯於 '+(r.build||'未知');
       }
       var tag=q('keyTag');
@@ -1126,7 +1129,6 @@
     modelAction({action:'add',provider:q('mProvider').value,model:q('mModel').value,label:q('mLabel').value});
     q('mModel').value='';q('mLabel').value='';
   });
-  q('adoptModelBtn').addEventListener('click',function(){modelAction({action:'adopt'});});
   q('bulkAddBtn').addEventListener('click',function(){
     var lines=q('bModels').value.split('\n').map(function(t){return t.trim();}).filter(function(t){return t;});
     if(!lines.length){toast('請先貼上模型名稱',true);return;}
@@ -1138,8 +1140,9 @@
     });
   });
   q('cleanModelBtn').addEventListener('click',function(){modelAction({action:'clean'});});
+  q('orphanModelBtn').addEventListener('click',function(){modelAction({action:'orphans'});});
   q('resetModelBtn').addEventListener('click',function(){
-    if(!window.confirm('清空自訂清單，改回依密鑰自動列出模型？'))return;
+    if(!window.confirm('清空全部模型？清空後使用者將沒有任何模型可選，需要重新填入。'))return;
     modelAction({action:'reset'});
   });
   document.addEventListener('keydown',function(ev){

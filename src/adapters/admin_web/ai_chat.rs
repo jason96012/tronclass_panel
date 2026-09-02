@@ -34,7 +34,7 @@ const PAGE_HTML: &str = include_str!("static/ai.html");
 
 /// AI_CHAT_V3：頁面版本。前端是 `include_str!` 編進二進位的，忘了重新編譯就會
 /// 看到舊畫面卻以為改動沒生效。把版本與編譯時間顯示在側欄，一眼就能分辨。
-const PAGE_VERSION: &str = "v3";
+const PAGE_VERSION: &str = "v4";
 
 fn build_stamp() -> &'static str {
     option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("dev")
@@ -444,11 +444,36 @@ impl ModelOption {
     }
 
     fn to_json(&self, keys: &[ApiKey]) -> Value {
-        let usable = keys
-            .iter()
-            .filter(|k| k.provider == self.provider && k.available())
-            .count();
-        let total = keys.iter().filter(|k| k.provider == self.provider).count();
+        let mine: Vec<&ApiKey> = keys.iter().filter(|k| k.provider == self.provider).collect();
+        let usable = mine.iter().filter(|k| k.available()).count();
+        let total = mine.len();
+        // AI_CHAT_V7：只說「無可用密鑰」太含糊 —— 到底是沒加金鑰、被停用、
+        // 失效還是冷卻中，處理方式完全不同，直接講明白。
+        let unavailable_reason = if usable > 0 {
+            String::new()
+        } else if total == 0 {
+            format!("尚未新增 {} 的 API 密鑰", provider_display(&self.provider))
+        } else if mine.iter().all(|k| !k.enabled) {
+            "此服務商的密鑰已被停用".to_string()
+        } else if mine.iter().any(|k| k.status == KeyStatus::Dead) {
+            "密鑰已失效（401／403），需要重新設定".to_string()
+        } else {
+            let left = mine
+                .iter()
+                .filter(|k| k.status == KeyStatus::Cooling)
+                .map(|k| k.cooldown_until.saturating_sub(now_secs()))
+                .min()
+                .unwrap_or(0);
+            if left > 3600 {
+                format!("密鑰冷卻中，約 {} 小時後恢復", left / 3600)
+            } else if left >= 60 {
+                format!("密鑰冷卻中，約 {} 分鐘後恢復", left / 60)
+            } else if left > 0 {
+                format!("密鑰冷卻中，約 {left} 秒後恢復")
+            } else {
+                "密鑰暫時不可用".to_string()
+            }
+        };
         let validity = self.validity();
         let invalid_reason = validity.as_ref().err().cloned().unwrap_or_default();
         let valid = validity.is_ok();
@@ -471,6 +496,7 @@ impl ModelOption {
             "total_keys": total,
             "valid": valid,
             "invalid_reason": invalid_reason,
+            "unavailable_reason": unavailable_reason,
             "available": self.enabled && usable > 0 && valid,
         })
     }
@@ -1061,31 +1087,6 @@ fn record_success(key_id: &str, prompt_tokens: u64, completion_tokens: u64) {
 
 /// 目前可供選擇的模型。管理員沒建清單時，直接由密鑰推導（每個服務商一項），
 /// 讓「新增一把密鑰就能立刻用」不需要多做設定。
-/// 由密鑰推導出模型清單（每把密鑰的預設模型各一項）。
-fn derive_models_from_keys(keys: &[ApiKey]) -> Vec<ModelOption> {
-    let mut out: Vec<ModelOption> = Vec::new();
-    for key in keys.iter() {
-        let model = key.effective_model();
-        if model.is_empty() {
-            continue;
-        }
-        let id = format!("{}:{}", key.provider, model);
-        if out.iter().any(|m| m.id == id) {
-            continue;
-        }
-        out.push(ModelOption {
-            tier: infer_tier(&model),
-            tags: infer_tags(&model),
-            id,
-            label: String::new(),
-            provider: key.provider.clone(),
-            model,
-            enabled: true,
-        });
-    }
-    out
-}
-
 /// AI_CHAT_V6：把整份模型清單正規化並合併重複項。
 ///
 /// 回傳 (修正數, 合併數, 丟棄的名稱)。設定檔載入時會跑一次，
@@ -1140,9 +1141,6 @@ fn register_models(store: &mut ChatStore, provider: &str, models: &[String]) -> 
     if wanted.is_empty() {
         return 0;
     }
-    if store.models.is_empty() {
-        store.models = derive_models_from_keys(&store.keys);
-    }
     let mut added = 0usize;
     for model in wanted {
         let id = format!("{provider}:{model}");
@@ -1163,14 +1161,12 @@ fn register_models(store: &mut ChatStore, provider: &str, models: &[String]) -> 
     added
 }
 
+/// AI_CHAT_V7：使用者可選的模型 = 管理員實際填過的那些，就這樣。
+///
+/// 先前會在清單為空時「依密鑰推導」補上服務商的預設模型，結果是系統自作主張
+/// 加了管理員從沒輸入過的項目。現在一律不推導：沒填就是沒有。
 fn model_options() -> Vec<ModelOption> {
-    read_store(|store| {
-        if !store.models.is_empty() {
-            return store.models.clone();
-        }
-        derive_models_from_keys(&store.keys)
-    })
-    .unwrap_or_default()
+    read_store(|store| store.models.clone()).unwrap_or_default()
 }
 
 /// 「自動」這個虛擬選項的 id。
@@ -2743,24 +2739,32 @@ pub(super) async fn models_handler(
             store.models.swap(index, target as usize);
             Ok("已調整順序".to_string())
         }
-        "adopt" => {
-            // 把目前自動推導的清單「固化」成可編輯的顯式清單。
-            if !store.models.is_empty() {
-                return Err("清單已經是自訂狀態".to_string());
+        "orphans" => {
+            // AI_CHAT_V8：移除「該服務商連一把密鑰都沒有」的模型。
+            // 舊版會依密鑰自動推導模型並寫進設定檔，密鑰刪掉後這些項目
+            // 會留在清單裡變成孤兒，使用者看了會以為系統又自己加東西。
+            let providers: Vec<String> =
+                store.keys.iter().map(|k| k.provider.clone()).collect();
+            let mut removed: Vec<String> = Vec::new();
+            store.models.retain(|m| {
+                if providers.contains(&m.provider) {
+                    true
+                } else {
+                    removed.push(format!("{}·{}", provider_display(&m.provider), m.model));
+                    false
+                }
+            });
+            if removed.is_empty() {
+                return Err("每個模型都有對應的服務商密鑰，沒有需要移除的".to_string());
             }
-            let out = derive_models_from_keys(&store.keys);
-            if out.is_empty() {
-                return Err("目前沒有密鑰可以推導模型".to_string());
-            }
-            let count = out.len();
-            store.models = out;
-            Ok(format!("已依現有密鑰建立 {count} 個模型，接下來可自行增減"))
+            tracing::info!(?removed, "移除沒有對應密鑰的模型");
+            Ok(format!(
+                "已移除 {} 個沒有密鑰的模型：{}",
+                removed.len(),
+                removed.join("、")
+            ))
         }
         "clean" => {
-            // 先固化推導清單，否則整理後其他密鑰的模型會跟著消失。
-            if store.models.is_empty() {
-                store.models = derive_models_from_keys(&store.keys);
-            }
             let (fixed, merged, dropped) = migrate_models(&mut store.models);
             if fixed == 0 && merged == 0 && dropped.is_empty() {
                 return Err("清單已經是整理過的狀態".to_string());
@@ -3422,6 +3426,120 @@ mod ai_chat_tests {
         // 有可用密鑰，但管理員把它關掉了。
         assert_eq!(option.to_json(&keys)["available"], serde_json::json!(false));
         assert_eq!(option.to_json(&keys)["usable_keys"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn orphan_models_from_deleted_keys_can_be_removed() {
+        // 舊版依密鑰推導出的模型會留在設定檔裡。密鑰刪掉後這些項目變成孤兒，
+        // 使用者會誤以為系統又自己新增了模型。
+        let mut store = ChatStore {
+            keys: vec![key_for("openai", "gpt-5.4-mini", KeyStatus::Ok)],
+            models: vec![
+                ModelOption {
+                    id: "openai:gpt-5.4-mini".into(),
+                    label: String::new(),
+                    provider: "openai".into(),
+                    model: "gpt-5.4-mini".into(),
+                    enabled: true,
+                    tier: "fast".into(),
+                    tags: Vec::new(),
+                },
+                ModelOption {
+                    id: "gemini:gemini-2.0-flash".into(),
+                    label: String::new(),
+                    provider: "gemini".into(),
+                    model: "gemini-2.0-flash".into(),
+                    enabled: true,
+                    tier: "fast".into(),
+                    tags: Vec::new(),
+                },
+                ModelOption {
+                    id: "gemini:gemini-3.5-flash".into(),
+                    label: String::new(),
+                    provider: "gemini".into(),
+                    model: "gemini-3.5-flash".into(),
+                    enabled: true,
+                    tier: "fast".into(),
+                    tags: Vec::new(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let providers: Vec<String> = store.keys.iter().map(|k| k.provider.clone()).collect();
+        let mut removed: Vec<String> = Vec::new();
+        store.models.retain(|m| {
+            if providers.contains(&m.provider) {
+                true
+            } else {
+                removed.push(m.model.clone());
+                false
+            }
+        });
+
+        assert_eq!(removed.len(), 2, "兩個 Gemini 模型沒有對應密鑰");
+        assert_eq!(store.models.len(), 1);
+        assert_eq!(store.models[0].model, "gpt-5.4-mini");
+    }
+
+    #[test]
+    fn the_page_version_is_bumped_whenever_the_page_changes() {
+        // 前端是 include_str! 編進二進位的。版本號不動，使用者就無法分辨
+        // 「功能沒生效」是程式問題還是沒重新編譯。
+        assert_ne!(PAGE_VERSION, "v3", "頁面改過就要把版本號往上加");
+        assert!(PAGE_VERSION.starts_with('v'));
+    }
+
+    #[test]
+    fn the_model_list_is_exactly_what_the_admin_typed() {
+        // 沒有任何顯式模型時就是空的 —— 不再依密鑰「推導」出管理員沒填過的項目。
+        let store = ChatStore {
+            keys: vec![key_for("openai", "gpt-4o-mini", KeyStatus::Ok)],
+            ..Default::default()
+        };
+        assert!(
+            store.models.is_empty(),
+            "有密鑰不代表就該自動生出模型選項"
+        );
+    }
+
+    #[test]
+    fn an_unavailable_model_explains_why() {
+        let option = ModelOption {
+            id: "gemini:gemini-2.0-flash".into(),
+            label: String::new(),
+            provider: "gemini".into(),
+            model: "gemini-2.0-flash".into(),
+            enabled: true,
+            tier: "fast".into(),
+            tags: Vec::new(),
+        };
+
+        // 1) 完全沒有這家的密鑰
+        let json = option.to_json(&[key_for("openai", "gpt-4o-mini", KeyStatus::Ok)]);
+        assert!(json["unavailable_reason"]
+            .as_str()
+            .unwrap()
+            .contains("尚未新增"));
+
+        // 2) 有密鑰但被停用
+        let mut disabled = key_for("gemini", "gemini-2.0-flash", KeyStatus::Ok);
+        disabled.enabled = false;
+        let json = option.to_json(&[disabled]);
+        assert!(json["unavailable_reason"].as_str().unwrap().contains("停用"));
+
+        // 3) 密鑰失效
+        let json = option.to_json(&[key_for("gemini", "gemini-2.0-flash", KeyStatus::Dead)]);
+        assert!(json["unavailable_reason"].as_str().unwrap().contains("失效"));
+
+        // 4) 冷卻中要講還要多久
+        let json = option.to_json(&[key_for("gemini", "gemini-2.0-flash", KeyStatus::Cooling)]);
+        assert!(json["unavailable_reason"].as_str().unwrap().contains("冷卻"));
+
+        // 5) 正常可用時不該有理由
+        let json = option.to_json(&[key_for("gemini", "gemini-2.0-flash", KeyStatus::Ok)]);
+        assert_eq!(json["available"], serde_json::json!(true));
+        assert_eq!(json["unavailable_reason"], serde_json::json!(""));
     }
 
     #[test]
