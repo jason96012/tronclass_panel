@@ -228,7 +228,7 @@
       <div class="field">
         <label>可用模型（一行一個，第一個當這把密鑰的預設）</label>
         <textarea id="fModels" placeholder=""></textarea>
-        <div class="note">這裡填的模型會全部出現在使用者的模型選單裡。留空則使用服務商預設。不知道有哪些？先儲存密鑰，再用下方「從 API 抓取可用模型」自動帶入。</div>
+        <div class="note" id="modelsNote">請填官方的模型代號（全小寫、用連字號），例如 <code>gpt-4o-mini</code>、<code>gemini-2.0-flash</code>；不要填「GPT-4o mini」這種顯示名稱，含空白或大寫會被上游拒絕。</div>
       </div>
       <div class="field">
         <label>API 網址（留空用預設）</label>
@@ -318,6 +318,7 @@
       <div class="btnrow">
         <button class="btn primary" id="addModelBtn" type="button">新增模型</button>
         <button class="btn" id="adoptModelBtn" type="button">依現有密鑰自動建立</button>
+        <button class="btn" id="cleanModelBtn" type="button">整理並合併重複</button>
         <button class="btn danger" id="resetModelBtn" type="button">改回自動</button>
       </div>
     </div>
@@ -607,11 +608,14 @@
     if(currentModel==='auto'||!currentModel)auto.selected=true;
     pick.appendChild(auto);
     // 選中的模型若已被管理員移除／停用，就退回自動。
-    var valid=currentModel==='auto'||models.some(function(m){return m.id===currentModel&&m.available;});
+    var valid=currentModel==='auto'||models.some(function(m){return m.id===currentModel&&m.available&&m.valid!==false;});
     if(!valid)currentModel='auto';
     models.forEach(function(m){
-      if(!m.enabled)return;
-      var option=el('option',null,m.name+(m.available?'':'（無可用密鑰）'));
+      // 只列出管理員填過、且名稱有效的模型。名稱有問題的不該出現在
+      // 使用者面前 —— 開機時會自動正規化，理論上也不會有。
+      if(!m.enabled||m.valid===false)return;
+      var suffix=m.available?'':'（無可用密鑰）';
+      var option=el('option',null,m.name+suffix);
       option.value=m.id;
       option.disabled=!m.available;
       if(m.id===currentModel)option.selected=true;
@@ -870,11 +874,9 @@
 
   function syncProviderHints(){
     var preset=providerPreset(q('fProvider').value);
-    var sample=(preset&&preset.model)||'模型名稱';
-    // 用同服務商的既有模型當範例，比固定字串好懂。
-    var same=(STATE.models||[]).filter(function(m){return m.provider===q('fProvider').value;})
-                               .map(function(m){return m.model;});
-    q('fModels').placeholder=(same.length?same:[sample]).slice(0,4).join('\n');
+    // placeholder 只用服務商的官方預設當範例。拿使用者既有的資料當範例，
+    // 看起來會很像「系統已經幫我填好了」，反而造成誤會。
+    q('fModels').placeholder=(preset&&preset.model)||'模型代號，一行一個';
     q('fBase').placeholder=(preset&&preset.base_url)||'必填，例如 https://…/v1';
   }
 
@@ -885,12 +887,10 @@
     q('fLabel').value=key.label;
     q('fSecret').value='';
     q('secretNote').textContent='留空＝不更動現有密鑰（目前 '+key.secret_masked+'）';
-    // 帶出這個服務商目前已登記的模型，預設模型排第一。
-    var mine=(STATE.models||[]).filter(function(m){return m.provider===key.provider;})
-                               .map(function(m){return m.model;});
-    var def=key.model||key.effective_model;
-    if(def){mine=[def].concat(mine.filter(function(m){return m!==def;}));}
-    q('fModels').value=mine.join('\n');
+    // 這裡刻意「不」自動帶入既有模型：儲存只會新增不會刪除，
+    // 自動帶入會讓使用者以為刪掉某行就等於移除該模型，結果下次又長回來。
+    q('fModels').value='';
+    q('modelsNote').textContent='留空＝不更動這把密鑰的模型。填入的名稱會「新增」到可選清單；要刪除請到下方「使用者可選的模型」。';
     q('fBase').value=key.base_url;
     q('saveKeyBtn').textContent='儲存變更';
     q('cancelEditBtn').style.display='inline-flex';
@@ -906,6 +906,7 @@
     q('fModels').value='';
     q('fBase').value='';
     q('secretNote').textContent='';
+    q('modelsNote').textContent='請填官方的模型代號（全小寫、用連字號），例如 gpt-4o-mini、gemini-2.0-flash；不要填「GPT-4o mini」這種顯示名稱，含空白或大寫會被上游拒絕。';
     q('saveKeyBtn').textContent='新增';
     q('cancelEditBtn').style.display='none';
     syncProviderHints();
@@ -950,6 +951,7 @@
     q('mdlDesc').textContent=(STATE.models_customized
       ? '使用者只會看到這裡列出的模型。'
       : '目前未自訂：系統直接依現有密鑰自動列出模型。按「依現有密鑰自動建立」後即可逐項增減。')
+      +'名稱會自動正規化成官方代號（「GPT-4o mini」→「gpt-4o-mini」），同一個模型只會留一筆。'
       +'「分級」與「擅長」會決定自動模式派哪個模型出場：快速＝短問題，強力＝長文與推理。';
     (STATE.models||[]).forEach(function(m,index){
       var card=el('div','mdlcard'+(m.enabled?'':' off'));
@@ -958,9 +960,14 @@
       head.appendChild(el('span','nm',m.name));
       head.appendChild(el('span','tier '+(m.tier||'balanced'),m.tier_label||'均衡'));
       (m.tags||[]).forEach(function(t){head.appendChild(el('span','tagchip',t));});
-      head.appendChild(el('span','chip '+(m.available?'ok':'dead'),m.available?('可用 · '+m.usable_keys+' 把密鑰'):'無可用密鑰'));
+      if(m.valid===false){
+        head.appendChild(el('span','chip dead','名稱不合法'));
+      }else{
+        head.appendChild(el('span','chip '+(m.available?'ok':'dead'),m.available?('可用 · '+m.usable_keys+' 把密鑰'):'無可用密鑰'));
+      }
       card.appendChild(head);
       card.appendChild(el('div','mdlmeta',m.provider_label+' · '+m.model));
+      if(m.invalid_reason)card.appendChild(el('div','keyerr','⚠ '+m.invalid_reason+' —— 不會出現在使用者選單，按「整理並合併重複」可自動修正。'));
       if(!STATE.models_customized){list.appendChild(card);return;}
       var acts=el('div','keyacts');
       function act(label,cls,handler){
@@ -1130,6 +1137,7 @@
       refreshState();
     });
   });
+  q('cleanModelBtn').addEventListener('click',function(){modelAction({action:'clean'});});
   q('resetModelBtn').addEventListener('click',function(){
     if(!window.confirm('清空自訂清單，改回依密鑰自動列出模型？'))return;
     modelAction({action:'reset'});

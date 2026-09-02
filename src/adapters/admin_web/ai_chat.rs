@@ -437,12 +437,21 @@ impl ModelOption {
         format!("{} · {}", provider_display(&self.provider), self.model)
     }
 
+    /// 名稱能不能真的送給上游。舊資料或手打錯字會留下不合法的名稱，
+    /// 這種模型必須擋在選單外，否則使用者一選就是 400。
+    fn validity(&self) -> Result<String, String> {
+        sanitize_model_name(&self.provider, &self.model)
+    }
+
     fn to_json(&self, keys: &[ApiKey]) -> Value {
         let usable = keys
             .iter()
             .filter(|k| k.provider == self.provider && k.available())
             .count();
         let total = keys.iter().filter(|k| k.provider == self.provider).count();
+        let validity = self.validity();
+        let invalid_reason = validity.as_ref().err().cloned().unwrap_or_default();
+        let valid = validity.is_ok();
         json!({
             "id": self.id,
             "label": self.label,
@@ -460,7 +469,9 @@ impl ModelOption {
             "tags": self.tags,
             "usable_keys": usable,
             "total_keys": total,
-            "available": self.enabled && usable > 0,
+            "valid": valid,
+            "invalid_reason": invalid_reason,
+            "available": self.enabled && usable > 0 && valid,
         })
     }
 }
@@ -543,6 +554,17 @@ static CHAT_STORE: once_cell::sync::Lazy<std::sync::Mutex<ChatStore>> =
             if let Ok(parsed) = serde_json::from_str::<ChatStore>(&text) {
                 store = parsed;
             }
+        }
+        // AI_CHAT_V6：舊設定檔可能存著「GPT-4o mini」這種顯示名稱，
+        // 開機時就正規化並合併，使用者不必手動整理。
+        let (fixed, merged, dropped) = migrate_models(&mut store.models);
+        for key in store.keys.iter_mut() {
+            if let Ok(name) = canonical_model_name(&key.provider, &key.model) {
+                key.model = name;
+            }
+        }
+        if fixed > 0 || merged > 0 || !dropped.is_empty() {
+            tracing::info!(fixed, merged, ?dropped, "AI 模型清單已自動正規化");
         }
         std::sync::Mutex::new(store)
     });
@@ -1064,6 +1086,47 @@ fn derive_models_from_keys(keys: &[ApiKey]) -> Vec<ModelOption> {
     out
 }
 
+/// AI_CHAT_V6：把整份模型清單正規化並合併重複項。
+///
+/// 回傳 (修正數, 合併數, 丟棄的名稱)。設定檔載入時會跑一次，
+/// 所以舊資料裡的「GPT-4o mini」會自動變成「gpt-4o-mini」並與既有項目合併。
+fn migrate_models(models: &mut Vec<ModelOption>) -> (usize, usize, Vec<String>) {
+    let original = std::mem::take(models);
+    let mut fixed = 0usize;
+    let mut merged = 0usize;
+    let mut dropped: Vec<String> = Vec::new();
+
+    for mut item in original {
+        let canonical = match canonical_model_name(&item.provider, &item.model) {
+            Ok(name) => name,
+            Err(_) => {
+                dropped.push(item.model.clone());
+                continue;
+            }
+        };
+        if canonical != item.model {
+            fixed += 1;
+            item.model = canonical;
+        }
+        item.id = format!("{}:{}", item.provider, item.model);
+
+        if let Some(existing) = models.iter_mut().find(|m| m.id == item.id) {
+            // 同一個模型出現兩次：保留先出現的，但把對方設定過的資訊補進來。
+            merged += 1;
+            if existing.label.trim().is_empty() && !item.label.trim().is_empty() {
+                existing.label = item.label;
+            }
+            if existing.tags.is_empty() && !item.tags.is_empty() {
+                existing.tags = item.tags;
+            }
+            existing.enabled = existing.enabled || item.enabled;
+            continue;
+        }
+        models.push(item);
+    }
+    (fixed, merged, dropped)
+}
+
 /// AI_CHAT_V4：把一批模型名稱登記成使用者可選的模型。
 ///
 /// 關鍵細節：目前若還是「自動推導」狀態（`store.models` 是空的），必須**先把
@@ -1072,7 +1135,7 @@ fn derive_models_from_keys(keys: &[ApiKey]) -> Vec<ModelOption> {
 fn register_models(store: &mut ChatStore, provider: &str, models: &[String]) -> usize {
     let wanted: Vec<String> = models
         .iter()
-        .filter_map(|m| sanitize_model_name(provider, m).ok())
+        .filter_map(|m| canonical_model_name(provider, m).ok())
         .collect();
     if wanted.is_empty() {
         return 0;
@@ -1182,6 +1245,10 @@ fn pick_auto_model(text: &str, options: &[ModelOption], keys: &[ApiKey]) -> Opti
         if !usable {
             continue;
         }
+        // 名稱不合法的模型送出去必定 400，自動模式不能挑。
+        if option.validity().is_err() {
+            continue;
+        }
 
         let mut score = 0i32;
         let has = |tag: &str| option.tags.iter().any(|t| t == tag);
@@ -1261,7 +1328,10 @@ fn resolve_model(id: &str, prompt: &str) -> (Option<ModelOption>, String) {
     let wanted = id.trim();
 
     if !wanted.is_empty() && wanted != AUTO_MODEL_ID {
-        if let Some(found) = options.iter().find(|m| m.id == wanted && m.enabled) {
+        if let Some(found) = options
+            .iter()
+            .find(|m| m.id == wanted && m.enabled && m.validity().is_ok())
+        {
             return (Some(found.clone()), String::new());
         }
     }
@@ -2164,10 +2234,13 @@ pub(super) async fn keys_handler(
                 key.provider = body.provider.trim().to_string();
             }
             key.base_url = body.base_url.trim().to_string();
-            key.model = listed
-                .first()
-                .cloned()
-                .unwrap_or_else(|| body.model.trim().to_string());
+            // 編輯時模型欄位留空代表「不更動」。若直接覆寫成空字串，
+            // 這把密鑰的預設模型就會被悄悄清掉。
+            if let Some(first) = listed.first() {
+                key.model = first.clone();
+            } else if !body.model.trim().is_empty() {
+                key.model = body.model.trim().to_string();
+            }
             // 密鑰留空代表不更動（前端顯示的是遮蔽字串）。
             if !body.secret.trim().is_empty() {
                 key.secret = body.secret.trim().to_string();
@@ -2461,6 +2534,37 @@ fn normalize_model_id(raw: &str) -> String {
     name
 }
 
+/// AI_CHAT_V6：把模型名稱正規化成官方代號。
+///
+/// 使用者常把選單上的「顯示名稱」當代號填（`GPT-4o mini`、`Gemini 3.5 Flash`），
+/// 這其實跟 `gpt-4o-mini`、`gemini-3.5-flash` 是同一個模型。與其標成不合法
+/// 讓清單裡一堆重複項目，不如直接轉成正規寫法並合併。
+///
+/// 例外：`custom`（自架端點，如 LM Studio）的模型名稱是大小寫敏感的
+/// （`Qwen2.5-7B-Instruct`），只做去空白處理，不動大小寫。
+fn canonical_model_name(provider: &str, raw: &str) -> Result<String, String> {
+    let mut name = normalize_model_id(raw);
+    if provider != "custom" {
+        name = name.to_ascii_lowercase();
+        // 空白轉連字號：「GPT-4o mini」→「gpt-4o-mini」
+        let mut collapsed = String::with_capacity(name.len());
+        let mut last_dash = false;
+        for c in name.chars() {
+            if c.is_whitespace() || c == '-' {
+                if !last_dash {
+                    collapsed.push('-');
+                    last_dash = true;
+                }
+            } else {
+                collapsed.push(c);
+                last_dash = false;
+            }
+        }
+        name = collapsed.trim_matches('-').to_string();
+    }
+    sanitize_model_name(provider, &name)
+}
+
 /// 依服務商清洗並驗證模型名稱。回傳 `Err` 時附上人看得懂的原因。
 fn sanitize_model_name(provider: &str, raw: &str) -> Result<String, String> {
     let mut name = normalize_model_id(raw);
@@ -2516,16 +2620,17 @@ pub(super) async fn models_handler(
             if provider_preset(&provider).is_none() {
                 return Err(format!("不認得的服務商：{provider}"));
             }
-            let model = if body.model.trim().is_empty() {
+            let raw = if body.model.trim().is_empty() {
                 provider_preset(&provider)
                     .map(|(_, _, m)| m.to_string())
                     .unwrap_or_default()
             } else {
                 body.model.trim().to_string()
             };
-            if model.is_empty() {
+            if raw.is_empty() {
                 return Err("請填入模型名稱".to_string());
             }
+            let model = canonical_model_name(&provider, &raw)?;
             let id = format!("{provider}:{model}");
             if store.models.iter().any(|m| m.id == id) {
                 return Err("這個模型已經在清單裡了".to_string());
@@ -2548,12 +2653,11 @@ pub(super) async fn models_handler(
             }
             let mut added = 0usize;
             let mut skipped = 0usize;
-            // 一行一個模型名稱，或由「抓取模型」勾選後送過來。
+            // 一行一個模型名稱，會先正規化成官方代號再登記。
             for raw in body.models.iter() {
-                let model = normalize_model_id(raw);
-                if model.is_empty() {
+                let Ok(model) = canonical_model_name(&provider, raw) else {
                     continue;
-                }
+                };
                 let id = format!("{provider}:{model}");
                 if store.models.iter().any(|m| m.id == id) {
                     skipped += 1;
@@ -2651,6 +2755,27 @@ pub(super) async fn models_handler(
             let count = out.len();
             store.models = out;
             Ok(format!("已依現有密鑰建立 {count} 個模型，接下來可自行增減"))
+        }
+        "clean" => {
+            // 先固化推導清單，否則整理後其他密鑰的模型會跟著消失。
+            if store.models.is_empty() {
+                store.models = derive_models_from_keys(&store.keys);
+            }
+            let (fixed, merged, dropped) = migrate_models(&mut store.models);
+            if fixed == 0 && merged == 0 && dropped.is_empty() {
+                return Err("清單已經是整理過的狀態".to_string());
+            }
+            let mut parts: Vec<String> = Vec::new();
+            if fixed > 0 {
+                parts.push(format!("修正 {fixed} 個名稱"));
+            }
+            if merged > 0 {
+                parts.push(format!("合併 {merged} 個重複"));
+            }
+            if !dropped.is_empty() {
+                parts.push(format!("移除 {}（無法修正）", dropped.join("、")));
+            }
+            Ok(parts.join("；"))
         }
         "reset" => {
             store.models.clear();
@@ -3297,6 +3422,170 @@ mod ai_chat_tests {
         // 有可用密鑰，但管理員把它關掉了。
         assert_eq!(option.to_json(&keys)["available"], serde_json::json!(false));
         assert_eq!(option.to_json(&keys)["usable_keys"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn display_names_are_canonicalised_into_official_ids() {
+        // 使用者把選單上看到的名字當代號填，其實是同一個模型。
+        assert_eq!(
+            canonical_model_name("openai", "GPT-4o mini").unwrap(),
+            "gpt-4o-mini"
+        );
+        assert_eq!(
+            canonical_model_name("openai", "GPT-3.5 Turbo").unwrap(),
+            "gpt-3.5-turbo"
+        );
+        assert_eq!(
+            canonical_model_name("gemini", "Gemini 3.5 Flash").unwrap(),
+            "gemini-3.5-flash"
+        );
+        // 多餘的空白／連字號要收斂成一個。
+        assert_eq!(
+            canonical_model_name("openai", "  GPT-4o   mini  ").unwrap(),
+            "gpt-4o-mini"
+        );
+        // 自架端點（LM Studio 等）大小寫敏感，不能亂改。
+        assert_eq!(
+            canonical_model_name("custom", "Qwen2.5-7B-Instruct").unwrap(),
+            "Qwen2.5-7B-Instruct"
+        );
+        // 真的救不回來的還是要擋。
+        assert!(canonical_model_name("openai", "gpt-4o★").is_err());
+    }
+
+    #[test]
+    fn the_same_model_written_two_ways_is_merged_into_one() {
+        let mut models = vec![
+            ModelOption {
+                id: "openai:GPT-4o mini".into(),
+                label: String::new(),
+                provider: "openai".into(),
+                model: "GPT-4o mini".into(),
+                enabled: true,
+                tier: "fast".into(),
+                tags: vec!["code".into()],
+            },
+            ModelOption {
+                id: "openai:gpt-4o-mini".into(),
+                label: "主力".into(),
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+                enabled: true,
+                tier: "fast".into(),
+                tags: Vec::new(),
+            },
+            ModelOption {
+                id: "openai:gpt-4o★".into(),
+                label: String::new(),
+                provider: "openai".into(),
+                model: "gpt-4o★".into(),
+                enabled: true,
+                tier: "balanced".into(),
+                tags: Vec::new(),
+            },
+        ];
+        let (fixed, merged, dropped) = migrate_models(&mut models);
+        assert_eq!(fixed, 1, "GPT-4o mini 要被修正");
+        assert_eq!(merged, 1, "修正後與既有項目重複，要合併");
+        assert_eq!(dropped, vec!["gpt-4o★".to_string()]);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model, "gpt-4o-mini");
+        assert_eq!(models[0].id, "openai:gpt-4o-mini");
+        // 合併時要把對方設定過的資訊補進來，不能無腦丟掉。
+        assert_eq!(models[0].label, "主力");
+        assert_eq!(models[0].tags, vec!["code".to_string()]);
+    }
+
+    #[test]
+    fn migrating_an_already_clean_list_changes_nothing() {
+        let mut models = vec![ModelOption {
+            id: "gemini:gemini-2.0-flash".into(),
+            label: String::new(),
+            provider: "gemini".into(),
+            model: "gemini-2.0-flash".into(),
+            enabled: true,
+            tier: "fast".into(),
+            tags: Vec::new(),
+        }];
+        let (fixed, merged, dropped) = migrate_models(&mut models);
+        assert_eq!((fixed, merged, dropped.len()), (0, 0, 0));
+        assert_eq!(models.len(), 1);
+    }
+
+    #[test]
+    fn editing_a_key_without_touching_models_keeps_its_default() {
+        // 編輯密鑰時「可用模型」留空＝不更動。若把 key.model 覆寫成空字串，
+        // 這把密鑰的預設模型就會消失，接著只能退回服務商預設。
+        let mut key = key_for("openai", "gpt-4.1-mini", KeyStatus::Ok);
+        let listed: Vec<String> = Vec::new();
+        let body_model = "";
+
+        if let Some(first) = listed.first() {
+            key.model = first.clone();
+        } else if !body_model.trim().is_empty() {
+            key.model = body_model.trim().to_string();
+        }
+        assert_eq!(key.model, "gpt-4.1-mini", "留空不該把預設模型清掉");
+
+        // 有填就以第一行為準。
+        let listed = vec!["gpt-4o".to_string(), "gpt-4o-mini".to_string()];
+        if let Some(first) = listed.first() {
+            key.model = first.clone();
+        }
+        assert_eq!(key.model, "gpt-4o");
+    }
+
+    #[test]
+    fn a_display_name_typed_by_mistake_is_flagged_and_never_used() {
+        // 使用者把「GPT-4o mini」這種顯示名稱當成模型代號填進去，
+        // 送到上游一定 400。這種項目要被標出來並排除在選單外。
+        let bad = ModelOption {
+            id: "openai:GPT-4o mini".into(),
+            label: String::new(),
+            provider: "openai".into(),
+            model: "GPT-4o mini".into(),
+            enabled: true,
+            tier: "fast".into(),
+            tags: Vec::new(),
+        };
+        assert!(bad.validity().is_err());
+        let keys = vec![key_for("openai", "gpt-4o-mini", KeyStatus::Ok)];
+        let json = bad.to_json(&keys);
+        assert_eq!(json["valid"], serde_json::json!(false));
+        // 有可用密鑰也不能算 available，否則使用者選得到就會失敗。
+        assert_eq!(json["available"], serde_json::json!(false));
+        assert!(json["invalid_reason"]
+            .as_str()
+            .unwrap()
+            .contains("空白"));
+
+        // 自動模式寧可挑合法的那個。
+        let good = ModelOption {
+            id: "openai:gpt-4o-mini".into(),
+            model: "gpt-4o-mini".into(),
+            ..bad.clone()
+        };
+        let options = vec![bad, good];
+        let (chosen, _) = pick_auto_model("你好", &options, &keys).expect("要挑得出");
+        assert_eq!(chosen.model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn auto_mode_gives_up_when_every_model_name_is_broken() {
+        let broken = ModelOption {
+            id: "openai:GPT 4o".into(),
+            label: String::new(),
+            provider: "openai".into(),
+            model: "GPT 4o".into(),
+            enabled: true,
+            tier: "fast".into(),
+            tags: Vec::new(),
+        };
+        let keys = vec![key_for("openai", "gpt-4o-mini", KeyStatus::Ok)];
+        assert!(
+            pick_auto_model("你好", &[broken], &keys).is_none(),
+            "全部不合法時要回 None，讓上層給出明確錯誤"
+        );
     }
 
     #[test]
