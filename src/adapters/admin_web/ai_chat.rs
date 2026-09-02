@@ -32,6 +32,14 @@ use super::{
 
 const PAGE_HTML: &str = include_str!("static/ai.html");
 
+/// AI_CHAT_V3：頁面版本。前端是 `include_str!` 編進二進位的，忘了重新編譯就會
+/// 看到舊畫面卻以為改動沒生效。把版本與編譯時間顯示在側欄，一眼就能分辨。
+const PAGE_VERSION: &str = "v3";
+
+fn build_stamp() -> &'static str {
+    option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("dev")
+}
+
 /// 單一請求的上限。串流過程中只要持續有 token 進來就不算逾時。
 const AI_REQUEST_TIMEOUT_SECS: u64 = 180;
 /// 整個 job 的總預算，超過就中止並回報。
@@ -55,6 +63,41 @@ const THREAD_MAX_MESSAGES: usize = 400;
 const THREADS_PER_ACCOUNT: usize = 60;
 /// 送給模型的歷史訊息數上限（避免無限增長把 token 燒光）。
 const CONTEXT_MESSAGES: usize = 24;
+/// AI_CHAT_V5：脈絡的 token 預算。固定「最近 N 則」在長對話會讓輸入
+/// 呈二次成長 —— 第 12 輪只問一句話卻扛著 5000+ tokens 的歷史。
+const CONTEXT_TOKEN_BUDGET: usize = 1500;
+/// 累積這麼多則還沒摘要的訊息，就在背景把較早的濃縮成一段摘要。
+const SUMMARY_TRIGGER: usize = 12;
+/// 摘要後仍保留原文的最近則數。
+const SUMMARY_KEEP_RAW: usize = 6;
+/// 摘要本身的長度上限（token）。
+const SUMMARY_MAX_TOKENS: u32 = 320;
+/// 相同問題的回覆快取。
+const CHAT_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+const CHAT_CACHE_MAX: usize = 200;
+
+/// AI_CHAT_V5：估算一段文字的 token 數。
+///
+/// 刻意不引入 tiktoken 之類的相依 —— 它只準於 OpenAI 的分詞器，對 Gemini
+/// 一樣是估的，卻要多背一個含詞表的套件。這裡用保守上界：CJK 一字一 token，
+/// 其餘每 4 個字元一 token，再加每則訊息的固定開銷。寧可少送一點也不要超支。
+fn estimate_tokens(text: &str) -> usize {
+    let mut cjk = 0usize;
+    let mut other = 0usize;
+    for c in text.chars() {
+        let code = c as u32;
+        let is_cjk = (0x3000..=0x9FFF).contains(&code)
+            || (0xAC00..=0xD7AF).contains(&code)
+            || (0xF900..=0xFAFF).contains(&code)
+            || (0x1_0000..=0x3_FFFF).contains(&code);
+        if is_cjk {
+            cjk += 1;
+        } else {
+            other += 1;
+        }
+    }
+    cjk + (other + 3) / 4 + 4
+}
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -303,6 +346,87 @@ struct ModelOption {
     model: String,
     #[serde(default = "default_true")]
     enabled: bool,
+    /// AI_CHAT_V3：`fast`（快、便宜）／`balanced`／`deep`（強、慢、貴）。
+    /// 自動選模型時用來決定「這題值不值得動用大模型」。
+    #[serde(default = "default_tier")]
+    tier: String,
+    /// 擅長領域：`code`／`math`／`long`／`vision`／`general`。
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+fn default_tier() -> String {
+    "balanced".to_string()
+}
+
+/// 把模型名稱拆成詞元。`openai/gpt-4o-mini` → `["openai","gpt","4o","mini"]`
+///
+/// 一定要拆詞再比對，不能用子字串 —— 「gemini」裡面就含有「mini」，
+/// 直接 contains 會把 gemini-2.5-pro 誤判成快速模型。
+fn model_tokens(model: &str) -> Vec<String> {
+    model
+        .to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(|t| t.to_string())
+        .collect()
+}
+
+/// 參數量詞元（`70b`、`8b`）→ 數字。
+fn param_size(token: &str) -> Option<u32> {
+    let digits = token.strip_suffix('b')?;
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok()
+}
+
+/// 由模型名稱推測分級。新增模型時先自動判斷，管理員可再手動改。
+fn infer_tier(model: &str) -> String {
+    const FAST: [&str; 10] = [
+        "mini", "flash", "lite", "small", "haiku", "turbo", "instant", "nano", "tiny", "air",
+    ];
+    const DEEP: [&str; 11] = [
+        "pro", "opus", "ultra", "large", "max", "thinking", "reasoner", "o1", "o3", "sonnet",
+        "plus",
+    ];
+    let tokens = model_tokens(model);
+
+    // 小模型（≤ 9B）算快速，大模型（≥ 30B）算強力。
+    for token in tokens.iter() {
+        if let Some(size) = param_size(token) {
+            if size <= 9 {
+                return "fast".to_string();
+            }
+            if size >= 30 {
+                return "deep".to_string();
+            }
+        }
+    }
+    if tokens.iter().any(|t| FAST.contains(&t.as_str())) {
+        return "fast".to_string();
+    }
+    if tokens.iter().any(|t| DEEP.contains(&t.as_str())) {
+        return "deep".to_string();
+    }
+    "balanced".to_string()
+}
+
+/// 由模型名稱推測擅長領域。
+fn infer_tags(model: &str) -> Vec<String> {
+    let tokens = model_tokens(model);
+    let has = |word: &str| tokens.iter().any(|t| t == word);
+    let mut tags: Vec<String> = Vec::new();
+    if has("code") || has("coder") || has("codestral") {
+        tags.push("code".to_string());
+    }
+    if has("math") || has("reasoner") || has("thinking") || has("r1") {
+        tags.push("math".to_string());
+    }
+    if has("vision") || has("vl") {
+        tags.push("vision".to_string());
+    }
+    tags
 }
 
 impl ModelOption {
@@ -327,6 +451,13 @@ impl ModelOption {
             "provider_label": provider_display(self.provider.as_str()),
             "model": self.model,
             "enabled": self.enabled,
+            "tier": self.tier,
+            "tier_label": match self.tier.as_str() {
+                "fast" => "快速",
+                "deep" => "強力",
+                _ => "均衡",
+            },
+            "tags": self.tags,
             "usable_keys": usable,
             "total_keys": total,
             "available": self.enabled && usable > 0,
@@ -345,6 +476,19 @@ struct ChatSettings {
     /// `order` = 固定由第一把開始；`round_robin` = 每次換下一把（分散配額）。
     #[serde(default = "default_strategy")]
     strategy: String,
+    /// AI_CHAT_V5：脈絡 token 預算（0＝用內建預設）。
+    #[serde(default = "default_context_budget")]
+    context_budget: usize,
+    /// 長對話自動濃縮成摘要。
+    #[serde(default = "default_true")]
+    summary_enabled: bool,
+    /// 完全相同的問題直接回快取，不再送上游。
+    #[serde(default = "default_true")]
+    cache_enabled: bool,
+}
+
+fn default_context_budget() -> usize {
+    CONTEXT_TOKEN_BUDGET
 }
 
 fn default_system_prompt() -> String {
@@ -366,6 +510,9 @@ impl Default for ChatSettings {
             temperature: default_temperature(),
             max_tokens: 0,
             strategy: default_strategy(),
+            context_budget: default_context_budget(),
+            summary_enabled: true,
+            cache_enabled: true,
         }
     }
 }
@@ -459,6 +606,12 @@ struct ChatThread {
     /// AI_CHAT_V2：這串對話用的模型，重新打開時自動選回同一個。
     #[serde(default)]
     model_id: String,
+    /// AI_CHAT_V5：較早對話的濃縮摘要。
+    #[serde(default)]
+    summary: String,
+    /// 已被摘要涵蓋的訊息則數（從頭算起）。
+    #[serde(default)]
+    summarized: usize,
     #[serde(default)]
     created: i64,
     #[serde(default)]
@@ -543,6 +696,25 @@ fn read_threads<T>(account: &str, read: impl FnOnce(&[ChatThread]) -> T) -> Opti
     Some(read(guard.get(account).unwrap_or(&empty)))
 }
 
+/// AI_CHAT_V5：在 token 預算內，由新到舊挑出要送給模型的歷史訊息。
+///
+/// 最新那一則一定會送（否則模型不知道使用者在問什麼），其餘依預算往前塞。
+fn select_context<'a>(history: &'a [ChatMessage], budget: usize) -> Vec<&'a ChatMessage> {
+    let mut picked: Vec<&ChatMessage> = Vec::new();
+    let mut used = 0usize;
+    for message in history.iter().rev() {
+        let cost = estimate_tokens(&message.content);
+        let is_latest = picked.is_empty();
+        if !is_latest && (used + cost > budget || picked.len() >= CONTEXT_MESSAGES) {
+            break;
+        }
+        used += cost;
+        picked.push(message);
+    }
+    picked.reverse();
+    picked
+}
+
 /// 用第一則使用者訊息當標題。
 fn derive_title(text: &str) -> String {
     let cleaned: String = text
@@ -580,6 +752,12 @@ struct ChatJob {
     code: String,
     key_name: String,
     model: String,
+    /// AI_CHAT_V3：自動模式下「為什麼挑這個模型」，顯示在回覆上方。
+    auto_reason: String,
+    /// AI_CHAT_V5：這次是不是直接命中快取。
+    cached: bool,
+    /// 成功後要寫回快取的 key（空＝不快取）。
+    cache_key: String,
     /// 輪替過程中每把密鑰的結果，失敗時攤開給使用者看。
     attempts: Vec<Value>,
     created_at: u64,
@@ -596,6 +774,8 @@ impl ChatJob {
             "thread_id": self.thread_id,
             "key_name": self.key_name,
             "model": self.model,
+            "auto_reason": self.auto_reason,
+            "cached": self.cached,
             "error": self.error,
             "code": self.code,
             "attempts": self.attempts,
@@ -642,6 +822,53 @@ fn job_cancelled(job_id: &str) -> bool {
         .ok()
         .and_then(|map| map.get(job_id).map(|j| j.cancel))
         .unwrap_or(false)
+}
+
+/// AI_CHAT_V5：完全相同的請求直接回快取。
+///
+/// key 是「模型 + 完整訊息陣列」的雜湊，所以只有連脈絡都一模一樣時才命中，
+/// 不會出現張冠李戴。校園情境重複問題多（作業截止、請假流程），命中率不低。
+static CHAT_CACHE: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, (u64, String, String)>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn chat_cache_key(model_id: &str, messages: &[Value]) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    model_id.hash(&mut hasher);
+    for message in messages {
+        message.to_string().hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+}
+
+/// 回傳 (回覆內容, 當初用的模型)。
+fn chat_cache_get(key: &str) -> Option<(String, String)> {
+    let mut map = CHAT_CACHE.lock().ok()?;
+    let now = now_secs();
+    map.retain(|_, (at, _, _)| now.saturating_sub(*at) <= CHAT_CACHE_TTL_SECS);
+    map.get(key).map(|(_, text, model)| (text.clone(), model.clone()))
+}
+
+fn chat_cache_put(key: &str, text: &str, model: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    if let Ok(mut map) = CHAT_CACHE.lock() {
+        if map.len() >= CHAT_CACHE_MAX {
+            let oldest = map
+                .iter()
+                .min_by_key(|(_, (at, _, _))| *at)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest {
+                map.remove(&k);
+            }
+        }
+        map.insert(
+            key.to_string(),
+            (now_secs(), text.to_string(), model.to_string()),
+        );
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -812,55 +1039,240 @@ fn record_success(key_id: &str, prompt_tokens: u64, completion_tokens: u64) {
 
 /// 目前可供選擇的模型。管理員沒建清單時，直接由密鑰推導（每個服務商一項），
 /// 讓「新增一把密鑰就能立刻用」不需要多做設定。
+/// 由密鑰推導出模型清單（每把密鑰的預設模型各一項）。
+fn derive_models_from_keys(keys: &[ApiKey]) -> Vec<ModelOption> {
+    let mut out: Vec<ModelOption> = Vec::new();
+    for key in keys.iter() {
+        let model = key.effective_model();
+        if model.is_empty() {
+            continue;
+        }
+        let id = format!("{}:{}", key.provider, model);
+        if out.iter().any(|m| m.id == id) {
+            continue;
+        }
+        out.push(ModelOption {
+            tier: infer_tier(&model),
+            tags: infer_tags(&model),
+            id,
+            label: String::new(),
+            provider: key.provider.clone(),
+            model,
+            enabled: true,
+        });
+    }
+    out
+}
+
+/// AI_CHAT_V4：把一批模型名稱登記成使用者可選的模型。
+///
+/// 關鍵細節：目前若還是「自動推導」狀態（`store.models` 是空的），必須**先把
+/// 推導結果固化**再寫入，否則一旦清單變成非空，其他密鑰推導出來的模型會整批
+/// 消失 —— 使用者會覺得「我只是新增一把金鑰，別的模型怎麼不見了」。
+fn register_models(store: &mut ChatStore, provider: &str, models: &[String]) -> usize {
+    let wanted: Vec<String> = models
+        .iter()
+        .filter_map(|m| sanitize_model_name(provider, m).ok())
+        .collect();
+    if wanted.is_empty() {
+        return 0;
+    }
+    if store.models.is_empty() {
+        store.models = derive_models_from_keys(&store.keys);
+    }
+    let mut added = 0usize;
+    for model in wanted {
+        let id = format!("{provider}:{model}");
+        if store.models.iter().any(|m| m.id == id) {
+            continue;
+        }
+        store.models.push(ModelOption {
+            tier: infer_tier(&model),
+            tags: infer_tags(&model),
+            id,
+            label: String::new(),
+            provider: provider.to_string(),
+            model,
+            enabled: true,
+        });
+        added += 1;
+    }
+    added
+}
+
 fn model_options() -> Vec<ModelOption> {
     read_store(|store| {
         if !store.models.is_empty() {
             return store.models.clone();
         }
-        let mut out: Vec<ModelOption> = Vec::new();
-        for key in store.keys.iter() {
-            let model = key.effective_model();
-            if model.is_empty() {
-                continue;
-            }
-            let id = format!("{}:{}", key.provider, model);
-            if out.iter().any(|m| m.id == id) {
-                continue;
-            }
-            out.push(ModelOption {
-                id,
-                label: String::new(),
-                provider: key.provider.clone(),
-                model,
-                enabled: true,
-            });
-        }
-        out
+        derive_models_from_keys(&store.keys)
     })
     .unwrap_or_default()
 }
 
-/// 把使用者選的模型 id 解析成實際設定。
-/// 沒指定（或指定的已被刪掉）時，自動挑第一個「真的有可用密鑰」的模型。
-fn resolve_model(id: &str) -> Option<ModelOption> {
-    let options = model_options();
-    let wanted = id.trim();
-    if !wanted.is_empty() {
-        if let Some(found) = options.iter().find(|m| m.id == wanted && m.enabled) {
-            return Some(found.clone());
+/// 「自動」這個虛擬選項的 id。
+const AUTO_MODEL_ID: &str = "auto";
+
+/// 使用者這則訊息的性質。用來決定該派哪種模型出場。
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PromptNeed {
+    code: bool,
+    math: bool,
+    long: bool,
+    simple: bool,
+}
+
+/// AI_CHAT_V3：判斷問題性質。
+///
+/// 刻意用規則而不是「先問一次小模型」——後者每則訊息都要多一次往返，
+/// 既慢又多燒一次額度，而且結果不穩定。規則式是決定性的，可以直接測。
+fn classify_prompt(text: &str) -> PromptNeed {
+    let lower = text.to_ascii_lowercase();
+    let chars = text.chars().count();
+
+    // 程式碼：圍欄、常見關鍵字、或明顯的程式符號組合。
+    const CODE_WORDS: [&str; 18] = [
+        "```", "function ", "def ", "class ", "import ", "select ", "console.log", "std::",
+        "public static", "程式", "程式碼", "code", "bug", "編譯", "報錯", "stack trace",
+        "npm ", "cargo ",
+    ];
+    let code = CODE_WORDS.iter().any(|w| lower.contains(w));
+
+    // 數學／推理：算式符號或關鍵字。
+    const MATH_WORDS: [&str; 12] = [
+        "證明", "推導", "計算", "解方程", "積分", "微分", "機率", "matrix", "prove",
+        "integral", "derivative", "equation",
+    ];
+    let math = MATH_WORDS.iter().any(|w| lower.contains(w))
+        || (text.contains('=') && text.chars().filter(|c| c.is_ascii_digit()).count() >= 4);
+
+    // 長文：整理／摘要大段文字，需要長上下文與較強的模型。
+    let long = chars > 1200;
+
+    // 簡單：很短、沒有上述特徵，用便宜的模型就好。
+    //
+    // 門檻刻意壓到 16 字：中文很精簡，「幫我寫一封請假信給教授」只有 11 字
+    // 卻是一個完整任務，用 40 字當門檻會把這種請求誤判成閒聊而派出小模型。
+    let simple = chars <= 16 && !code && !math;
+
+    PromptNeed {
+        code,
+        math,
+        long,
+        simple,
+    }
+}
+
+/// 依問題性質挑一個最合適的模型，回傳（模型, 選它的理由）。
+///
+/// 只在「有可用密鑰」的模型裡面挑，所以自動模式永遠不會挑到一個
+/// 送出去就失敗的模型。
+fn pick_auto_model(text: &str, options: &[ModelOption], keys: &[ApiKey]) -> Option<(ModelOption, String)> {
+    let need = classify_prompt(text);
+    let total = options.len() as i32;
+    let mut best: Option<(i32, usize, &ModelOption)> = None;
+
+    for (index, option) in options.iter().enumerate() {
+        if !option.enabled {
+            continue;
+        }
+        let usable = keys
+            .iter()
+            .any(|k| k.provider == option.provider && k.available());
+        if !usable {
+            continue;
+        }
+
+        let mut score = 0i32;
+        let has = |tag: &str| option.tags.iter().any(|t| t == tag);
+
+        if need.code {
+            score += if has("code") { 40 } else { 0 };
+            score += match option.tier.as_str() {
+                "deep" => 12,
+                "fast" => -8,
+                _ => 4,
+            };
+        }
+        if need.math {
+            score += if has("math") { 35 } else { 0 };
+            score += match option.tier.as_str() {
+                "deep" => 15,
+                "fast" => -10,
+                _ => 3,
+            };
+        }
+        if need.long {
+            score += if has("long") { 20 } else { 0 };
+            score += match option.tier.as_str() {
+                "deep" => 25,
+                "fast" => -15,
+                _ => 6,
+            };
+        }
+        if need.simple {
+            // 打招呼、一句話的小問題，不需要動用貴的模型。
+            score += match option.tier.as_str() {
+                "fast" => 25,
+                "deep" => -12,
+                _ => 5,
+            };
+        }
+        if !need.code && !need.math && !need.long && !need.simple {
+            score += match option.tier.as_str() {
+                "balanced" => 10,
+                "fast" => 4,
+                _ => 2,
+            };
+        }
+        // 同分時尊重管理員排的順序（越前面越優先）。
+        score = score * 100 + (total - index as i32);
+
+        if best.map(|(b, _, _)| score > b).unwrap_or(true) {
+            best = Some((score, index, option));
         }
     }
+
+    let (_, _, chosen) = best?;
+    let reason = if need.code {
+        "偵測到程式問題"
+    } else if need.math {
+        "偵測到計算／推理問題"
+    } else if need.long {
+        "內容較長，需要較強的模型"
+    } else if need.simple {
+        "簡短問題，用快速模型即可"
+    } else {
+        "一般問題"
+    };
+    Some((
+        chosen.clone(),
+        format!("自動選用：{}（{}）", chosen.display(), reason),
+    ))
+}
+
+/// 把使用者選的模型 id 解析成實際設定，並附上「為什麼是這個」的說明。
+///
+/// - `auto`（或留空）→ 依問題性質自動挑。
+/// - 指定的模型不存在／被停用 → 退回自動挑，不讓使用者卡住。
+fn resolve_model(id: &str, prompt: &str) -> (Option<ModelOption>, String) {
+    let options = model_options();
     let keys = read_store(|store| store.keys.clone()).unwrap_or_default();
-    options
-        .iter()
-        .find(|m| {
-            m.enabled
-                && keys
-                    .iter()
-                    .any(|k| k.provider == m.provider && k.available())
-        })
-        .cloned()
-        .or_else(|| options.into_iter().find(|m| m.enabled))
+    let wanted = id.trim();
+
+    if !wanted.is_empty() && wanted != AUTO_MODEL_ID {
+        if let Some(found) = options.iter().find(|m| m.id == wanted && m.enabled) {
+            return (Some(found.clone()), String::new());
+        }
+    }
+
+    if let Some((chosen, reason)) = pick_auto_model(prompt, &options, &keys) {
+        return (Some(chosen), reason);
+    }
+
+    // 一個有可用密鑰的模型都沒有：退而求其次挑第一個啟用的，
+    // 讓錯誤訊息由實際送出時的輪替流程產生（訊息比較具體）。
+    (options.into_iter().find(|m| m.enabled), String::new())
 }
 
 /// 取出這次要嘗試的密鑰順序。已冷卻到期的會先自動復活。
@@ -946,13 +1358,18 @@ async fn stream_once(
         Some(name) if !name.trim().is_empty() => name.trim().to_string(),
         _ => key.effective_model(),
     };
-    if model.is_empty() {
-        return Err(AttemptError::Failed {
-            kind: FailureKind::BadRequest,
-            message: "沒有設定模型名稱".to_string(),
-            status: None,
-        });
-    }
+    // AI_CHAT_V5：送出前再驗一次。上游對格式錯誤只會回一句
+    // 「unexpected model name format」，不講是哪個模型，很難查。
+    let model = match sanitize_model_name(&key.provider, &model) {
+        Ok(name) => name,
+        Err(reason) => {
+            return Err(AttemptError::Failed {
+                kind: FailureKind::BadRequest,
+                message: format!("模型名稱有問題 —— {reason}"),
+                status: None,
+            })
+        }
+    };
     let url = format!("{base}/chat/completions");
 
     let mut payload = json!({
@@ -1002,9 +1419,18 @@ async fn stream_once(
         if include_usage && status == 400 && lower.contains("stream_options") {
             return Err(AttemptError::RetryWithoutUsage);
         }
+        let kind = classify_failure(status, &body);
+        let detail = extract_error_message(&body);
+        // 上游只會說「unexpected model name format」，不講是哪個模型。
+        // 把模型名稱補進訊息裡，使用者才知道要去改哪一個。
+        let message = if kind == FailureKind::BadRequest {
+            format!("HTTP {status}（模型 {model}）：{detail}")
+        } else {
+            format!("HTTP {status}：{detail}")
+        };
         return Err(AttemptError::Failed {
-            kind: classify_failure(status, &body),
-            message: format!("HTTP {status}：{}", extract_error_message(&body)),
+            kind,
+            message,
             status: Some(status),
         });
     }
@@ -1114,6 +1540,150 @@ async fn stream_once(
         prompt_tokens,
         completion_tokens,
     })
+}
+
+/// AI_CHAT_V5：非串流的單次呼叫，給摘要這種背景工作用。
+async fn complete_once(
+    key: &ApiKey,
+    model: &str,
+    messages: Vec<Value>,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let base = key.effective_base_url();
+    if base.is_empty() {
+        return Err("沒有 API 網址".to_string());
+    }
+    let model = sanitize_model_name(&key.provider, model)?;
+    let response = AI_CLIENT
+        .post(format!("{base}/chat/completions"))
+        .bearer_auth(key.secret.trim())
+        .json(&json!({
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.2,
+            "stream": false,
+        }))
+        .send()
+        .await
+        .map_err(|e| detail_snippet(&e.to_string()))?;
+
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    if !(200..300).contains(&status) {
+        // 摘要失敗時也要讓密鑰狀態跟著更新，否則額度用盡不會被記錄。
+        let kind = classify_failure(status, &body);
+        let message = extract_error_message(&body);
+        record_failure(&key.id, kind, &message);
+        return Err(format!("HTTP {status}：{message}"));
+    }
+    let value: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let text = value
+        .pointer("/choices/0/message/content")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if text.is_empty() {
+        return Err("上游沒有回傳摘要內容".to_string());
+    }
+    Ok(text)
+}
+
+/// 挑一個最便宜的可用模型來做摘要 —— 摘要本身不該花大錢。
+fn pick_cheapest_model() -> Option<(ModelOption, ApiKey)> {
+    let options = model_options();
+    let keys = read_store(|store| store.keys.clone()).unwrap_or_default();
+    let mut best: Option<(u8, ModelOption, ApiKey)> = None;
+    for option in options.iter().filter(|m| m.enabled) {
+        let Some(key) = keys
+            .iter()
+            .find(|k| k.provider == option.provider && k.available())
+        else {
+            continue;
+        };
+        let rank = match option.tier.as_str() {
+            "fast" => 0,
+            "balanced" => 1,
+            _ => 2,
+        };
+        if best.as_ref().map(|(r, _, _)| rank < *r).unwrap_or(true) {
+            best = Some((rank, option.clone(), key.clone()));
+        }
+    }
+    best.map(|(_, option, key)| (option, key))
+}
+
+/// AI_CHAT_V5：把較早的對話濃縮成一段摘要。
+///
+/// 在回覆送出「之後」才於背景執行，所以使用者完全感覺不到延遲；
+/// 摘要只做一次並存進對話串，之後每輪都直接重用，成本被攤平。
+async fn maybe_summarize(account: String, thread_id: String) {
+    let Some((previous, pending, keep_from)) = read_threads(&account, |threads| {
+        let thread = threads.iter().find(|t| t.id == thread_id)?;
+        let total = thread.messages.len();
+        // 保留最近幾則原文，只濃縮更早的部分。
+        if total < thread.summarized + SUMMARY_TRIGGER {
+            return None;
+        }
+        let cut = total.saturating_sub(SUMMARY_KEEP_RAW);
+        if cut <= thread.summarized {
+            return None;
+        }
+        let pending: Vec<ChatMessage> = thread.messages[thread.summarized..cut].to_vec();
+        Some((thread.summary.clone(), pending, cut))
+    })
+    .flatten() else {
+        return;
+    };
+
+    let Some((option, key)) = pick_cheapest_model() else {
+        return;
+    };
+
+    let mut transcript = String::new();
+    for message in pending.iter() {
+        let who = if message.role == "user" { "使用者" } else { "助理" };
+        transcript.push_str(&format!("{who}：{}
+", message.content));
+    }
+
+    let instruction = if previous.trim().is_empty() {
+        "把以下對話濃縮成重點摘要，保留人名、日期、數字、結論與待辦事項。用繁體中文條列，不要加入原文沒有的內容。".to_string()
+    } else {
+        format!(
+            "這是既有摘要：
+{previous}
+
+請把既有摘要與以下新對話合併成一份更新後的摘要，保留人名、日期、數字、結論與待辦事項。用繁體中文條列，不要加入原文沒有的內容。"
+        )
+    };
+
+    let messages = vec![
+        json!({ "role": "system", "content": instruction }),
+        json!({ "role": "user", "content": transcript }),
+    ];
+
+    match complete_once(&key, &option.model, messages, SUMMARY_MAX_TOKENS).await {
+        Ok(summary) => {
+            let _ = with_threads(&account, |threads| {
+                if let Some(thread) = threads.iter_mut().find(|t| t.id == thread_id) {
+                    // 期間可能又有新訊息，只認領當初算好的範圍。
+                    if thread.messages.len() >= keep_from {
+                        thread.summary = summary.clone();
+                        thread.summarized = keep_from;
+                    }
+                }
+            });
+            tracing::info!(
+                thread = %thread_id,
+                upto = keep_from,
+                model = %option.model,
+                "對話摘要已更新"
+            );
+        }
+        Err(e) => tracing::warn!("對話摘要失敗（不影響聊天）：{e}"),
+    }
 }
 
 /// 背景生成：依序嘗試每一把可用密鑰，直到有人成功。
@@ -1306,11 +1876,19 @@ fn finish_job_success(job_id: &str, key_name: &str, model: &str, attempts: Vec<V
         job.key_name = key_name.to_string();
         job.model = model.to_string();
         job.attempts = attempts;
-        (job.account.clone(), job.thread_id.clone(), job.text.clone())
+        (
+            job.account.clone(),
+            job.thread_id.clone(),
+            job.text.clone(),
+            job.cache_key.clone(),
+        )
     });
-    let Some((account, thread_id, text)) = snapshot else {
+    let Some((account, thread_id, text, cache_key)) = snapshot else {
         return;
     };
+    if !cache_key.is_empty() {
+        chat_cache_put(&cache_key, &text, model);
+    }
     append_assistant_message(&account, &thread_id, &text, key_name, model);
 }
 
@@ -1408,6 +1986,9 @@ pub(super) async fn state_handler(
                 "temperature": store.settings.temperature,
                 "max_tokens": store.settings.max_tokens,
                 "strategy": store.settings.strategy,
+                "context_budget": store.settings.context_budget,
+                "summary_enabled": store.settings.summary_enabled,
+                "cache_enabled": store.settings.cache_enabled,
             }),
         )
     })
@@ -1453,6 +2034,8 @@ pub(super) async fn state_handler(
             "providers": providers,
             "models": models,
             "models_customized": models_customized,
+            "page_version": PAGE_VERSION,
+            "build": build_stamp(),
             "can_manage": can_manage,
             "is_admin": session.is_admin,
             "usable_keys": usable,
@@ -1482,6 +2065,10 @@ pub(super) struct KeyActionRequest {
     secret: String,
     #[serde(default)]
     model: String,
+    /// AI_CHAT_V4：這把密鑰能用的所有模型（一行一個）。
+    /// 第一個當作這把密鑰的預設模型，全部都會登記成使用者可選的模型。
+    #[serde(default)]
+    models: Vec<String>,
     #[serde(default)]
     enabled: Option<bool>,
     /// `move` 用：-1 上移、1 下移。
@@ -1525,13 +2112,24 @@ pub(super) async fn keys_handler(
             if store.keys.iter().any(|k| k.secret == body.secret.trim()) {
                 return Err("這把密鑰已經加過了".to_string());
             }
+            // 多行模型的第一個當預設；沒填 models 就退回單一 model 欄位。
+            let listed: Vec<String> = body
+                .models
+                .iter()
+                .map(|m| normalize_model_id(m))
+                .filter(|m| !m.is_empty())
+                .collect();
+            let default_model = listed
+                .first()
+                .cloned()
+                .unwrap_or_else(|| body.model.trim().to_string());
             store.keys.push(ApiKey {
                 id: uuid::Uuid::new_v4().to_string(),
                 label: body.label.trim().to_string(),
-                provider,
+                provider: provider.clone(),
                 base_url: body.base_url.trim().to_string(),
                 secret: body.secret.trim().to_string(),
-                model: body.model.trim().to_string(),
+                model: default_model,
                 enabled: body.enabled.unwrap_or(true),
                 status: KeyStatus::Ok,
                 cooldown_until: 0,
@@ -1543,9 +2141,21 @@ pub(super) async fn keys_handler(
                 completion_tokens: 0,
                 usage_supported: true,
             });
-            Ok("已新增密鑰".to_string())
+            let listed_count = listed.len();
+            register_models(store, &provider, &listed);
+            Ok(if listed_count > 0 {
+                format!("已新增密鑰，這把金鑰可用 {listed_count} 個模型")
+            } else {
+                "已新增密鑰".to_string()
+            })
         }
         "update" => {
+            let listed: Vec<String> = body
+                .models
+                .iter()
+                .map(|m| normalize_model_id(m))
+                .filter(|m| !m.is_empty())
+                .collect();
             let Some(key) = store.keys.iter_mut().find(|k| k.id == body.id) else {
                 return Err("找不到這把密鑰".to_string());
             };
@@ -1554,7 +2164,10 @@ pub(super) async fn keys_handler(
                 key.provider = body.provider.trim().to_string();
             }
             key.base_url = body.base_url.trim().to_string();
-            key.model = body.model.trim().to_string();
+            key.model = listed
+                .first()
+                .cloned()
+                .unwrap_or_else(|| body.model.trim().to_string());
             // 密鑰留空代表不更動（前端顯示的是遮蔽字串）。
             if !body.secret.trim().is_empty() {
                 key.secret = body.secret.trim().to_string();
@@ -1565,7 +2178,15 @@ pub(super) async fn keys_handler(
             if let Some(enabled) = body.enabled {
                 key.enabled = enabled;
             }
-            Ok("已更新密鑰".to_string())
+            // 借用結束後才能再動 store.models。
+            let provider = key.provider.clone();
+            let listed_count = listed.len();
+            register_models(store, &provider, &listed);
+            Ok(if listed_count > 0 {
+                format!("已更新密鑰，這把金鑰可用 {listed_count} 個模型")
+            } else {
+                "已更新密鑰".to_string()
+            })
         }
         "delete" => {
             let before = store.keys.len();
@@ -1735,6 +2356,12 @@ pub(super) struct SettingsRequest {
     max_tokens: Option<u32>,
     #[serde(default)]
     strategy: Option<String>,
+    #[serde(default)]
+    context_budget: Option<usize>,
+    #[serde(default)]
+    summary_enabled: Option<bool>,
+    #[serde(default)]
+    cache_enabled: Option<bool>,
 }
 
 pub(super) async fn settings_handler(
@@ -1765,6 +2392,16 @@ pub(super) async fn settings_handler(
                 store.settings.strategy = strategy;
             }
         }
+        if let Some(budget) = body.context_budget {
+            // 太小會讓模型看不到上一句，設下限。
+            store.settings.context_budget = budget.clamp(200, 32_000);
+        }
+        if let Some(enabled) = body.summary_enabled {
+            store.settings.summary_enabled = enabled;
+        }
+        if let Some(enabled) = body.cache_enabled {
+            store.settings.cache_enabled = enabled;
+        }
     });
 
     (StatusCode::OK, Json(json!({ "ok": true, "message": "已儲存設定" }))).into_response()
@@ -1787,6 +2424,76 @@ pub(super) struct ModelActionRequest {
     enabled: Option<bool>,
     #[serde(default)]
     offset: i32,
+    /// AI_CHAT_V3：一次填入多個模型名稱。
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default)]
+    tier: String,
+    /// 逗號分隔的標籤字串。
+    #[serde(default)]
+    tags: String,
+}
+
+/// 服務商的模型名稱是否允許帶斜線（`vendor/model` 形式）。
+/// OpenRouter 一定要帶（`openai/gpt-4o`），Gemini 帶了就會被拒。
+fn provider_allows_slash(provider: &str) -> bool {
+    matches!(provider, "openrouter" | "custom")
+}
+
+/// AI_CHAT_V5：把模型名稱清成上游能接受的格式。
+///
+/// 實測結果：Gemini 的 `GenerateContentRequest.model` 只吃
+/// `models/{name}` 這種格式，name 裡有斜線或空白就會回
+/// `400 unexpected model name format`。使用者常從免費 API 清單複製到
+/// OpenRouter 格式的 `google/gemini-2.0-flash`，貼進 Gemini 就爆這個錯。
+fn normalize_model_id(raw: &str) -> String {
+    // 全形空白與零寬字元一併清掉（從網頁複製很常夾帶）。
+    let cleaned: String = raw
+        .chars()
+        .filter(|c| !matches!(*c, '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}'))
+        .map(|c| if c == '\u{3000}' || c == '\u{a0}' { ' ' } else { c })
+        .collect();
+    let mut name = cleaned.trim().to_string();
+    // Gemini 的清單會回 models/xxx，重複前綴也一併剝掉。
+    while let Some(rest) = name.strip_prefix("models/") {
+        name = rest.trim().to_string();
+    }
+    name
+}
+
+/// 依服務商清洗並驗證模型名稱。回傳 `Err` 時附上人看得懂的原因。
+fn sanitize_model_name(provider: &str, raw: &str) -> Result<String, String> {
+    let mut name = normalize_model_id(raw);
+    if name.is_empty() {
+        return Err("模型名稱是空的".to_string());
+    }
+
+    // 不吃斜線的服務商：把 `google/gemini-2.0-flash` 這種前綴自動修掉，
+    // 而不是讓使用者對著 400 錯誤發呆。
+    if !provider_allows_slash(provider) {
+        if let Some((vendor, rest)) = name.split_once('/') {
+            if rest.contains('/') {
+                return Err(format!(
+                    "「{name}」含有多個斜線，{} 不接受這種格式",
+                    provider_display(provider)
+                ));
+            }
+            tracing::info!(provider, vendor, "自動移除模型名稱的服務商前綴");
+            name = rest.to_string();
+        }
+    }
+
+    if name.contains(char::is_whitespace) {
+        return Err(format!("「{name}」含有空白字元，請確認是否複製到多餘內容"));
+    }
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/');
+    if let Some(bad) = name.chars().find(|c| !allowed(*c)) {
+        return Err(format!("「{name}」含有不合法的字元「{bad}」"));
+    }
+    if name.len() > 120 {
+        return Err("模型名稱過長".to_string());
+    }
+    Ok(name)
 }
 
 /// AI_CHAT_V2：管理員維護「使用者可以選哪些模型」。
@@ -1824,6 +2531,8 @@ pub(super) async fn models_handler(
                 return Err("這個模型已經在清單裡了".to_string());
             }
             store.models.push(ModelOption {
+                tier: infer_tier(&model),
+                tags: infer_tags(&model),
                 id,
                 label: body.label.trim().to_string(),
                 provider,
@@ -1831,6 +2540,67 @@ pub(super) async fn models_handler(
                 enabled: body.enabled.unwrap_or(true),
             });
             Ok("已新增模型".to_string())
+        }
+        "bulk_add" => {
+            let provider = body.provider.trim().to_string();
+            if provider_preset(&provider).is_none() {
+                return Err(format!("不認得的服務商：{provider}"));
+            }
+            let mut added = 0usize;
+            let mut skipped = 0usize;
+            // 一行一個模型名稱，或由「抓取模型」勾選後送過來。
+            for raw in body.models.iter() {
+                let model = normalize_model_id(raw);
+                if model.is_empty() {
+                    continue;
+                }
+                let id = format!("{provider}:{model}");
+                if store.models.iter().any(|m| m.id == id) {
+                    skipped += 1;
+                    continue;
+                }
+                store.models.push(ModelOption {
+                    tier: infer_tier(&model),
+                    tags: infer_tags(&model),
+                    id,
+                    label: String::new(),
+                    provider: provider.clone(),
+                    model,
+                    enabled: true,
+                });
+                added += 1;
+            }
+            if added == 0 {
+                return Err(if skipped > 0 {
+                    "這些模型都已經在清單裡了".to_string()
+                } else {
+                    "沒有可新增的模型名稱".to_string()
+                });
+            }
+            Ok(format!("已新增 {added} 個模型（略過重複 {skipped} 個）"))
+        }
+        "set_tier" => {
+            let tier = body.tier.trim();
+            if !matches!(tier, "fast" | "balanced" | "deep") {
+                return Err("分級只能是 fast／balanced／deep".to_string());
+            }
+            let Some(item) = store.models.iter_mut().find(|m| m.id == body.id) else {
+                return Err("找不到這個模型".to_string());
+            };
+            item.tier = tier.to_string();
+            Ok("已更新分級".to_string())
+        }
+        "set_tags" => {
+            let Some(item) = store.models.iter_mut().find(|m| m.id == body.id) else {
+                return Err("找不到這個模型".to_string());
+            };
+            item.tags = body
+                .tags
+                .split(&[',', '，', ' '][..])
+                .map(|t| t.trim().to_ascii_lowercase())
+                .filter(|t| !t.is_empty())
+                .collect();
+            Ok("已更新擅長領域".to_string())
         }
         "delete" => {
             let before = store.models.len();
@@ -1874,24 +2644,7 @@ pub(super) async fn models_handler(
             if !store.models.is_empty() {
                 return Err("清單已經是自訂狀態".to_string());
             }
-            let mut out: Vec<ModelOption> = Vec::new();
-            for key in store.keys.iter() {
-                let model = key.effective_model();
-                if model.is_empty() {
-                    continue;
-                }
-                let id = format!("{}:{}", key.provider, model);
-                if out.iter().any(|m| m.id == id) {
-                    continue;
-                }
-                out.push(ModelOption {
-                    id,
-                    label: String::new(),
-                    provider: key.provider.clone(),
-                    model,
-                    enabled: true,
-                });
-            }
+            let out = derive_models_from_keys(&store.keys);
             if out.is_empty() {
                 return Err("目前沒有密鑰可以推導模型".to_string());
             }
@@ -1961,10 +2714,12 @@ pub(super) async fn chat_handler(
     }
 
     let account = session.account_id.clone();
+    // ChatJob 會吃掉 account，快取路徑與背景摘要另外留一份。
+    let account_for_cache = account.clone();
 
     // 先確定要用哪個模型。使用者選的優先，沒選（或選的已被管理員刪掉）
     // 就自動挑一個真的有可用密鑰的。
-    let selection = resolve_model(&body.model_id);
+    let (selection, auto_reason) = resolve_model(&body.model_id, &text);
     if selection.is_none() {
         let total = read_store(|store| store.keys.len()).unwrap_or(0);
         return (
@@ -1984,6 +2739,13 @@ pub(super) async fn chat_handler(
         .as_ref()
         .map(|m| m.id.clone())
         .unwrap_or_default();
+    // 使用者選的是「自動」時，對話串要記住 auto，
+    // 否則下次打開這串對話會被固定成這次剛好挑中的那個模型。
+    let remembered_id = if body.model_id.trim() == AUTO_MODEL_ID || body.model_id.trim().is_empty() {
+        AUTO_MODEL_ID.to_string()
+    } else {
+        selected_id.clone()
+    };
 
     // 把使用者訊息寫進對話串（沒有指定就開一個新的）。
     let thread_id = if body.thread_id.trim().is_empty() {
@@ -2000,7 +2762,9 @@ pub(super) async fn chat_handler(
                 threads.push(ChatThread {
                     id: thread_id.clone(),
                     title: derive_title(&text),
-                    model_id: selected_id.clone(),
+                    model_id: remembered_id.clone(),
+                    summary: String::new(),
+                    summarized: 0,
                     created: now_millis(),
                     updated: now_millis(),
                     messages: Vec::new(),
@@ -2013,7 +2777,7 @@ pub(super) async fn chat_handler(
             thread.title = derive_title(&text);
         }
         // 中途換模型也記下來，下次打開這串對話會選回最後用的那個。
-        thread.model_id = selected_id.clone();
+        thread.model_id = remembered_id.clone();
         thread.messages.push(ChatMessage {
             role: "user".to_string(),
             content: text.clone(),
@@ -2026,21 +2790,62 @@ pub(super) async fn chat_handler(
             thread.messages.drain(..drop);
         }
         thread.updated = now_millis();
-        thread.messages.clone()
+        (
+            thread.messages.clone(),
+            thread.summary.clone(),
+            thread.summarized.min(thread.messages.len()),
+        )
     })
     .unwrap_or_default();
+    let (history, thread_summary, summarized) = history;
 
     let settings = read_store(|store| store.settings.clone()).unwrap_or_default();
 
-    // 組送給模型的訊息：system + 最近 N 則。
+    // AI_CHAT_V5：組送給模型的訊息 = system ＋ 較早內容的摘要 ＋ token 預算內的最近幾則。
     let mut messages: Vec<Value> = Vec::new();
     if !settings.system_prompt.trim().is_empty() {
         messages.push(json!({ "role": "system", "content": settings.system_prompt }));
     }
-    let start = history.len().saturating_sub(CONTEXT_MESSAGES);
-    for message in history.iter().skip(start) {
+    if !thread_summary.trim().is_empty() {
+        messages.push(json!({
+            "role": "system",
+            "content": format!("以下是這段對話較早內容的摘要，供你延續脈絡：\n{thread_summary}"),
+        }));
+    }
+    let budget = if settings.context_budget == 0 {
+        CONTEXT_TOKEN_BUDGET
+    } else {
+        settings.context_budget
+    };
+    // 已被摘要涵蓋的部分不再原文重送。
+    let recent = &history[summarized.min(history.len())..];
+    let picked = select_context(recent, budget);
+    let context_tokens: usize = picked
+        .iter()
+        .map(|m| estimate_tokens(&m.content))
+        .sum::<usize>();
+    for message in picked {
         messages.push(json!({ "role": message.role, "content": message.content }));
     }
+    tracing::debug!(
+        history = history.len(),
+        summarized,
+        sent = messages.len(),
+        est_tokens = context_tokens,
+        "AI 脈絡組裝完成"
+    );
+
+    // 完全相同的請求直接回快取（temperature 拉高時代表要多樣性，就不快取）。
+    let cache_key = if settings.cache_enabled && settings.temperature < 1.0 {
+        chat_cache_key(&selected_id, &messages)
+    } else {
+        String::new()
+    };
+    let cache_hit = if cache_key.is_empty() {
+        None
+    } else {
+        chat_cache_get(&cache_key)
+    };
 
     let job_id = uuid::Uuid::new_v4().to_string();
     job_insert(
@@ -2056,16 +2861,37 @@ pub(super) async fn chat_handler(
             code: String::new(),
             key_name: String::new(),
             model: String::new(),
+            auto_reason: auto_reason.clone(),
+            cached: cache_hit.is_some(),
+            cache_key: cache_key.clone(),
             attempts: Vec::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
         },
     );
 
-    {
+    if let Some((text, model)) = cache_hit {
+        // 直接把 job 標成完成，前端照原本的輪詢流程就會立刻拿到答案。
+        let _ = job_update(&job_id, |job| {
+            job.done = true;
+            job.ok = true;
+            job.text = text.clone();
+            job.model = model.clone();
+            job.key_name = "快取".to_string();
+        });
+        append_assistant_message(&account_for_cache, &thread_id, &text, "快取", &model);
+        tracing::info!(model = %model, "AI 回覆命中快取，未呼叫上游");
+    } else {
         let job_id = job_id.clone();
+        let summary_enabled = settings.summary_enabled;
+        let account = account_for_cache.clone();
+        let thread = thread_id.clone();
         tokio::spawn(async move {
             run_chat_job(job_id, messages, settings, selection).await;
+            // 回覆送出後才在背景濃縮較早的對話，使用者感覺不到延遲。
+            if summary_enabled {
+                maybe_summarize(account, thread).await;
+            }
         });
     }
 
@@ -2075,6 +2901,7 @@ pub(super) async fn chat_handler(
             "job_id": job_id,
             "thread_id": thread_id,
             "model_id": selected_id,
+            "auto_reason": auto_reason,
             "state": "running",
             "poll_path": "/admin/api/ai/chat/status",
             "poll_ms": 350,
@@ -2408,6 +3235,8 @@ mod ai_chat_tests {
             provider: "openai".into(),
             model: "gpt-4o-mini".into(),
             enabled: true,
+            tier: "balanced".into(),
+            tags: Vec::new(),
         };
         // 使用者看到的是「ChatGPT」而不是「openai」。
         assert_eq!(option.display(), "ChatGPT · gpt-4o-mini");
@@ -2428,6 +3257,8 @@ mod ai_chat_tests {
             provider: "gemini".into(),
             model: "gemini-2.0-flash".into(),
             enabled: true,
+            tier: "balanced".into(),
+            tags: Vec::new(),
         };
         // 只有 OpenAI 密鑰時，Gemini 這個選項要顯示成不可用。
         let keys = vec![key_for("openai", "gpt-4o-mini", KeyStatus::Ok)];
@@ -2459,11 +3290,339 @@ mod ai_chat_tests {
             provider: "openai".into(),
             model: "gpt-4o".into(),
             enabled: false,
+            tier: "balanced".into(),
+            tags: Vec::new(),
         };
         let keys = vec![key_for("openai", "gpt-4o", KeyStatus::Ok)];
         // 有可用密鑰，但管理員把它關掉了。
         assert_eq!(option.to_json(&keys)["available"], serde_json::json!(false));
         assert_eq!(option.to_json(&keys)["usable_keys"], serde_json::json!(1));
+    }
+
+    #[test]
+    fn a_slash_prefixed_model_name_is_repaired_for_gemini() {
+        // 使用者常從免費 API 清單複製到 OpenRouter 格式，貼進 Gemini 會回
+        // 400 unexpected model name format。這裡直接修掉而不是讓它爆。
+        assert_eq!(
+            sanitize_model_name("gemini", "google/gemini-2.0-flash").unwrap(),
+            "gemini-2.0-flash"
+        );
+        assert_eq!(
+            sanitize_model_name("gemini", "models/gemini-2.5-pro").unwrap(),
+            "gemini-2.5-pro"
+        );
+        // OpenRouter 反過來一定要保留斜線。
+        assert_eq!(
+            sanitize_model_name("openrouter", "google/gemini-2.0-flash").unwrap(),
+            "google/gemini-2.0-flash"
+        );
+    }
+
+    #[test]
+    fn a_malformed_model_name_is_rejected_with_a_readable_reason() {
+        assert!(sanitize_model_name("gemini", "   ").is_err());
+        let spaced = sanitize_model_name("gemini", "gemini 2.0 flash").unwrap_err();
+        assert!(spaced.contains("空白"), "{spaced}");
+        let bad = sanitize_model_name("gemini", "gemini-2.0-flash★").unwrap_err();
+        assert!(bad.contains("不合法"), "{bad}");
+        let many = sanitize_model_name("gemini", "a/b/c").unwrap_err();
+        assert!(many.contains("斜線"), "{many}");
+        // 從網頁複製常夾帶的零寬字元與全形空白要被清掉。
+        assert_eq!(
+            sanitize_model_name("gemini", "\u{feff}gemini-2.0-flash").unwrap(),
+            "gemini-2.0-flash"
+        );
+        assert!(sanitize_model_name("gemini", "gemini\u{3000}flash").is_err());
+    }
+
+    #[test]
+    fn token_estimate_treats_chinese_as_one_token_per_character() {
+        // 4 個中文字 + 每則固定開銷 4
+        assert_eq!(estimate_tokens("你好世界"), 8);
+        // 8 個 ASCII 字元 → 2 tokens + 4
+        assert_eq!(estimate_tokens("abcdefgh"), 6);
+        assert!(estimate_tokens("") == 4);
+        // 長文要明顯比短文貴。
+        assert!(estimate_tokens(&"公告內容".repeat(100)) > estimate_tokens("你好"));
+    }
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.into(),
+            content: content.into(),
+            ts: 0,
+            key_name: String::new(),
+            model: String::new(),
+        }
+    }
+
+    #[test]
+    fn context_selection_respects_the_token_budget() {
+        let history: Vec<ChatMessage> = (0..20)
+            .map(|i| msg(if i % 2 == 0 { "user" } else { "assistant" }, &"字".repeat(100)))
+            .collect();
+        // 每則約 104 tokens，預算 500 大約只塞得下 4 則。
+        let picked = select_context(&history, 500);
+        assert!(picked.len() >= 4 && picked.len() <= 5, "實際 {}", picked.len());
+        // 一定要保留最新的那一則，否則模型不知道使用者在問什麼。
+        assert_eq!(
+            picked.last().unwrap().content,
+            history.last().unwrap().content
+        );
+        // 順序要維持由舊到新。
+        let all = select_context(&history, 100_000);
+        assert_eq!(all.len(), CONTEXT_MESSAGES.min(history.len()));
+    }
+
+    #[test]
+    fn the_latest_message_is_sent_even_if_it_blows_the_budget() {
+        let history = vec![msg("user", &"字".repeat(5000))];
+        let picked = select_context(&history, 100);
+        assert_eq!(picked.len(), 1, "超預算也要送出使用者這一則");
+    }
+
+    #[test]
+    fn the_cache_only_hits_on_an_identical_request() {
+        let a = vec![json!({"role":"user","content":"這週作業截止日"})];
+        let b = vec![json!({"role":"user","content":"這週作業截止日？"})];
+        let ka = chat_cache_key("gemini:flash", &a);
+        assert_eq!(ka, chat_cache_key("gemini:flash", &a));
+        assert_ne!(ka, chat_cache_key("gemini:flash", &b), "問題不同就不該命中");
+        assert_ne!(ka, chat_cache_key("openai:gpt-4o", &a), "換模型不該共用");
+
+        chat_cache_put(&ka, "10 月 3 日", "gemini-2.0-flash");
+        let hit = chat_cache_get(&ka).expect("要命中");
+        assert_eq!(hit.0, "10 月 3 日");
+        assert_eq!(hit.1, "gemini-2.0-flash");
+        assert!(chat_cache_get("nonexistent-key").is_none());
+        // 空回覆不該進快取，否則會一直回空白。
+        chat_cache_put("empty-key", "   ", "m");
+        assert!(chat_cache_get("empty-key").is_none());
+    }
+
+    #[test]
+    fn registering_models_does_not_wipe_out_the_other_keys() {
+        // 兩把不同服務商的密鑰，目前是「自動推導」狀態（models 為空）。
+        let mut store = ChatStore {
+            keys: vec![
+                key_for("openai", "gpt-4o-mini", KeyStatus::Ok),
+                key_for("gemini", "gemini-2.0-flash", KeyStatus::Ok),
+            ],
+            ..Default::default()
+        };
+        assert!(store.models.is_empty());
+
+        // 只替 OpenAI 登記兩個模型。
+        let added = register_models(
+            &mut store,
+            "openai",
+            &["gpt-4o".to_string(), "gpt-4.1".to_string()],
+        );
+        assert_eq!(added, 2);
+
+        let ids: Vec<String> = store.models.iter().map(|m| m.id.clone()).collect();
+        // 關鍵：Gemini 推導出來的模型不能因此消失。
+        assert!(
+            ids.contains(&"gemini:gemini-2.0-flash".to_string()),
+            "其他密鑰推導出的模型不該被洗掉，實際：{ids:?}"
+        );
+        assert!(ids.contains(&"openai:gpt-4o-mini".to_string()));
+        assert!(ids.contains(&"openai:gpt-4o".to_string()));
+        assert!(ids.contains(&"openai:gpt-4.1".to_string()));
+        assert_eq!(ids.len(), 4);
+    }
+
+    #[test]
+    fn registering_the_same_model_twice_is_a_no_op() {
+        let mut store = ChatStore {
+            keys: vec![key_for("gemini", "gemini-2.0-flash", KeyStatus::Ok)],
+            ..Default::default()
+        };
+        assert_eq!(
+            register_models(&mut store, "gemini", &["gemini-2.0-flash".to_string()]),
+            0,
+            "推導清單裡已經有了，不該重複新增"
+        );
+        assert_eq!(store.models.len(), 1);
+
+        // Gemini 回的 models/ 前綴要先正規化，否則會變成第二筆重複資料。
+        assert_eq!(
+            register_models(&mut store, "gemini", &["models/gemini-2.0-flash".to_string()]),
+            0
+        );
+        assert_eq!(store.models.len(), 1);
+
+        // 空白行要被忽略。
+        assert_eq!(
+            register_models(&mut store, "gemini", &["".to_string(), "  ".to_string()]),
+            0
+        );
+    }
+
+    #[test]
+    fn a_multi_model_key_registers_every_line() {
+        let mut store = ChatStore::default();
+        let added = register_models(
+            &mut store,
+            "gemini",
+            &[
+                "gemini-2.5-pro".to_string(),
+                "gemini-2.5-flash".to_string(),
+                "gemini-2.0-flash".to_string(),
+            ],
+        );
+        assert_eq!(added, 3, "一把金鑰填三個模型就要有三個選項");
+        // 分級要各自推導，自動模式才能挑對人。
+        let pro = store.models.iter().find(|m| m.model == "gemini-2.5-pro").unwrap();
+        let flash = store.models.iter().find(|m| m.model == "gemini-2.0-flash").unwrap();
+        assert_eq!(pro.tier, "deep");
+        assert_eq!(flash.tier, "fast");
+    }
+
+    #[test]
+    fn gemini_is_not_mistaken_for_a_mini_model() {
+        // 「gemini」字串裡就含有「mini」。用子字串比對會把所有 Gemini
+        // 模型都判成快速模型，長文與推理就會派錯人。
+        assert_eq!(infer_tier("gemini-2.5-pro"), "deep");
+        assert_eq!(infer_tier("gemini-2.0-flash"), "fast");
+        assert_eq!(
+            model_tokens("openai/gpt-4o-mini"),
+            vec!["openai", "gpt", "4o", "mini"]
+        );
+        assert_eq!(param_size("70b"), Some(70));
+        assert_eq!(param_size("4o"), None);
+    }
+
+    #[test]
+    fn a_short_chinese_request_is_not_treated_as_small_talk() {
+        // 11 個字，但是一個完整任務。
+        let need = classify_prompt("幫我寫一封請假信給教授");
+        assert!(!need.simple, "這不是閒聊，不該派最小的模型");
+        assert!(classify_prompt("你好").simple);
+        assert!(classify_prompt("台灣的首都").simple);
+    }
+
+    #[test]
+    fn model_tier_is_inferred_from_the_name() {
+        assert_eq!(infer_tier("gemini-2.0-flash"), "fast");
+        assert_eq!(infer_tier("gpt-4o-mini"), "fast");
+        assert_eq!(infer_tier("gemini-2.5-pro"), "deep");
+        assert_eq!(infer_tier("deepseek-reasoner"), "deep");
+        assert_eq!(infer_tier("llama-3.3-70b-versatile"), "deep");
+        assert_eq!(infer_tier("gpt-4o"), "balanced");
+        assert_eq!(infer_tier("llama-3.1-8b-instant"), "fast");
+        assert_eq!(infer_tier("qwen-2.5-72b"), "deep");
+        assert_eq!(infer_tier("gemini-2.5-flash"), "fast");
+        assert_eq!(infer_tags("deepseek-coder"), vec!["code".to_string()]);
+        assert!(infer_tags("gpt-4o").is_empty());
+    }
+
+    #[test]
+    fn prompts_are_classified_by_what_they_need() {
+        let code = classify_prompt("這段 code 為什麼會 bug？\n```js\nconst a=1;\n```");
+        assert!(code.code && !code.simple);
+
+        let math = classify_prompt("請證明畢氏定理");
+        assert!(math.math);
+
+        let simple = classify_prompt("你好");
+        assert!(simple.simple && !simple.code && !simple.math);
+
+        let long = classify_prompt(&"這是一段很長的公告內容。".repeat(200));
+        assert!(long.long && !long.simple);
+
+        let general = classify_prompt("幫我寫一封請假信給教授，語氣客氣一點");
+        assert!(!general.code && !general.math && !general.simple && !general.long);
+    }
+
+    fn opt(id: &str, provider: &str, model: &str, tier: &str, tags: &[&str]) -> ModelOption {
+        ModelOption {
+            id: id.into(),
+            label: String::new(),
+            provider: provider.into(),
+            model: model.into(),
+            enabled: true,
+            tier: tier.into(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn auto_mode_sends_easy_questions_to_the_cheap_model() {
+        let options = vec![
+            opt("a", "openai", "gpt-4o", "deep", &[]),
+            opt("b", "openai", "gpt-4o-mini", "fast", &[]),
+        ];
+        let keys = vec![key_for("openai", "gpt-4o", KeyStatus::Ok)];
+        let (chosen, reason) = pick_auto_model("你好", &options, &keys).expect("要挑得出模型");
+        assert_eq!(chosen.model, "gpt-4o-mini", "打招呼不該動用貴的模型");
+        assert!(reason.contains("簡短問題"), "{reason}");
+    }
+
+    #[test]
+    fn auto_mode_prefers_a_code_model_for_code_questions() {
+        let options = vec![
+            opt("a", "openai", "gpt-4o-mini", "fast", &[]),
+            opt("b", "deepseek", "deepseek-coder", "balanced", &["code"]),
+        ];
+        let keys = vec![
+            key_for("openai", "gpt-4o-mini", KeyStatus::Ok),
+            key_for("deepseek", "deepseek-coder", KeyStatus::Ok),
+        ];
+        let (chosen, reason) =
+            pick_auto_model("這段 function 為什麼會 bug", &options, &keys).expect("要挑得出");
+        assert_eq!(chosen.model, "deepseek-coder");
+        assert!(reason.contains("程式"), "{reason}");
+    }
+
+    #[test]
+    fn auto_mode_upgrades_to_a_strong_model_for_long_input() {
+        let options = vec![
+            opt("a", "openai", "gpt-4o-mini", "fast", &[]),
+            opt("b", "gemini", "gemini-2.5-pro", "deep", &[]),
+        ];
+        let keys = vec![
+            key_for("openai", "gpt-4o-mini", KeyStatus::Ok),
+            key_for("gemini", "gemini-2.5-pro", KeyStatus::Ok),
+        ];
+        let long = "請幫我摘要這份公告。".repeat(200);
+        let (chosen, _) = pick_auto_model(&long, &options, &keys).expect("要挑得出");
+        assert_eq!(chosen.model, "gemini-2.5-pro");
+    }
+
+    #[test]
+    fn auto_mode_never_picks_a_model_without_a_usable_key() {
+        let options = vec![
+            opt("a", "deepseek", "deepseek-coder", "balanced", &["code"]),
+            opt("b", "openai", "gpt-4o-mini", "fast", &[]),
+        ];
+        // 最適合的 deepseek 密鑰已失效，只剩 openai 能用。
+        let keys = vec![
+            key_for("deepseek", "deepseek-coder", KeyStatus::Dead),
+            key_for("openai", "gpt-4o-mini", KeyStatus::Ok),
+        ];
+        let (chosen, _) = pick_auto_model("修一下這段 code 的 bug", &options, &keys).expect("要挑得出");
+        assert_eq!(chosen.model, "gpt-4o-mini", "不能挑一個送出去必定失敗的模型");
+
+        // 全部不可用時要回 None，讓上層產生明確錯誤。
+        let dead = vec![key_for("openai", "gpt-4o-mini", KeyStatus::Dead)];
+        assert!(pick_auto_model("你好", &options, &dead).is_none());
+    }
+
+    #[test]
+    fn a_disabled_model_is_invisible_to_auto_mode() {
+        let mut options = vec![opt("a", "openai", "gpt-4o-mini", "fast", &[])];
+        options[0].enabled = false;
+        let keys = vec![key_for("openai", "gpt-4o-mini", KeyStatus::Ok)];
+        assert!(pick_auto_model("你好", &options, &keys).is_none());
+    }
+
+    #[test]
+    fn gemini_model_ids_lose_their_prefix() {
+        // Gemini 的 OpenAI 相容層回的是 models/gemini-2.0-flash
+        assert_eq!(normalize_model_id("models/gemini-2.0-flash"), "gemini-2.0-flash");
+        assert_eq!(normalize_model_id("  gpt-4o-mini "), "gpt-4o-mini");
+        assert_eq!(normalize_model_id("openai/gpt-4o"), "openai/gpt-4o");
     }
 
     #[test]

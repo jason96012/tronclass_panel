@@ -18,6 +18,7 @@
   .brand{display:flex;align-items:center;gap:8px;font-weight:800;font-size:15px;padding:2px 4px 6px}
   .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);flex:0 0 auto}
   .brand .dot.off{background:var(--bad)}
+  .brand .ver{margin-left:auto;font-size:10px;font-weight:600;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:1px 6px}
   .newbtn{display:flex;align-items:center;justify-content:center;gap:7px;background:var(--primary);color:var(--primaryText);border:none;border-radius:12px;padding:11px 12px;font-size:14px;font-weight:700;cursor:pointer}
   .threads{flex:1;overflow-y:auto;padding:8px;display:flex;flex-direction:column;gap:3px;min-height:0}
   .thread{display:flex;align-items:center;gap:6px;border-radius:10px;padding:9px 10px;cursor:pointer;border:1px solid transparent}
@@ -49,6 +50,16 @@
   .mdlhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .mdlhead .nm{font-size:13.5px;font-weight:750}
   .mdlmeta{font-size:11.5px;color:var(--muted);margin-top:5px;overflow-wrap:anywhere}
+  .tier{font-size:10.5px;font-weight:700;border-radius:999px;padding:2px 8px;border:1px solid}
+  .tier.fast{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent)}
+  .tier.balanced{color:var(--primary);border-color:color-mix(in srgb,var(--primary) 40%,transparent)}
+  .tier.deep{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent)}
+  .tagchip{font-size:10.5px;color:var(--muted);border:1px dashed var(--line);border-radius:6px;padding:1px 6px}
+  .found{max-height:230px;overflow-y:auto;border:1px solid var(--line2);border-radius:10px;padding:8px;margin:8px 0;background:var(--bg)}
+  .foundrow{display:flex;align-items:center;gap:8px;padding:4px 2px;font-size:12.5px}
+  .foundrow input{width:15px;height:15px;flex:0 0 auto}
+  .foundrow .m{flex:1;overflow-wrap:anywhere;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+  .autonote{font-size:11px;color:var(--primary);margin-bottom:4px;font-weight:600}
 
   .stream{flex:1;overflow-y:auto;padding:18px 0 8px;min-height:0;scroll-behavior:smooth}
   .inner{max-width:760px;margin:0 auto;padding:0 16px;display:flex;flex-direction:column;gap:18px}
@@ -156,7 +167,7 @@
 <div class="app">
   <aside class="side" id="side">
     <div class="side-top">
-      <div class="brand"><span class="dot" id="statusDot"></span><span>AI 對話</span></div>
+      <div class="brand"><span class="dot" id="statusDot"></span><span>AI 對話</span><span class="ver" id="verTag"></span></div>
       <button class="newbtn" id="newBtn" type="button">＋ 新對話</button>
     </div>
     <div class="threads" id="threadList"></div>
@@ -214,15 +225,14 @@
         <input id="fSecret" type="password" placeholder="sk-…" autocomplete="off">
         <div class="note" id="secretNote"></div>
       </div>
-      <div class="row2">
-        <div class="field">
-          <label>模型（留空用預設）</label>
-          <input id="fModel" type="text" placeholder="">
-        </div>
-        <div class="field">
-          <label>API 網址（留空用預設）</label>
-          <input id="fBase" type="text" placeholder="">
-        </div>
+      <div class="field">
+        <label>可用模型（一行一個，第一個當這把密鑰的預設）</label>
+        <textarea id="fModels" placeholder=""></textarea>
+        <div class="note">這裡填的模型會全部出現在使用者的模型選單裡。留空則使用服務商預設。不知道有哪些？先儲存密鑰，再用下方「從 API 抓取可用模型」自動帶入。</div>
+      </div>
+      <div class="field">
+        <label>API 網址（留空用預設）</label>
+        <input id="fBase" type="text" placeholder="">
       </div>
       <div class="btnrow">
         <button class="btn primary" id="saveKeyBtn" type="button">新增</button>
@@ -261,6 +271,33 @@
     </div>
 
     <div class="sect">
+      <h3>節省 token</h3>
+      <div class="desc">長對話最大的浪費是每輪重送整段歷史。以下三項預設全開，20 輪對話約可省 7 成輸入 token。</div>
+      <div class="field">
+        <label>脈絡 token 預算（每次送出的歷史上限）</label>
+        <input id="sBudget" type="number" min="200" max="32000" step="100">
+        <div class="note">依預算由新到舊挑訊息，而不是固定則數。太小會讓模型忘記前文，建議 1000–2000。</div>
+      </div>
+      <div class="field">
+        <label>長對話自動摘要</label>
+        <select id="sSummary">
+          <option value="1">開啟（超過 12 則就把較早內容濃縮）</option>
+          <option value="0">關閉</option>
+        </select>
+        <div class="note">摘要在回覆送出後於背景產生，用最便宜的模型，不會拖慢對話。</div>
+      </div>
+      <div class="field">
+        <label>相同問題快取</label>
+        <select id="sCache">
+          <option value="1">開啟（24 小時內完全相同的提問直接回覆）</option>
+          <option value="0">關閉</option>
+        </select>
+        <div class="note">只有連前後文都一模一樣才算命中。溫度 ≥ 1.0 時自動略過快取。</div>
+      </div>
+      <div class="btnrow"><button class="btn primary" id="saveTokenBtn" type="button">儲存</button></div>
+    </div>
+
+    <div class="sect">
       <h3>使用者可選的模型</h3>
       <div class="desc" id="mdlDesc"></div>
       <div id="mdlList"></div>
@@ -283,6 +320,19 @@
         <button class="btn" id="adoptModelBtn" type="button">依現有密鑰自動建立</button>
         <button class="btn danger" id="resetModelBtn" type="button">改回自動</button>
       </div>
+    </div>
+
+    <div class="sect">
+      <h3>批次貼上模型名稱</h3>
+      <div class="desc">一行一個，自行輸入。名稱要用該服務商的官方寫法：Gemini 是 <code>gemini-2.0-flash</code>（不要帶 <code>google/</code> 或 <code>models/</code> 前綴），OpenRouter 才需要 <code>vendor/model</code> 形式。貼錯格式會自動修正或明確告訴你哪裡不對。</div>
+      <div class="field">
+        <label>服務商</label>
+        <select id="bProvider"></select>
+      </div>
+      <div class="field">
+        <textarea id="bModels" placeholder="gemini-2.0-flash&#10;gemini-2.5-pro&#10;gemini-2.5-flash"></textarea>
+      </div>
+      <div class="btnrow"><button class="btn primary" id="bulkAddBtn" type="button">全部加入</button></div>
     </div>
     <div class="sect">
       <h3>對話紀錄</h3>
@@ -507,9 +557,13 @@
       box.appendChild(el('h2','','要聊點什麼？'));
       var tip;
       if(STATE.usable_models>0){
-        var picked=null;
-        (STATE.models||[]).forEach(function(m){if(m.id===currentModel)picked=m;});
-        tip='目前使用 '+(picked?picked.name:'預設模型')+'，可在右上角切換。';
+        if(currentModel==='auto'){
+          tip='目前是「自動」模式：系統會依你的問題挑最合適的模型（共 '+STATE.usable_models+' 個可用），也可在右上角自己指定。';
+        }else{
+          var picked=null;
+          (STATE.models||[]).forEach(function(m){if(m.id===currentModel)picked=m;});
+          tip='目前使用 '+(picked?picked.name:'預設模型')+'，可在右上角切換。';
+        }
       }else if(STATE.is_admin){
         tip='尚未有可用的模型，先到左下角「API 密鑰」新增一把。';
       }else{
@@ -547,13 +601,14 @@
       return;
     }
     pick.disabled=false;
-    // 選中的模型若已被管理員移除／停用，就退回第一個可用的。
-    var valid=models.some(function(m){return m.id===currentModel&&m.available;});
-    if(!valid){
-      var first=null;
-      models.forEach(function(m){if(!first&&m.available)first=m;});
-      currentModel=first?first.id:'';
-    }
+    // AI_CHAT_V3：「自動」永遠排第一，讓系統依問題性質挑。
+    var auto=el('option',null,'⚡ 自動（依問題挑選）');
+    auto.value='auto';
+    if(currentModel==='auto'||!currentModel)auto.selected=true;
+    pick.appendChild(auto);
+    // 選中的模型若已被管理員移除／停用，就退回自動。
+    var valid=currentModel==='auto'||models.some(function(m){return m.id===currentModel&&m.available;});
+    if(!valid)currentModel='auto';
     models.forEach(function(m){
       if(!m.enabled)return;
       var option=el('option',null,m.name+(m.available?'':'（無可用密鑰）'));
@@ -691,7 +746,11 @@
         activeJob=null;setSending(false);showError(bubble,r);return;
       }
       if(r.key_name&&who&&!who.querySelector('.via')){
-        who.appendChild(el('span','via',r.key_name+(r.model?' · '+r.model:'')));
+        who.appendChild(el('span','via',(r.model||'')+' · '+r.key_name+(r.cached?' · 快取':'')));
+      }
+      if(r.auto_reason&&bubble&&bubble.parentNode&&!bubble.parentNode.querySelector('.autonote')){
+        var note=el('div','autonote','⚡ '+r.auto_reason);
+        bubble.parentNode.insertBefore(note,bubble);
       }
       if(r.text){
         renderMarkdown(bubble,r.text);
@@ -811,7 +870,11 @@
 
   function syncProviderHints(){
     var preset=providerPreset(q('fProvider').value);
-    q('fModel').placeholder=(preset&&preset.model)||'必填';
+    var sample=(preset&&preset.model)||'模型名稱';
+    // 用同服務商的既有模型當範例，比固定字串好懂。
+    var same=(STATE.models||[]).filter(function(m){return m.provider===q('fProvider').value;})
+                               .map(function(m){return m.model;});
+    q('fModels').placeholder=(same.length?same:[sample]).slice(0,4).join('\n');
     q('fBase').placeholder=(preset&&preset.base_url)||'必填，例如 https://…/v1';
   }
 
@@ -822,7 +885,12 @@
     q('fLabel').value=key.label;
     q('fSecret').value='';
     q('secretNote').textContent='留空＝不更動現有密鑰（目前 '+key.secret_masked+'）';
-    q('fModel').value=key.model;
+    // 帶出這個服務商目前已登記的模型，預設模型排第一。
+    var mine=(STATE.models||[]).filter(function(m){return m.provider===key.provider;})
+                               .map(function(m){return m.model;});
+    var def=key.model||key.effective_model;
+    if(def){mine=[def].concat(mine.filter(function(m){return m!==def;}));}
+    q('fModels').value=mine.join('\n');
     q('fBase').value=key.base_url;
     q('saveKeyBtn').textContent='儲存變更';
     q('cancelEditBtn').style.display='inline-flex';
@@ -835,7 +903,7 @@
     q('formTitle').textContent='新增密鑰';
     q('fLabel').value='';
     q('fSecret').value='';
-    q('fModel').value='';
+    q('fModels').value='';
     q('fBase').value='';
     q('secretNote').textContent='';
     q('saveKeyBtn').textContent='新增';
@@ -844,13 +912,16 @@
   }
 
   function saveKey(){
+    var lines=q('fModels').value.split('\n').map(function(t){return t.trim();})
+                                .filter(function(t){return t;});
     var payload={
       action:editingKey?'update':'add',
       id:editingKey,
       provider:q('fProvider').value,
       label:q('fLabel').value,
       secret:q('fSecret').value,
-      model:q('fModel').value,
+      model:lines.length?lines[0]:'',
+      models:lines,
       base_url:q('fBase').value
     };
     postJson('/admin/api/ai/keys',payload,function(r){
@@ -868,19 +939,25 @@
     q('sTemp').value=(s.temperature==null?0.7:s.temperature);
     q('sMax').value=s.max_tokens||0;
     q('sStrategy').value=s.strategy||'order';
+    q('sBudget').value=s.context_budget||1500;
+    q('sSummary').value=s.summary_enabled===false?'0':'1';
+    q('sCache').value=s.cache_enabled===false?'0':'1';
   }
 
   function renderModelAdmin(){
     var list=q('mdlList');
     clear(list);
-    q('mdlDesc').textContent=STATE.models_customized
+    q('mdlDesc').textContent=(STATE.models_customized
       ? '使用者只會看到這裡列出的模型。'
-      : '目前未自訂：系統直接依現有密鑰自動列出模型。按「依現有密鑰自動建立」後即可逐項增減。';
+      : '目前未自訂：系統直接依現有密鑰自動列出模型。按「依現有密鑰自動建立」後即可逐項增減。')
+      +'「分級」與「擅長」會決定自動模式派哪個模型出場：快速＝短問題，強力＝長文與推理。';
     (STATE.models||[]).forEach(function(m,index){
       var card=el('div','mdlcard'+(m.enabled?'':' off'));
       var head=el('div','mdlhead');
       head.appendChild(el('span','ord','#'+(index+1)));
       head.appendChild(el('span','nm',m.name));
+      head.appendChild(el('span','tier '+(m.tier||'balanced'),m.tier_label||'均衡'));
+      (m.tags||[]).forEach(function(t){head.appendChild(el('span','tagchip',t));});
       head.appendChild(el('span','chip '+(m.available?'ok':'dead'),m.available?('可用 · '+m.usable_keys+' 把密鑰'):'無可用密鑰'));
       card.appendChild(head);
       card.appendChild(el('div','mdlmeta',m.provider_label+' · '+m.model));
@@ -895,6 +972,17 @@
         var next=window.prompt('顯示給使用者的名稱（留空＝自動）',m.label||'');
         if(next==null)return;
         modelAction({action:'rename',id:m.id,label:next});
+      });
+      act('分級：'+(m.tier_label||'均衡'),null,function(){
+        // fast → balanced → deep → fast，點一下換一級。
+        var order=['fast','balanced','deep'];
+        var next=order[(order.indexOf(m.tier||'balanced')+1)%3];
+        modelAction({action:'set_tier',id:m.id,tier:next});
+      });
+      act('擅長',null,function(){
+        var next=window.prompt('擅長領域，逗號分隔（可用：code, math, long, vision）',(m.tags||[]).join(','));
+        if(next==null)return;
+        modelAction({action:'set_tags',id:m.id,tags:next});
       });
       act('↑',null,function(){modelAction({action:'move',id:m.id,offset:-1});});
       act('↓',null,function(){modelAction({action:'move',id:m.id,offset:1});});
@@ -936,6 +1024,11 @@
       fillSettings();
       var dot=q('statusDot');
       dot.className='dot'+(r.usable_models>0?'':' off');
+      if(r.page_version){
+        var ver=q('verTag');
+        ver.textContent=r.page_version;
+        ver.title='版面 '+r.page_version+'｜編譯於 '+(r.build||'未知');
+      }
       var tag=q('keyTag');
       if(r.usable_keys>0){tag.textContent=r.usable_keys+'/'+r.keys.length+' 可用';tag.className='tag';}
       else{tag.textContent=r.keys.length?'全部不可用':'未設定';tag.className='tag warn';}
@@ -995,6 +1088,16 @@
   q('saveKeyBtn').addEventListener('click',saveKey);
   q('cancelEditBtn').addEventListener('click',resetForm);
   q('saveSetBtn').addEventListener('click',saveSettings);
+  q('saveTokenBtn').addEventListener('click',function(){
+    postJson('/admin/api/ai/settings',{
+      context_budget:parseInt(q('sBudget').value,10)||1500,
+      summary_enabled:q('sSummary').value==='1',
+      cache_enabled:q('sCache').value==='1'
+    },function(r){
+      if(r.error){toast(r.error,true);return;}
+      toast('已儲存');refreshState();
+    });
+  });
   q('clearAllBtn').addEventListener('click',function(){
     if(!window.confirm('刪除你的全部對話紀錄？此動作無法復原。'))return;
     postJson('/admin/api/ai/threads',{action:'clear'},function(){
@@ -1017,6 +1120,16 @@
     q('mModel').value='';q('mLabel').value='';
   });
   q('adoptModelBtn').addEventListener('click',function(){modelAction({action:'adopt'});});
+  q('bulkAddBtn').addEventListener('click',function(){
+    var lines=q('bModels').value.split('\n').map(function(t){return t.trim();}).filter(function(t){return t;});
+    if(!lines.length){toast('請先貼上模型名稱',true);return;}
+    postJson('/admin/api/ai/models',{action:'bulk_add',provider:q('bProvider').value,models:lines},function(r){
+      if(r.error){toast(r.error,true);return;}
+      toast(r.message||'已加入');
+      q('bModels').value='';
+      refreshState();
+    });
+  });
   q('resetModelBtn').addEventListener('click',function(){
     if(!window.confirm('清空自訂清單，改回依密鑰自動列出模型？'))return;
     modelAction({action:'reset'});
@@ -1029,7 +1142,7 @@
   getJson('/admin/api/ai/state',function(r){
     if(r.error){toast(r.error,true);return;}
     STATE=r;
-    [['fProvider',null],['mProvider',null]].forEach(function(pair){
+    [['fProvider',null],['mProvider',null],['bProvider',null]].forEach(function(pair){
       var select=q(pair[0]);
       clear(select);
       (r.providers||[]).forEach(function(p){
