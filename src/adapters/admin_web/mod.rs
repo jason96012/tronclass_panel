@@ -46,6 +46,7 @@ use crate::runtime_settings::{RuntimeRestPeriod, RuntimeSettings};
 use crate::trusted_ip::ClientIp;
 
 mod actions;
+mod ai_chat;
 mod auth;
 mod blacklist;
 mod class_reminder;
@@ -1239,6 +1240,17 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/bulletins/translate/selftest",
             get(bulletins::translate_selftest_handler),
         )
+        // AI_CHAT_V1：ChatGPT 風格對話頁。密鑰存後端並自動輪替，
+        // 生成走「背景 job + 輪詢」避免反向代理逾時回 502。
+        .route("/admin/ai", get(ai_chat::page_handler))
+        .route("/admin/api/ai/state", get(ai_chat::state_handler))
+        .route("/admin/api/ai/keys", post(ai_chat::keys_handler))
+        .route("/admin/api/ai/keys/test", post(ai_chat::key_test_handler))
+        .route("/admin/api/ai/settings", post(ai_chat::settings_handler))
+        .route("/admin/api/ai/chat", post(ai_chat::chat_handler))
+        .route("/admin/api/ai/chat/status", get(ai_chat::chat_status_handler))
+        .route("/admin/api/ai/chat/stop", post(ai_chat::chat_stop_handler))
+        .route("/admin/api/ai/threads", post(ai_chat::threads_handler))
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))

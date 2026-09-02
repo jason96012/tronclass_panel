@@ -3068,7 +3068,7 @@ window.setTimeout(function(){
     if (!q('mobileMoreFinalV2')) {
       var sheet = document.createElement('div');
       sheet.id = 'mobileMoreFinalV2';
-      sheet.innerHTML = '<div class="sheet"><h3>更多功能</h3><div class="more-grid"><a id="moreSettingsFinalV2" class="button secondary" href="/admin/settings">設定</a><a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a><a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a><a id=\"moreBulletinsFinalV2\" class=\"button secondary\" href=\"/admin/bulletins\">學校公告</a><a id="moreActivityFinalV2" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><a id="moreBlacklistFinalV2" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a><button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button><a id="moreDetectionScheduleFinalV2" class="button secondary" data-detection-schedule-entry="1" href="/admin/detection-schedule">點名排程</a><button id="moreLogoutFinalV2" class="danger" type="button">登出</button></div></div>';
+      sheet.innerHTML = '<div class="sheet"><h3>更多功能</h3><div class="more-grid"><a id="moreSettingsFinalV2" class="button secondary" href="/admin/settings">設定</a><a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a><a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a><a id=\"moreBulletinsFinalV2\" class=\"button secondary\" href=\"/admin/bulletins\">學校公告</a><a id=\"moreAiFinalV2\" class=\"button secondary\" href=\"/admin/ai\">AI 對話</a><a id="moreActivityFinalV2" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><a id="moreBlacklistFinalV2" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a><button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button><a id="moreDetectionScheduleFinalV2" class="button secondary" data-detection-schedule-entry="1" href="/admin/detection-schedule">點名排程</a><button id="moreLogoutFinalV2" class="danger" type="button">登出</button></div></div>';
       document.body.appendChild(sheet);
       sheet.onclick = function(ev){ if (ev.target === sheet) closeMore(); };
       sheet.querySelectorAll('[data-sheet-view]').forEach(function(btn){ btn.onclick = function(){ closeMore(); switchView(btn.dataset.sheetView); }; });
@@ -3077,6 +3077,7 @@ window.setTimeout(function(){
     }
     if(q('moreDriveFinalV2')) q('moreDriveFinalV2').href = withToken('/admin/files');
     if(q('moreBulletinsFinalV2')) q('moreBulletinsFinalV2').href = withToken('/admin/bulletins');
+    if(q('moreAiFinalV2')) q('moreAiFinalV2').href = withToken('/admin/ai');
     if(q('moreActivityFinalV2')) q('moreActivityFinalV2').href = withToken('/admin/activity');
     if(q('moreMeFinalV2')) q('moreMeFinalV2').href = withToken('/admin/me');
     if(q('moreLogsFinalV2')) q('moreLogsFinalV2').href = withToken('/admin/logs');
@@ -3639,6 +3640,18 @@ try{await nativeFetch('/admin/api/status?include_history=false',{cache:'no-store
       bl.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();location.assign('/admin/bulletins');});
       var mt=tabs.querySelector('.tab[data-view="materials"]');
       if(mt)mt.insertAdjacentElement('afterend',bl); else tabs.appendChild(bl);
+    }
+    // AI_CHAT_TAB_V1: 「AI」分頁（公告旁），樣式同排程膠囊。
+    if(!document.getElementById('aiChatTab')){
+      var ai=document.createElement('a');
+      ai.id='aiChatTab';
+      ai.className='tab detection-schedule-desktop-link';
+      ai.href='/admin/ai';
+      ai.textContent='AI';
+      ai.setAttribute('aria-label','前往 AI 對話');
+      ai.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();location.assign('/admin/ai');});
+      var bt=document.getElementById('bulletinsTab');
+      if(bt)bt.insertAdjacentElement('afterend',ai); else tabs.appendChild(ai);
     }
   }
   function start(){ensure();try{new MutationObserver(ensure).observe(document.documentElement,{childList:true,subtree:true});}catch(_){}var count=0,timer=setInterval(function(){ensure();if(++count>=20)clearInterval(timer);},500);}
