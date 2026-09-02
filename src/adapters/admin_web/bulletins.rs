@@ -462,3 +462,148 @@ pub(super) async fn read_handler(
 
     (StatusCode::OK, Json(json!({ "ok": true, "deleted": deleted_now }))).into_response()
 }
+
+// BULLETIN_PUSH_V1: 背景輪詢各啟用帳號的課程公告，有新公告即 Web Push 提醒。
+// 已通知的 key 存 config/bulletin_notified.json；**首輪只記錄不發送**，避免啟動灌爆。
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct BulletinNotifiedStore {
+    #[serde(default)]
+    keys: Vec<String>,
+}
+
+fn bulletin_notified_file() -> std::path::PathBuf {
+    std::path::Path::new("config/bulletin_notified.json").to_path_buf()
+}
+
+static BULLETIN_NOTIFIED: once_cell::sync::Lazy<std::sync::Mutex<Vec<String>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+static BULLETIN_NOTIFIED_WARM: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn save_notified(keys: &[String]) {
+    let path = bulletin_notified_file();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string(&BulletinNotifiedStore {
+        keys: keys.to_vec(),
+    }) {
+        let _ = std::fs::write(path, s);
+    }
+}
+
+pub(super) fn start_bulletin_notifier(state: AdminWebState) {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        let path = bulletin_notified_file();
+        let existed = path.exists();
+        let mut keys = Vec::new();
+        if existed {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                if let Ok(store) = serde_json::from_str::<BulletinNotifiedStore>(&text) {
+                    keys = store.keys;
+                }
+            }
+        }
+        *BULLETIN_NOTIFIED.lock().unwrap() = keys;
+        BULLETIN_NOTIFIED_WARM.store(existed, std::sync::atomic::Ordering::SeqCst);
+
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(120));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                notify_check(&state).await;
+            }
+        });
+    });
+}
+
+async fn notify_check(state: &AdminWebState) {
+    let accounts = match state.accounts_db.list().await {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+    let enabled: Vec<_> = accounts.into_iter().filter(|a| a.enabled).collect();
+    if enabled.is_empty() {
+        return;
+    }
+    let Some(config) = crate::config::try_get_config() else {
+        return;
+    };
+
+    let mut current: Vec<(String, String, String, String)> = Vec::new();
+    for raw in enabled {
+        let Some(provider) = config.providers.get(&raw.provider) else {
+            continue;
+        };
+        let account = crate::account::AccountConfig {
+            id: raw.id.clone(),
+            provider: raw.provider.clone(),
+            username: raw.username.clone(),
+            password: raw.password.clone(),
+            enabled: raw.enabled,
+            line_user_id: raw.line_user_id.clone(),
+            discord_user_id: raw.discord_user_id.clone(),
+            session_cookie: raw.session_cookie.clone(),
+            is_admin: raw.is_admin,
+            provider_config: provider.clone(),
+            request_timeout_secs: provider.api.request_timeout_secs,
+        };
+        let Ok(client) = get_client(state, &account).await else {
+            continue;
+        };
+        let base = account.base_url().to_string();
+        let Ok(resp) = client.get(format!("{base}/api/my-courses")).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(cj) = resp.json::<Value>().await else {
+            continue;
+        };
+        let courses = crate::api::todos::parse_course_briefs(&cj)
+            .into_iter()
+            .map(|c| (c.id, c.name))
+            .collect();
+        let items = fetch_all_bulletins(client, base, courses).await;
+        for b in items {
+            let key = bulletin_key(&b);
+            let course = b
+                .get("_course_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let title = pick_str(&b, &["title", "name", "subject"]);
+            current.push((key, account.id.clone(), course, title));
+        }
+    }
+
+    let mut guard = BULLETIN_NOTIFIED.lock().unwrap();
+    let warm = BULLETIN_NOTIFIED_WARM.load(std::sync::atomic::Ordering::SeqCst);
+    let mut keys = guard.clone();
+    if !warm {
+        for (k, _, _, _) in &current {
+            if !keys.contains(k) {
+                keys.push(k.clone());
+            }
+        }
+        *guard = keys.clone();
+        BULLETIN_NOTIFIED_WARM.store(true, std::sync::atomic::Ordering::SeqCst);
+        save_notified(&keys);
+        return;
+    }
+    let mut changed = false;
+    for (key, account, course, title) in current {
+        if !keys.contains(&key) {
+            keys.push(key.clone());
+            changed = true;
+            crate::web_push_notifications::notify_bulletin(&account, &key, &course, &title);
+        }
+    }
+    if changed {
+        *guard = keys.clone();
+        save_notified(&keys);
+    }
+}

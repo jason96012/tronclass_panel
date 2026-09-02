@@ -1144,6 +1144,11 @@ async fn main() -> Result<()> {
         None
     };
 
+    // BULLETIN_PUSH_V1: 有新課程公告時 Web Push 推播到手機。
+    if let Some(state) = admin_web_state.clone() {
+        adapters::admin_web::start_bulletin_notifier(state);
+    }
+
     let webhook_handle = if line_bot.is_some() {
         if let Some(bot) = line_bot.as_ref() {
             let request_state = adapters::requests::RequestState::new(

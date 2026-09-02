@@ -247,6 +247,34 @@ pub fn notify_homework(
     });
 }
 
+/// BULLETIN_PUSH_V1: 排入一則課程公告推播（去重後非同步發送）。
+pub fn notify_bulletin(
+    account_id: &str,
+    bulletin_key: &str,
+    course_name: &str,
+    title: &str,
+) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    let key = format!("bulletin:{account_id}:{bulletin_key}");
+    {
+        let mut recent = RECENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !dedupe_should_send(&mut recent, &key) {
+            return;
+        }
+    }
+
+    let account_id = account_id.to_string();
+    let course_name = course_name.to_string();
+    let title = title.to_string();
+    tokio::spawn(async move {
+        if let Err(error) = service.send_bulletin(&account_id, &course_name, &title).await {
+            warn!(account = %account_id, error = %error, "Web Push 公告通知失敗");
+        }
+    });
+}
+
 impl WebPushService {
     async fn send_homework(
         &self,
@@ -266,6 +294,28 @@ impl WebPushService {
             "tag": format!("tronclass-homework-{account_id}"),
         }))
         .map_err(|error| miette::miette!("序列化 Web Push 作業 payload 失敗：{error}"))?;
+
+        self.send_to_many(subscriptions, &payload).await;
+        Ok(())
+    }
+
+    async fn send_bulletin(
+        &self,
+        account_id: &str,
+        course_name: &str,
+        title: &str,
+    ) -> Result<()> {
+        let subscriptions = self.db.list_web_push_subscriptions(account_id).await?;
+        if subscriptions.is_empty() {
+            return Ok(());
+        }
+        let payload = serde_json::to_vec(&json!({
+            "title": format!("新公告｜{course_name}"),
+            "body": title,
+            "url": "/admin/bulletins",
+            "tag": format!("tronclass-bulletin-{account_id}"),
+        }))
+        .map_err(|error| miette::miette!("序列化 Web Push 公告 payload 失敗：{error}"))?;
 
         self.send_to_many(subscriptions, &payload).await;
         Ok(())

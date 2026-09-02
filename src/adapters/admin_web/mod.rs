@@ -51,6 +51,11 @@ mod blacklist;
 mod class_reminder;
 mod bulletins;
 mod detection_schedule;
+
+// BULLETIN_PUSH_V1: 供 main.rs 啟動課程公告 Web Push 背景任務。
+pub(crate) fn start_bulletin_notifier(state: AdminWebState) {
+    bulletins::start_bulletin_notifier(state);
+}
 mod files;
 mod materials_import;
 mod homework;
