@@ -1247,6 +1247,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/api/ai/keys", post(ai_chat::keys_handler))
         .route("/admin/api/ai/keys/test", post(ai_chat::key_test_handler))
         .route("/admin/api/ai/settings", post(ai_chat::settings_handler))
+        .route("/admin/api/ai/models", post(ai_chat::models_handler))
         .route("/admin/api/ai/chat", post(ai_chat::chat_handler))
         .route("/admin/api/ai/chat/status", get(ai_chat::chat_status_handler))
         .route("/admin/api/ai/chat/stop", post(ai_chat::chat_stop_handler))

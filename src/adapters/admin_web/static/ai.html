@@ -40,6 +40,15 @@
   .iconbtn{background:transparent;border:1px solid var(--line);border-radius:10px;padding:7px 10px;font-size:13px;cursor:pointer;white-space:nowrap}
   .iconbtn:hover{background:var(--soft)}
   .menubtn{display:none}
+  /* AI_CHAT_V2：模型選單 */
+  .modelpick{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:7px 9px;font-size:12.5px;cursor:pointer;max-width:210px}
+  .modelpick:focus{outline:none;border-color:var(--primary)}
+  .modelpick option:disabled{color:var(--muted)}
+  .mdlcard{border:1px solid var(--line2);border-radius:12px;padding:10px 12px;margin-bottom:8px;background:var(--bg)}
+  .mdlcard.off{opacity:.55}
+  .mdlhead{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .mdlhead .nm{font-size:13.5px;font-weight:750}
+  .mdlmeta{font-size:11.5px;color:var(--muted);margin-top:5px;overflow-wrap:anywhere}
 
   .stream{flex:1;overflow-y:auto;padding:18px 0 8px;min-height:0;scroll-behavior:smooth}
   .inner{max-width:760px;margin:0 auto;padding:0 16px;display:flex;flex-direction:column;gap:18px}
@@ -162,6 +171,7 @@
     <div class="topbar">
       <button class="iconbtn menubtn" id="menuBtn" type="button">☰</button>
       <h1 id="title">新對話</h1>
+      <select class="modelpick" id="modelPick" aria-label="選擇模型"></select>
       <button class="iconbtn" id="renameBtn" type="button">重新命名</button>
     </div>
     <div class="stream" id="stream"><div class="inner" id="inner"></div></div>
@@ -179,7 +189,7 @@
 
 <!-- 密鑰面板 -->
 <section class="panel" id="keyPanel">
-  <div class="ptop"><h2>API 密鑰</h2><button class="iconbtn" data-close="1" type="button">關閉</button></div>
+  <div class="ptop"><h2>API 密鑰</h2><span class="chip dead">管理員限定</span><button class="iconbtn" data-close="1" type="button">關閉</button></div>
   <div class="pbody">
     <div class="sect">
       <h3>自動輪替</h3>
@@ -247,14 +257,32 @@
           <option value="round_robin">輪流使用（每次換下一把，分散配額）</option>
         </select>
       </div>
-      <div class="field">
-        <label>誰可以管理密鑰</label>
-        <select id="sAdminOnly">
-          <option value="1">只有管理員</option>
-          <option value="0">所有登入者</option>
-        </select>
-      </div>
       <div class="btnrow"><button class="btn primary" id="saveSetBtn" type="button">儲存設定</button></div>
+    </div>
+
+    <div class="sect">
+      <h3>使用者可選的模型</h3>
+      <div class="desc" id="mdlDesc"></div>
+      <div id="mdlList"></div>
+      <div class="row2">
+        <div class="field">
+          <label>服務商</label>
+          <select id="mProvider"></select>
+        </div>
+        <div class="field">
+          <label>模型名稱（留空用預設）</label>
+          <input id="mModel" type="text" placeholder="">
+        </div>
+      </div>
+      <div class="field">
+        <label>顯示名稱（選填，使用者看到的名字）</label>
+        <input id="mLabel" type="text" placeholder="例如：ChatGPT（快速）">
+      </div>
+      <div class="btnrow">
+        <button class="btn primary" id="addModelBtn" type="button">新增模型</button>
+        <button class="btn" id="adoptModelBtn" type="button">依現有密鑰自動建立</button>
+        <button class="btn danger" id="resetModelBtn" type="button">改回自動</button>
+      </div>
     </div>
     <div class="sect">
       <h3>對話紀錄</h3>
@@ -313,7 +341,8 @@
   }
 
   // ── 狀態 ───────────────────────────────────────────────
-  var STATE={keys:[],settings:{},threads:[],providers:[],can_manage:false,usable_keys:0};
+  var STATE={keys:[],settings:{},threads:[],providers:[],models:[],can_manage:false,usable_keys:0,usable_models:0};
+  var currentModel='';
   var currentThread='';
   var currentMessages=[];
   var editingKey='';
@@ -476,9 +505,16 @@
     if(!currentMessages.length){
       var box=el('div','empty');
       box.appendChild(el('h2','','要聊點什麼？'));
-      var tip=STATE.usable_keys>0
-        ? ('目前有 '+STATE.usable_keys+' 把可用密鑰，會自動輪替使用。')
-        : '尚未有可用的 API 密鑰，先到左下角「API 密鑰」新增一把。';
+      var tip;
+      if(STATE.usable_models>0){
+        var picked=null;
+        (STATE.models||[]).forEach(function(m){if(m.id===currentModel)picked=m;});
+        tip='目前使用 '+(picked?picked.name:'預設模型')+'，可在右上角切換。';
+      }else if(STATE.is_admin){
+        tip='尚未有可用的模型，先到左下角「API 密鑰」新增一把。';
+      }else{
+        tip='系統尚未設定可用的 AI 模型，請聯絡管理員。';
+      }
       box.appendChild(el('p','',tip));
       var grid=el('div','sugg');
       ['幫我把這段中文潤飾得更專業','用簡單的比喻解釋什麼是 TCP 三次握手','幫我寫一封請假信給教授','把這段程式碼改寫得更好讀'].forEach(function(text){
@@ -496,6 +532,36 @@
       inner.appendChild(messageNode(m.role,m.content,via));
     });
     scrollDown(true);
+  }
+
+  // ── 模型選單 ───────────────────────────────────────────
+  function renderModels(){
+    var pick=q('modelPick');
+    var models=STATE.models||[];
+    clear(pick);
+    if(!models.length){
+      var none=el('option',null,'尚無可用模型');
+      none.value='';none.disabled=true;
+      pick.appendChild(none);
+      pick.disabled=true;
+      return;
+    }
+    pick.disabled=false;
+    // 選中的模型若已被管理員移除／停用，就退回第一個可用的。
+    var valid=models.some(function(m){return m.id===currentModel&&m.available;});
+    if(!valid){
+      var first=null;
+      models.forEach(function(m){if(!first&&m.available)first=m;});
+      currentModel=first?first.id:'';
+    }
+    models.forEach(function(m){
+      if(!m.enabled)return;
+      var option=el('option',null,m.name+(m.available?'':'（無可用密鑰）'));
+      option.value=m.id;
+      option.disabled=!m.available;
+      if(m.id===currentModel)option.selected=true;
+      pick.appendChild(option);
+    });
   }
 
   // ── 對話串 ─────────────────────────────────────────────
@@ -532,6 +598,8 @@
     postJson('/admin/api/ai/threads',{action:'get',id:id},function(r){
       if(r.error){toast(r.error,true);return;}
       currentThread=id;
+      if(r.thread&&r.thread.model_id)currentModel=r.thread.model_id;
+      renderModels();
       currentMessages=(r.thread&&r.thread.messages)||[];
       q('title').textContent=(r.thread&&r.thread.title)||'對話';
       renderThread();
@@ -599,13 +667,14 @@
     scrollDown(true);
     setSending(true);
 
-    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text},function(r){
+    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text,model_id:currentModel},function(r){
       if(r.error){
         setSending(false);
         showError(bubble,r);
         return;
       }
       currentThread=r.thread_id||currentThread;
+      if(r.model_id){currentModel=r.model_id;renderModels();}
       activeJob=r.job_id;
       POLL_MS=r.poll_ms||350;
       poll(bubble,aiNode._who,0);
@@ -799,7 +868,48 @@
     q('sTemp').value=(s.temperature==null?0.7:s.temperature);
     q('sMax').value=s.max_tokens||0;
     q('sStrategy').value=s.strategy||'order';
-    q('sAdminOnly').value=s.admin_only_keys?'1':'0';
+  }
+
+  function renderModelAdmin(){
+    var list=q('mdlList');
+    clear(list);
+    q('mdlDesc').textContent=STATE.models_customized
+      ? '使用者只會看到這裡列出的模型。'
+      : '目前未自訂：系統直接依現有密鑰自動列出模型。按「依現有密鑰自動建立」後即可逐項增減。';
+    (STATE.models||[]).forEach(function(m,index){
+      var card=el('div','mdlcard'+(m.enabled?'':' off'));
+      var head=el('div','mdlhead');
+      head.appendChild(el('span','ord','#'+(index+1)));
+      head.appendChild(el('span','nm',m.name));
+      head.appendChild(el('span','chip '+(m.available?'ok':'dead'),m.available?('可用 · '+m.usable_keys+' 把密鑰'):'無可用密鑰'));
+      card.appendChild(head);
+      card.appendChild(el('div','mdlmeta',m.provider_label+' · '+m.model));
+      if(!STATE.models_customized){list.appendChild(card);return;}
+      var acts=el('div','keyacts');
+      function act(label,cls,handler){
+        var b=el('button','btn sm'+(cls?' '+cls:''),label);
+        b.type='button';b.addEventListener('click',handler);acts.appendChild(b);
+      }
+      act(m.enabled?'隱藏':'開放',null,function(){modelAction({action:'toggle',id:m.id,enabled:!m.enabled});});
+      act('改名',null,function(){
+        var next=window.prompt('顯示給使用者的名稱（留空＝自動）',m.label||'');
+        if(next==null)return;
+        modelAction({action:'rename',id:m.id,label:next});
+      });
+      act('↑',null,function(){modelAction({action:'move',id:m.id,offset:-1});});
+      act('↓',null,function(){modelAction({action:'move',id:m.id,offset:1});});
+      act('移除','danger',function(){modelAction({action:'delete',id:m.id});});
+      card.appendChild(acts);
+      list.appendChild(card);
+    });
+  }
+
+  function modelAction(payload){
+    postJson('/admin/api/ai/models',payload,function(r){
+      if(r.error){toast(r.error,true);return;}
+      toast(r.message||'已更新');
+      refreshState();
+    });
   }
 
   function saveSettings(){
@@ -807,8 +917,7 @@
       system_prompt:q('sPrompt').value,
       temperature:parseFloat(q('sTemp').value)||0,
       max_tokens:parseInt(q('sMax').value,10)||0,
-      strategy:q('sStrategy').value,
-      admin_only_keys:q('sAdminOnly').value==='1'
+      strategy:q('sStrategy').value
     },function(r){
       if(r.error){toast(r.error,true);return;}
       toast('已儲存設定');refreshState();
@@ -821,15 +930,17 @@
       if(r.error){toast(r.error,true);return;}
       STATE=r;
       renderThreadList();
+      renderModels();
       renderKeys();
+      renderModelAdmin();
       fillSettings();
       var dot=q('statusDot');
-      dot.className='dot'+(r.usable_keys>0?'':' off');
+      dot.className='dot'+(r.usable_models>0?'':' off');
       var tag=q('keyTag');
-      if(!r.can_manage){tag.textContent='僅管理員';tag.className='tag';}
-      else if(r.usable_keys>0){tag.textContent=r.usable_keys+'/'+r.keys.length+' 可用';tag.className='tag';}
+      if(r.usable_keys>0){tag.textContent=r.usable_keys+'/'+r.keys.length+' 可用';tag.className='tag';}
       else{tag.textContent=r.keys.length?'全部不可用':'未設定';tag.className='tag warn';}
-      q('keysBtn').style.display=r.can_manage?'flex':'none';
+      // AI_CHAT_V2：密鑰與設定一律只有管理員看得到入口。
+      q('keysBtn').style.display=r.is_admin?'flex':'none';
       q('setBtn').style.display=r.is_admin?'flex':'none';
       if(!currentMessages.length)renderThread();
     });
@@ -891,6 +1002,25 @@
     });
   });
   q('fProvider').addEventListener('change',syncProviderHints);
+  q('modelPick').addEventListener('change',function(){
+    currentModel=q('modelPick').value;
+    var picked=null;
+    (STATE.models||[]).forEach(function(m){if(m.id===currentModel)picked=m;});
+    if(picked)toast('已切換到 '+picked.name);
+  });
+  q('mProvider').addEventListener('change',function(){
+    var preset=providerPreset(q('mProvider').value);
+    q('mModel').placeholder=(preset&&preset.model)||'必填';
+  });
+  q('addModelBtn').addEventListener('click',function(){
+    modelAction({action:'add',provider:q('mProvider').value,model:q('mModel').value,label:q('mLabel').value});
+    q('mModel').value='';q('mLabel').value='';
+  });
+  q('adoptModelBtn').addEventListener('click',function(){modelAction({action:'adopt'});});
+  q('resetModelBtn').addEventListener('click',function(){
+    if(!window.confirm('清空自訂清單，改回依密鑰自動列出模型？'))return;
+    modelAction({action:'reset'});
+  });
   document.addEventListener('keydown',function(ev){
     if(ev.key==='Escape')closePanels();
   });
@@ -899,16 +1029,22 @@
   getJson('/admin/api/ai/state',function(r){
     if(r.error){toast(r.error,true);return;}
     STATE=r;
-    var select=q('fProvider');
-    clear(select);
-    (r.providers||[]).forEach(function(p){
-      var option=el('option',null,p.label);
-      option.value=p.id;
-      select.appendChild(option);
+    [['fProvider',null],['mProvider',null]].forEach(function(pair){
+      var select=q(pair[0]);
+      clear(select);
+      (r.providers||[]).forEach(function(p){
+        var option=el('option',null,p.label);
+        option.value=p.id;
+        select.appendChild(option);
+      });
     });
     syncProviderHints();
+    var mPreset=providerPreset(q('mProvider').value);
+    q('mModel').placeholder=(mPreset&&mPreset.model)||'必填';
     renderThreadList();
+    renderModels();
     renderKeys();
+    renderModelAdmin();
     fillSettings();
     renderThread();
     refreshState();

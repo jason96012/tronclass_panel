@@ -117,6 +117,22 @@ fn provider_preset(provider: &str) -> Option<(&'static str, &'static str, &'stat
     }
 }
 
+/// AI_CHAT_V2：給使用者看的通俗名稱。管理面板用正式名稱（OpenAI），
+/// 聊天頁的模型選單用大家熟悉的稱呼（ChatGPT）。
+fn provider_display(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "ChatGPT",
+        "gemini" => "Gemini",
+        "groq" => "Groq",
+        "openrouter" => "OpenRouter",
+        "deepseek" => "DeepSeek",
+        "xai" => "Grok",
+        "mistral" => "Mistral",
+        "custom" => "自訂",
+        _ => "其他",
+    }
+}
+
 fn provider_label(provider: &str) -> String {
     provider_preset(provider)
         .map(|(label, _, _)| label.to_string())
@@ -273,6 +289,51 @@ fn mask_secret(secret: &str) -> String {
     format!("{head}…{tail}")
 }
 
+/// AI_CHAT_V2：使用者可以自由選擇的模型。
+///
+/// 一個模型只描述「要用哪家的哪個模型」，不綁定特定密鑰 —— 實際送出時仍會在
+/// 該服務商的所有密鑰之間自動輪替，所以選了 ChatGPT 就會吃掉所有 OpenAI 密鑰
+/// 的額度，一把用完換下一把。
+#[derive(Clone, Serialize, Deserialize)]
+struct ModelOption {
+    id: String,
+    #[serde(default)]
+    label: String,
+    provider: String,
+    model: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+}
+
+impl ModelOption {
+    fn display(&self) -> String {
+        if !self.label.trim().is_empty() {
+            return self.label.trim().to_string();
+        }
+        format!("{} · {}", provider_display(&self.provider), self.model)
+    }
+
+    fn to_json(&self, keys: &[ApiKey]) -> Value {
+        let usable = keys
+            .iter()
+            .filter(|k| k.provider == self.provider && k.available())
+            .count();
+        let total = keys.iter().filter(|k| k.provider == self.provider).count();
+        json!({
+            "id": self.id,
+            "label": self.label,
+            "name": self.display(),
+            "provider": self.provider,
+            "provider_label": provider_display(self.provider.as_str()),
+            "model": self.model,
+            "enabled": self.enabled,
+            "usable_keys": usable,
+            "total_keys": total,
+            "available": self.enabled && usable > 0,
+        })
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 struct ChatSettings {
     #[serde(default = "default_system_prompt")]
@@ -284,9 +345,6 @@ struct ChatSettings {
     /// `order` = 固定由第一把開始；`round_robin` = 每次換下一把（分散配額）。
     #[serde(default = "default_strategy")]
     strategy: String,
-    /// 只有管理員能改密鑰設定；一般使用者只能聊天。
-    #[serde(default = "default_true")]
-    admin_only_keys: bool,
 }
 
 fn default_system_prompt() -> String {
@@ -308,7 +366,6 @@ impl Default for ChatSettings {
             temperature: default_temperature(),
             max_tokens: 0,
             strategy: default_strategy(),
-            admin_only_keys: true,
         }
     }
 }
@@ -317,6 +374,10 @@ impl Default for ChatSettings {
 struct ChatStore {
     #[serde(default)]
     keys: Vec<ApiKey>,
+    /// AI_CHAT_V2：管理員維護的「可選模型」清單，使用者在聊天頁自己挑。
+    /// 留空時由密鑰自動推導，不設定也能直接用。
+    #[serde(default)]
+    models: Vec<ModelOption>,
     #[serde(default)]
     settings: ChatSettings,
     /// round_robin 用的游標。
@@ -395,6 +456,9 @@ struct ChatThread {
     id: String,
     #[serde(default)]
     title: String,
+    /// AI_CHAT_V2：這串對話用的模型，重新打開時自動選回同一個。
+    #[serde(default)]
+    model_id: String,
     #[serde(default)]
     created: i64,
     #[serde(default)]
@@ -408,6 +472,7 @@ impl ChatThread {
         json!({
             "id": self.id,
             "title": self.title,
+            "model_id": self.model_id,
             "created": self.created,
             "updated": self.updated,
             "count": self.messages.len(),
@@ -418,6 +483,7 @@ impl ChatThread {
         json!({
             "id": self.id,
             "title": self.title,
+            "model_id": self.model_id,
             "created": self.created,
             "updated": self.updated,
             "messages": self.messages.iter().map(|m| json!({
@@ -744,8 +810,64 @@ fn record_success(key_id: &str, prompt_tokens: u64, completion_tokens: u64) {
     });
 }
 
+/// 目前可供選擇的模型。管理員沒建清單時，直接由密鑰推導（每個服務商一項），
+/// 讓「新增一把密鑰就能立刻用」不需要多做設定。
+fn model_options() -> Vec<ModelOption> {
+    read_store(|store| {
+        if !store.models.is_empty() {
+            return store.models.clone();
+        }
+        let mut out: Vec<ModelOption> = Vec::new();
+        for key in store.keys.iter() {
+            let model = key.effective_model();
+            if model.is_empty() {
+                continue;
+            }
+            let id = format!("{}:{}", key.provider, model);
+            if out.iter().any(|m| m.id == id) {
+                continue;
+            }
+            out.push(ModelOption {
+                id,
+                label: String::new(),
+                provider: key.provider.clone(),
+                model,
+                enabled: true,
+            });
+        }
+        out
+    })
+    .unwrap_or_default()
+}
+
+/// 把使用者選的模型 id 解析成實際設定。
+/// 沒指定（或指定的已被刪掉）時，自動挑第一個「真的有可用密鑰」的模型。
+fn resolve_model(id: &str) -> Option<ModelOption> {
+    let options = model_options();
+    let wanted = id.trim();
+    if !wanted.is_empty() {
+        if let Some(found) = options.iter().find(|m| m.id == wanted && m.enabled) {
+            return Some(found.clone());
+        }
+    }
+    let keys = read_store(|store| store.keys.clone()).unwrap_or_default();
+    options
+        .iter()
+        .find(|m| {
+            m.enabled
+                && keys
+                    .iter()
+                    .any(|k| k.provider == m.provider && k.available())
+        })
+        .cloned()
+        .or_else(|| options.into_iter().find(|m| m.enabled))
+}
+
 /// 取出這次要嘗試的密鑰順序。已冷卻到期的會先自動復活。
-fn candidate_keys() -> Vec<ApiKey> {
+///
+/// `provider` 有值時只挑該服務商的密鑰 —— 使用者選了 Gemini 就不該偷偷
+/// 掉到 OpenAI 去回答。
+fn candidate_keys(provider: Option<&str>) -> Vec<ApiKey> {
     with_store(|store| {
         let now = now_secs();
         // 冷卻到期自動復活。
@@ -756,7 +878,18 @@ fn candidate_keys() -> Vec<ApiKey> {
             }
         }
 
-        let mut list: Vec<ApiKey> = store.keys.iter().filter(|k| k.available()).cloned().collect();
+        let mut list: Vec<ApiKey> = store
+            .keys
+            .iter()
+            .filter(|k| {
+                k.available()
+                    && match provider {
+                        Some(want) => k.provider == want,
+                        None => true,
+                    }
+            })
+            .cloned()
+            .collect();
         if list.is_empty() {
             return list;
         }
@@ -797,6 +930,7 @@ async fn stream_once(
     key: &ApiKey,
     messages: &[Value],
     settings: &ChatSettings,
+    model_override: Option<&str>,
     include_usage: bool,
 ) -> Result<StreamOutcome, AttemptError> {
     let base = key.effective_base_url();
@@ -807,7 +941,11 @@ async fn stream_once(
             status: None,
         });
     }
-    let model = key.effective_model();
+    // 使用者選的模型優先；沒選才用這把密鑰的預設模型。
+    let model = match model_override {
+        Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+        _ => key.effective_model(),
+    };
     if model.is_empty() {
         return Err(AttemptError::Failed {
             kind: FailureKind::BadRequest,
@@ -979,17 +1117,30 @@ async fn stream_once(
 }
 
 /// 背景生成：依序嘗試每一把可用密鑰，直到有人成功。
-async fn run_chat_job(job_id: String, messages: Vec<Value>, settings: ChatSettings) {
+async fn run_chat_job(
+    job_id: String,
+    messages: Vec<Value>,
+    settings: ChatSettings,
+    selection: Option<ModelOption>,
+) {
     let started = std::time::Instant::now();
-    let keys = candidate_keys();
+    let provider = selection.as_ref().map(|m| m.provider.clone());
+    let model_override = selection.as_ref().map(|m| m.model.clone());
+    let keys = candidate_keys(provider.as_deref());
 
     if keys.is_empty() {
         let total = read_store(|s| s.keys.len()).unwrap_or(0);
         let hint = if total == 0 {
-            "尚未新增任何 API 密鑰，請先到「密鑰」分頁新增。".to_string()
+            "系統尚未設定任何 AI 密鑰，請聯絡管理員。".to_string()
+        } else if let Some(model) = selection.as_ref() {
+            // 使用者選了特定模型，就要講清楚是「這個模型」沒得用，
+            // 而不是籠統地說全部壞掉 —— 換一個模型可能就能繼續聊。
+            format!(
+                "「{}」目前沒有可用的密鑰（額度用盡、被限流或已停用），請改選其他模型或稍後再試。",
+                model.display()
+            )
         } else {
-            "所有密鑰都不可用（額度用盡、被限流或已停用）。可到「密鑰」分頁查看每把的狀態與冷卻時間。"
-                .to_string()
+            "所有密鑰都不可用（額度用盡、被限流或已停用），請聯絡管理員。".to_string()
         };
         let _ = job_update(&job_id, |job| {
             job.done = true;
@@ -1015,14 +1166,26 @@ async fn run_chat_job(job_id: String, messages: Vec<Value>, settings: ChatSettin
         }
 
         let key_name = key.display_name();
+        let model_used = match model_override.as_deref() {
+            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+            _ => key.effective_model(),
+        };
         let _ = job_update(&job_id, |job| {
             job.key_name = key_name.clone();
-            job.model = key.effective_model();
+            job.model = model_used.clone();
         });
 
         let attempt_started = std::time::Instant::now();
         let mut include_usage = key.usage_supported;
-        let mut result = stream_once(&job_id, key, &messages, &settings, include_usage).await;
+        let mut result = stream_once(
+            &job_id,
+            key,
+            &messages,
+            &settings,
+            model_override.as_deref(),
+            include_usage,
+        )
+        .await;
 
         if matches!(result, Err(AttemptError::RetryWithoutUsage)) {
             // 記住這把不支援，下次不再送。
@@ -1032,7 +1195,15 @@ async fn run_chat_job(job_id: String, messages: Vec<Value>, settings: ChatSettin
                     k.usage_supported = false;
                 }
             });
-            result = stream_once(&job_id, key, &messages, &settings, include_usage).await;
+            result = stream_once(
+                &job_id,
+                key,
+                &messages,
+                &settings,
+                model_override.as_deref(),
+                include_usage,
+            )
+            .await;
         }
 
         match result {
@@ -1059,12 +1230,12 @@ async fn run_chat_job(job_id: String, messages: Vec<Value>, settings: ChatSettin
                 }));
                 tracing::info!(
                     key = %key_name,
-                    model = %key.effective_model(),
+                    model = %model_used,
                     prompt_tokens = outcome.prompt_tokens,
                     completion_tokens = outcome.completion_tokens,
                     "AI 對話完成"
                 );
-                finish_job_success(&job_id, &key_name, &key.effective_model(), attempts);
+                finish_job_success(&job_id, &key_name, &model_used, attempts);
                 return;
             }
             Err(AttemptError::RetryWithoutUsage) => {
@@ -1222,8 +1393,9 @@ pub(super) async fn state_handler(
         return unauthorized_response();
     };
 
-    let (keys, settings, can_manage) = read_store(|store| {
-        let can_manage = !store.settings.admin_only_keys || session.is_admin;
+    // AI_CHAT_V2：密鑰是管理員資產，一般使用者連遮蔽後的清單都拿不到。
+    let can_manage = session.is_admin;
+    let (keys, settings) = read_store(|store| {
         let keys: Vec<Value> = if can_manage {
             store.keys.iter().map(|k| k.to_public_json()).collect()
         } else {
@@ -1236,19 +1408,23 @@ pub(super) async fn state_handler(
                 "temperature": store.settings.temperature,
                 "max_tokens": store.settings.max_tokens,
                 "strategy": store.settings.strategy,
-                "admin_only_keys": store.settings.admin_only_keys,
             }),
-            can_manage,
         )
     })
-    .unwrap_or_else(|| (Vec::new(), json!({}), false));
+    .unwrap_or_else(|| (Vec::new(), json!({})));
+
+    // 模型清單所有人都看得到（要選才聊得起來），但只有管理員能改。
+    let all_keys = read_store(|store| store.keys.clone()).unwrap_or_default();
+    let options = model_options();
+    let models: Vec<Value> = options.iter().map(|m| m.to_json(&all_keys)).collect();
+    let models_customized = read_store(|store| !store.models.is_empty()).unwrap_or(false);
 
     let threads = read_threads(&session.account_id, |list| {
         list.iter().map(|t| t.summary_json()).collect::<Vec<Value>>()
     })
     .unwrap_or_default();
 
-    let usable = read_store(|store| store.keys.iter().filter(|k| k.available()).count()).unwrap_or(0);
+    let usable = all_keys.iter().filter(|k| k.available()).count();
 
     let providers: Vec<Value> = [
         "openai",
@@ -1275,9 +1451,15 @@ pub(super) async fn state_handler(
             "settings": settings,
             "threads": threads,
             "providers": providers,
+            "models": models,
+            "models_customized": models_customized,
             "can_manage": can_manage,
             "is_admin": session.is_admin,
             "usable_keys": usable,
+            "usable_models": options
+                .iter()
+                .filter(|m| m.enabled && all_keys.iter().any(|k| k.provider == m.provider && k.available()))
+                .count(),
         })),
     )
         .into_response()
@@ -1317,8 +1499,8 @@ pub(super) async fn keys_handler(
     let Some(session) = state.authorize_any(&token).await else {
         return unauthorized_response();
     };
-    let admin_only = read_store(|s| s.settings.admin_only_keys).unwrap_or(true);
-    if admin_only && !session.is_admin {
+    // 密鑰的新增／修改／刪除只開放管理員，沒有任何開關可以放寬。
+    if !session.is_admin {
         return unauthorized_response();
     }
 
@@ -1449,8 +1631,7 @@ pub(super) async fn key_test_handler(
     let Some(session) = state.authorize_any(&token).await else {
         return unauthorized_response();
     };
-    let admin_only = read_store(|s| s.settings.admin_only_keys).unwrap_or(true);
-    if admin_only && !session.is_admin {
+    if !session.is_admin {
         return unauthorized_response();
     }
 
@@ -1554,8 +1735,6 @@ pub(super) struct SettingsRequest {
     max_tokens: Option<u32>,
     #[serde(default)]
     strategy: Option<String>,
-    #[serde(default)]
-    admin_only_keys: Option<bool>,
 }
 
 pub(super) async fn settings_handler(
@@ -1586,12 +1765,160 @@ pub(super) async fn settings_handler(
                 store.settings.strategy = strategy;
             }
         }
-        if let Some(admin_only) = body.admin_only_keys {
-            store.settings.admin_only_keys = admin_only;
-        }
     });
 
     (StatusCode::OK, Json(json!({ "ok": true, "message": "已儲存設定" }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ModelActionRequest {
+    #[serde(default)]
+    token: String,
+    action: String,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    provider: String,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    offset: i32,
+}
+
+/// AI_CHAT_V2：管理員維護「使用者可以選哪些模型」。
+pub(super) async fn models_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Json(body): Json<ModelActionRequest>,
+) -> Response {
+    let token = session_token(&headers, &body.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+
+    let result: Result<String, String> = with_store(|store| match body.action.as_str() {
+        "add" => {
+            let provider = body.provider.trim().to_string();
+            if provider_preset(&provider).is_none() {
+                return Err(format!("不認得的服務商：{provider}"));
+            }
+            let model = if body.model.trim().is_empty() {
+                provider_preset(&provider)
+                    .map(|(_, _, m)| m.to_string())
+                    .unwrap_or_default()
+            } else {
+                body.model.trim().to_string()
+            };
+            if model.is_empty() {
+                return Err("請填入模型名稱".to_string());
+            }
+            let id = format!("{provider}:{model}");
+            if store.models.iter().any(|m| m.id == id) {
+                return Err("這個模型已經在清單裡了".to_string());
+            }
+            store.models.push(ModelOption {
+                id,
+                label: body.label.trim().to_string(),
+                provider,
+                model,
+                enabled: body.enabled.unwrap_or(true),
+            });
+            Ok("已新增模型".to_string())
+        }
+        "delete" => {
+            let before = store.models.len();
+            store.models.retain(|m| m.id != body.id);
+            if store.models.len() == before {
+                return Err("找不到這個模型".to_string());
+            }
+            Ok("已移除模型".to_string())
+        }
+        "toggle" => {
+            let Some(item) = store.models.iter_mut().find(|m| m.id == body.id) else {
+                return Err("找不到這個模型".to_string());
+            };
+            item.enabled = body.enabled.unwrap_or(!item.enabled);
+            Ok(if item.enabled {
+                "已開放使用者選用".to_string()
+            } else {
+                "已隱藏，使用者不會看到".to_string()
+            })
+        }
+        "rename" => {
+            let Some(item) = store.models.iter_mut().find(|m| m.id == body.id) else {
+                return Err("找不到這個模型".to_string());
+            };
+            item.label = body.label.trim().to_string();
+            Ok("已更新顯示名稱".to_string())
+        }
+        "move" => {
+            let Some(index) = store.models.iter().position(|m| m.id == body.id) else {
+                return Err("找不到這個模型".to_string());
+            };
+            let target = index as i32 + body.offset;
+            if target < 0 || target as usize >= store.models.len() {
+                return Err("已經在邊界了".to_string());
+            }
+            store.models.swap(index, target as usize);
+            Ok("已調整順序".to_string())
+        }
+        "adopt" => {
+            // 把目前自動推導的清單「固化」成可編輯的顯式清單。
+            if !store.models.is_empty() {
+                return Err("清單已經是自訂狀態".to_string());
+            }
+            let mut out: Vec<ModelOption> = Vec::new();
+            for key in store.keys.iter() {
+                let model = key.effective_model();
+                if model.is_empty() {
+                    continue;
+                }
+                let id = format!("{}:{}", key.provider, model);
+                if out.iter().any(|m| m.id == id) {
+                    continue;
+                }
+                out.push(ModelOption {
+                    id,
+                    label: String::new(),
+                    provider: key.provider.clone(),
+                    model,
+                    enabled: true,
+                });
+            }
+            if out.is_empty() {
+                return Err("目前沒有密鑰可以推導模型".to_string());
+            }
+            let count = out.len();
+            store.models = out;
+            Ok(format!("已依現有密鑰建立 {count} 個模型，接下來可自行增減"))
+        }
+        "reset" => {
+            store.models.clear();
+            Ok("已清空自訂清單，改回依密鑰自動推導".to_string())
+        }
+        other => Err(format!("不支援的操作：{other}")),
+    })
+    .unwrap_or_else(|| Err("設定儲存區被鎖住了，請稍後再試".to_string()));
+
+    match result {
+        Ok(message) => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "message": message })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "ok": false, "error": error })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1600,6 +1927,9 @@ pub(super) struct ChatRequest {
     token: String,
     #[serde(default)]
     thread_id: String,
+    /// 使用者在聊天頁選的模型（`model_options()` 的 id）。留空＝自動挑。
+    #[serde(default)]
+    model_id: String,
     message: String,
 }
 
@@ -1632,6 +1962,29 @@ pub(super) async fn chat_handler(
 
     let account = session.account_id.clone();
 
+    // 先確定要用哪個模型。使用者選的優先，沒選（或選的已被管理員刪掉）
+    // 就自動挑一個真的有可用密鑰的。
+    let selection = resolve_model(&body.model_id);
+    if selection.is_none() {
+        let total = read_store(|store| store.keys.len()).unwrap_or(0);
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": if total == 0 {
+                    "系統尚未設定任何 AI 模型，請聯絡管理員。"
+                } else {
+                    "目前沒有可用的模型，請聯絡管理員。"
+                },
+                "code": "NO_MODEL_AVAILABLE",
+            })),
+        )
+            .into_response();
+    }
+    let selected_id = selection
+        .as_ref()
+        .map(|m| m.id.clone())
+        .unwrap_or_default();
+
     // 把使用者訊息寫進對話串（沒有指定就開一個新的）。
     let thread_id = if body.thread_id.trim().is_empty() {
         uuid::Uuid::new_v4().to_string()
@@ -1647,6 +2000,7 @@ pub(super) async fn chat_handler(
                 threads.push(ChatThread {
                     id: thread_id.clone(),
                     title: derive_title(&text),
+                    model_id: selected_id.clone(),
                     created: now_millis(),
                     updated: now_millis(),
                     messages: Vec::new(),
@@ -1658,6 +2012,8 @@ pub(super) async fn chat_handler(
         if thread.title.trim().is_empty() || thread.title == "新對話" {
             thread.title = derive_title(&text);
         }
+        // 中途換模型也記下來，下次打開這串對話會選回最後用的那個。
+        thread.model_id = selected_id.clone();
         thread.messages.push(ChatMessage {
             role: "user".to_string(),
             content: text.clone(),
@@ -1709,7 +2065,7 @@ pub(super) async fn chat_handler(
     {
         let job_id = job_id.clone();
         tokio::spawn(async move {
-            run_chat_job(job_id, messages, settings).await;
+            run_chat_job(job_id, messages, settings, selection).await;
         });
     }
 
@@ -1718,6 +2074,7 @@ pub(super) async fn chat_handler(
         Json(json!({
             "job_id": job_id,
             "thread_id": thread_id,
+            "model_id": selected_id,
             "state": "running",
             "poll_path": "/admin/api/ai/chat/status",
             "poll_ms": 350,
@@ -2016,6 +2373,97 @@ mod ai_chat_tests {
             "invalid api key"
         );
         assert_eq!(extract_error_message("plain text failure"), "plain text failure");
+    }
+
+    fn key_for(provider: &str, model: &str, status: KeyStatus) -> ApiKey {
+        ApiKey {
+            id: format!("{provider}-{model}"),
+            label: String::new(),
+            provider: provider.into(),
+            base_url: String::new(),
+            secret: "sk-test-1234567890".into(),
+            model: model.into(),
+            enabled: true,
+            status,
+            cooldown_until: if status == KeyStatus::Cooling {
+                now_secs() + 600
+            } else {
+                0
+            },
+            last_error: String::new(),
+            last_used: 0,
+            uses: 0,
+            fails: 0,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            usage_supported: true,
+        }
+    }
+
+    #[test]
+    fn users_see_friendly_model_names() {
+        let option = ModelOption {
+            id: "openai:gpt-4o-mini".into(),
+            label: String::new(),
+            provider: "openai".into(),
+            model: "gpt-4o-mini".into(),
+            enabled: true,
+        };
+        // 使用者看到的是「ChatGPT」而不是「openai」。
+        assert_eq!(option.display(), "ChatGPT · gpt-4o-mini");
+        let named = ModelOption {
+            label: "老師推薦".into(),
+            ..option.clone()
+        };
+        assert_eq!(named.display(), "老師推薦");
+        assert_eq!(provider_display("gemini"), "Gemini");
+        assert_eq!(provider_display("xai"), "Grok");
+    }
+
+    #[test]
+    fn a_model_is_only_available_when_its_provider_has_a_usable_key() {
+        let option = ModelOption {
+            id: "gemini:gemini-2.0-flash".into(),
+            label: String::new(),
+            provider: "gemini".into(),
+            model: "gemini-2.0-flash".into(),
+            enabled: true,
+        };
+        // 只有 OpenAI 密鑰時，Gemini 這個選項要顯示成不可用。
+        let keys = vec![key_for("openai", "gpt-4o-mini", KeyStatus::Ok)];
+        let json = option.to_json(&keys);
+        assert_eq!(json["available"], serde_json::json!(false));
+        assert_eq!(json["usable_keys"], serde_json::json!(0));
+
+        // 加上一把冷卻中的 Gemini 密鑰：算得到總數，但仍然不可用。
+        let keys = vec![
+            key_for("openai", "gpt-4o-mini", KeyStatus::Ok),
+            key_for("gemini", "gemini-2.0-flash", KeyStatus::Cooling),
+        ];
+        let json = option.to_json(&keys);
+        assert_eq!(json["total_keys"], serde_json::json!(1));
+        assert_eq!(json["available"], serde_json::json!(false));
+
+        // 冷卻結束後就可用了。
+        let keys = vec![key_for("gemini", "gemini-2.0-flash", KeyStatus::Ok)];
+        let json = option.to_json(&keys);
+        assert_eq!(json["available"], serde_json::json!(true));
+        assert_eq!(json["provider_label"], serde_json::json!("Gemini"));
+    }
+
+    #[test]
+    fn a_disabled_model_is_never_offered() {
+        let option = ModelOption {
+            id: "openai:gpt-4o".into(),
+            label: String::new(),
+            provider: "openai".into(),
+            model: "gpt-4o".into(),
+            enabled: false,
+        };
+        let keys = vec![key_for("openai", "gpt-4o", KeyStatus::Ok)];
+        // 有可用密鑰，但管理員把它關掉了。
+        assert_eq!(option.to_json(&keys)["available"], serde_json::json!(false));
+        assert_eq!(option.to_json(&keys)["usable_keys"], serde_json::json!(1));
     }
 
     #[test]
