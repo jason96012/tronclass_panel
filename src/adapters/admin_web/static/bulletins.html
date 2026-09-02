@@ -124,6 +124,44 @@
     t=t.replace(/[ \t]+\n/g,'\n').replace(/\n[ ]+/g,'\n').replace(/\n{3,}/g,'\n\n');
     return t.replace(/^[ \n]+/,'').replace(/[ \n]+$/,'');
   }
+  // BULLETIN_TRANSLATE_V3
+  // 公告內容是 iClass 的 HTML 片段。要送去翻譯、或在沒有 DOMPurify 時呈現，
+  // 都必須先轉成純文字，否則畫面會出現字面的 <p>…</p>。
+  // 這裡刻意不用 innerHTML / DOMParser：本頁 CSP 有 require-trusted-types-for，
+  // 那些都是 Trusted Types sink，純字串處理才穩。
+  var ENTITIES={lt:'<',gt:'>',amp:'&',quot:'"',apos:"'",nbsp:' ',ndash:'\u2013',mdash:'\u2014',hellip:'\u2026',middot:'\u00b7',lsquo:'\u2018',rsquo:'\u2019',ldquo:'\u201c',rdquo:'\u201d'};
+  function decodeEntities(s){
+    if(String(s).indexOf('&')<0)return String(s);
+    return String(s).replace(/&(#[xX]?[0-9a-fA-F]+|[a-zA-Z]+);/g,function(m,e){
+      if(e.charAt(0)==='#'){
+        var hex=(e.charAt(1)==='x'||e.charAt(1)==='X');
+        var cp=hex?parseInt(e.slice(2),16):parseInt(e.slice(1),10);
+        if(!isFinite(cp)||cp<=0||cp>0x10FFFF)return m;
+        try{return String.fromCodePoint(cp);}catch(err){return m;}
+      }
+      var k=e.toLowerCase();
+      return Object.prototype.hasOwnProperty.call(ENTITIES,k)?ENTITIES[k]:m;
+    });
+  }
+  var TAG_RE=/<\/?[a-zA-Z][^>]*>/g;
+  function stripTags(s){
+    var t=String(s);
+    t=t.replace(/<!--[\s\S]*?-->/g,'');
+    t=t.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,'');
+    t=t.replace(/<\s*br\s*\/?\s*>/gi,'\n');
+    t=t.replace(/<\s*\/?\s*(p|div|li|tr|ul|ol|table|section|article|blockquote|pre|h[1-6]|hr)\b[^>]*>/gi,'\n');
+    return t.replace(TAG_RE,'');
+  }
+  function htmlToPlainText(raw){
+    if(raw==null)return '';
+    var s=String(raw);
+    if(s.indexOf('<')<0&&s.indexOf('&')<0)return cleanRaw(s);
+    s=decodeEntities(stripTags(s));
+    // 解碼後可能又冒出標籤（&lt;p&gt; 這種二次編碼），再清一輪。
+    if(TAG_RE.test(s)){TAG_RE.lastIndex=0;s=stripTags(s);}
+    TAG_RE.lastIndex=0;
+    return cleanRaw(s.replace(/\u00a0/g,' ').replace(/[ \t]+/g,' ').replace(/[ \t]*\n[ \t]*/g,'\n'));
+  }
   function isBlank(n){
     if(n.nodeType===3)return !n.textContent.trim();
     if(n.nodeType===1){var t=n.tagName;if(t==='IMG'||t==='TABLE'||t==='IFRAME'||t==='VIDEO')return false;return !n.textContent.trim()&&!n.querySelector('img,table,iframe,video');}
@@ -133,7 +171,12 @@
     var cleaned=cleanRaw(raw);
     if(!cleaned){el.style.display='none';return;}
     if(window.DOMPurify&&DOMPurify.sanitize){el.innerHTML=DOMPurify.sanitize(cleaned,{USE_PROFILES:{html:true}});}
-    else{el.textContent=cleaned;}
+    else{
+      // 沒有 DOMPurify 時不能直接把原始 HTML 塞進 textContent，
+      // 否則使用者會看到字面的 <p>…</p>。
+      el.textContent=htmlToPlainText(cleaned);
+      el.style.whiteSpace='pre-wrap';
+    }
     while(el.firstChild&&isBlank(el.firstChild))el.removeChild(el.firstChild);
     while(el.lastChild&&isBlank(el.lastChild))el.removeChild(el.lastChild);
     if(!el.childNodes.length)el.style.display='none';
@@ -162,7 +205,7 @@
       var box=c.querySelector('.transbox');
       if(box){box.remove();tr.textContent='翻譯';return;}
       tr.disabled=true;tr.textContent='翻譯中…';
-      var src=((it.title||'')+'\n'+(it.content||'')).trim();
+      var src=(htmlToPlainText(it.title||'')+'\n'+htmlToPlainText(it.content||'')).trim();
       var hasCJK=/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(src);
       postJson('/admin/api/bulletins/translate',{text:src,tl:hasCJK?'en':'zh-TW'},function(r){
         tr.disabled=false;
@@ -171,8 +214,16 @@
         var d=document.createElement('div');d.className='transbox';
         var lab=document.createElement('div');lab.className='translab';
         lab.textContent=(r.tl==='en'?'翻譯（英文）':'翻譯（繁體中文）');
-        d.appendChild(lab);
-        var tx=document.createElement('div');tx.textContent=String(r.translated||'');d.appendChild(tx);
+        // BULLETIN_TRANSLATE_V4：分段翻譯時若有片段失敗，明確告知（該段保留原文）。
+        if(r.partial&&r.note){
+          var warn=document.createElement('div');
+          warn.style.cssText='font-size:11px;font-weight:600;color:var(--warn);margin-bottom:4px';
+          warn.textContent='⚠ '+r.note;
+          d.appendChild(lab);d.appendChild(warn);
+        }else{
+          d.appendChild(lab);
+        }
+        var tx=document.createElement('div');tx.textContent=htmlToPlainText(r.translated||'');d.appendChild(tx);
         c.insertBefore(d,foot);
       });
     };
