@@ -1223,10 +1223,21 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/bulletins/admin/delete",
             post(bulletins::admin_delete_handler),
         )
-        // BULLETIN_TRANSLATE_V1
+        // BULLETIN_TRANSLATE_V8：翻譯改為背景 job（立即回 202），
+        // 避免占住 HTTP request 直到 proxy 逾時 → 502。狀態走 GET 輪詢。
         .route(
             "/admin/api/bulletins/translate",
             post(bulletins::translate_handler),
+        )
+        .route(
+            "/admin/api/bulletins/translate/status",
+            get(bulletins::translate_status_handler),
+        )
+        // BULLETIN_TRANSLATE_V7：自我檢測（僅管理員）。用來分辨
+        // 「502 是反向代理／程序中斷」還是「本服務連不到 Google」。
+        .route(
+            "/admin/api/bulletins/translate/selftest",
+            get(bulletins::translate_selftest_handler),
         )
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))

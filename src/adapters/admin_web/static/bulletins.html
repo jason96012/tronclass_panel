@@ -190,6 +190,37 @@
       .then(function(r){return r.json().catch(function(){return{};});})
       .then(cb).catch(function(){cb({});});
   }
+  // BULLETIN_TRANSLATE_V8：背景 job 輪詢。每個 HTTP 請求都是毫秒級，
+  // 反向代理不會再因為「久等」而丟出沒有內容的 502。
+  var POLL_MS=600, POLL_MAX=220;   // 約 2 分鐘上限
+  function pollTranslate(jobId,total,btn,cardEl,footEl,onDone){
+    var tries=0;
+    (function tick(){
+      tries++;
+      if(tries>POLL_MAX){
+        btn.disabled=false;btn.textContent='重試翻譯';
+        showTranslateError(cardEl,footEl,{error:'翻譯逾時（前端等待超過上限）',status:0,code:'TRANSLATE_POLL_TIMEOUT',trace_id:jobId});
+        return;
+      }
+      getJson('/admin/api/bulletins/translate/status?job='+encodeURIComponent(jobId),function(r){
+        if(r.error&&r.state==null){
+          btn.disabled=false;btn.textContent='重試翻譯';
+          showTranslateError(cardEl,footEl,r);return;
+        }
+        if(r.state==='running'){
+          var n=r.finished||0,t=r.total||total||1;
+          btn.textContent='翻譯中… '+n+'/'+t;
+          setTimeout(tick,POLL_MS);return;
+        }
+        btn.disabled=false;
+        if(r.state==='failed'||!r.ok){
+          btn.textContent='重試翻譯';
+          showTranslateError(cardEl,footEl,r);return;
+        }
+        onDone(r);
+      });
+    })();
+  }
   // BULLETIN_TRANSLATE_V6：翻譯失敗時把完整錯誤碼顯示在卡片裡，並可一鍵複製。
   function buildDiagnosticText(r){
     var lines=[];
@@ -209,11 +240,49 @@
       });
     }
     if(r.raw){
-      lines.push('原始回應（非 JSON，通常代表 502 來自反向代理而非本服務）：');
-      lines.push('  '+r.raw);
+      lines.push('原始回應（非 JSON）：');
+      lines.push('  '+r.raw.replace(/\n/g,'\n  '));
     }
+    lines.push('判讀：'+interpret(r));
     lines.push('頁面：'+location.href);
+    lines.push('UA：'+navigator.userAgent);
     return lines.join('\n');
+  }
+  // BULLETIN_TRANSLATE_V7：把常見情境直接寫成人話，省去來回猜測。
+  function interpret(r){
+    var raw=String(r.raw||'');
+    var cfEdge=/cloudflare|bad gateway|cf-ray/i.test(raw);
+    if(r.code==='TRANSLATE_PANIC')return '本服務內部 panic（已攔截）。請到 /admin/logs 以 trace_id 搜尋 panic 詳情。';
+    if(r.code==='TRANSLATE_TIMEOUT')return '本服務連得到但上游 Google 超過時間預算未回應（可能被限流）。';
+    if(r.code==='TRANSLATE_UPSTREAM_FAILED')return '本服務有回應，是 Google 端失敗；看上面每段的「上游狀態」。';
+    if((r.status===502||r.status===504)&&cfEdge)
+      return '502/504 由 Cloudflare 邊緣產生，代表本服務在處理這個請求時「沒有吐出任何回應」'+
+             '（程序被重啟／OOM、或 cloudflared 與 origin 之間斷線）。'+
+             '請先按下方「自我檢測」，再到 /admin/logs 看有沒有「公告翻譯開始」這一行：'+
+             '有 → 卡在上游或程序中斷；沒有 → 請求根本沒進到本服務。';
+    if(r.status===0)return '請求沒有送達（網路中斷或被瀏覽器阻擋）。';
+    return '未分類，請把本診斷全文回報。';
+  }
+  function runSelfTest(target){
+    target.textContent='檢測中…';
+    fetch('/admin/api/bulletins/translate/selftest',{credentials:'same-origin',cache:'no-store'})
+      .then(function(r){return r.text().then(function(raw){
+        var j=null;try{j=JSON.parse(raw);}catch(e){}
+        if(r.status===401||r.status===403){target.textContent='自我檢測需要管理員權限。';return;}
+        if(!j){target.textContent='自我檢測回應非 JSON（HTTP '+r.status+'）：'+raw.slice(0,300);return;}
+        var out=['自我檢測：'+(j.ok?'✅ 有可用引擎':'❌ 全部不可用')];
+        (j.engines||[]).forEach(function(e){
+          out.push('  '+(e.ok?'✅':'❌')+' '+e.label+
+            '｜'+e.elapsed_ms+' ms'+
+            (e.status!=null?'｜HTTP '+e.status:'')+
+            (e.cooling_before?'｜檢測前處於冷卻':'')+
+            (e.ok?('｜樣本：'+e.sample):('｜'+(e.error||''))));
+          if(!e.ok&&e.detail)out.push('      '+e.detail);
+        });
+        if(j.hint)out.push(j.hint);
+        target.textContent=out.join('\n');
+      });})
+      .catch(function(e){target.textContent='自我檢測失敗：'+((e&&e.message)||e);});
   }
   function showTranslateError(cardEl,footEl,r){
     var old=cardEl.querySelector('.transerr');if(old)old.remove();
@@ -239,9 +308,13 @@
       ta.select();try{document.execCommand('copy');done();}catch(e){}
       document.body.removeChild(ta);
     }
+    var selftest=document.createElement('button');selftest.type='button';selftest.className='readbtn';selftest.textContent='自我檢測';
+    var stOut=document.createElement('div');stOut.className='transerrmsg';stOut.style.marginTop='6px';
+    selftest.onclick=function(){runSelfTest(stOut);};
     var close=document.createElement('button');close.type='button';close.className='readbtn';close.textContent='關閉';
     close.onclick=function(){box.remove();};
-    row.appendChild(copy);row.appendChild(close);box.appendChild(row);
+    row.appendChild(copy);row.appendChild(selftest);row.appendChild(close);
+    box.appendChild(row);box.appendChild(stOut);
     cardEl.insertBefore(box,footEl);
   }
   function card(it){
@@ -265,13 +338,19 @@
       tr.disabled=true;tr.textContent='翻譯中…';
       var src=(htmlToPlainText(it.title||'')+'\n'+htmlToPlainText(it.content||'')).trim();
       var hasCJK=/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(src);
+      // BULLETIN_TRANSLATE_V8：後端改為背景 job，這裡送出後改用輪詢取進度／結果。
       postJson('/admin/api/bulletins/translate',{text:src,tl:hasCJK?'en':'zh-TW'},function(r){
-        tr.disabled=false;
-        if(r.error){tr.textContent='重試翻譯';showTranslateError(c,foot,r);return;}
-        tr.textContent='收起翻譯';
+        if(r.error){tr.disabled=false;tr.textContent='重試翻譯';showTranslateError(c,foot,r);return;}
+        if(r.job_id&&r.translated==null){pollTranslate(r.job_id,r.total||r.chunks||1,tr,c,foot,renderTranslation);return;}
+        tr.disabled=false;renderTranslation(r);
+      });
+      function renderTranslation(r){
+        tr.disabled=false;tr.textContent='收起翻譯';
         var d=document.createElement('div');d.className='transbox';
         var lab=document.createElement('div');lab.className='translab';
-        lab.textContent=(r.tl==='en'?'翻譯（英文）':'翻譯（繁體中文）');
+        var eng=r.engine?('·'+r.engine):'';
+        var cached=r.cached?'·快取':'';
+        lab.textContent=(r.tl==='en'?'翻譯（英文':'翻譯（繁體中文')+eng+cached+'）';
         // BULLETIN_TRANSLATE_V4：分段翻譯時若有片段失敗，明確告知（該段保留原文）。
         if(r.partial&&r.note){
           var warn=document.createElement('div');
@@ -283,7 +362,7 @@
         }
         var tx=document.createElement('div');tx.textContent=htmlToPlainText(r.translated||'');d.appendChild(tx);
         c.insertBefore(d,foot);
-      });
+      }
     };
     foot.appendChild(tr);
     if(isAdmin&&it.source==='admin'){
@@ -342,6 +421,25 @@
   // 舊版 `r.json().catch(()=>({}))` 會把非 JSON 的回應整個吞掉，
   // 於是像 Cloudflare Tunnel 回的 502 HTML 只剩下「HTTP 502」四個字，
   // 完全看不到錯誤碼。改成永遠保留原始狀態碼與回應內文。
+  function getJson(path,cb){
+    var st=0,done=false;
+    function once(o){if(!done){done=true;cb(o);}}
+    fetch(path,{credentials:'same-origin',cache:'no-store'})
+      .then(function(r){
+        st=r.status;
+        return r.text().then(function(raw){
+          var j=null;try{j=JSON.parse(raw);}catch(e){}
+          if(!r.ok){
+            once({error:(j&&j.error)||('HTTP '+r.status),status:r.status,code:(j&&j.code)||'',
+                  trace_id:(j&&j.trace_id)||'',diagnostics:(j&&j.diagnostics)||null,
+                  raw:j?'':String(raw||'').slice(0,600)});
+            return;
+          }
+          once(j||{});
+        });
+      })
+      .catch(function(e){once({error:(e&&e.message)||'網路錯誤（請求未送達或被中斷）',status:st});});
+  }
   function postJson(path,data,cb){
     var st=0,done=false;
     function once(o){if(!done){done=true;cb(o);}}

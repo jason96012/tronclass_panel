@@ -14,7 +14,8 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["full"] }
 
 # HTTP client
-reqwest = { version = "0.12.28", features = ["cookies", "json", "rustls-tls", "multipart"], default-features = false }
+# AI_CHAT_V1：新增 "stream" 讓 reqwest 提供 bytes_stream()，AI 回覆才能邊生成邊顯示。
+reqwest = { version = "0.12.28", features = ["cookies", "json", "rustls-tls", "multipart", "stream"], default-features = false }
 
 # Web server (Line Bot webhook)
 axum = { version = "0.8.8", features = ["json", "multipart"] }

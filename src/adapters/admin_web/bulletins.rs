@@ -1019,23 +1019,215 @@ fn contains_cjk(text: &str) -> bool {
 // 所以照樣分段：依「段落 → 句子 → 硬切」拆成安全長度，記住每段後面的原始分隔
 // 字串，逐段翻譯（有限併發、保持順序）後依序拼回，結構與原文完全一致。
 
-/// 單次送出的最大 bytes。中文百分比編碼會膨脹約 3 倍
-/// （1200 → 約 3.6 KB query），遠低於常見的 8 KB URL 上限。
-const TRANSLATE_CHUNK_BYTES: usize = 1200;
+/// BULLETIN_TRANSLATE_V9
+/// 單次送出的最大 bytes。取「所有引擎都吃得下」的保守值：
+/// MyMemory 匿名端點上限約 500 bytes，是鏈上最嚴格的一環，
+/// 因此統一切到 460，任何一段都能丟給任何引擎重試。
+const TRANSLATE_CHUNK_BYTES: usize = 460;
 /// 片段數上限，避免一則超長公告打出上百個外部請求。
-const TRANSLATE_MAX_CHUNKS: usize = 32;
+const TRANSLATE_MAX_CHUNKS: usize = 48;
 /// 併發翻譯數；太高容易被 Google 擋。
 const TRANSLATE_CONCURRENCY: usize = 3;
 /// 單段失敗時的重試次數（gtx 偶發 429/5xx）。
-const TRANSLATE_RETRIES: usize = 1;
+const TRANSLATE_RETRIES: usize = 2;
 /// 單次上游請求逾時。
-const TRANSLATE_REQUEST_TIMEOUT_SECS: u64 = 8;
-/// BULLETIN_TRANSLATE_V6
-/// 整體時間預算。超過就自己回 504（帶 trace_id），
-/// 而不是讓 Cloudflare Tunnel／反向代理先斷線丟出一個沒有內容的 502。
-const TRANSLATE_TOTAL_BUDGET_SECS: u64 = 25;
+const TRANSLATE_REQUEST_TIMEOUT_SECS: u64 = 10;
+/// BULLETIN_TRANSLATE_V8
+/// 背景工作的整體時間預算。翻譯已不佔用 HTTP 連線，所以可以放寬；
+/// 超過就把工作標記為 TRANSLATE_TIMEOUT，不會永遠停在 running。
+const TRANSLATE_TOTAL_BUDGET_SECS: u64 = 90;
 /// 診斷訊息中保留的上游回應長度。
 const TRANSLATE_DETAIL_CHARS: usize = 300;
+
+/// BULLETIN_TRANSLATE_V7
+/// 共用單一 HTTP client。舊版每個請求都 `Client::builder().build()`，
+/// 會重建連線池與 TLS 設定，在記憶體吃緊的容器裡是不必要的負擔
+/// （程序被 OOM 殺掉時，Cloudflare 看到的就是沒有回應的 502）。
+static TRANSLATE_CLIENT: once_cell::sync::Lazy<reqwest::Client> =
+    once_cell::sync::Lazy::new(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(
+                TRANSLATE_REQUEST_TIMEOUT_SECS,
+            ))
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .pool_max_idle_per_host(4)
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) TronclassPanel/1.0")
+            .build()
+            .unwrap_or_default()
+    });
+
+/// BULLETIN_TRANSLATE_V8
+/// 這個部署的反向代理（Cloudflare Tunnel）對「久等的請求」會直接回一個
+/// 沒有內容的 502 —— 本專案的教材匯入早就踩過同一顆雷，解法寫在
+/// `materials_import.rs`：「匯入改為背景 job（立即回 202），避免占住 HTTP
+/// request 直到 proxy 逾時 → 502」。
+/// 翻譯要連打多段 Google 請求，同樣會佔住連線，因此照相同 pattern 改寫：
+/// POST 立即建立背景工作並回 202，前端改用輪詢取進度與結果。
+#[derive(Clone)]
+struct TranslateJob {
+    owner: String,
+    running: bool,
+    done: bool,
+    ok: bool,
+    started_at: u64,
+    updated_at: u64,
+    total: usize,
+    finished: usize,
+    tl: String,
+    translated: String,
+    partial: bool,
+    note: String,
+    error: String,
+    code: String,
+    trace_id: String,
+    engine: String,
+    diagnostics: Vec<Value>,
+}
+
+impl TranslateJob {
+    fn new(owner: &str, total: usize, tl: &str, trace_id: &str) -> Self {
+        let now = now_secs();
+        Self {
+            owner: owner.to_string(),
+            running: true,
+            done: false,
+            ok: false,
+            started_at: now,
+            updated_at: now,
+            total,
+            finished: 0,
+            tl: tl.to_string(),
+            translated: String::new(),
+            partial: false,
+            note: String::new(),
+            error: String::new(),
+            code: String::new(),
+            trace_id: trace_id.to_string(),
+            engine: String::new(),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    fn to_json(&self, job_id: &str) -> Value {
+        json!({
+            "job_id": job_id,
+            "state": if self.done {
+                if self.ok { "done" } else { "failed" }
+            } else {
+                "running"
+            },
+            "running": self.running,
+            "done": self.done,
+            "ok": self.ok,
+            "finished": self.finished,
+            "total": self.total,
+            "elapsed_secs": now_secs().saturating_sub(self.started_at),
+            "translated": self.translated,
+            "tl": self.tl,
+            "partial": self.partial,
+            "note": if self.note.is_empty() { Value::Null } else { Value::String(self.note.clone()) },
+            "error": self.error,
+            "code": self.code,
+            "trace_id": self.trace_id,
+            "engine": self.engine,
+            "chunks": self.total,
+            "diagnostics": self.diagnostics,
+        })
+    }
+}
+
+/// 工作保留時間（完成後仍可再查詢一次結果）。
+const TRANSLATE_JOB_TTL_SECS: u64 = 10 * 60;
+/// 最多同時保留的工作數。
+const TRANSLATE_JOB_MAX: usize = 32;
+
+static TRANSLATE_JOBS: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, TranslateJob>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn translate_jobs_prune(map: &mut std::collections::HashMap<String, TranslateJob>) {
+    let now = now_secs();
+    map.retain(|_, job| now.saturating_sub(job.updated_at) <= TRANSLATE_JOB_TTL_SECS);
+    if map.len() > TRANSLATE_JOB_MAX {
+        let mut ordered: Vec<(String, u64)> =
+            map.iter().map(|(k, v)| (k.clone(), v.updated_at)).collect();
+        ordered.sort_by_key(|(_, at)| *at);
+        let drop_count = map.len() - TRANSLATE_JOB_MAX;
+        for (key, _) in ordered.into_iter().take(drop_count) {
+            map.remove(&key);
+        }
+    }
+}
+
+fn translate_job_insert(job_id: &str, job: TranslateJob) {
+    if let Ok(mut map) = TRANSLATE_JOBS.lock() {
+        translate_jobs_prune(&mut map);
+        map.insert(job_id.to_string(), job);
+    }
+}
+
+fn translate_job_get(job_id: &str) -> Option<TranslateJob> {
+    TRANSLATE_JOBS
+        .lock()
+        .ok()
+        .and_then(|map| map.get(job_id).cloned())
+}
+
+fn translate_job_update(job_id: &str, apply: impl FnOnce(&mut TranslateJob)) {
+    if let Ok(mut map) = TRANSLATE_JOBS.lock() {
+        if let Some(job) = map.get_mut(job_id) {
+            apply(job);
+            job.updated_at = now_secs();
+        }
+    }
+}
+
+/// BULLETIN_TRANSLATE_V9
+/// 整段翻譯結果快取。公告內容不會變，重複點「翻譯」不該再打一次上游 ——
+/// 既省 MyMemory 的每日配額，也降低再次觸發 Google 反機器人判定的機率。
+const TRANSLATE_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+const TRANSLATE_CACHE_MAX: usize = 200;
+
+/// 快取值：(寫入時間, 譯文, 引擎)
+static TRANSLATE_CACHE: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, (u64, String, String)>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn translate_cache_key(text: &str, tl: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    tl.hash(&mut hasher);
+    text.hash(&mut hasher);
+    format!("{tl}-{:x}", hasher.finish())
+}
+
+fn translate_cache_get(key: &str) -> Option<(String, String)> {
+    let mut map = TRANSLATE_CACHE.lock().ok()?;
+    let now = now_secs();
+    map.retain(|_, (at, _, _)| now.saturating_sub(*at) <= TRANSLATE_CACHE_TTL_SECS);
+    map.get(key)
+        .map(|(_, text, engine)| (text.clone(), engine.clone()))
+}
+
+fn translate_cache_put(key: &str, text: &str, engine: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = TRANSLATE_CACHE.lock() {
+        if map.len() >= TRANSLATE_CACHE_MAX {
+            // 丟掉最舊的一筆，維持固定上限（避免長期佔用記憶體）。
+            if let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, (at, _, _))| *at)
+                .map(|(k, _)| k.clone())
+            {
+                map.remove(&oldest);
+            }
+        }
+        map.insert(key.to_string(), (now_secs(), text.to_string(), engine.to_string()));
+    }
+}
 
 /// 單段翻譯的結果與診斷資訊。失敗時完整記錄上游狀態碼與回應片段，
 /// 讓使用者可以直接把錯誤碼回報出來。
@@ -1050,6 +1242,8 @@ struct ChunkOutcome {
     detail: String,
     attempts: usize,
     ms: u64,
+    /// 實際成功（或最後嘗試）的翻譯引擎。
+    engine: String,
 }
 
 /// 上游失敗細節。
@@ -1153,54 +1347,111 @@ fn split_for_translation(text: &str, max_bytes: usize) -> Vec<(String, String)> 
     merge_translation_units(units, max_bytes)
 }
 
-/// Google gtx 單段翻譯（唯一來源）。內含重試，並回傳完整診斷。
-async fn translate_once_google(
-    client: &reqwest::Client,
-    index: usize,
-    q: &str,
-    sl: &str,
-    tl: &str,
-) -> ChunkOutcome {
-    let started = std::time::Instant::now();
-    let mut last = UpstreamError {
-        message: "未執行".to_string(),
-        status: None,
-        detail: String::new(),
-    };
+// BULLETIN_TRANSLATE_V9
+// 實測結果：translate.googleapis.com 對本機房 IP 回 HTTP 429 +「Sorry…」
+// 反機器人攔截頁（Google 的 /sorry/ interstitial），且重試必定再被擋。
+// 這是 IP 層級封鎖，不是暫時性限流，只靠重試永遠救不回來。
+// 因此改為「引擎鏈」：依序嘗試多個免金鑰端點，任何一個成功就採用；
+// 被擋的引擎進入冷卻，短時間內不再浪費請求。
+// 順序可用環境變數覆寫：TRONCLASS_TRANSLATE_ENGINES="google,google_dict,mymemory"
 
-    for attempt in 0..=TRANSLATE_RETRIES {
-        if attempt > 0 {
-            // 線性退避，避免立刻再撞上同一個 429。
-            tokio::time::sleep(std::time::Duration::from_millis(400 * attempt as u64)).await;
-        }
-        match google_translate_request(client, q, sl, tl).await {
-            Ok(value) => {
-                return ChunkOutcome {
-                    index,
-                    bytes: q.len(),
-                    ok: true,
-                    text: value,
-                    error: String::new(),
-                    status: Some(200),
-                    detail: String::new(),
-                    attempts: attempt + 1,
-                    ms: started.elapsed().as_millis() as u64,
-                }
-            }
-            Err(error) => last = error,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TranslateEngine {
+    /// translate.googleapis.com（client=gtx）
+    GoogleGtx,
+    /// clients5.google.com（client=dict-chrome-ex）—— Chrome 擴充套件用的端點，
+    /// 與 gtx 的濫用判定不同，gtx 被擋時常常還通。
+    GoogleDict,
+    /// MyMemory 匿名 API。非爬蟲端點，機房 IP 也能用，是最後的保底。
+    MyMemory,
+}
+
+impl TranslateEngine {
+    fn key(self) -> &'static str {
+        match self {
+            Self::GoogleGtx => "google",
+            Self::GoogleDict => "google_dict",
+            Self::MyMemory => "mymemory",
         }
     }
 
-    ChunkOutcome {
-        index,
-        bytes: q.len(),
-        ok: false,
-        text: String::new(),
-        error: last.message,
-        status: last.status,
-        detail: last.detail,
-        attempts: TRANSLATE_RETRIES + 1,
-        ms: started.elapsed().as_millis() as u64,
+    fn label(self) -> &'static str {
+        match self {
+            Self::GoogleGtx => "Google",
+            Self::GoogleDict => "Google(dict)",
+            Self::MyMemory => "MyMemory",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "google" | "gtx" | "google_gtx" => Some(Self::GoogleGtx),
+            "google_dict" | "dict" | "clients5" => Some(Self::GoogleDict),
+            "mymemory" | "mm" => Some(Self::MyMemory),
+            _ => None,
+        }
+    }
+}
+
+/// 預設嘗試順序：先 Google（兩種端點），再 MyMemory 保底。
+const DEFAULT_ENGINE_ORDER: &[TranslateEngine] = &[
+    TranslateEngine::GoogleGtx,
+    TranslateEngine::GoogleDict,
+    TranslateEngine::MyMemory,
+];
+
+fn engine_order() -> Vec<TranslateEngine> {
+    match std::env::var("TRONCLASS_TRANSLATE_ENGINES") {
+        Ok(raw) if !raw.trim().is_empty() => {
+            let list: Vec<TranslateEngine> = raw
+                .split(&[',', ' '][..])
+                .filter_map(TranslateEngine::parse)
+                .collect();
+            if list.is_empty() {
+                DEFAULT_ENGINE_ORDER.to_vec()
+            } else {
+                list
+            }
+        }
+        _ => DEFAULT_ENGINE_ORDER.to_vec(),
+    }
+}
+
+/// 被上游擋下後的冷卻秒數。期間直接跳過該引擎，不浪費往返時間。
+const ENGINE_COOLDOWN_SECS: u64 = 10 * 60;
+
+static ENGINE_COOLDOWN: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<&'static str, u64>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn engine_in_cooldown(engine: TranslateEngine) -> bool {
+    ENGINE_COOLDOWN
+        .lock()
+        .ok()
+        .and_then(|map| map.get(engine.key()).copied())
+        .is_some_and(|until| now_secs() < until)
+}
+
+fn engine_start_cooldown(engine: TranslateEngine, status: Option<u16>) {
+    // 只有「被擋」才冷卻；一般錯誤（逾時、解析失敗）不該讓引擎整個停用。
+    let blocked = matches!(status, Some(403) | Some(429) | Some(503));
+    if !blocked {
+        return;
+    }
+    if let Ok(mut map) = ENGINE_COOLDOWN.lock() {
+        map.insert(engine.key(), now_secs() + ENGINE_COOLDOWN_SECS);
+    }
+    tracing::warn!(
+        engine = engine.key(),
+        status = status.unwrap_or(0),
+        cooldown_secs = ENGINE_COOLDOWN_SECS,
+        "翻譯引擎被上游封鎖，進入冷卻"
+    );
+}
+
+fn engine_clear_cooldown(engine: TranslateEngine) {
+    if let Ok(mut map) = ENGINE_COOLDOWN.lock() {
+        map.remove(engine.key());
     }
 }
 
@@ -1216,50 +1467,143 @@ fn detail_snippet(raw: &str) -> String {
     out
 }
 
-async fn google_translate_request(
+/// 依序嘗試引擎鏈，任何一個成功就回傳。全部失敗才回報最後一個錯誤。
+async fn translate_chunk(
     client: &reqwest::Client,
+    index: usize,
+    q: &str,
+    sl: &str,
+    tl: &str,
+) -> ChunkOutcome {
+    let started = std::time::Instant::now();
+    let order = engine_order();
+    let mut attempts = 0usize;
+    let mut last_engine = order.first().copied().unwrap_or(TranslateEngine::MyMemory);
+    let mut last = UpstreamError {
+        message: "沒有可用的翻譯引擎".to_string(),
+        status: None,
+        detail: String::new(),
+    };
+    let mut skipped: Vec<&'static str> = Vec::new();
+
+    for engine in order {
+        if engine_in_cooldown(engine) {
+            skipped.push(engine.label());
+            continue;
+        }
+        last_engine = engine;
+
+        // 同一個引擎的暫時性錯誤（逾時、5xx）才重試；被擋就立刻換下一家。
+        for attempt in 0..=TRANSLATE_RETRIES {
+            if attempt > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(300 * attempt as u64)).await;
+            }
+            attempts += 1;
+            match engine_request(client, engine, q, sl, tl).await {
+                Ok(value) => {
+                    engine_clear_cooldown(engine);
+                    return ChunkOutcome {
+                        index,
+                        bytes: q.len(),
+                        ok: true,
+                        text: value,
+                        error: String::new(),
+                        status: Some(200),
+                        detail: String::new(),
+                        attempts,
+                        ms: started.elapsed().as_millis() as u64,
+                        engine: engine.label().to_string(),
+                    };
+                }
+                Err(error) => {
+                    let blocked = matches!(error.status, Some(403) | Some(429) | Some(503));
+                    last = error;
+                    if blocked {
+                        engine_start_cooldown(engine, last.status);
+                        break; // 換下一個引擎
+                    }
+                }
+            }
+        }
+    }
+
+    let mut message = format!("{}：{}", last_engine.label(), last.message);
+    if !skipped.is_empty() {
+        message.push_str(&format!("（冷卻中已跳過：{}）", skipped.join("、")));
+    }
+
+    ChunkOutcome {
+        index,
+        bytes: q.len(),
+        ok: false,
+        text: String::new(),
+        error: message,
+        status: last.status,
+        detail: last.detail,
+        attempts,
+        ms: started.elapsed().as_millis() as u64,
+        engine: last_engine.label().to_string(),
+    }
+}
+
+async fn engine_request(
+    client: &reqwest::Client,
+    engine: TranslateEngine,
     q: &str,
     sl: &str,
     tl: &str,
 ) -> Result<String, UpstreamError> {
-    let resp = client
-        .get("https://translate.googleapis.com/translate_a/single")
-        .query(&[
-            ("client", "gtx"),
-            ("sl", sl),
-            ("tl", tl),
-            ("dt", "t"),
-            ("q", q),
-        ])
-        .send()
-        .await
-        .map_err(|e| UpstreamError {
-            message: if e.is_timeout() {
-                format!("Google 逾時（>{TRANSLATE_REQUEST_TIMEOUT_SECS}s）")
-            } else {
-                "Google 連線失敗".to_string()
-            },
-            status: None,
-            detail: detail_snippet(&e.to_string()),
-        })?;
-
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        return Err(UpstreamError {
-            message: format!("Google HTTP {}", status.as_u16()),
-            status: Some(status.as_u16()),
-            detail: detail_snippet(&body),
-        });
+    match engine {
+        TranslateEngine::GoogleGtx => google_gtx_request(client, q, sl, tl).await,
+        TranslateEngine::GoogleDict => google_dict_request(client, q, sl, tl).await,
+        TranslateEngine::MyMemory => mymemory_request(client, q, sl, tl).await,
     }
+}
 
-    let v: Value = serde_json::from_str(&body).map_err(|e| UpstreamError {
-        message: "Google 回應非 JSON".to_string(),
-        status: Some(status.as_u16()),
-        detail: format!("{}｜{}", e, detail_snippet(&body)),
+/// 共用的「送出 → 取狀態碼與內文」流程。
+async fn fetch_text(
+    client: &reqwest::Client,
+    engine: TranslateEngine,
+    request: reqwest::RequestBuilder,
+) -> Result<(u16, String), UpstreamError> {
+    let _ = client;
+    let resp = request.send().await.map_err(|e| UpstreamError {
+        message: if e.is_timeout() {
+            format!(
+                "{} 逾時（>{TRANSLATE_REQUEST_TIMEOUT_SECS}s）",
+                engine.label()
+            )
+        } else {
+            format!("{} 連線失敗", engine.label())
+        },
+        status: None,
+        detail: detail_snippet(&e.to_string()),
     })?;
+    let status = resp.status().as_u16();
+    let body = resp.text().await.unwrap_or_default();
+    Ok((status, body))
+}
 
+fn http_error(engine: TranslateEngine, status: u16, body: &str) -> UpstreamError {
+    // Google 的 /sorry/ 攔截頁是 IP 層級封鎖，明確標示出來避免誤判成暫時限流。
+    let blocked_page = body.contains("<title>Sorry") || body.contains("/sorry/");
+    let message = if blocked_page {
+        format!(
+            "{} HTTP {status}（Google 反機器人攔截頁：本機 IP 被封鎖，重試無效）",
+            engine.label()
+        )
+    } else {
+        format!("{} HTTP {status}", engine.label())
+    };
+    UpstreamError {
+        message,
+        status: Some(status),
+        detail: detail_snippet(body),
+    }
+}
+
+/// gtx 回傳格式：`[[["譯文","原文",…],…],…]`
+fn extract_gtx_text(v: &Value) -> String {
     let mut out = String::new();
     if let Some(arr) = v.get(0).and_then(|x| x.as_array()) {
         for seg in arr {
@@ -1268,11 +1612,62 @@ async fn google_translate_request(
             }
         }
     }
-    let out = to_plain_text(&out);
+    out
+}
+
+/// dict-chrome-ex 回傳格式：`["譯文"]` 或 `[["譯文","原文"],…]`
+fn extract_dict_text(v: &Value) -> String {
+    match v {
+        Value::Array(items) => {
+            let mut out = String::new();
+            for item in items {
+                match item {
+                    Value::String(s) => out.push_str(s),
+                    Value::Array(inner) => {
+                        if let Some(Value::String(s)) = inner.first() {
+                            out.push_str(s);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out
+        }
+        Value::String(s) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+async fn google_gtx_request(
+    client: &reqwest::Client,
+    q: &str,
+    sl: &str,
+    tl: &str,
+) -> Result<String, UpstreamError> {
+    let engine = TranslateEngine::GoogleGtx;
+    let request = client
+        .get("https://translate.googleapis.com/translate_a/single")
+        .query(&[
+            ("client", "gtx"),
+            ("sl", sl),
+            ("tl", tl),
+            ("dt", "t"),
+            ("q", q),
+        ]);
+    let (status, body) = fetch_text(client, engine, request).await?;
+    if !(200..300).contains(&status) {
+        return Err(http_error(engine, status, &body));
+    }
+    let v: Value = serde_json::from_str(&body).map_err(|e| UpstreamError {
+        message: format!("{} 回應非 JSON", engine.label()),
+        status: Some(status),
+        detail: format!("{}｜{}", e, detail_snippet(&body)),
+    })?;
+    let out = to_plain_text(&extract_gtx_text(&v));
     if out.is_empty() {
         Err(UpstreamError {
-            message: "Google 未回結果".to_string(),
-            status: Some(status.as_u16()),
+            message: format!("{} 未回結果", engine.label()),
+            status: Some(status),
             detail: detail_snippet(&body),
         })
     } else {
@@ -1280,18 +1675,250 @@ async fn google_translate_request(
     }
 }
 
+async fn google_dict_request(
+    client: &reqwest::Client,
+    q: &str,
+    sl: &str,
+    tl: &str,
+) -> Result<String, UpstreamError> {
+    let engine = TranslateEngine::GoogleDict;
+    let request = client
+        .get("https://clients5.google.com/translate_a/t")
+        .query(&[
+            ("client", "dict-chrome-ex"),
+            ("sl", sl),
+            ("tl", tl),
+            ("q", q),
+        ]);
+    let (status, body) = fetch_text(client, engine, request).await?;
+    if !(200..300).contains(&status) {
+        return Err(http_error(engine, status, &body));
+    }
+    let v: Value = serde_json::from_str(&body).map_err(|e| UpstreamError {
+        message: format!("{} 回應非 JSON", engine.label()),
+        status: Some(status),
+        detail: format!("{}｜{}", e, detail_snippet(&body)),
+    })?;
+    let out = to_plain_text(&extract_dict_text(&v));
+    if out.is_empty() {
+        Err(UpstreamError {
+            message: format!("{} 未回結果", engine.label()),
+            status: Some(status),
+            detail: detail_snippet(&body),
+        })
+    } else {
+        Ok(out)
+    }
+}
+
+async fn mymemory_request(
+    client: &reqwest::Client,
+    q: &str,
+    sl: &str,
+    tl: &str,
+) -> Result<String, UpstreamError> {
+    let engine = TranslateEngine::MyMemory;
+    // MyMemory 用 zh-TW / zh-CN 這種 BCP-47 標記；gtx 的 zh-CN 可直接沿用。
+    let langpair = format!("{sl}|{tl}");
+    let request = client
+        .get("https://api.mymemory.translated.net/get")
+        .query(&[("q", q), ("langpair", langpair.as_str())]);
+    let (status, body) = fetch_text(client, engine, request).await?;
+    if !(200..300).contains(&status) {
+        return Err(http_error(engine, status, &body));
+    }
+    let v: Value = serde_json::from_str(&body).map_err(|e| UpstreamError {
+        message: format!("{} 回應非 JSON", engine.label()),
+        status: Some(status),
+        detail: format!("{}｜{}", e, detail_snippet(&body)),
+    })?;
+    // responseStatus 有時是數字、有時是字串。
+    let api_status = v
+        .get("responseStatus")
+        .and_then(|x| {
+            x.as_i64()
+                .or_else(|| x.as_str().and_then(|s| s.trim().parse::<i64>().ok()))
+        })
+        .unwrap_or(-1);
+    let out = to_plain_text(
+        v.pointer("/responseData/translatedText")
+            .and_then(|x| x.as_str())
+            .unwrap_or(""),
+    );
+    if api_status == 200 && !out.is_empty() {
+        Ok(out)
+    } else {
+        Err(UpstreamError {
+            // 配額用盡時 MyMemory 會回 429 或在內文提示，一併帶出來。
+            message: format!("{} responseStatus={api_status}", engine.label()),
+            status: Some(if api_status == 429 { 429 } else { status }),
+            detail: detail_snippet(&body),
+        })
+    }
+}
+
+/// 取出 panic payload 的訊息文字。
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "未知 panic（payload 型別無法解析）".to_string()
+}
+
+/// BULLETIN_TRANSLATE_V7
+/// handler 內若發生 panic，axum/hyper 會直接中斷連線，Cloudflare 只會顯示
+/// 一個沒有內容的「502 Bad gateway」，完全查不到原因。這裡把整段處理包在
+/// `catch_unwind` 裡，任何 panic 都轉成帶 trace_id 的 JSON 回應。
 pub(super) async fn translate_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
     Json(body): Json<BulletinTranslateRequest>,
 ) -> Response {
-    use futures::StreamExt;
+    use futures::FutureExt;
 
+    let trace_id: String = uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(8)
+        .collect();
+
+    let guarded = std::panic::AssertUnwindSafe(translate_inner(
+        state,
+        headers,
+        query,
+        body,
+        trace_id.clone(),
+    ))
+    .catch_unwind()
+    .await;
+
+    match guarded {
+        Ok(response) => response,
+        Err(payload) => {
+            let message = panic_payload_message(payload.as_ref());
+            tracing::error!(
+                trace_id = %trace_id,
+                panic = %message,
+                "公告翻譯 panic（已攔截，連線未中斷）"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": format!("翻譯處理發生內部錯誤（已攔截 panic）：{message}"),
+                    "code": "TRANSLATE_PANIC",
+                    "trace_id": trace_id,
+                })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// BULLETIN_TRANSLATE_V7：自我檢測。直接從本機打一次極小的 Google 翻譯請求，
+/// 用來判斷「502 是不是因為本服務根本連不到 translate.googleapis.com」。
+/// GET /admin/api/bulletins/translate/selftest（僅管理員）
+pub(super) async fn translate_selftest_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
     let token = session_token(&headers, &query.token);
-    if state.authorize_any(&token).await.is_none() {
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
         return unauthorized_response();
     }
+
+    // BULLETIN_TRANSLATE_V9：逐一實測每個引擎，直接看出誰被擋、誰能用。
+    let mut results: Vec<Value> = Vec::new();
+    let mut usable: Vec<&'static str> = Vec::new();
+
+    for engine in engine_order() {
+        let cooling = engine_in_cooldown(engine);
+        let started = std::time::Instant::now();
+        let outcome = engine_request(
+            &TRANSLATE_CLIENT,
+            engine,
+            "Curved scores are published on Moodle.",
+            "en",
+            "zh-TW",
+        )
+        .await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        match outcome {
+            Ok(text) => {
+                engine_clear_cooldown(engine);
+                usable.push(engine.label());
+                results.push(json!({
+                    "engine": engine.key(),
+                    "label": engine.label(),
+                    "ok": true,
+                    "cooling_before": cooling,
+                    "elapsed_ms": elapsed_ms,
+                    "sample": text,
+                }));
+            }
+            Err(error) => {
+                engine_start_cooldown(engine, error.status);
+                results.push(json!({
+                    "engine": engine.key(),
+                    "label": engine.label(),
+                    "ok": false,
+                    "cooling_before": cooling,
+                    "elapsed_ms": elapsed_ms,
+                    "status": error.status,
+                    "error": error.message,
+                    "detail": error.detail,
+                }));
+            }
+        }
+    }
+
+    let ok = !usable.is_empty();
+    tracing::info!(
+        ok,
+        usable = %usable.join("、"),
+        "公告翻譯自我檢測"
+    );
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": ok,
+            "usable": usable,
+            "engines": results,
+            "request_timeout_secs": TRANSLATE_REQUEST_TIMEOUT_SECS,
+            "total_budget_secs": TRANSLATE_TOTAL_BUDGET_SECS,
+            "chunk_bytes": TRANSLATE_CHUNK_BYTES,
+            "hint": if ok {
+                format!("可用引擎：{}。翻譯會自動挑選能用的那一個。", usable.join("、"))
+            } else {
+                "所有翻譯引擎都連不上或被封鎖。若 Google 顯示 429／Sorry 頁，代表本機 IP 被 Google 擋，需改用其他引擎或出口 IP。".to_string()
+            },
+        })),
+    )
+        .into_response()
+}
+
+/// 建立背景翻譯工作並立即回 202。實際的多段翻譯在 tokio task 裡跑，
+/// HTTP 連線只佔用幾毫秒，反向代理不可能再對它逾時 502。
+async fn translate_inner(
+    state: AdminWebState,
+    headers: HeaderMap,
+    query: AdminQuery,
+    body: BulletinTranslateRequest,
+    trace_id: String,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
     // BULLETIN_TRANSLATE_V3：來源一律先轉純文字，翻譯服務就不會拿到／回吐標籤。
     let text = to_plain_text(&body.text);
     if text.is_empty() {
@@ -1306,7 +1933,7 @@ pub(super) async fn translate_handler(
             .into_response();
     }
     let cjk = contains_cjk(&text);
-    let sl: &str = if cjk { "zh-CN" } else { "en" };
+    let sl: &'static str = if cjk { "zh-CN" } else { "en" };
     let tl: String = match body.tl.trim() {
         "en" | "ja" | "ko" | "zh-TW" => body.tl.trim().to_string(),
         _ => {
@@ -1328,34 +1955,82 @@ pub(super) async fn translate_handler(
             .into_response();
     }
 
-    // BULLETIN_TRANSLATE_V6：每次翻譯都有 trace_id，log 與畫面上是同一組，
-    // 方便對照 /admin/logs 回報問題。
-    let trace_id: String = uuid::Uuid::new_v4()
-        .simple()
-        .to_string()
-        .chars()
-        .take(8)
-        .collect();
+    // 命中快取就直接回結果（前端已支援「直接帶 translated 的同步回應」）。
+    let cache_key = translate_cache_key(&text, &tl);
+    if let Some((cached, engine)) = translate_cache_get(&cache_key) {
+        tracing::info!(trace_id = %trace_id, engine = %engine, "公告翻譯命中快取");
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "translated": cached,
+                "tl": tl,
+                "partial": false,
+                "cached": true,
+                "engine": engine,
+                "trace_id": trace_id,
+            })),
+        )
+            .into_response();
+    }
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(
-            TRANSLATE_REQUEST_TIMEOUT_SECS,
-        ))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) TronclassPanel/1.0")
-        .build()
-        .unwrap_or_default();
+    let total_chunks = units.len();
+    let job_id = format!("t{trace_id}");
+    translate_job_insert(
+        &job_id,
+        TranslateJob::new(&session.account_id, total_chunks, &tl, &trace_id),
+    );
 
     tracing::info!(
         trace_id = %trace_id,
-        chunks = units.len(),
+        job_id = %job_id,
+        chunks = total_chunks,
         bytes = text.len(),
         sl = %sl,
         tl = %tl,
-        "公告翻譯開始"
+        "公告翻譯開始（背景工作）"
     );
 
+    {
+        let job_id = job_id.clone();
+        let trace_id = trace_id.clone();
+        let tl = tl.clone();
+        let cache_key = cache_key.clone();
+        tokio::spawn(async move {
+            run_translate_job(job_id, units, sl, tl, trace_id, cache_key).await;
+        });
+    }
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "job_id": job_id,
+            "state": "running",
+            "chunks": total_chunks,
+            "total": total_chunks,
+            "trace_id": trace_id,
+            "poll_path": "/admin/api/bulletins/translate/status",
+            "poll_ms": 600,
+        })),
+    )
+        .into_response()
+}
+
+/// 背景執行多段翻譯，逐段更新進度，最後把結果寫回工作狀態。
+async fn run_translate_job(
+    job_id: String,
+    units: Vec<(String, String)>,
+    sl: &'static str,
+    tl: String,
+    trace_id: String,
+    cache_key: String,
+) {
+    use futures::StreamExt;
+
+    let client = TRANSLATE_CLIENT.clone();
+    let total = units.len();
+
     // FnOnce-NOT-GENERAL-ENOUGH-FIX
-    // 這裡刻意先 clone 成「擁有所有權」的 Vec<String> 再 into_iter()。
+    // 這裡刻意先 clone 成「擁有所有權」的 Vec 再 into_iter()。
     // 若直接 `units.iter().map(|(piece, _)| async move { … })`，閉包參數是
     // `&'a (String, String)`，回傳的 async block 型別會綁死在那個生命週期上，
     // rustc 無法把它推成 higher-ranked 的 `FnOnce`，就會報
@@ -1370,9 +2045,10 @@ pub(super) async fn translate_handler(
     let translate_all = futures::stream::iter(pieces.into_iter().map(|(index, piece)| {
         let client = client.clone();
         let tl = tl.clone();
+        let job_id = job_id.clone();
         async move {
-            if piece.trim().is_empty() {
-                return ChunkOutcome {
+            let outcome = if piece.trim().is_empty() {
+                ChunkOutcome {
                     index,
                     bytes: piece.len(),
                     ok: true,
@@ -1382,15 +2058,19 @@ pub(super) async fn translate_handler(
                     detail: String::new(),
                     attempts: 0,
                     ms: 0,
-                };
-            }
-            translate_once_google(&client, index, &piece, sl, &tl).await
+                    engine: String::new(),
+                }
+            } else {
+                translate_chunk(&client, index, &piece, sl, &tl).await
+            };
+            translate_job_update(&job_id, |job| job.finished += 1);
+            outcome
         }
     }))
     .buffered(TRANSLATE_CONCURRENCY)
     .collect::<Vec<ChunkOutcome>>();
 
-    // 自己設總預算並回明確錯誤，避免代理層先超時丟出「沒有內容的 502」。
+    // 背景工作仍設上限，避免上游卡死時工作永遠停在 running。
     let outcomes = match tokio::time::timeout(
         std::time::Duration::from_secs(TRANSLATE_TOTAL_BUDGET_SECS),
         translate_all,
@@ -1401,28 +2081,25 @@ pub(super) async fn translate_handler(
         Err(_) => {
             tracing::warn!(
                 trace_id = %trace_id,
-                chunks = units.len(),
+                job_id = %job_id,
+                chunks = total,
                 budget_secs = TRANSLATE_TOTAL_BUDGET_SECS,
                 "公告翻譯逾時（超過總預算）"
             );
-            return (
-                StatusCode::GATEWAY_TIMEOUT,
-                Json(json!({
-                    "error": format!(
-                        "翻譯逾時：{} 段在 {} 秒內未完成（上游 translate.googleapis.com 無回應或被限流）",
-                        units.len(),
-                        TRANSLATE_TOTAL_BUDGET_SECS
-                    ),
-                    "code": "TRANSLATE_TIMEOUT",
-                    "trace_id": trace_id,
-                    "chunks": units.len(),
-                })),
-            )
-                .into_response();
+            translate_job_update(&job_id, |job| {
+                job.running = false;
+                job.done = true;
+                job.ok = false;
+                job.code = "TRANSLATE_TIMEOUT".to_string();
+                job.error = format!(
+                    "翻譯逾時：{total} 段在 {TRANSLATE_TOTAL_BUDGET_SECS} 秒內未完成（上游 translate.googleapis.com 無回應或被限流）"
+                );
+            });
+            return;
         }
     };
 
-    let mut assembled = String::with_capacity(text.len() + 64);
+    let mut assembled = String::new();
     let mut diagnostics: Vec<Value> = Vec::new();
     let mut failures = 0usize;
     let mut translated_count = 0usize;
@@ -1439,8 +2116,9 @@ pub(super) async fn translate_handler(
             assembled.push_str(piece);
             tracing::warn!(
                 trace_id = %trace_id,
+                job_id = %job_id,
                 chunk = outcome.index + 1,
-                total = units.len(),
+                total,
                 bytes = outcome.bytes,
                 attempts = outcome.attempts,
                 elapsed_ms = outcome.ms,
@@ -1455,12 +2133,13 @@ pub(super) async fn translate_handler(
         if !outcome.ok || outcome.attempts > 1 {
             diagnostics.push(json!({
                 "chunk": outcome.index + 1,
-                "total": units.len(),
+                "total": total,
                 "bytes": outcome.bytes,
                 "ok": outcome.ok,
                 "status": outcome.status,
                 "attempts": outcome.attempts,
                 "ms": outcome.ms,
+                "engine": outcome.engine,
                 "error": outcome.error,
                 "detail": outcome.detail,
             }));
@@ -1468,7 +2147,7 @@ pub(super) async fn translate_handler(
     }
 
     if translated_count == 0 {
-        let first = outcomes
+        let reason = outcomes
             .iter()
             .find(|o| !o.ok)
             .map(|o| {
@@ -1484,57 +2163,102 @@ pub(super) async fn translate_handler(
             .unwrap_or_else(|| "未知原因".to_string());
         tracing::warn!(
             trace_id = %trace_id,
-            chunks = units.len(),
-            reason = %first,
+            job_id = %job_id,
+            chunks = total,
+            reason = %reason,
             "公告翻譯完全失敗"
         );
-        return (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({
-                "error": format!("翻譯失敗：{first}"),
-                "code": "TRANSLATE_UPSTREAM_FAILED",
-                "trace_id": trace_id,
-                "chunks": units.len(),
-                "diagnostics": diagnostics,
-            })),
-        )
-            .into_response();
+        translate_job_update(&job_id, |job| {
+            job.running = false;
+            job.done = true;
+            job.ok = false;
+            job.code = "TRANSLATE_UPSTREAM_FAILED".to_string();
+            job.error = format!("翻譯失敗：{reason}");
+            job.diagnostics = diagnostics;
+        });
+        return;
     }
 
     let translated = collapse_plain_text(&assembled);
     let partial = failures > 0;
+    // 回報實際成功的引擎（多段可能用到不同引擎，去重後列出）。
+    let mut engines: Vec<String> = Vec::new();
+    for outcome in outcomes.iter() {
+        if outcome.ok && !outcome.engine.is_empty() && !engines.contains(&outcome.engine) {
+            engines.push(outcome.engine.clone());
+        }
+    }
+    let engine_label = engines.join("＋");
     if partial {
-        tracing::warn!(
-            trace_id = %trace_id,
-            failed = failures,
-            chunks = units.len(),
-            "公告翻譯部分失敗"
-        );
+        tracing::warn!(trace_id = %trace_id, job_id = %job_id, failed = failures, chunks = total, "公告翻譯部分失敗");
     } else {
-        tracing::info!(
-            trace_id = %trace_id,
-            chunks = units.len(),
-            "公告翻譯完成"
-        );
+        tracing::info!(trace_id = %trace_id, job_id = %job_id, chunks = total, "公告翻譯完成");
     }
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "translated": translated,
-            "tl": tl,
-            "chunks": units.len(),
-            "partial": partial,
-            "trace_id": trace_id,
-            "note": if partial {
-                Value::String(format!("{failures}/{} 段翻譯失敗，該段保留原文", units.len()))
-            } else {
-                Value::Null
-            },
-            "diagnostics": diagnostics,
-        })),
-    )
-        .into_response()
+    // 只有「完全成功」才快取；部分失敗的結果不該被記住。
+    if !partial {
+        translate_cache_put(&cache_key, &translated, &engine_label);
+    }
+
+    translate_job_update(&job_id, |job| {
+        job.running = false;
+        job.done = true;
+        job.ok = true;
+        job.engine = engine_label;
+        job.translated = translated;
+        job.partial = partial;
+        job.note = if partial {
+            format!("{failures}/{total} 段翻譯失敗，該段保留原文")
+        } else {
+            String::new()
+        };
+        job.diagnostics = diagnostics;
+    });
+}
+
+/// 查詢背景翻譯工作的進度／結果。
+/// GET /admin/api/bulletins/translate/status?job=xxxx
+pub(super) async fn translate_status_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<TranslateStatusQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    let job_id = query.job.trim();
+    if job_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "缺少 job 參數", "code": "TRANSLATE_JOB_MISSING" })),
+        )
+            .into_response();
+    }
+    let Some(job) = translate_job_get(job_id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "error": "找不到這個翻譯工作（可能已逾時被清除，請重新翻譯）",
+                "code": "TRANSLATE_JOB_NOT_FOUND",
+            })),
+        )
+            .into_response();
+    };
+    // 只有工作的擁有者或管理員可以查詢。
+    if job.owner != session.account_id && !session.is_admin {
+        return unauthorized_response();
+    }
+
+    (StatusCode::OK, Json(job.to_json(job_id))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct TranslateStatusQuery {
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub job: String,
 }
 
 // BULLETIN_TRANSLATE_V3 的回歸測試：翻譯欄位絕不能出現 HTML 標籤。
