@@ -105,6 +105,21 @@
 
   /* ── 輸入區 ─────────────────────────────── */
   .composer{border-top:1px solid var(--line2);padding:12px 16px 16px;background:var(--bg)}
+  /* AI_CHAT_V7：附件 */
+  .attachbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px}
+  .attachbar:empty{display:none}
+  .chip{display:flex;align-items:center;gap:6px;max-width:220px;padding:4px 6px 4px 4px;border:1px solid var(--line2);border-radius:10px;background:var(--bg2);font-size:12px}
+  .chip img{width:34px;height:34px;object-fit:cover;border-radius:6px;display:block}
+  .chip .fi{width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:6px;background:var(--line2);font-size:15px}
+  .chip .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chip .sz{color:var(--dim);font-size:11px}
+  .chip .x{border:0;background:transparent;color:var(--dim);cursor:pointer;font-size:15px;line-height:1;padding:2px 4px;border-radius:6px}
+  .chip .x:hover{background:var(--line2);color:var(--fg)}
+  .attbtn{flex:none;width:34px;height:34px;border:1px solid var(--line2);border-radius:10px;background:var(--bg2);color:var(--dim);cursor:pointer;font-size:17px;line-height:1}
+  .attbtn:hover{color:var(--fg);border-color:var(--accent)}
+  .msgatt{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .msgatt span{font-size:11px;color:var(--dim);border:1px solid var(--line2);border-radius:8px;padding:2px 7px}
+  .dropping{outline:2px dashed var(--accent);outline-offset:-6px}
   .cwrap{max-width:760px;margin:0 auto;display:flex;gap:9px;align-items:flex-end;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:8px 8px 8px 14px}
   .cwrap:focus-within{border-color:var(--primary)}
   .cwrap textarea{flex:1;border:none;background:transparent;outline:none;resize:none;font-size:14.5px;line-height:1.6;max-height:200px;padding:7px 0}
@@ -187,11 +202,14 @@
     </div>
     <div class="stream" id="stream"><div class="inner" id="inner"></div></div>
     <div class="composer">
+      <div class="attachbar" id="attachBar"></div>
       <div class="cwrap">
-        <textarea id="input" rows="1" placeholder="傳訊息給 AI…（Enter 送出，Shift+Enter 換行）"></textarea>
+        <button class="attbtn" id="attachBtn" type="button" title="附加圖片或文字檔">＋</button>
+        <textarea id="input" rows="1" placeholder="傳訊息給 AI…（Enter 送出，Shift+Enter 換行，可直接貼上或拖入圖片）"></textarea>
         <button class="sendbtn" id="sendBtn" type="button">↑</button>
       </div>
-      <div class="hint" id="hint">回覆由 AI 生成，請自行查證重要資訊。</div>
+      <input type="file" id="fileInput" multiple style="display:none" accept="image/png,image/jpeg,image/webp,image/gif,text/*,.txt,.md,.csv,.json,.log,.xml,.yml,.yaml,.ini,.conf,.sql,.js,.ts,.py,.rs,.java,.c,.cpp,.h,.css,.html,.sh">
+      <div class="hint" id="hint">回覆由 AI 生成，請自行查證重要資訊。附圖時會自動改用看得懂圖片的模型。</div>
     </div>
   </main>
 </div>
@@ -228,7 +246,7 @@
       <div class="field">
         <label>可用模型（一行一個，第一個當這把密鑰的預設）</label>
         <textarea id="fModels" placeholder=""></textarea>
-        <div class="note" id="modelsNote">請填官方的模型代號（全小寫、用連字號），例如 <code>gpt-4o-mini</code>、<code>gemini-2.0-flash</code>；不要填「GPT-4o mini」這種顯示名稱，含空白或大寫會被上游拒絕。</div>
+        <div class="note" id="modelsNote">請填官方的模型代號（全小寫、用連字號），Groq 少打前綴會自動補齊。不要填「GPT-4o mini」這種顯示名稱。<b>Groq 與 OpenRouter 的代號本來就帶前綴</b>，要完整填寫（例如 <code>openai/gpt-oss-120b</code>、<code>qwen/qwen3.6-27b</code>）；OpenAI、Gemini 則不能帶前綴（<code>gpt-4o-mini</code>、<code>gemini-2.0-flash</code>）。</div>
       </div>
       <div class="field">
         <label>API 網址（留空用預設）</label>
@@ -325,7 +343,7 @@
 
     <div class="sect">
       <h3>批次貼上模型名稱</h3>
-      <div class="desc">一行一個，自行輸入。名稱要用該服務商的官方寫法：Gemini 是 <code>gemini-2.0-flash</code>（不要帶 <code>google/</code> 或 <code>models/</code> 前綴），OpenRouter 才需要 <code>vendor/model</code> 形式。貼錯格式會自動修正或明確告訴你哪裡不對。</div>
+      <div class="desc">一行一個，自行輸入。<b>Groq 與 OpenRouter</b> 需要完整前綴（<code>openai/gpt-oss-120b</code>、<code>qwen/qwen3.6-27b</code>）；<b>Gemini 與 OpenAI</b> 不能帶前綴（<code>gemini-2.0-flash</code>、<code>gpt-4o-mini</code>）。Groq 少了前綴（<code>gpt-oss-120b</code>）會自動補成官方代號。填錯格式會自動修正或明確告訴你哪裡不對。</div>
       <div class="field">
         <label>服務商</label>
         <select id="bProvider"></select>
@@ -400,6 +418,10 @@
   var activeJob=null;
   var pollTimer=null;
   var POLL_MS=350;
+  // AI_CHAT_V8：SSE 串流。連不上就自動退回輪詢。
+  var activeStream=null;
+  var streamBuf='';
+  var renderTimer=null;
 
   // ── Markdown → DOM ─────────────────────────────────────
   // CSP 有 require-trusted-types-for 'script'，innerHTML 會直接 throw，
@@ -515,8 +537,105 @@
     }
   }
 
+  // ── AI_CHAT_V7：附件（圖片／文字檔）───────────────────────
+  var MAX_FILES=6, MAX_IMG=4*1024*1024, MAX_TXT=256*1024;
+  var IMG_MIME={'image/png':1,'image/jpeg':1,'image/jpg':1,'image/webp':1,'image/gif':1};
+  var TEXT_EXT=['txt','md','markdown','csv','tsv','json','log','xml','yml','yaml','ini','conf','cfg',
+                'sql','js','mjs','ts','jsx','tsx','py','rs','java','kt','go','rb','php','c','h','cpp',
+                'hpp','cs','css','scss','html','htm','sh','bash','env','toml','properties'];
+  var pending=[];
+
+  function extOf(name){
+    var i=String(name||'').lastIndexOf('.');
+    return i<0?'':String(name).slice(i+1).toLowerCase();
+  }
+  function humanSize(n){
+    if(n<1024)return n+' B';
+    if(n<1024*1024)return (n/1024).toFixed(0)+' KB';
+    return (n/1024/1024).toFixed(1)+' MB';
+  }
+  function classify(file){
+    var mime=(file.type||'').toLowerCase();
+    if(IMG_MIME[mime])return 'image';
+    if(mime.indexOf('image/')===0)return 'bad-image';
+    if(mime.indexOf('text/')===0)return 'text';
+    if(TEXT_EXT.indexOf(extOf(file.name))>=0)return 'text';
+    if(mime==='application/json'||mime==='application/xml')return 'text';
+    return 'unknown';
+  }
+
+  function renderAttachBar(){
+    var bar=q('attachBar');
+    clear(bar);
+    pending.forEach(function(item,index){
+      var chip=el('div','chip');
+      if(item.kind==='image'){
+        var img=document.createElement('img');
+        img.src=item.preview;
+        img.alt=item.name;
+        chip.appendChild(img);
+      }else{
+        chip.appendChild(el('div','fi','📄'));
+      }
+      var box=el('div');
+      box.style.minWidth='0';
+      box.appendChild(el('div','nm',item.name));
+      box.appendChild(el('div','sz',humanSize(item.size)));
+      chip.appendChild(box);
+      var x=el('button','x','✕');
+      x.type='button';
+      x.title='移除';
+      x.addEventListener('click',function(){pending.splice(index,1);renderAttachBar();});
+      chip.appendChild(x);
+      bar.appendChild(chip);
+    });
+  }
+
+  function addFiles(files){
+    var list=Array.prototype.slice.call(files||[]);
+    if(!list.length)return;
+    list.forEach(function(file){
+      if(pending.length>=MAX_FILES){toast('一次最多只能附 '+MAX_FILES+' 個檔案',true);return;}
+      var kind=classify(file);
+      if(kind==='bad-image'){toast('「'+file.name+'」的圖片格式不支援，請用 PNG／JPG／WebP／GIF',true);return;}
+      if(kind==='unknown'){toast('「'+file.name+'」不支援。目前只能附圖片和純文字類檔案（PDF、Word 還不行）',true);return;}
+      if(kind==='image'&&file.size>MAX_IMG){toast('「'+file.name+'」有 '+humanSize(file.size)+'，圖片上限 4 MB',true);return;}
+      if(kind==='text'&&file.size>MAX_TXT){toast('「'+file.name+'」有 '+humanSize(file.size)+'，文字檔上限 256 KB',true);return;}
+      var slot={name:file.name||(kind==='image'?'貼上的圖片.png':'附件.txt'),
+                mime:(file.type||'').toLowerCase(),kind:kind,size:file.size,
+                data:'',text:'',preview:'',ready:false};
+      pending.push(slot);
+      renderAttachBar();
+      var reader=new FileReader();
+      reader.onload=function(){
+        var out=String(reader.result||'');
+        if(kind==='image'){
+          slot.preview=out;
+          var cut=out.indexOf('base64,');
+          slot.data=cut>=0?out.slice(cut+7):'';
+          if(!slot.mime){slot.mime='image/png';}
+          if(!slot.data){dropSlot(slot,'「'+slot.name+'」讀取失敗');return;}
+        }else{
+          slot.text=out;
+          if(!out.trim()){dropSlot(slot,'「'+slot.name+'」是空的');return;}
+        }
+        slot.ready=true;
+        renderAttachBar();
+      };
+      reader.onerror=function(){dropSlot(slot,'「'+slot.name+'」讀取失敗');};
+      if(kind==='image')reader.readAsDataURL(file);
+      else reader.readAsText(file);
+    });
+  }
+  function dropSlot(slot,message){
+    var i=pending.indexOf(slot);
+    if(i>=0)pending.splice(i,1);
+    renderAttachBar();
+    toast(message,true);
+  }
+
   // ── 訊息渲染 ───────────────────────────────────────────
-  function messageNode(role,content,via){
+  function messageNode(role,content,via,atts){
     var wrap=el('div','msg '+(role==='user'?'user':'ai'));
     wrap.appendChild(el('div','avatar',role==='user'?'你':'AI'));
     var body=el('div','body');
@@ -535,6 +654,11 @@
       renderMarkdown(bubble,content);
     }
     body.appendChild(bubble);
+    if(atts&&atts.length){
+      var row=el('div','msgatt');
+      atts.forEach(function(name){row.appendChild(el('span','','📎 '+name));});
+      body.appendChild(row);
+    }
     wrap.appendChild(body);
     wrap._bubble=bubble;
     wrap._who=who;
@@ -586,7 +710,7 @@
     }
     currentMessages.forEach(function(m){
       var via=m.role==='assistant'&&m.key_name?(m.key_name+(m.model?' · '+m.model:'')):'';
-      inner.appendChild(messageNode(m.role,m.content,via));
+      inner.appendChild(messageNode(m.role,m.content,via,m.attachments));
     });
     scrollDown(true);
   }
@@ -707,16 +831,28 @@
   function send(){
     var input=q('input');
     var text=input.value.trim();
-    if(!text)return;
     if(activeJob){stopGeneration();return;}
+    // 只附檔案不打字也可以送，但檔案還在讀就得等一下。
+    if(!text&&!pending.length)return;
+    if(pending.some(function(a){return !a.ready;})){toast('檔案還在讀取，請稍候再送出');return;}
+
+    var payload=pending.map(function(a){
+      return a.kind==='image'
+        ? {name:a.name,mime:a.mime,kind:'image',data:a.data}
+        : {name:a.name,mime:a.mime||'text/plain',kind:'text',text:a.text};
+    });
+    var names=pending.map(function(a){return a.name;});
+    pending=[];
+    renderAttachBar();
 
     input.value='';
     autoGrow();
 
     var inner=q('inner');
     if(!currentMessages.length)clear(inner);
-    currentMessages.push({role:'user',content:text});
-    inner.appendChild(messageNode('user',text,''));
+    var shown=text||(payload.some(function(a){return a.kind==='image';})?'（請看這張圖片）':'（請看附件）');
+    currentMessages.push({role:'user',content:shown});
+    inner.appendChild(messageNode('user',shown,'',names));
 
     var aiNode=messageNode('assistant','',''); 
     var bubble=aiNode._bubble;
@@ -728,7 +864,7 @@
     scrollDown(true);
     setSending(true);
 
-    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text,model_id:currentModel},function(r){
+    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text,model_id:currentModel,attachments:payload},function(r){
       if(r.error){
         setSending(false);
         showError(bubble,r);
@@ -738,8 +874,99 @@
       if(r.model_id){currentModel=r.model_id;renderModels();}
       activeJob=r.job_id;
       POLL_MS=r.poll_ms||350;
-      poll(bubble,aiNode._who,0);
+      startStream(bubble,aiNode._who);
     });
+  }
+
+  // ── AI_CHAT_V8：SSE 串流 ────────────────────────────────
+  function closeStream(){
+    if(activeStream){try{activeStream.close();}catch(e){}activeStream=null;}
+    if(renderTimer){clearTimeout(renderTimer);renderTimer=null;}
+  }
+
+  // 每來一小段就重畫整棵 Markdown 太貴，節流到 90ms 畫一次。
+  function scheduleRender(bubble,done){
+    if(renderTimer)return;
+    renderTimer=setTimeout(function(){
+      renderTimer=null;
+      renderMarkdown(bubble,streamBuf);
+      if(!done)bubble.appendChild(el('span','cursor'));
+      scrollDown(false);
+    },90);
+  }
+
+  function stampWho(who,meta){
+    if(!who||!meta)return;
+    if(meta.key_name&&!who.querySelector('.via')){
+      who.appendChild(el('span','via',(meta.model||'')+' · '+meta.key_name+(meta.cached?' · 快取':'')));
+    }
+  }
+  function stampReason(bubble,reason){
+    if(!reason||!bubble||!bubble.parentNode)return;
+    if(bubble.parentNode.querySelector('.autonote'))return;
+    var note=el('div','autonote','⚡ '+reason);
+    bubble.parentNode.insertBefore(note,bubble);
+  }
+
+  function finishStream(bubble,who,r){
+    closeStream();
+    activeJob=null;
+    setSending(false);
+    if(r.ok){
+      renderMarkdown(bubble,r.text||'（沒有內容）');
+      currentMessages.push({role:'assistant',content:r.text,key_name:r.key_name,model:r.model});
+      if(r.code==='AI_CANCELLED')toast('已停止生成');
+      refreshState();
+    }else{
+      showError(bubble,r);
+      refreshState();
+    }
+  }
+
+  function startStream(bubble,who){
+    streamBuf='';
+    if(typeof EventSource!=='function'){poll(bubble,who,0);return;}
+    var job=activeJob;
+    var got=false, ended=false;
+    var es;
+    try{
+      es=new EventSource('/admin/api/ai/chat/stream?job='+encodeURIComponent(job));
+    }catch(e){poll(bubble,who,0);return;}
+    activeStream=es;
+
+    es.addEventListener('meta',function(ev){
+      got=true;
+      var meta=null;try{meta=JSON.parse(ev.data);}catch(e){}
+      if(!meta)return;
+      stampWho(who,meta);
+      stampReason(bubble,meta.auto_reason);
+    });
+    es.addEventListener('delta',function(ev){
+      got=true;
+      streamBuf+=ev.data;
+      scheduleRender(bubble,false);
+    });
+    es.addEventListener('done',function(ev){
+      ended=true;
+      var r=null;try{r=JSON.parse(ev.data);}catch(e){}
+      if(!r){closeStream();poll(bubble,who,0);return;}
+      stampWho(who,r);
+      stampReason(bubble,r.auto_reason);
+      finishStream(bubble,who,r);
+    });
+    // 伺服器說這個 job 不見了（過期／逾時）：交給輪詢去拿最終狀態或錯誤訊息。
+    es.addEventListener('gone',function(){
+      ended=true;closeStream();
+      if(activeJob)poll(bubble,who,0);
+    });
+    es.onerror=function(){
+      if(ended)return;
+      // 一律關掉，不讓 EventSource 自動重連 —— 重連會從頭再推一次造成重複。
+      closeStream();
+      if(!activeJob)return;
+      // 已經收到過內容就沿用；沒收到代表這條路不通（代理擋 SSE），退回輪詢。
+      poll(bubble,who,0);
+    };
   }
 
   function poll(bubble,who,ticks){
@@ -759,6 +986,8 @@
         bubble.parentNode.insertBefore(note,bubble);
       }
       if(r.text){
+        // 輪詢拿的是全文，直接覆蓋（可能是從 SSE 半途接手過來的）。
+        streamBuf=r.text;
         renderMarkdown(bubble,r.text);
         if(!r.done)bubble.appendChild(el('span','cursor'));
         scrollDown(false);
@@ -767,22 +996,13 @@
         pollTimer=setTimeout(function(){poll(bubble,who,ticks+1);},POLL_MS);
         return;
       }
-      activeJob=null;
-      setSending(false);
-      if(r.ok){
-        renderMarkdown(bubble,r.text||'（沒有內容）');
-        currentMessages.push({role:'assistant',content:r.text,key_name:r.key_name,model:r.model});
-        if(r.code==='AI_CANCELLED')toast('已停止生成');
-        refreshState();
-      }else{
-        showError(bubble,r);
-        refreshState();
-      }
+      finishStream(bubble,who,r);
     });
   }
 
   function stopGeneration(){
     if(!activeJob)return;
+    // 先讓伺服器停，SSE 會收到帶 AI_CANCELLED 的 done 事件再收尾。
     postJson('/admin/api/ai/chat/stop',{job:activeJob},function(){});
   }
 
@@ -908,7 +1128,7 @@
     q('fModels').value='';
     q('fBase').value='';
     q('secretNote').textContent='';
-    q('modelsNote').textContent='請填官方的模型代號（全小寫、用連字號），例如 gpt-4o-mini、gemini-2.0-flash；不要填「GPT-4o mini」這種顯示名稱，含空白或大寫會被上游拒絕。';
+    q('modelsNote').textContent='請填官方的模型代號。Groq／OpenRouter 要帶完整前綴（openai/gpt-oss-120b）；OpenAI／Gemini 不能帶前綴（gpt-4o-mini）。不要填「GPT-4o mini」這種顯示名稱。';
     q('saveKeyBtn').textContent='新增';
     q('cancelEditBtn').style.display='none';
     syncProviderHints();
@@ -1070,6 +1290,41 @@
 
   // ── 綁定 ───────────────────────────────────────────────
   q('sendBtn').addEventListener('click',send);
+  // AI_CHAT_V7：三種附檔方式 —— 按鈕、拖進來、直接貼上。
+  q('attachBtn').addEventListener('click',function(){q('fileInput').click();});
+  q('fileInput').addEventListener('change',function(ev){
+    addFiles(ev.target.files);
+    ev.target.value='';
+  });
+  q('input').addEventListener('paste',function(ev){
+    var items=(ev.clipboardData&&ev.clipboardData.items)||[];
+    var picked=[];
+    for(var i=0;i<items.length;i++){
+      if(items[i].kind==='file'){
+        var f=items[i].getAsFile();
+        if(f)picked.push(f);
+      }
+    }
+    if(picked.length){ev.preventDefault();addFiles(picked);}
+  });
+  ['dragenter','dragover'].forEach(function(name){
+    document.addEventListener(name,function(ev){
+      if(!ev.dataTransfer||Array.prototype.indexOf.call(ev.dataTransfer.types||[],'Files')<0)return;
+      ev.preventDefault();
+      q('stream').className='stream dropping';
+    });
+  });
+  ['dragleave','drop'].forEach(function(name){
+    document.addEventListener(name,function(ev){
+      if(name==='dragleave'&&ev.relatedTarget)return;
+      q('stream').className='stream';
+    });
+  });
+  document.addEventListener('drop',function(ev){
+    if(!ev.dataTransfer||!ev.dataTransfer.files||!ev.dataTransfer.files.length)return;
+    ev.preventDefault();
+    addFiles(ev.dataTransfer.files);
+  });
   q('input').addEventListener('input',autoGrow);
   q('input').addEventListener('keydown',function(ev){
     if(ev.key==='Enter'&&!ev.shiftKey&&!ev.isComposing){ev.preventDefault();send();}

@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use tower_http::compression::predicate::Predicate as _;
 use axum::{
     extract::{DefaultBodyLimit, Multipart, Query, State},
     http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode},
@@ -85,6 +86,8 @@ const PW_SALT: &[u8] = b"tronclass-rollcall-admin-web-password-hash-v2";
 // enough that extraction before handler-local authorization cannot spike RSS.
 const ADMIN_TINY_BODY_LIMIT: usize = 8 * 1024;
 const ADMIN_LOGIN_BODY_LIMIT: usize = 16 * 1024;
+// AI_CHAT_V7：AI 聊天可以附圖片（base64 會膨脹約 4/3），預設的 2 MB 不夠用。
+const ADMIN_AI_CHAT_BODY_LIMIT: usize = 20 * 1024 * 1024;
 const ADMIN_MOCK_BODY_LIMIT: usize = 64 * 1024;
 const ADMIN_JSON_BODY_LIMIT: usize = 256 * 1024;
 const ADMIN_UPLOAD_BODY_LIMIT: usize = MATERIALS_MAX_FILE_SIZE + 1024 * 1024;
@@ -1248,8 +1251,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/api/ai/keys/test", post(ai_chat::key_test_handler))
         .route("/admin/api/ai/settings", post(ai_chat::settings_handler))
         .route("/admin/api/ai/models", post(ai_chat::models_handler))
-        .route("/admin/api/ai/chat", post(ai_chat::chat_handler))
+        .route(
+            "/admin/api/ai/chat",
+            post(ai_chat::chat_handler).layer(DefaultBodyLimit::max(ADMIN_AI_CHAT_BODY_LIMIT)),
+        )
         .route("/admin/api/ai/chat/status", get(ai_chat::chat_status_handler))
+        .route("/admin/api/ai/chat/stream", get(ai_chat::chat_stream_handler))
         .route("/admin/api/ai/chat/stop", post(ai_chat::chat_stop_handler))
         .route("/admin/api/ai/threads", post(ai_chat::threads_handler))
         .route("/admin/push-status", get(web_push::page_handler))
@@ -1570,7 +1577,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             tower_http::compression::CompressionLayer::new()
                 .br(true)
                 .gzip(true)
-                .deflate(true),
+                .deflate(true)
+                // AI_CHAT_V8：壓縮器會把 SSE 累在緩衝區裡等資料，等於把串流變成
+                // 「生成完才一次吐出來」。明確排除，不倚賴 tower-http 的預設行為。
+                .compress_when(
+                    tower_http::compression::predicate::DefaultPredicate::new()
+                        .and(tower_http::compression::predicate::NotForContentType::SSE),
+                ),
         )
         .with_state(state)
 }

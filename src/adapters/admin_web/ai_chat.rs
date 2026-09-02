@@ -17,10 +17,14 @@
 
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    http::{HeaderMap, HeaderValue, StatusCode},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -34,7 +38,7 @@ const PAGE_HTML: &str = include_str!("static/ai.html");
 
 /// AI_CHAT_V3：頁面版本。前端是 `include_str!` 編進二進位的，忘了重新編譯就會
 /// 看到舊畫面卻以為改動沒生效。把版本與編譯時間顯示在側欄，一眼就能分辨。
-const PAGE_VERSION: &str = "v4";
+const PAGE_VERSION: &str = "v8";
 
 fn build_stamp() -> &'static str {
     option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("dev")
@@ -42,6 +46,12 @@ fn build_stamp() -> &'static str {
 
 /// 單一請求的上限。串流過程中只要持續有 token 進來就不算逾時。
 const AI_REQUEST_TIMEOUT_SECS: u64 = 180;
+/// AI_CHAT_V8：SSE 推送的取樣間隔。上游 chunk 每 80ms 進 job，
+/// 這裡用 40ms 去取，使用者看到的就是「幾乎即時」。
+const AI_STREAM_TICK_MS: u64 = 40;
+/// 連線最長閒置多少個 tick 就主動收掉（40ms × 5000 = 200 秒，
+/// 比單次請求逾時 180 秒還長，正常情況輪不到它）。
+const AI_STREAM_MAX_IDLE_TICKS: u32 = 5_000;
 /// 整個 job 的總預算，超過就中止並回報。
 const AI_TOTAL_BUDGET_SECS: u64 = 300;
 /// 完成的 job 保留多久（供前端最後一次輪詢取結果）。
@@ -644,6 +654,9 @@ struct ChatMessage {
     key_name: String,
     #[serde(default)]
     model: String,
+    /// AI_CHAT_V7：這則訊息附了哪些檔案（只留檔名，內容不落地）。
+    #[serde(default)]
+    attachments: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -693,6 +706,7 @@ impl ChatThread {
                 "ts": m.ts,
                 "key_name": m.key_name,
                 "model": m.model,
+                "attachments": m.attachments,
             })).collect::<Vec<Value>>(),
         })
     }
@@ -1318,10 +1332,37 @@ fn pick_auto_model(text: &str, options: &[ModelOption], keys: &[ApiKey]) -> Opti
 ///
 /// - `auto`（或留空）→ 依問題性質自動挑。
 /// - 指定的模型不存在／被停用 → 退回自動挑，不讓使用者卡住。
-fn resolve_model(id: &str, prompt: &str) -> (Option<ModelOption>, String) {
+fn resolve_model(id: &str, prompt: &str, needs_vision: bool) -> (Option<ModelOption>, String) {
     let options = model_options();
     let keys = read_store(|store| store.keys.clone()).unwrap_or_default();
     let wanted = id.trim();
+
+    // AI_CHAT_V7：附了圖片時，只有看得懂圖的模型能用。
+    // 使用者選的那個不支援就自動換一個，並在回覆上說明換了誰、為什麼。
+    if needs_vision {
+        let usable = |m: &ModelOption| {
+            m.enabled
+                && m.validity().is_ok()
+                && model_supports_vision(m)
+                && keys
+                    .iter()
+                    .any(|k| k.provider == m.provider && k.available())
+        };
+        if !wanted.is_empty() && wanted != AUTO_MODEL_ID {
+            if let Some(found) = options.iter().find(|m| m.id == wanted && usable(m)) {
+                return (Some(found.clone()), String::new());
+            }
+        }
+        let picked = options.iter().find(|m| usable(m)).cloned();
+        return match picked {
+            Some(chosen) => {
+                let reason = format!("你附了圖片，改用看得懂圖片的「{}」", chosen.display());
+                (Some(chosen), reason)
+            }
+            // 一個視覺模型都沒有：回 None，由呼叫端給出「請管理員新增」的訊息。
+            None => (None, String::new()),
+        };
+    }
 
     if !wanted.is_empty() && wanted != AUTO_MODEL_ID {
         if let Some(found) = options
@@ -1490,7 +1531,16 @@ async fn stream_once(
         // 上游只會說「unexpected model name format」，不講是哪個模型。
         // 把模型名稱補進訊息裡，使用者才知道要去改哪一個。
         let message = if kind == FailureKind::BadRequest {
-            format!("HTTP {status}（模型 {model}）：{detail}")
+            // 404「模型不存在」多半是代號寫錯，直接把可能的正確寫法講出來。
+            let hint = if status == 404 && key.provider == "groq" && !model.contains('/') {
+                match groq_full_model_id(&model) {
+                    Some(full) => format!("（Groq 的正確代號應為 {full}，請到模型清單改成這個）"),
+                    None => "（Groq 多數模型代號帶服務商前綴，例如 openai/gpt-oss-120b）".to_string(),
+                }
+            } else {
+                String::new()
+            };
+            format!("HTTP {status}（模型 {model}）：{detail}{hint}")
         } else {
             format!("HTTP {status}：{detail}")
         };
@@ -1997,6 +2047,7 @@ fn append_assistant_message(
                 ts: now_millis(),
                 key_name: key_name.to_string(),
                 model: model.to_string(),
+                attachments: Vec::new(),
             });
             if thread.messages.len() > THREAD_MAX_MESSAGES {
                 let drop = thread.messages.len() - THREAD_MAX_MESSAGES;
@@ -2504,9 +2555,13 @@ pub(super) struct ModelActionRequest {
 }
 
 /// 服務商的模型名稱是否允許帶斜線（`vendor/model` 形式）。
-/// OpenRouter 一定要帶（`openai/gpt-4o`），Gemini 帶了就會被拒。
+///
+/// - OpenRouter：一定要帶（`openai/gpt-4o`）
+/// - **Groq：一定要帶**（`openai/gpt-oss-120b`、`qwen/qwen3.6-27b`、
+///   `meta-llama/llama-4-scout-17b-16e-instruct`），剝掉前綴會找不到模型
+/// - Gemini／OpenAI／DeepSeek 等：帶了反而會被拒
 fn provider_allows_slash(provider: &str) -> bool {
-    matches!(provider, "openrouter" | "custom")
+    matches!(provider, "groq" | "openrouter" | "custom")
 }
 
 /// AI_CHAT_V5：把模型名稱清成上游能接受的格式。
@@ -2561,11 +2616,62 @@ fn canonical_model_name(provider: &str, raw: &str) -> Result<String, String> {
     sanitize_model_name(provider, &name)
 }
 
+/// AI_CHAT_V6：Groq 官方代號中「帶服務商前綴」的那些模型。
+///
+/// 用途有兩個：
+/// 1. 舊版本曾經誤把 Groq 的前綴當成 Gemini 那種多餘前綴剝掉，設定檔裡因此存了
+///    `gpt-oss-120b` 這種殘缺代號，送出去只會拿到 404。載入設定時照這張表補回。
+/// 2. 使用者從文件、部落格複製到的常常是「短名」，一樣直接幫他補齊。
+///
+/// 只列「官方代號本來就帶前綴」的；`llama-3.3-70b-versatile`、`whisper-large-v3`
+/// 這類本來就沒前綴的絕對不能出現在這裡，否則會反過來把正確名稱改壞。
+const GROQ_PREFIXED_MODELS: &[&str] = &[
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-safeguard-20b",
+    "qwen/qwen3-32b",
+    "qwen/qwen3.6-27b",
+    "qwen/qwen3.8-27b",
+    "qwen/qwen3-vl-32b-instruct",
+    "moonshotai/kimi-k2-instruct",
+    "moonshotai/kimi-k2-instruct-0905",
+    "meta-llama/llama-4-scout-17b-16e-instruct",
+    "meta-llama/llama-4-maverick-17b-128e-instruct",
+    "meta-llama/llama-guard-4-12b",
+    "meta-llama/llama-prompt-guard-2-22m",
+    "meta-llama/llama-prompt-guard-2-86m",
+    "minimaxai/minimax-m2.5",
+    "minimaxai/minimax-m2.7",
+    "groq/compound",
+    "groq/compound-mini",
+];
+
+/// 缺前綴的 Groq 短名 → 官方完整代號。找不到就回 `None`（代表本來就沒前綴）。
+fn groq_full_model_id(bare: &str) -> Option<&'static str> {
+    let bare = bare.trim().to_ascii_lowercase();
+    if bare.is_empty() || bare.contains('/') {
+        return None;
+    }
+    GROQ_PREFIXED_MODELS
+        .iter()
+        .copied()
+        .find(|full| matches!(full.split_once('/'), Some((_, rest)) if rest == bare))
+}
+
 /// 依服務商清洗並驗證模型名稱。回傳 `Err` 時附上人看得懂的原因。
 fn sanitize_model_name(provider: &str, raw: &str) -> Result<String, String> {
     let mut name = normalize_model_id(raw);
     if name.is_empty() {
         return Err("模型名稱是空的".to_string());
+    }
+
+    // Groq 的官方代號多半帶前綴。舊版誤刪過，這裡照官方表補回去，
+    // 使用者不必自己發現「原來要重新輸入一次」。
+    if provider == "groq" {
+        if let Some(full) = groq_full_model_id(&name) {
+            tracing::info!(from = %name, to = full, "補回 Groq 模型代號的服務商前綴");
+            name = full.to_string();
+        }
     }
 
     // 不吃斜線的服務商：把 `google/gemini-2.0-flash` 這種前綴自動修掉，
@@ -2803,6 +2909,210 @@ pub(super) async fn models_handler(
     }
 }
 
+/// AI_CHAT_V7：一次提問最多能附幾個檔案。
+const MAX_ATTACHMENTS: usize = 6;
+/// 單張圖片解碼後的大小上限（4 MB）。再大就算送得出去，多數服務商也會擋。
+const MAX_IMAGE_BYTES: usize = 4 * 1024 * 1024;
+/// 單個文字檔取用的字元上限。超過就截斷並在內容裡註明，
+/// 否則一個 log 檔就能把整個 token 預算吃光。
+const MAX_TEXT_CHARS: usize = 8_000;
+/// 所有附件加起來的上限（12 MB，含 base64 膨脹前的原始大小）。
+const MAX_ATTACH_TOTAL_BYTES: usize = 12 * 1024 * 1024;
+
+/// 前端上傳的一個附件。**只在這次提問用一次，不落地存檔。**
+///
+/// `Debug` 是手寫的：`ChatRequest` 有 `#[derive(Debug)]`，如果這裡也直接 derive，
+/// 一旦有人 debug 印出請求，4 MB 的 base64 圖片和整份文字檔內容就會被灌進 log。
+/// 只印檔名、類型與大小就夠診斷了。
+#[derive(Clone, Deserialize)]
+pub(super) struct Attachment {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    mime: String,
+    /// `image` = 圖片（`data` 放 base64）；`text` = 純文字檔（`text` 放內容）。
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    data: String,
+    #[serde(default)]
+    text: String,
+}
+
+impl std::fmt::Debug for Attachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attachment")
+            .field("name", &self.name)
+            .field("mime", &self.mime)
+            .field("kind", &self.kind)
+            .field("data_len", &self.data.len())
+            .field("text_len", &self.text.len())
+            .finish()
+    }
+}
+
+/// 驗證通過、可以直接組進請求裡的附件。
+struct PreparedAttachments {
+    /// (檔名, data URI)
+    images: Vec<(String, String)>,
+    /// (檔名, 內容)
+    texts: Vec<(String, String)>,
+    /// 給對話紀錄看的檔名清單。
+    names: Vec<String>,
+}
+
+impl PreparedAttachments {
+    fn is_empty(&self) -> bool {
+        self.images.is_empty() && self.texts.is_empty()
+    }
+}
+
+/// 檔名只留最後一段並去掉控制字元 —— 附件名會進提示詞，不能讓它夾帶怪東西。
+fn safe_attachment_name(raw: &str) -> String {
+    // 用閉包而不是 `['/', '\\']` 陣列 pattern —— 後者需要較新的 Rust，
+    // 這個專案要能在舊工具鏈上編過。
+    let base = raw
+        .rsplit(|c| c == '/' || c == '\\')
+        .next()
+        .unwrap_or(raw)
+        .trim();
+    let cleaned: String = base
+        .chars()
+        .filter(|c| !c.is_control() && *c != '`')
+        .take(120)
+        .collect();
+    if cleaned.trim().is_empty() {
+        "附件".to_string()
+    } else {
+        cleaned.trim().to_string()
+    }
+}
+
+/// 服務商都吃 data URI，但只認得這幾種圖片格式。
+fn allowed_image_mime(mime: &str) -> Option<&'static str> {
+    match mime.trim().to_ascii_lowercase().as_str() {
+        "image/png" => Some("image/png"),
+        "image/jpeg" | "image/jpg" => Some("image/jpeg"),
+        "image/webp" => Some("image/webp"),
+        "image/gif" => Some("image/gif"),
+        _ => None,
+    }
+}
+
+/// 檢查並整理附件。回 `Err` 時是使用者看得懂的理由。
+fn prepare_attachments(list: &[Attachment]) -> Result<PreparedAttachments, String> {
+    if list.len() > MAX_ATTACHMENTS {
+        return Err(format!("一次最多只能附 {MAX_ATTACHMENTS} 個檔案"));
+    }
+    let mut out = PreparedAttachments {
+        images: Vec::new(),
+        texts: Vec::new(),
+        names: Vec::new(),
+    };
+    let mut total = 0usize;
+
+    for item in list {
+        let name = safe_attachment_name(&item.name);
+        match item.kind.trim() {
+            "image" => {
+                let Some(mime) = allowed_image_mime(&item.mime) else {
+                    return Err(format!(
+                        "「{name}」的格式不支援，圖片只接受 PNG／JPG／WebP／GIF"
+                    ));
+                };
+                // 前端可能連 data URI 前綴一起送過來，兩種都收。
+                let payload = match item.data.split_once("base64,") {
+                    Some((_, rest)) => rest,
+                    None => item.data.as_str(),
+                };
+                let payload: String = payload.chars().filter(|c| !c.is_whitespace()).collect();
+                if payload.is_empty() {
+                    return Err(format!("「{name}」是空的"));
+                }
+                let bytes = BASE64
+                    .decode(payload.as_bytes())
+                    .map_err(|_| format!("「{name}」的內容毀損，請重新選一次"))?;
+                if bytes.is_empty() {
+                    return Err(format!("「{name}」是空的"));
+                }
+                if bytes.len() > MAX_IMAGE_BYTES {
+                    return Err(format!(
+                        "「{name}」有 {} MB，單張圖片上限 {} MB",
+                        bytes.len() / (1024 * 1024),
+                        MAX_IMAGE_BYTES / (1024 * 1024)
+                    ));
+                }
+                total += bytes.len();
+                out.images
+                    .push((name.clone(), format!("data:{mime};base64,{payload}")));
+                out.names.push(name);
+            }
+            "text" => {
+                let body = item.text.replace('\r', "");
+                if body.trim().is_empty() {
+                    return Err(format!("「{name}」讀不到文字內容"));
+                }
+                total += body.len();
+                let truncated: String = if body.chars().count() > MAX_TEXT_CHARS {
+                    let head: String = body.chars().take(MAX_TEXT_CHARS).collect();
+                    format!("{head}\n…（檔案過長，只取前 {MAX_TEXT_CHARS} 字）")
+                } else {
+                    body
+                };
+                out.texts.push((name.clone(), truncated));
+                out.names.push(name);
+            }
+            other => {
+                return Err(format!("「{name}」的類型無法辨識（{other}）"));
+            }
+        }
+        if total > MAX_ATTACH_TOTAL_BYTES {
+            return Err(format!(
+                "附件總大小超過 {} MB",
+                MAX_ATTACH_TOTAL_BYTES / (1024 * 1024)
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// 這個模型看不看得懂圖片。
+///
+/// 以管理員設定的 `vision` 標籤為準；沒設標籤時才用名稱推測，
+/// 免得使用者附了圖卻被系統說「沒有支援的模型」。這只是判斷既有模型的能力，
+/// 不會憑空多出任何一個模型。
+fn model_supports_vision(option: &ModelOption) -> bool {
+    if option.tags.iter().any(|t| t == "vision") {
+        return true;
+    }
+    let tokens = model_tokens(&option.model);
+    let has = |word: &str| tokens.iter().any(|t| t == word);
+    if has("vision") || has("vl") || has("multimodal") {
+        return true;
+    }
+    let name = option.model.to_ascii_lowercase();
+    const VISION_HINTS: &[&str] = &[
+        "gpt-4o",
+        "gpt-4.1",
+        "gpt-5",
+        "o3",
+        "o4-mini",
+        "gemini",
+        "claude-3",
+        "claude-4",
+        "claude-sonnet",
+        "claude-opus",
+        "llama-4-scout",
+        "llama-4-maverick",
+        "qwen3.6-27b",
+        "qwen3.8-27b",
+        "pixtral",
+        "grok-2-vision",
+        "grok-4",
+    ];
+    VISION_HINTS.iter().any(|hint| name.contains(hint))
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct ChatRequest {
     #[serde(default)]
@@ -2813,6 +3123,9 @@ pub(super) struct ChatRequest {
     #[serde(default)]
     model_id: String,
     message: String,
+    /// AI_CHAT_V7：這次提問附帶的圖片／文字檔。用完即丟，不寫進硬碟。
+    #[serde(default)]
+    attachments: Vec<Attachment>,
 }
 
 /// 送出訊息 → 建立背景 job → 立刻回 202。
@@ -2826,13 +3139,33 @@ pub(super) async fn chat_handler(
         return unauthorized_response();
     };
 
-    let text = body.message.trim().to_string();
-    if text.is_empty() {
+    // AI_CHAT_V7：先把附件驗好，訊息可不可以是空的要看有沒有附件。
+    let attachments = match prepare_attachments(&body.attachments) {
+        Ok(prepared) => prepared,
+        Err(reason) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": reason, "code": "AI_BAD_ATTACHMENT" })),
+            )
+                .into_response();
+        }
+    };
+
+    let mut text = body.message.trim().to_string();
+    if text.is_empty() && attachments.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "訊息是空的", "code": "AI_EMPTY_MESSAGE" })),
         )
             .into_response();
+    }
+    // 只丟檔案不打字也是常見用法，補一句預設指令免得模型不知道要幹嘛。
+    if text.is_empty() {
+        text = if attachments.images.is_empty() {
+            "請閱讀附件並說明重點。".to_string()
+        } else {
+            "請看這張圖片，說明裡面的內容。".to_string()
+        };
     }
     if text.len() > 200_000 {
         return (
@@ -2848,7 +3181,18 @@ pub(super) async fn chat_handler(
 
     // 先確定要用哪個模型。使用者選的優先，沒選（或選的已被管理員刪掉）
     // 就自動挑一個真的有可用密鑰的。
-    let (selection, auto_reason) = resolve_model(&body.model_id, &text);
+    let needs_vision = !attachments.images.is_empty();
+    let (selection, auto_reason) = resolve_model(&body.model_id, &text, needs_vision);
+    if selection.is_none() && needs_vision {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "目前沒有看得懂圖片的模型可用。請管理員在模型清單新增具視覺能力的模型（例如 Groq 的 qwen/qwen3.6-27b、Gemini、GPT-4o），或把該模型標上 vision 標籤。",
+                "code": "AI_NO_VISION_MODEL",
+            })),
+        )
+            .into_response();
+    }
     if selection.is_none() {
         let total = read_store(|store| store.keys.len()).unwrap_or(0);
         return (
@@ -2875,6 +3219,22 @@ pub(super) async fn chat_handler(
     } else {
         selected_id.clone()
     };
+
+    // AI_CHAT_V7：文字檔的內容直接併進這則訊息保存下來 —— 這樣之後追問
+    // 「剛剛那個檔案第三欄是什麼」時模型還看得到。圖片不併（base64 太肥），
+    // 只留檔名，要再問就重附一次。
+    let mut stored_text = text.clone();
+    for (name, body_text) in &attachments.texts {
+        stored_text.push_str(&format!("\n\n【附件：{name}】\n```\n{body_text}\n```"));
+    }
+    if !attachments.images.is_empty() {
+        let names: Vec<&str> = attachments
+            .images
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        stored_text.push_str(&format!("\n\n（附了圖片：{}）", names.join("、")));
+    }
 
     // 把使用者訊息寫進對話串（沒有指定就開一個新的）。
     let thread_id = if body.thread_id.trim().is_empty() {
@@ -2909,10 +3269,11 @@ pub(super) async fn chat_handler(
         thread.model_id = remembered_id.clone();
         thread.messages.push(ChatMessage {
             role: "user".to_string(),
-            content: text.clone(),
+            content: stored_text.clone(),
             ts: now_millis(),
             key_name: String::new(),
             model: String::new(),
+            attachments: attachments.names.clone(),
         });
         if thread.messages.len() > THREAD_MAX_MESSAGES {
             let drop = thread.messages.len() - THREAD_MAX_MESSAGES;
@@ -2955,6 +3316,21 @@ pub(super) async fn chat_handler(
         .sum::<usize>();
     for message in picked {
         messages.push(json!({ "role": message.role, "content": message.content }));
+    }
+    // AI_CHAT_V7：把這次的圖片掛到最新一則使用者訊息上。
+    // OpenAI 相容格式的 content 可以是陣列，Gemini／Groq／OpenRouter 都吃這套。
+    // `select_context` 保證最新一則一定在，所以最後一筆就是它。
+    if !attachments.images.is_empty() {
+        if let Some(last) = messages.last_mut() {
+            let mut parts: Vec<Value> = vec![json!({ "type": "text", "text": stored_text })];
+            for (_, uri) in &attachments.images {
+                parts.push(json!({
+                    "type": "image_url",
+                    "image_url": { "url": uri },
+                }));
+            }
+            last["content"] = Value::Array(parts);
+        }
     }
     tracing::debug!(
         history = history.len(),
@@ -3047,7 +3423,170 @@ pub(super) struct JobQuery {
     job: String,
 }
 
-/// 輪詢：拿目前已生成的全文。
+/// AI_CHAT_V8：把生成中的內容用 SSE 直接推給瀏覽器。
+///
+/// 為什麼要做：原本前端每 350ms 輪詢一次、而且每次都把「整段文字」重新拿回來
+/// 再重畫整棵 Markdown DOM。結果是（1）字是一坨一坨跳出來的、（2）長回覆的
+/// 流量是 O(n²)、（3）重畫時使用者選取的文字會被清掉。改成只推「新增的那一段」。
+///
+/// 前端如果連不上（某些代理會吃掉 SSE），會自動退回原本的輪詢，不會壞掉。
+pub(super) async fn chat_stream_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<JobQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    let job_id = query.job.trim().to_string();
+    if job_id.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "缺少 job 參數", "code": "AI_JOB_MISSING" })),
+        )
+            .into_response();
+    }
+
+    // 先確認這個 job 存在而且是自己的 —— 不要為了一個不存在的工作開一條長連線。
+    let owned = CHAT_JOBS
+        .lock()
+        .ok()
+        .and_then(|map| map.get(&job_id).map(|job| job.account == session.account_id));
+    match owned {
+        Some(true) => {}
+        Some(false) => return unauthorized_response(),
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": "找不到這個生成工作（可能已過期）",
+                    "code": "AI_JOB_NOT_FOUND",
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    let cursor = StreamCursor {
+        job: job_id,
+        account: session.account_id.clone(),
+        sent: 0,
+        meta_sent: false,
+        finished: false,
+        idle_ticks: 0,
+    };
+
+    let stream = futures::stream::unfold(cursor, |mut cur| async move {
+        if cur.finished {
+            return None;
+        }
+        loop {
+            // 取快照時不能持有鎖跨越 await，先 clone 出來再放掉。
+            let snapshot = CHAT_JOBS.lock().ok().and_then(|map| {
+                map.get(&cur.job).map(|job| {
+                    (
+                        job.account.clone(),
+                        job.text.clone(),
+                        job.done,
+                        job.key_name.clone(),
+                        job.model.clone(),
+                        job.auto_reason.clone(),
+                        job.cached,
+                        job.to_json(),
+                    )
+                })
+            });
+            let Some((account, text, done, key_name, model, auto_reason, cached, full)) = snapshot
+            else {
+                cur.finished = true;
+                return Some((
+                    Ok::<Event, std::convert::Infallible>(
+                        Event::default().event("gone").data("expired"),
+                    ),
+                    cur,
+                ));
+            };
+            if account != cur.account {
+                cur.finished = true;
+                return Some((Ok(Event::default().event("gone").data("forbidden")), cur));
+            }
+
+            // 先送一次「這則是誰生的」，前端要拿去標在氣泡上。
+            if !cur.meta_sent && (!key_name.is_empty() || !auto_reason.is_empty()) {
+                cur.meta_sent = true;
+                let payload = json!({
+                    "key_name": key_name,
+                    "model": model,
+                    "auto_reason": auto_reason,
+                    "cached": cached,
+                })
+                .to_string();
+                return Some((Ok(Event::default().event("meta").data(payload)), cur));
+            }
+
+            if let Some((delta, next)) = next_delta(&text, cur.sent) {
+                cur.sent = next;
+                cur.idle_ticks = 0;
+                return Some((Ok(Event::default().event("delta").data(delta)), cur));
+            }
+
+            if done {
+                cur.finished = true;
+                return Some((Ok(Event::default().event("done").data(full.to_string())), cur));
+            }
+
+            cur.idle_ticks += 1;
+            if cur.idle_ticks > AI_STREAM_MAX_IDLE_TICKS {
+                cur.finished = true;
+                return Some((Ok(Event::default().event("gone").data("timeout")), cur));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(AI_STREAM_TICK_MS)).await;
+        }
+    });
+
+    let mut response = Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(std::time::Duration::from_secs(15))
+                .text("ping"),
+        )
+        .into_response();
+    // nginx／cloudflared 之類的中間層預設會緩衝，緩衝了就等於沒有串流。
+    let head = response.headers_mut();
+    head.insert("x-accel-buffering", HeaderValue::from_static("no"));
+    head.insert("cache-control", HeaderValue::from_static("no-store"));
+    response
+}
+
+/// 從 `sent` 之後取出還沒推送的那一段。
+///
+/// `sent` 一律等於上一次的 `text.len()`，所以必定落在字元邊界上；
+/// 但萬一有人改壞了，`get()` 會回 `None` 而不是 panic —— 這時退回整段重推，
+/// 前端拿到的內容仍然正確（頂多重複一次），總比整條連線炸掉好。
+fn next_delta(text: &str, sent: usize) -> Option<(String, usize)> {
+    if text.len() <= sent {
+        return None;
+    }
+    match text.get(sent..) {
+        Some(rest) if !rest.is_empty() => Some((rest.to_string(), text.len())),
+        Some(_) => None,
+        None => Some((text.to_string(), text.len())),
+    }
+}
+
+/// SSE 推送的游標：記住這條連線已經送到哪裡。
+struct StreamCursor {
+    job: String,
+    account: String,
+    /// 已推送出去的位元組數。
+    sent: usize,
+    meta_sent: bool,
+    finished: bool,
+    idle_ticks: u32,
+}
+
+/// 輪詢：拿目前已生成的全文。SSE 連不上時的後備方案。
 pub(super) async fn chat_status_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -3706,6 +4245,251 @@ mod ai_chat_tests {
         );
     }
 
+    fn att(kind: &str, name: &str, data: &str, text: &str) -> Attachment {
+        Attachment {
+            name: name.to_string(),
+            mime: if kind == "image" {
+                "image/png".to_string()
+            } else {
+                "text/plain".to_string()
+            },
+            kind: kind.to_string(),
+            data: data.to_string(),
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn stream_deltas_never_resend_what_was_already_pushed() {
+        // 逐段長出來的文字，每次只推新增的部分，串起來要等於原文。
+        let steps = ["你", "你好", "你好，世界", "你好，世界！"];
+        let mut sent = 0usize;
+        let mut rebuilt = String::new();
+        for text in steps {
+            if let Some((delta, next)) = next_delta(text, sent) {
+                rebuilt.push_str(&delta);
+                sent = next;
+            }
+        }
+        assert_eq!(rebuilt, "你好，世界！");
+        assert_eq!(sent, "你好，世界！".len());
+        // 沒有新內容時不該再推東西出去。
+        assert!(next_delta("你好，世界！", sent).is_none());
+    }
+
+    #[test]
+    fn stream_deltas_survive_multibyte_and_emoji_boundaries() {
+        let full = "第一段🙂第二段——結束";
+        let mut sent = 0usize;
+        let mut rebuilt = String::new();
+        // 一個字元一個字元長，最容易切壞 UTF-8 的情況。
+        for end in full.char_indices().map(|(i, c)| i + c.len_utf8()) {
+            let partial = &full[..end];
+            if let Some((delta, next)) = next_delta(partial, sent) {
+                rebuilt.push_str(&delta);
+                sent = next;
+            }
+        }
+        assert_eq!(rebuilt, full);
+        // 游標落在非字元邊界時退回整段重推，不 panic。
+        let (delta, next) = next_delta(full, 1).expect("要有內容");
+        assert_eq!(delta, full);
+        assert_eq!(next, full.len());
+    }
+
+    #[test]
+    fn attachments_are_validated_before_they_reach_the_model() {
+        // 1x1 PNG。
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let ok = prepare_attachments(&[
+            att("image", "photo.png", png, ""),
+            att("text", "note.csv", "", "a,b\n1,2"),
+        ])
+        .expect("應該通過");
+        assert_eq!(ok.images.len(), 1);
+        assert_eq!(ok.texts.len(), 1);
+        assert_eq!(ok.names, vec!["photo.png", "note.csv"]);
+        assert!(ok.images[0].1.starts_with("data:image/png;base64,"));
+        assert!(!ok.is_empty());
+
+        // 連 data URI 前綴一起送過來也要收。
+        let with_prefix = prepare_attachments(&[att(
+            "image",
+            "x.png",
+            &format!("data:image/png;base64,{png}"),
+            "",
+        )])
+        .expect("應該通過");
+        assert!(with_prefix.images[0].1.starts_with("data:image/png;base64,i"));
+
+        // 壞掉的 base64、不支援的格式、空檔案都要擋。
+        assert!(prepare_attachments(&[att("image", "x.png", "@@@not-base64@@@", "")]).is_err());
+        let mut bad_mime = att("image", "x.bmp", png, "");
+        bad_mime.mime = "image/bmp".to_string();
+        assert!(prepare_attachments(&[bad_mime]).is_err());
+        assert!(prepare_attachments(&[att("text", "empty.txt", "", "   ")]).is_err());
+        assert!(prepare_attachments(&[att("pdf", "a.pdf", "", "x")]).is_err());
+
+        // 超過數量上限。
+        let many: Vec<Attachment> = (0..MAX_ATTACHMENTS + 1)
+            .map(|i| att("text", &format!("f{i}.txt"), "", "x"))
+            .collect();
+        assert!(prepare_attachments(&many).is_err());
+    }
+
+    #[test]
+    fn long_text_files_are_truncated_instead_of_eating_the_budget() {
+        let huge = "字".repeat(MAX_TEXT_CHARS + 500);
+        let prepared = prepare_attachments(&[att("text", "big.log", "", &huge)]).expect("要收下");
+        let body = &prepared.texts[0].1;
+        assert!(body.contains("檔案過長"));
+        assert!(body.chars().count() < MAX_TEXT_CHARS + 60);
+    }
+
+    #[test]
+    fn attachment_names_cannot_smuggle_paths_or_control_characters() {
+        assert_eq!(safe_attachment_name("../../etc/passwd"), "passwd");
+        assert_eq!(safe_attachment_name("C:\\temp\\a.png"), "a.png");
+        assert_eq!(safe_attachment_name("a\nb.txt"), "ab.txt");
+        assert_eq!(safe_attachment_name("   "), "附件");
+    }
+
+    #[test]
+    fn vision_capability_follows_admin_tags_then_the_model_name() {
+        let mut option = ModelOption {
+            id: "groq:llama-3.3-70b-versatile".to_string(),
+            label: String::new(),
+            provider: "groq".to_string(),
+            model: "llama-3.3-70b-versatile".to_string(),
+            enabled: true,
+            tier: "balanced".to_string(),
+            tags: Vec::new(),
+        };
+        // 純文字模型：看不懂圖。
+        assert!(!model_supports_vision(&option));
+        // 管理員說它可以，就聽管理員的。
+        option.tags = vec!["vision".to_string()];
+        assert!(model_supports_vision(&option));
+
+        // 沒標籤時靠名稱認得出來的那些。
+        for name in [
+            "gpt-4o-mini",
+            "gemini-2.0-flash",
+            "qwen/qwen3-vl-32b-instruct",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "qwen/qwen3.6-27b",
+        ] {
+            let candidate = ModelOption {
+                id: format!("x:{name}"),
+                label: String::new(),
+                provider: "groq".to_string(),
+                model: name.to_string(),
+                enabled: true,
+                tier: "balanced".to_string(),
+                tags: Vec::new(),
+            };
+            assert!(model_supports_vision(&candidate), "{name} 應該支援圖片");
+        }
+    }
+
+    #[test]
+    fn legacy_stripped_groq_names_get_their_prefix_back() {
+        // 舊版把前綴刪掉存進設定檔，載入時要自動補回，不然只會拿到 404。
+        for (stored, expected) in [
+            ("gpt-oss-120b", "openai/gpt-oss-120b"),
+            ("gpt-oss-20b", "openai/gpt-oss-20b"),
+            ("qwen3.8-27b", "qwen/qwen3.8-27b"),
+            ("kimi-k2-instruct-0905", "moonshotai/kimi-k2-instruct-0905"),
+            ("llama-4-scout-17b-16e-instruct", "meta-llama/llama-4-scout-17b-16e-instruct"),
+            ("compound-mini", "groq/compound-mini"),
+        ] {
+            assert_eq!(sanitize_model_name("groq", stored).unwrap(), expected);
+            assert_eq!(canonical_model_name("groq", stored).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn groq_models_without_official_prefix_are_left_alone() {
+        // 本來就沒前綴的別亂補，補了反而變成不存在的模型。
+        for id in [
+            "llama-3.3-70b-versatile",
+            "llama-3.1-8b-instant",
+            "whisper-large-v3",
+            "whisper-large-v3-turbo",
+            "gemma2-9b-it",
+        ] {
+            assert_eq!(sanitize_model_name("groq", id).unwrap(), id);
+            assert!(groq_full_model_id(id).is_none());
+        }
+        // 別的服務商不套用這張表。
+        assert_eq!(
+            sanitize_model_name("openai", "gpt-oss-120b").unwrap(),
+            "gpt-oss-120b"
+        );
+    }
+
+    #[test]
+    fn migrate_repairs_stored_groq_models_on_load() {
+        let mut models = vec![ModelOption {
+            id: "groq:gpt-oss-120b".to_string(),
+            label: String::new(),
+            provider: "groq".to_string(),
+            model: "gpt-oss-120b".to_string(),
+            enabled: true,
+            tier: "deep".to_string(),
+            tags: Vec::new(),
+        }];
+        let (fixed, _merged, dropped) = migrate_models(&mut models);
+        assert_eq!(fixed, 1);
+        assert!(dropped.is_empty());
+        assert_eq!(models[0].model, "openai/gpt-oss-120b");
+        assert_eq!(models[0].id, "groq:openai/gpt-oss-120b");
+    }
+
+    #[test]
+    fn groq_model_ids_keep_their_vendor_prefix() {
+        // Groq 的模型 ID 本來就帶前綴，剝掉就找不到模型。
+        for id in [
+            "openai/gpt-oss-120b",
+            "qwen/qwen3.6-27b",
+            "meta-llama/llama-4-scout-17b-16e-instruct",
+            "moonshotai/kimi-k2-instruct-0905",
+            "groq/compound-mini",
+        ] {
+            assert_eq!(
+                canonical_model_name("groq", id).unwrap(),
+                id,
+                "Groq 的 {id} 必須原樣保留"
+            );
+        }
+        // 沒有前綴的 Groq 模型也還是合法（例如 whisper-large-v3）。
+        assert_eq!(
+            canonical_model_name("groq", "whisper-large-v3").unwrap(),
+            "whisper-large-v3"
+        );
+        // 分級推導對帶前綴的名稱也要正常運作。
+        assert_eq!(infer_tier("openai/gpt-oss-120b"), "deep");
+        assert_eq!(infer_tier("openai/gpt-oss-20b"), "balanced");
+    }
+
+    #[test]
+    fn providers_that_reject_slashes_still_get_them_stripped() {
+        // Gemini 帶前綴會回 400 unexpected model name format，要修掉。
+        assert_eq!(
+            canonical_model_name("gemini", "google/gemini-2.0-flash").unwrap(),
+            "gemini-2.0-flash"
+        );
+        assert_eq!(
+            canonical_model_name("openai", "openai/gpt-4o-mini").unwrap(),
+            "gpt-4o-mini"
+        );
+        assert!(provider_allows_slash("groq"));
+        assert!(provider_allows_slash("openrouter"));
+        assert!(provider_allows_slash("custom"));
+        assert!(!provider_allows_slash("gemini"));
+        assert!(!provider_allows_slash("openai"));
+    }
+
     #[test]
     fn a_slash_prefixed_model_name_is_repaired_for_gemini() {
         // 使用者常從免費 API 清單複製到 OpenRouter 格式，貼進 Gemini 會回
@@ -3760,6 +4544,7 @@ mod ai_chat_tests {
             ts: 0,
             key_name: String::new(),
             model: String::new(),
+            attachments: Vec::new(),
         }
     }
 
