@@ -1110,6 +1110,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/js/dashboard-more-actions.js",
             get(static_assets::admin_dashboard_more_actions_js_handler),
         )
+        // SHARED_MOBILE_NAV_V1
+        .route(
+            "/admin/static/js/mobile-nav.js",
+            get(static_assets::shared_mobile_nav_js_handler),
+        )
         // PDFJS_PREVIEW_V1
         .route(
             "/admin/static/js/pdf.min.js",
@@ -1205,6 +1210,23 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/api/bulletins/read",
             post(bulletins::read_handler),
+        )
+        .route(
+            "/admin/api/bulletins/test",
+            post(bulletins::test_handler),
+        )
+        .route(
+            "/admin/api/bulletins/admin",
+            post(bulletins::admin_create_handler),
+        )
+        .route(
+            "/admin/api/bulletins/admin/delete",
+            post(bulletins::admin_delete_handler),
+        )
+        // BULLETIN_TRANSLATE_V1
+        .route(
+            "/admin/api/bulletins/translate",
+            post(bulletins::translate_handler),
         )
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))

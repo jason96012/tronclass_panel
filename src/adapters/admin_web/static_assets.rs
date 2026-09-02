@@ -215,6 +215,10 @@ pub(super) async fn admin_dashboard_header_spacious_js_handler() -> Response {
 pub(super) async fn admin_dashboard_more_actions_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_MORE_ACTIONS_JS)
 }
+// SHARED_MOBILE_NAV_V1
+pub(super) async fn shared_mobile_nav_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::SHARED_MOBILE_NAV_JS)
+}
 
 // SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS。
 pub(super) async fn admin_share_preview_js_handler() -> Response {

@@ -285,6 +285,43 @@ fn persist_bulletin_reads(store: &BulletinReadStore) {
     }
 }
 
+// ADMIN_BULLETIN_V1: 管理員發佈的公告（獨立於 Tronclass 課程公告），對所有使用者顯示。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub(super) struct AdminBulletin {
+    pub id: u64,
+    pub title: String,
+    pub content: String,
+    pub created: i64,
+    pub author: String,
+}
+
+fn admin_bulletins_file() -> std::path::PathBuf {
+    std::path::Path::new("config/admin_bulletins.json").to_path_buf()
+}
+
+static ADMIN_BULLETINS: once_cell::sync::Lazy<std::sync::Mutex<Vec<AdminBulletin>>> =
+    once_cell::sync::Lazy::new(|| {
+        let mut v = Vec::new();
+        if let Ok(text) = std::fs::read_to_string(admin_bulletins_file()) {
+            if let Ok(list) = serde_json::from_str::<Vec<AdminBulletin>>(&text) {
+                v = list;
+            }
+        }
+        std::sync::Mutex::new(v)
+    });
+
+fn persist_admin_bulletins(list: &[AdminBulletin]) {
+    let path = admin_bulletins_file();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(s) = serde_json::to_string_pretty(list) {
+        if let Err(e) = std::fs::write(path, s) {
+            tracing::warn!("無法寫入 admin_bulletins.json：{e}");
+        }
+    }
+}
+
 /// 穩定 key：優先 Tronclass bulletin id，否則用 course+title+time 雜湊。
 fn bulletin_key(b: &Value) -> String {
     let course_id = b.get("_course_id").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -377,7 +414,7 @@ pub(super) async fn list_handler(
         (store.deleted.clone(), reads)
     };
 
-    let items: Vec<Value> = raw
+    let course_items: Vec<Value> = raw
         .into_iter()
         .map(|b| {
             let key = bulletin_key(&b);
@@ -404,11 +441,42 @@ pub(super) async fn list_handler(
         })
         .collect();
 
+    let admin_items: Vec<Value> = ADMIN_BULLETINS
+        .lock()
+        .map(|list| {
+            list.iter()
+                .map(|b| {
+                    let key = format!("admin-{}", b.id);
+                    json!({
+                        "key": key,
+                        "course_name": "管理員公告",
+                        "title": b.title,
+                        "content": b.content,
+                        "author": b.author,
+                        "time": b.created.to_string(),
+                        "pinned": true,
+                        "ts": b.created,
+                        "read": read_by_me.get(&key).copied().unwrap_or(false),
+                        "source": "admin",
+                        "id": b.id,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut items = admin_items;
+    items.extend(course_items);
+
     if let Ok(mut cache) = BULLETINS_CACHE.lock() {
         *cache = Some((account.id.clone(), now, items.clone()));
     }
 
-    (StatusCode::OK, Json(json!({ "items": items }))).into_response()
+    (
+        StatusCode::OK,
+        Json(json!({ "items": items, "is_admin": session.is_admin })),
+    )
+        .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -450,7 +518,9 @@ pub(super) async fn read_handler(
         if !entry.contains(&session.account_id) {
             entry.push(session.account_id.clone());
         }
-        if !enabled.is_empty()
+        // 管理員公告由管理員手動管理生命週期，不套用「全讀即刪」。
+        if !key.starts_with("admin-")
+            && !enabled.is_empty()
             && enabled.iter().all(|id| entry.contains(id))
             && !store.deleted.contains(&key)
         {
@@ -461,6 +531,113 @@ pub(super) async fn read_handler(
     }
 
     (StatusCode::OK, Json(json!({ "ok": true, "deleted": deleted_now }))).into_response()
+}
+
+// BULLETIN_PUSH_V1: 公告通知測試（設定頁「測試通知」面板），走真實公告推播路徑。
+pub(super) async fn test_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    let key = format!("test-{}", now_secs());
+    crate::web_push_notifications::notify_bulletin(
+        &session.account_id,
+        &key,
+        "公告測試",
+        "這是一則測試公告通知，點一下即可開啟課程公告頁。",
+    );
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminBulletinCreateRequest {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    content: String,
+}
+
+// ADMIN_BULLETIN_V1: 管理員發佈公告（對所有使用者顯示）。
+pub(super) async fn admin_create_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(body): Json<AdminBulletinCreateRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "僅管理員可發佈公告" })),
+        )
+            .into_response();
+    }
+    let title = body.title.trim().to_string();
+    if title.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "標題不能為空" })),
+        )
+            .into_response();
+    }
+    let now = now_secs() as i64;
+    let bulletin = AdminBulletin {
+        id: now_secs(),
+        title,
+        content: body.content.trim().to_string(),
+        created: now,
+        author: session.account_id.clone(),
+    };
+    if let Ok(mut list) = ADMIN_BULLETINS.lock() {
+        list.insert(0, bulletin.clone());
+        persist_admin_bulletins(&list);
+    }
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "id": bulletin.id })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminBulletinDeleteRequest {
+    #[serde(default)]
+    id: u64,
+}
+
+// ADMIN_BULLETIN_V1: 管理員刪除公告。
+pub(super) async fn admin_delete_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(body): Json<AdminBulletinDeleteRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "僅管理員可刪除公告" })),
+        )
+            .into_response();
+    }
+    if let Ok(mut list) = ADMIN_BULLETINS.lock() {
+        let before = list.len();
+        list.retain(|b| b.id != body.id);
+        if list.len() != before {
+            persist_admin_bulletins(&list);
+        }
+    }
+    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
 
 // BULLETIN_PUSH_V1: 背景輪詢各啟用帳號的課程公告，有新公告即 Web Push 提醒。
@@ -606,4 +783,167 @@ async fn notify_check(state: &AdminWebState) {
         *guard = keys.clone();
         save_notified(&keys);
     }
+}
+
+// BULLETIN_TRANSLATE_V2: 公告翻譯。MyMemory（免金鑰、支援 zh-TW）為主、Google gtx 為備；
+// 錯誤訊息帶回各服務失敗原因，方便診斷。
+#[derive(Deserialize)]
+pub(super) struct BulletinTranslateRequest {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub tl: String,
+}
+
+fn contains_cjk(text: &str) -> bool {
+    text.chars().any(|c| {
+        let u = c as u32;
+        (0x3040..=0x30FF).contains(&u)
+            || (0x3400..=0x9FFF).contains(&u)
+            || (0xAC00..=0xD7AF).contains(&u)
+    })
+}
+
+fn truncate_bytes(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut out = s.to_string();
+    while out.len() > max {
+        out.pop();
+    }
+    out.push('…');
+    out
+}
+
+pub(super) async fn translate_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(body): Json<BulletinTranslateRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    if state.authorize_any(&token).await.is_none() {
+        return unauthorized_response();
+    }
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "沒有可翻譯的內容" })))
+            .into_response();
+    }
+    if text.chars().count() > 5000 {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "內容過長（上限 5000 字）" })),
+        )
+            .into_response();
+    }
+    let cjk = contains_cjk(&text);
+    let sl: &str = if cjk { "zh-CN" } else { "en" };
+    let tl: String = match body.tl.trim() {
+        "en" | "ja" | "ko" | "zh-TW" => body.tl.trim().to_string(),
+        _ => {
+            if cjk {
+                "en".to_string()
+            } else {
+                "zh-TW".to_string()
+            }
+        }
+    };
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(12))
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) TronclassPanel/1.0")
+        .build()
+        .unwrap_or_default();
+    let mut errors: Vec<String> = Vec::new();
+
+    // 1) MyMemory（匿名免金鑰；單次上限約 500 bytes，截斷處理）
+    let mm_q = truncate_bytes(&text, 480);
+    let langpair = format!("{sl}|{tl}");
+    match client
+        .get("https://api.mymemory.translated.net/get")
+        .query(&[("q", mm_q.as_str()), ("langpair", langpair.as_str())])
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                match resp.json::<Value>().await {
+                    Ok(v) => {
+                        let st = v
+                            .get("responseStatus")
+                            .and_then(|x| x.as_i64())
+                            .unwrap_or(-1);
+                        let s = v
+                            .pointer("/responseData/translatedText")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .trim()
+                            .to_string();
+                        if st == 200 && !s.is_empty() {
+                            return (
+                                StatusCode::OK,
+                                Json(json!({ "translated": s, "tl": tl })),
+                            )
+                                .into_response();
+                        }
+                        errors.push(format!("MyMemory status={st}"));
+                    }
+                    Err(e) => errors.push(format!("MyMemory 解析失敗：{e}")),
+                }
+            } else {
+                errors.push(format!("MyMemory HTTP {}", resp.status()));
+            }
+        }
+        Err(e) => errors.push(format!("MyMemory 連線失敗：{e}")),
+    }
+
+    // 2) Google gtx 備援
+    match client
+        .get("https://translate.googleapis.com/translate_a/single")
+        .query(&[
+            ("client", "gtx"),
+            ("sl", sl),
+            ("tl", tl.as_str()),
+            ("dt", "t"),
+            ("q", text.as_str()),
+        ])
+        .send()
+        .await
+    {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                if let Ok(v) = resp.json::<Value>().await {
+                    let mut out = String::new();
+                    if let Some(arr) = v.get(0).and_then(|x| x.as_array()) {
+                        for seg in arr {
+                            if let Some(s) = seg.get(0).and_then(|x| x.as_str()) {
+                                out.push_str(s);
+                            }
+                        }
+                    }
+                    if !out.trim().is_empty() {
+                        return (
+                            StatusCode::OK,
+                            Json(json!({ "translated": out, "tl": tl })),
+                        )
+                            .into_response();
+                    }
+                    errors.push("Google 未回結果".to_string());
+                } else {
+                    errors.push("Google 解析失敗".to_string());
+                }
+            } else {
+                errors.push(format!("Google HTTP {}", resp.status()));
+            }
+        }
+        Err(e) => errors.push(format!("Google 連線失敗：{e}")),
+    }
+
+    (
+        StatusCode::BAD_GATEWAY,
+        Json(json!({ "error": format!("翻譯失敗：{}", errors.join("；")) })),
+    )
+        .into_response()
 }

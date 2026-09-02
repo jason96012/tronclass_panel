@@ -166,6 +166,10 @@
 
   function injectGear() {
     if (document.getElementById('appSettingsRoot')) return; // 設定頁本身不需要
+    // SETTINGS_GEAR_DASHBOARD_ONLY_V1: 設定齒輪只出現在 Dashboard；
+    // 其他頁面（如 /admin/activity 也有 .tabs）不再誤植「設定」分頁鈕。
+    var p = location.pathname;
+    if (p !== '/admin' && p !== '/admin/' && p !== '/admin/dashboard') return;
     var tabs = document.querySelector('.tabs');
     if (!tabs) return; // 非 Dashboard 頁面：右上角不加入任何設定按鈕
     startGearTabFlow(tabs);

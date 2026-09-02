@@ -57,6 +57,8 @@ pub(super) const DASHBOARD_NOTIFY_PURGE_JS: &str = include_str!("static/js/dashb
 pub(super) const DASHBOARD_DESKTOP_SIZE_JS: &str = include_str!("static/js/dashboard-desktop-size.js");
 pub(super) const DASHBOARD_HEADER_SPACIOUS_JS: &str = include_str!("static/js/dashboard-header-spacious.js");
 pub(super) const DASHBOARD_MORE_ACTIONS_JS: &str = include_str!("static/js/dashboard-more-actions.js");
+// SHARED_MOBILE_NAV_V1: 全頁共用手機導覽列。
+pub(super) const SHARED_MOBILE_NAV_JS: &str = include_str!("static/js/mobile-nav.js");
 // SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS（符合 CSP，不用 inline）。
 pub(super) const SHARE_PREVIEW_JS: &str = include_str!("static/js/share-preview.js");
 pub(super) const SHARE_CSS: &str = include_str!("static/css/share.css");
@@ -171,7 +173,7 @@ pub(super) fn inject_theme(html: &str) -> String {
     // （此 inline <style> 由 html_page_response() 統一補上 CSP nonce。）
     // 注意：concat!() 只接受字面值（literal），不能展開 const，因此全部內聯在此。
     const SHARED_ASSETS: &str = concat!(
-        r#"<script src="/admin/static/app-settings.js?v=20260829settings9"></script>"#,
+        r#"<script src="/admin/static/app-settings.js?v=20260902settings10"></script>"#,
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
@@ -205,6 +207,25 @@ html[data-app-settings][data-motion="reduced"] *,html[data-app-settings][data-mo
    用 CSS 隱藏而非刪除 markup:dashboard 內聯 script 有未加防護的
    q('refreshAll').onclick=...,刪除元素會讓整段腳本拋錯掛掉。 */
 #refreshAll{display:none!important}
+/* SHARED_MOBILE_NAV_V3: 共用手機導覽列（mobile-nav.js 建立）之字級統一與深色模式。
+   寫在此處（隨每頁 HTML 注入、無快取問題），保證所有頁面一致。 */
+#mobileMoreFinalV2 .more-grid a,#mobileMoreFinalV2 .more-grid button{font-size:15px!important;font-weight:900!important;min-height:48px!important}
+#mobileNavFinalV2 button{background:transparent!important;border:0!important;box-shadow:none!important}
+html[data-app-settings][data-theme="dark"] #mobileNavFinalV2{background:rgba(15,23,42,.94)!important;border-color:rgba(148,163,184,.18)!important}
+html[data-app-settings][data-theme="dark"] #mobileNavFinalV2 button{background:transparent!important;color:#94a3b8!important;border:0!important;box-shadow:none!important}
+html[data-app-settings][data-theme="dark"] #mobileNavFinalV2 button.active{background:rgba(96,165,250,.18)!important;color:#93c5fd!important}
+html[data-app-settings][data-theme="dark"] #mobileMoreFinalV2 .sheet{background:rgba(22,29,41,.97)!important;border-color:rgba(148,163,184,.18)!important}
+html[data-app-settings][data-theme="dark"] #mobileMoreFinalV2 h3{color:#f1f5f9!important}
+html[data-app-settings][data-theme="dark"] #mobileMoreFinalV2 .more-grid a,html[data-app-settings][data-theme="dark"] #mobileMoreFinalV2 .more-grid button{background:rgba(30,41,59,.65)!important;color:#f1f5f9!important;border-color:#334155!important}
+html[data-app-settings][data-theme="dark"] #mobileMoreFinalV2 .more-grid .danger{background:rgba(248,113,113,.12)!important;color:#fca5a5!important;border-color:rgba(248,113,113,.35)!important}
+@media(prefers-color-scheme:dark){
+html:not([data-theme="light"]) #mobileNavFinalV2{background:rgba(15,23,42,.94)!important;border-color:rgba(148,163,184,.18)!important}
+html:not([data-theme="light"]) #mobileNavFinalV2 button{background:transparent!important;color:#94a3b8!important;border:0!important;box-shadow:none!important}
+html:not([data-theme="light"]) #mobileMoreFinalV2 .sheet{background:rgba(22,29,41,.97)!important;border-color:rgba(148,163,184,.18)!important}
+html:not([data-theme="light"]) #mobileMoreFinalV2 h3{color:#f1f5f9!important}
+html:not([data-theme="light"]) #mobileMoreFinalV2 .more-grid a,html:not([data-theme="light"]) #mobileMoreFinalV2 .more-grid button{background:rgba(30,41,59,.65)!important;color:#f1f5f9!important;border-color:#334155!important}
+html:not([data-theme="light"]) #mobileMoreFinalV2 .more-grid .danger{background:rgba(248,113,113,.12)!important;color:#fca5a5!important;border-color:rgba(248,113,113,.35)!important}
+}
 /* 保險:若瀏覽器/service worker 仍快取舊版 app-settings.js 並把「設定」
    連結塞進 header,此規則(每次導頁都隨 no-cache HTML 刷新)保證將其隱藏。 */
 #appSettingsGearLink,.app-settings-gear{display:none!important}
