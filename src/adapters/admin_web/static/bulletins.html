@@ -49,6 +49,10 @@
   .trbtn:disabled{opacity:.55;cursor:not-allowed}
   .transbox{margin:10px 0 0;padding:10px 12px;border:1px dashed color-mix(in srgb,var(--primary) 45%,transparent);background:color-mix(in srgb,var(--primary) 6%,transparent);border-radius:10px}
   .translab{font-size:11px;font-weight:700;color:var(--primary);margin-bottom:4px}
+  .transerr{margin:10px 0 0;padding:10px 12px;border:1px solid color-mix(in srgb,var(--bad) 45%,transparent);background:color-mix(in srgb,var(--bad) 8%,transparent);border-radius:10px}
+  .transerrhead{font-size:12px;font-weight:800;color:var(--bad);margin-bottom:6px}
+  .transerrmsg{font-size:11.5px;line-height:1.55;color:var(--text);white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .transerrrow{display:flex;gap:8px;margin-top:8px}
   .transbox>div:last-child{font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
   .readbtn:hover{color:var(--primary);border-color:var(--primary)}
   .readtag{display:inline-flex;font-size:11px;color:var(--muted);border:1px dashed var(--line);border-radius:9px;padding:4px 9px}
@@ -186,6 +190,60 @@
       .then(function(r){return r.json().catch(function(){return{};});})
       .then(cb).catch(function(){cb({});});
   }
+  // BULLETIN_TRANSLATE_V6：翻譯失敗時把完整錯誤碼顯示在卡片裡，並可一鍵複製。
+  function buildDiagnosticText(r){
+    var lines=[];
+    lines.push('【公告翻譯失敗診斷】');
+    lines.push('時間：'+new Date().toISOString());
+    lines.push('訊息：'+(r.error||'(無)'));
+    lines.push('HTTP 狀態：'+(r.status||'(無回應)'));
+    if(r.code)lines.push('錯誤碼：'+r.code);
+    if(r.trace_id)lines.push('trace_id：'+r.trace_id+'（可在 /admin/logs 搜尋）');
+    if(r.diagnostics&&r.diagnostics.length){
+      lines.push('分段明細：');
+      r.diagnostics.forEach(function(d){
+        lines.push('  第 '+d.chunk+'/'+d.total+' 段｜'+d.bytes+' bytes｜'+(d.ok?'成功':'失敗')+
+          '｜上游狀態 '+(d.status==null?'無':d.status)+'｜重試 '+d.attempts+' 次｜'+d.ms+' ms');
+        if(d.error)lines.push('    原因：'+d.error);
+        if(d.detail)lines.push('    上游回應：'+d.detail);
+      });
+    }
+    if(r.raw){
+      lines.push('原始回應（非 JSON，通常代表 502 來自反向代理而非本服務）：');
+      lines.push('  '+r.raw);
+    }
+    lines.push('頁面：'+location.href);
+    return lines.join('\n');
+  }
+  function showTranslateError(cardEl,footEl,r){
+    var old=cardEl.querySelector('.transerr');if(old)old.remove();
+    var box=document.createElement('div');box.className='transerr';
+    var head=document.createElement('div');head.className='transerrhead';
+    head.textContent='翻譯失敗 · HTTP '+(r.status||'無回應')+(r.trace_id?(' · trace '+r.trace_id):'');
+    box.appendChild(head);
+    var msg=document.createElement('div');msg.className='transerrmsg';
+    msg.textContent=buildDiagnosticText(r);
+    box.appendChild(msg);
+    var row=document.createElement('div');row.className='transerrrow';
+    var copy=document.createElement('button');copy.type='button';copy.className='readbtn';copy.textContent='複製診斷';
+    copy.onclick=function(){
+      var t=buildDiagnosticText(r);
+      function done(){copy.textContent='已複製 ✓';setTimeout(function(){copy.textContent='複製診斷';},1600);}
+      if(navigator.clipboard&&navigator.clipboard.writeText){
+        navigator.clipboard.writeText(t).then(done,function(){fallback(t,done);});
+      }else{fallback(t,done);}
+    };
+    function fallback(t,done){
+      var ta=document.createElement('textarea');ta.value=t;ta.setAttribute('readonly','');
+      ta.style.cssText='position:fixed;left:-9999px';document.body.appendChild(ta);
+      ta.select();try{document.execCommand('copy');done();}catch(e){}
+      document.body.removeChild(ta);
+    }
+    var close=document.createElement('button');close.type='button';close.className='readbtn';close.textContent='關閉';
+    close.onclick=function(){box.remove();};
+    row.appendChild(copy);row.appendChild(close);box.appendChild(row);
+    cardEl.insertBefore(box,footEl);
+  }
   function card(it){
     var c=document.createElement('article');c.className='card'+(it.read?' read':'');
     var r1=document.createElement('div');r1.className='row1';
@@ -209,7 +267,7 @@
       var hasCJK=/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(src);
       postJson('/admin/api/bulletins/translate',{text:src,tl:hasCJK?'en':'zh-TW'},function(r){
         tr.disabled=false;
-        if(r.error){tr.textContent='翻譯';alert('翻譯失敗：'+r.error);return;}
+        if(r.error){tr.textContent='重試翻譯';showTranslateError(c,foot,r);return;}
         tr.textContent='收起翻譯';
         var d=document.createElement('div');d.className='transbox';
         var lab=document.createElement('div');lab.className='translab';
@@ -280,10 +338,33 @@
       list.innerHTML='<div class="err">讀取公告失敗：'+esc(e.message||e)+'</div>';
     });
   }
+  // BULLETIN_TRANSLATE_V6
+  // 舊版 `r.json().catch(()=>({}))` 會把非 JSON 的回應整個吞掉，
+  // 於是像 Cloudflare Tunnel 回的 502 HTML 只剩下「HTTP 502」四個字，
+  // 完全看不到錯誤碼。改成永遠保留原始狀態碼與回應內文。
   function postJson(path,data,cb){
+    var st=0,done=false;
+    function once(o){if(!done){done=true;cb(o);}}
     fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(data||{})})
-      .then(function(r){return r.json().catch(function(){return{};}).then(function(j){if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j;});})
-      .then(cb).catch(function(e){cb({error:e.message});});
+      .then(function(r){
+        st=r.status;
+        return r.text().then(function(raw){
+          var j=null;try{j=JSON.parse(raw);}catch(e){}
+          if(!r.ok){
+            once({
+              error:(j&&j.error)||('HTTP '+r.status),
+              status:r.status,
+              code:(j&&j.code)||'',
+              trace_id:(j&&j.trace_id)||'',
+              diagnostics:(j&&j.diagnostics)||null,
+              raw:j?'':String(raw||'').slice(0,600)
+            });
+            return;
+          }
+          once(j||{});
+        });
+      })
+      .catch(function(e){once({error:(e&&e.message)||'網路錯誤（請求未送達或被中斷）',status:st});});
   }
   function delApi(id,cb){postJson('/admin/api/bulletins/admin/delete',{id:id},cb);}
   if(publishBtn)publishBtn.onclick=function(){pubForm.style.display=pubForm.style.display==='none'?'flex':'none';};
