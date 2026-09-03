@@ -104,11 +104,9 @@
     try{
       var tok=window.__tronBootToken||'';
       var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
-      if(tok && url.origin===location.origin && url.pathname.indexOf('/admin/api/')===0 &&
-         url.pathname!=='/admin/api/login' && !url.searchParams.get('token')){
-        url.searchParams.set('token', tok);
-        input=url.pathname+url.search+url.hash;
-      }
+      /* TOKEN_STORAGE_PURGE_V1: cookie-only——不再把 token 附加到 API URL
+         （伺服端 middleware 會以 HttpOnly cookie 注入），僅確保 same-origin credentials。 */
+      void tok; void url;
     }catch(_){}
     init = init || {};
     if(!init.credentials) init.credentials='same-origin';
@@ -970,7 +968,7 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
   function isAdminPath(){ return location.pathname === '/admin' || location.pathname.startsWith('/admin/'); }
   function currentPath(){ return location.pathname + location.search + location.hash; }
   function loginUrl(){ var u = new URL('/admin', location.origin); var cur = currentPath(); if (cur && cur !== '/admin' && cur.indexOf('/admin?logout=1') !== 0) u.searchParams.set('next', cur); u.searchParams.set('v','auth'+Date.now()); return u.pathname + u.search; }
-  function withToken(path){ var t = token(); if (!t) return path; var u = new URL(path, location.origin); u.searchParams.set('token', t); u.searchParams.delete('logout'); return u.pathname + u.search + u.hash; }
+  function withToken(path){ /* TOKEN_STORAGE_PURGE_V1: cookie-only（SECURITY-F03）——不再寫 token 進 storage，改清除遺留 key */ return path; }
   function setClass(state){
     document.documentElement.classList.remove('tron-auth-pending','tron-auth-ok','tron-auth-logged-out');
     if (document.body) document.body.classList.remove('auth-ok','dash-auth-ok','logged-in');
@@ -1025,7 +1023,7 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
   function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
   function token(){try{if(window.__tronBootToken)return String(window.__tronBootToken).trim();
       var u=new URLSearchParams(location.search).get('token');
-      if(u){storeToken(u);return u.trim()}
+      if(u){return u.trim()}
       var keys=['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];
       for(var i=0;i<keys.length;i++){
         var v=localStorage.getItem(keys[i])||sessionStorage.getItem(keys[i]);
@@ -1037,7 +1035,7 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
   function storeToken(t){
     if(!t)return;
     ['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'].forEach(function(k){
-      try{localStorage.setItem(k,t);sessionStorage.setItem(k,t)}catch(_){}
+      try{localStorage.removeItem(k);sessionStorage.removeItem(k)}catch(_){}
     });
     try{
       var u=new URL(location.href);
@@ -1048,11 +1046,8 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
     }catch(_){}
   }
   function withToken(path){
-    var t=token();
-    if(!t)return path;
-    var u=new URL(path,location.origin);
-    u.searchParams.set('token',t);
-    return u.pathname+u.search+u.hash
+    /* TOKEN_STORAGE_PURGE_V1: cookie-only */
+    return path
   }
   async function parse(res){
     var b=await res.json().catch(function(){return{}});
@@ -1805,11 +1800,8 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
     return '';
   }
   function withToken(path){
-    var t = token();
-    if(!t) return path;
-    var u = new URL(path, location.origin);
-    u.searchParams.set('token', t);
-    return u.pathname + u.search + u.hash;
+    /* TOKEN_STORAGE_PURGE_V1: cookie-only */
+    return path;
   }
   async function parse(res){
     var b = await res.json().catch(function(){ return {}; });
@@ -2065,7 +2057,8 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
       try{
         var u=new URL(a.getAttribute('href'), location.origin);
         if(!(u.pathname==='/admin'||u.pathname==='/admin/'||u.pathname==='/admin/dashboard')) return;
-        if(t && !u.searchParams.get('token')) u.searchParams.set('token', t);
+        /* TOKEN_STORAGE_PURGE_V1: cookie-only——連結不帶 token */
+        void t;
         if(!u.hash) u.hash='overview';
         a.setAttribute('href', u.pathname+u.search+u.hash);
       }catch(_){}

@@ -264,6 +264,12 @@ fn decrypt_layered(stored: &str, current: [u8; 32]) -> Option<String> {
     None
 }
 
+/// LOGIN_FAIL_DIAG_V1：此字串是否為加密信封樣式（供登入失敗診斷，
+/// 判別送出的密碼是否未被解密）。不記錄、不外洩內容。
+pub fn looks_like_envelope(value: &str) -> bool {
+    is_envelope(value)
+}
+
 /// MASTER_KEY_ROTATION_V1：此儲存值是否需要重加密至目前 key。
 ///
 /// v1 信封一律需要（輪替後補上 key id 標記）；v2 信封僅在 key id ≠

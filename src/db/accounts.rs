@@ -64,6 +64,7 @@ impl AccountsDb {
         .wrap_err("列出帳號失敗")?;
 
         // MASTER_KEY_ROTATION_V1：讀取時背景重加密舊信封（每帳號一次）。
+        // LOG_QUIET_V1：轉換全程靜靜執行，不發任何 info 通知（細節僅 debug 層級）。
         for row in &rows {
             self.rewrap_row_secrets(row).await;
         }
@@ -133,11 +134,12 @@ impl AccountsDb {
     /// 在帳號讀取路徑上呼叫——每個帳號只需重寫一次，完成後不再產生寫入；
     /// 所有帳號都完成後，operator 即可自 `TRONCLASS_MASTER_KEY_OLD` 移除舊 key。
     /// 失敗不影響讀取結果（保留原值，下輪讀取再試）。
-    async fn rewrap_row_secrets(&self, row: &AccountRow) {
+    /// 回傳是否有重寫（供 list 彙總計數）。
+    async fn rewrap_row_secrets(&self, row: &AccountRow) -> bool {
         let password = crate::secret_encryption::rewrap_stored(&row.password);
         let session_cookie = crate::secret_encryption::rewrap_stored(&row.session_cookie);
         if password.is_none() && session_cookie.is_none() {
-            return;
+            return false;
         }
         let new_password = password.unwrap_or_else(|| row.password.clone());
         let new_cookie = session_cookie.unwrap_or_else(|| row.session_cookie.clone());
@@ -148,15 +150,22 @@ impl AccountsDb {
             .execute(&self.pool)
             .await
         {
-            Ok(_) => tracing::info!(
-                account_id = %row.id,
-                "master key 輪替：已將儲存密文重加密為目前 key"
-            ),
-            Err(error) => tracing::debug!(
-                account_id = %row.id,
-                %error,
-                "master key 重加密寫回失敗（下輪讀取再試）"
-            ),
+            // LOG_QUIET_V1：逐帳號細節降 debug；list() 端以單行彙總替代，避免洗版。
+            Ok(_) => {
+                tracing::debug!(
+                    account_id = %row.id,
+                    "master key 輪替：已將儲存密文重加密為目前 key"
+                );
+                true
+            }
+            Err(error) => {
+                tracing::debug!(
+                    account_id = %row.id,
+                    %error,
+                    "master key 重加密寫回失敗（下輪讀取再試）"
+                );
+                false
+            }
         }
     }
 

@@ -96,10 +96,23 @@ impl AuthFlow for TkuAuthFlow {
         let final_url = sso_login_to_service(client, cookie_jar, &login_url, account).await?;
         debug!(url = %final_url, "TKU: SSO 登入流程完成，驗證 iClass session");
 
-        let user_name = verify_session_with_client(client, base_url)
-            .await
-            .into_diagnostic()
-            .wrap_err("TKU: SSO 登入後 session 驗證失敗，請確認帳號密碼是否正確")?;
+        let user_name = match verify_session_with_client(client, base_url).await {
+            Ok(name) => name,
+            Err(error) => {
+                // LOGIN_FAIL_DIAG_V1：登入失敗時記錄「送出的密碼」形態（不記內容），
+                // 當場分辨：密文未解密（key 問題）vs 已解密但帳密被拒（學校端）。
+                let envelope = crate::secret_encryption::looks_like_envelope(&account.password);
+                tracing::error!(
+                    account = %account.id,
+                    password_len = account.password.chars().count(),
+                    password_is_envelope = envelope,
+                    "TKU 登入失敗診斷：password_is_envelope=true 代表密文未被解密（master key 問題）；false 代表已解密成明文，問題在帳密本身或學校端拒絕"
+                );
+                return Err(error)
+                    .into_diagnostic()
+                    .wrap_err("TKU: SSO 登入後 session 驗證失敗，請確認帳號密碼是否正確");
+            }
+        };
 
         let base_url_parsed = Url::parse(base_url)
             .map_err(|_| AuthError::InvalidUrl(base_url.to_string()))
@@ -207,7 +220,18 @@ pub(crate) async fn sso_login_to_service(
         .await
         .into_diagnostic()
         .wrap_err("TKU: Failed to read NEAI login response")?;
-    follow_html_redirects(client, body, final_url).await
+    let final_url = follow_html_redirects(client, body, final_url).await?;
+
+    // LOGIN_FAIL_DIAG_V1：SSO 後仍停在登入頁＝帳密被拒絕（或觸發學校端
+    // 驗證／鎖定）。舊版這裡不檢查，錯誤會延後到 session 驗證才爆，
+    // 產生誤導性的「SSO 登入後 session 驗證失敗」。
+    let path = final_url.path();
+    if path.contains("logineb") || path.contains("NEAI") {
+        return auth_failed(
+            "TKU: 帳號或密碼錯誤（登入後仍停在 SSO 登入頁）——請先用瀏覽器確認此帳號可以登入，反覆失敗可能已觸發學校端防護",
+        );
+    }
+    Ok(final_url)
 }
 
 async fn fetch_login_form(

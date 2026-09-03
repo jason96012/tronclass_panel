@@ -99,6 +99,9 @@
   document.addEventListener('click', function(ev){
     var b=isTarget(ev.target);
     if(!b) return;
+    /* PASSKEY_LOGIN_BUTTON_FIX_V1：登入卡內按鈕（通行密鑰「登入」）不攔截 */
+    if(b.closest && b.closest('#animatedLoginForm,#loginCard')) return;
+    if(/passkeylogin/i.test(b.id||'')) return;
     var act=b.getAttribute('data-more-action')||'';
     var id=b.id||'';
     var tx=(b.textContent||'').replace(/\s+/g,'').trim();

@@ -170,6 +170,9 @@
     if(!a) return '';
     var href=(a.getAttribute('href')||'');
     var id=a.id||'';
+    /* PASSKEY_LOGIN_BUTTON_FIX_V1：登入卡內的按鈕（如 passkeyLoginBtn）屬於「通行密鑰登入」流程，
+       不得被「設定通行密鑰／變更密碼」modal 的全域攔截吃掉（否則未登入點它會開設定流程 → 401 →「登入已過期」） */
+    if(/passkeylogin/i.test(id) || a.closest('#animatedLoginForm,#loginCard')) return '';
     var act=a.getAttribute('data-more-action')||'';
     var tx=(a.textContent||'').replace(/\s+/g,'').trim();
     if(act==='password'||/ChangePassword|changePassword/i.test(id)||tx==='變更密碼'||href.indexOf('tron-password')>=0) return 'password';

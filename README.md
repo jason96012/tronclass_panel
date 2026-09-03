@@ -341,8 +341,8 @@ src/
   # 2. 舊 key 放進環境（多把以逗號分隔；或 ptero 部署寫入 config/master.old.keys，一行一個）
   export TRONCLASS_MASTER_KEY=<新 key>
   export TRONCLASS_MASTER_KEY_OLD=<舊 key>
-  # 3. 重啟服務——讀取帳號時自動把舊密文背景重加密為新 key
-  #    （log：「master key 輪替：已將儲存密文重加密為目前 key」）
+  # 3. 重啟服務——讀取帳號時自動把舊密文背景重加密為新 key（背景靜默執行，
+  #    不發 info 通知；需要排查時可開 debug 層級檢視「已重加密」細節）
   # 4. 所有帳號都出現過該 log 後，移除 _OLD 環境變數／master.old.keys 再重啟
   ```
 
