@@ -652,8 +652,9 @@ start_filebrowser
 #   2. config/master.key file — already exists
 #   3. auto-generate a fresh key into config/master.key (so no manual step is
 #      needed in the Pterodactyl panel)
-# Never change the key after accounts exist, or existing encrypted values
-# cannot be decrypted.
+# Key rotation is supported (MASTER_KEY_ROTATION_V1): set the NEW key above and
+# list the OLD key(s) in TRONCLASS_MASTER_KEY_OLD / config/master.old.keys;
+# stored secrets are re-encrypted in the background as accounts are loaded.
 if [[ -n "${TRONCLASS_MASTER_KEY:-}" ]]; then
   export TRONCLASS_MASTER_KEY
 elif [[ -f config/master.key ]]; then
@@ -669,6 +670,22 @@ else
   chmod 600 config/master.key 2>/dev/null || true
   export TRONCLASS_MASTER_KEY="$(tr -d '\r\n ' < config/master.key)"
   echo "[ptero-start] 已自動產生 at-rest 加密 master key → config/master.key（請勿外流或變更）"
+fi
+
+# MASTER_KEY_ROTATION_V1：舊 key 僅供解密＋背景重加密（一行一個 64 hex key）。
+# 輪替步驟：
+#   1. openssl rand -hex 32 產生新 key，寫入 config/master.key（或 TRONCLASS_MASTER_KEY）
+#   2. 把舊 key 放進 config/master.old.keys（或 TRONCLASS_MASTER_KEY_OLD，逗號分隔）
+#   3. 重啟；log 出現各帳號「master key 輪替：已將儲存密文重加密」即完成
+#   4. 刪除 master.old.keys／環境變數後再重啟（舊 key 功成身退）
+if [[ -n "${TRONCLASS_MASTER_KEY_OLD:-}" ]]; then
+  export TRONCLASS_MASTER_KEY_OLD
+elif [[ -f config/master.old.keys ]]; then
+  OLD_KEYS="$(grep -vE '^[[:space:]]*(#|$)' config/master.old.keys | tr -d '\r' | paste -sd, -)"
+  if [[ -n "$OLD_KEYS" ]]; then
+    export TRONCLASS_MASTER_KEY_OLD="$OLD_KEYS"
+    echo "[ptero-start] 已載入舊 master key（config/master.old.keys）供輪替解密與背景重加密"
+  fi
 fi
 
 # Filebrowser 開啟時，Dashboard 教材自動指向同一包 cloud/

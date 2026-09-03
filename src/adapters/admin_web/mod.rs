@@ -2494,6 +2494,9 @@ struct AdminActionRequest {
     auto_stop_time: Option<Option<String>>,
     #[serde(default)]
     rest_periods: Option<Vec<RuntimeRestPeriod>>,
+    /// CURRENT_SEMESTER_OVERRIDE_V1：Some("1151") 覆蓋學期、Some("") 清除、None 不變。
+    #[serde(default)]
+    semester_override: Option<String>,
 }
 
 fn admin_login_redirect(next_path: &str) -> Response {

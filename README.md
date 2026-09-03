@@ -99,10 +99,11 @@ cp config/config.toml.example config/config.toml
 ### 3. 新增帳號
 
 ```bash
-./tronclass_rollcall account add my-account \
+# 建議：密碼從 stdin 讀取，不留在 shell 歷史紀錄
+echo '你的Tronclass密碼' | ./tronclass_rollcall account add my-account \
   -p tku \
   -u 414850098 \
-  -P '你的Tronclass密碼' \
+  --password-stdin \
   --discord-user-id 123456789012345678 \
   --admin
 ```
@@ -183,7 +184,7 @@ tronclass_rollcall account <子命令>
 |---|---|
 | `account list` | 列出所有帳號 |
 | `account show <id>` | 顯示帳號詳情 |
-| `account add <id>` | 新增帳號（`-p` provider、`-u` 帳號、`-P` 密碼為必填） |
+| `account add <id>` | 新增帳號（`-p` provider、`-u` 帳號為必填；密碼用 `-P` 或 `--password-stdin` 擇一提供，後者不留 shell 歷史紀錄） |
 | `account bind <id>` | 更新 Discord / LINE 綁定 |
 | `account admin <id>` | 授予管理員權限 |
 | `account unadmin <id>` | 移除管理員權限 |
@@ -326,11 +327,26 @@ src/
 ## 安全性
 
 - **密碼分離** — Dashboard 密碼與 Tronclass 密碼各自獨立，PBKDF2-HMAC-SHA256（100,000 輪、128-bit salt）
+- **CLI 密碼輸入** — `account add --password-stdin` 與 `account dashboard-password --stdin` 從 stdin 讀取密碼，不留在 shell 歷史紀錄與程序引數清單
 - **速率限制** — 單帳號 5 次、單 IP 20 次失敗即限流
 - **自動封鎖** — 連續失敗達門檻自動加入 IP 黑名單並發出安全警報
 - **Passkey** — 支援 WebAuthn 免密碼登入
 - **檔案權限** — 程式啟動時設定 `umask 0077`，確保新建的資料庫與密鑰檔為 0600
 - **敏感資料隔離** — `config.toml`、`accounts.db`、各類 token 皆列於 `.gitignore`
+- **靜態加密與 Master Key 輪替** — 上游密碼與 session cookie 以 AES-256-GCM 加密後才寫入資料庫（`TRONCLASS_MASTER_KEY`，64 hex）。支援免停機輪替：
+
+  ```bash
+  # 1. 產生新 key（Pterodactyl 部署：新 key 寫入 config/master.key）
+  openssl rand -hex 32
+  # 2. 舊 key 放進環境（多把以逗號分隔；或 ptero 部署寫入 config/master.old.keys，一行一個）
+  export TRONCLASS_MASTER_KEY=<新 key>
+  export TRONCLASS_MASTER_KEY_OLD=<舊 key>
+  # 3. 重啟服務——讀取帳號時自動把舊密文背景重加密為新 key
+  #    （log：「master key 輪替：已將儲存密文重加密為目前 key」）
+  # 4. 所有帳號都出現過該 log 後，移除 _OLD 環境變數／master.old.keys 再重啟
+  ```
+
+  新寫入的密文為 `enc:v2:<key_id>:…` 信封（key id＝SHA-256(key) 前 8 bytes，無法反推 key）；舊 `enc:v1:` 信封在新週期內逐步重加密，完成後舊 key 即可退役。
 
 > ⚠️ 帳號資料庫依設計會儲存 Tronclass 上游密碼（背景登入所需）。請確保 `config/` 目錄權限正確，且**絕不上傳至公開儲存庫**。
 

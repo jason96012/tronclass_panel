@@ -111,6 +111,13 @@ impl super::ApiClient {
             .map(|config| config.homework.include_all_semesters)
             .unwrap_or(false);
 
+        // STRICT_CURRENT_SEMESTER_V1：嚴格模式旗標＋課程學期判定映射。
+        // 映射在步驟 2（/api/my-courses）填入，最終過濾階段使用。
+        let strict_current_semester = crate::config::try_get_config()
+            .map(|config| config.homework.strict_current_semester)
+            .unwrap_or(false);
+        let mut course_current: HashMap<u64, Option<bool>> = HashMap::new();
+
         // ─────────────────────────────────────────────────────────────────────
         // 步驟 1: 查詢全域待辦清單 GET /api/todos
         // ─────────────────────────────────────────────────────────────────────
@@ -161,6 +168,37 @@ impl super::ApiClient {
                         // 它們的 /activities、/exams 根本不會被抓。
                         let all_courses = parse_course_briefs(&json_val);
                         let total_courses = all_courses.len();
+
+                        // STRICT_CURRENT_SEMESTER_V1：記下每門課的學期判定，
+                        // 供最終嚴格過濾（無截止時間項目）使用。
+                        for course in &all_courses {
+                            course_current.insert(course.id, course.is_current);
+                        }
+
+                        // CURRENT_SEMESTER_ONLY_V1（全域待辦回溯過濾）
+                        // 步驟 1 的 /api/todos 不帶課程過濾：舊課的作業（尤其
+                        // 是沒有截止時間、躲過第二道學期起點防線的項目）會從
+                        // 這裡漏進作業頁。以這裡判定出的「非當前學期課程」id
+                        // 集合回頭過濾步驟 1 已收集的項目；course_id 缺漏一律
+                        // 保留（寧可多顯示）。放寬旗標開啟時一併跳過。
+                        if !include_all_semesters {
+                            let excluded_course_ids: HashSet<u64> = all_courses
+                                .iter()
+                                .filter(|course| course.is_current == Some(false))
+                                .map(|course| course.id)
+                                .collect();
+                            let removed = retain_only_current_course_items(
+                                &mut results,
+                                &excluded_course_ids,
+                            );
+                            if removed > 0 {
+                                debug!(
+                                    removed,
+                                    "已自全域待辦移除非當前學期課程的項目"
+                                );
+                            }
+                        }
+
                         let courses: Vec<_> = if include_all_semesters {
                             all_courses
                         } else {
@@ -333,6 +371,28 @@ impl super::ApiClient {
                     skipped = before - results.len(),
                     cutoff = %cutoff,
                     "已略過上一學期的舊作業"
+                );
+            }
+        }
+
+        // STRICT_CURRENT_SEMESTER_V1（第三道防線）
+        // 把「寧可多顯示」反轉為「無法判定為當前學期＝隱藏」：
+        // 沒有截止時間、且所屬課程不是確定的當前學期（None 或 Some(false)）
+        // 的項目移除；有截止時間者仍以學期起點為界（上方已過濾）。
+        // 修課清單抓取失敗（映射為空）時不套用，避免整頁清空；
+        // 放寬旗標開啟時一併跳過。
+        if strict_current_semester && !include_all_semesters && !course_current.is_empty() {
+            let cutoff = current_semester_start(Utc::now());
+            let before = results.len();
+            results.retain(|item| {
+                todo_item_is_confirmably_current(item, &course_current, cutoff)
+            });
+            if results.len() < before {
+                debug!(
+                    total = before,
+                    kept = results.len(),
+                    skipped = before - results.len(),
+                    "嚴格模式：已隱藏無法判定為當前學期的作業"
                 );
             }
         }
@@ -677,6 +737,53 @@ pub fn parse_course_briefs(root: &serde_json::Value) -> Vec<CourseBrief> {
         }
     }
     courses
+}
+
+/// 將課程清單過濾為「當前學期」課程並轉成 `(id, name)`（公告等子系統共用）。
+///
+/// 與 `get_todos` 的第一道防線同一條規則：`is_current == Some(false)` 剔除，
+/// 無法判定（`None`）一律保留（寧可多顯示）。
+pub fn current_course_pairs(briefs: Vec<CourseBrief>) -> Vec<(u64, String)> {
+    briefs
+        .into_iter()
+        .filter(|course| course.is_current != Some(false))
+        .map(|course| (course.id, course.name))
+        .collect()
+}
+
+/// 以「已知非當前學期」的課程 id 集合過濾全域待辦項目，回傳移除數量。
+///
+/// `course_id` 缺漏（`None`）或不在集合內的項目一律保留——只刪「確定屬於
+/// 舊課」的項目，寧可多顯示也不誤刪。
+fn retain_only_current_course_items(
+    items: &mut Vec<TronclassTodoItem>,
+    excluded_course_ids: &HashSet<u64>,
+) -> usize {
+    let before = items.len();
+    items.retain(|item| match item.course_id {
+        Some(id) => !excluded_course_ids.contains(&id),
+        None => true,
+    });
+    before - items.len()
+}
+
+/// STRICT_CURRENT_SEMESTER_V1：判定作業項目是否「可確認為當前學期」。
+///
+/// 有截止時間 → 以學期起點為界（`end >= cutoff` 顯示）；
+/// 沒有截止時間 → 必須隸屬於「確定為當前學期」（`is_current == Some(true)`）
+/// 的課程才顯示。`course_id` 缺漏、課程未知或無法判定（`None`）皆視為無法確認。
+fn todo_item_is_confirmably_current(
+    item: &TronclassTodoItem,
+    course_current: &HashMap<u64, Option<bool>>,
+    cutoff: DateTime<Utc>,
+) -> bool {
+    match item.end_time {
+        Some(end) => end >= cutoff,
+        None => matches!(
+            item.course_id.and_then(|id| course_current.get(&id)),
+            Some(Some(true))
+        ),
+    }
 }
 
 /// 判斷單一課程物件是否為當前學期課程。
@@ -1350,6 +1457,83 @@ mod tests {
             semester_text_is_current_with("115-1", now, None),
             Some(true)
         );
+    }
+
+    #[test]
+    fn test_current_course_pairs_and_global_todo_retro_filter() {
+        // CURRENT_SEMESTER_ONLY_V1：Some(false) 剔除、None／Some(true) 保留
+        let briefs = vec![
+            CourseBrief { id: 1, name: "當前課".to_string(), is_current: Some(true), department: None },
+            CourseBrief { id: 2, name: "舊課".to_string(), is_current: Some(false), department: None },
+            CourseBrief { id: 3, name: "無法判定課".to_string(), is_current: None, department: None },
+        ];
+        let pairs = current_course_pairs(briefs);
+        assert_eq!(pairs.len(), 2, "只剔除確定為舊課者：{pairs:?}");
+        assert_eq!(pairs[0], (1, "當前課".to_string()));
+        assert_eq!(pairs[1], (3, "無法判定課".to_string()));
+
+        // 全域待辦回溯過濾：course_id 對應舊課 → 移除；None／未知課 → 保留
+        let mk = |id: Option<u64>| TronclassTodoItem {
+            id: id.unwrap_or(999),
+            title: "作業".to_string(),
+            course_id: id,
+            course_name: None,
+            department_name: None,
+            item_type: "homework".to_string(),
+            start_time: None,
+            end_time: None,
+            is_submitted: false,
+            submission_status: String::new(),
+            allow_late_submission: false,
+            score: None,
+        };
+        let mut items = vec![mk(Some(1)), mk(Some(2)), mk(None), mk(Some(77))];
+        let excluded: HashSet<u64> = [2u64].into_iter().collect();
+        let removed = retain_only_current_course_items(&mut items, &excluded);
+        assert_eq!(removed, 1);
+        assert_eq!(items.len(), 3);
+        assert!(items.iter().all(|it| it.course_id != Some(2)));
+        // 空排除集合＝不移除任何項目
+        let mut untouched = vec![mk(Some(2))];
+        assert_eq!(retain_only_current_course_items(&mut untouched, &HashSet::new()), 0);
+        assert_eq!(untouched.len(), 1);
+    }
+
+    #[test]
+    fn test_strict_current_semester_gate() {
+        let mk = |course_id: Option<u64>, end: Option<DateTime<Utc>>| TronclassTodoItem {
+            id: 1,
+            title: "作業".to_string(),
+            course_id,
+            course_name: None,
+            department_name: None,
+            item_type: "homework".to_string(),
+            start_time: None,
+            end_time: end,
+            is_submitted: false,
+            submission_status: String::new(),
+            allow_late_submission: false,
+            score: None,
+        };
+        let cutoff = DateTime::parse_from_rfc3339("2026-08-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut map = HashMap::new();
+        map.insert(1u64, Some(true)); // 確定當前學期
+        map.insert(2u64, Some(false)); // 確定舊課
+        map.insert(3u64, None); // 無法判定
+        let future = Some(cutoff + chrono::Duration::days(30));
+        let past = Some(cutoff - chrono::Duration::days(30));
+        // 有截止時間：以學期起點為界，與課程判定無關
+        assert!(todo_item_is_confirmably_current(&mk(Some(2), future), &map, cutoff));
+        assert!(!todo_item_is_confirmably_current(&mk(Some(1), past), &map, cutoff));
+        // 無截止時間：只有「確定當前學期」課程的項目顯示
+        assert!(todo_item_is_confirmably_current(&mk(Some(1), None), &map, cutoff));
+        assert!(!todo_item_is_confirmably_current(&mk(Some(2), None), &map, cutoff));
+        assert!(!todo_item_is_confirmably_current(&mk(Some(3), None), &map, cutoff));
+        // course_id 缺漏或未知課程 → 無法確認 → 隱藏
+        assert!(!todo_item_is_confirmably_current(&mk(None, None), &map, cutoff));
+        assert!(!todo_item_is_confirmably_current(&mk(Some(99), None), &map, cutoff));
     }
 
     #[test]

@@ -405,11 +405,10 @@ pub(super) async fn list_handler(
                 .into_response()
         }
     };
+    // CURRENT_SEMESTER_ONLY_V1：只抓當前學期課程的公告（與作業頁同一條
+    // 防線；無法判定學期的課程保留），避免上學期課程的公告洗版。
     let briefs = crate::api::todos::parse_course_briefs(&courses_json);
-    let courses: Vec<(u64, String)> = briefs
-        .into_iter()
-        .map(|c| (c.id, c.name))
-        .collect();
+    let courses: Vec<(u64, String)> = crate::api::todos::current_course_pairs(briefs);
 
     let raw = fetch_all_bulletins(client, base_url, courses).await;
 
@@ -892,10 +891,9 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
         let Ok(cj) = resp.json::<Value>().await else {
             continue;
         };
-        let courses = crate::api::todos::parse_course_briefs(&cj)
-            .into_iter()
-            .map(|c| (c.id, c.name))
-            .collect();
+        // CURRENT_SEMESTER_ONLY_V1：同 list_handler，只通知當前學期課程的公告。
+        let courses =
+            crate::api::todos::current_course_pairs(crate::api::todos::parse_course_briefs(&cj));
         let items = fetch_all_bulletins(client, base, courses).await;
         for b in items {
             let key = bulletin_key(&b);

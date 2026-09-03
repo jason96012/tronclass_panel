@@ -82,6 +82,12 @@ pub(super) async fn admin_action_handler(
             return response;
         }
     }
+    // CURRENT_SEMESTER_OVERRIDE_V1
+    if let Some(value) = action.semester_override.as_deref() {
+        if let Err(response) = validate_admin_text(value, 32, "semester_override") {
+            return response;
+        }
+    }
     if let Some(rest_periods) = action.rest_periods.as_ref() {
         if rest_periods.len() > ADMIN_MAX_REST_PERIODS {
             return (
@@ -371,7 +377,12 @@ pub(super) async fn handle_admin_account_action(
                     Some(value) => value,
                     None => current.auto_stop_time,
                 },
-                rest_periods: action.rest_periods.unwrap_or(current.rest_periods),
+                rest_periods: action.rest_periods.clone().unwrap_or(current.rest_periods),
+                // CURRENT_SEMESTER_OVERRIDE_V1：Some(值)＝設定／Some("")＝清除、None＝不變
+                semester_override: match action.semester_override.clone() {
+                    Some(value) => Some(value),
+                    None => current.semester_override.clone(),
+                },
             };
             crate::runtime_settings::update(settings.clone()).await;
             super::status::invalidate_admin_status_cache().await;

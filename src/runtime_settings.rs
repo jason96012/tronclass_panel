@@ -27,6 +27,14 @@ pub struct RuntimeSettings {
     /// any of these windows; manual Force/Reauth still works.
     #[serde(default)]
     pub rest_periods: Vec<RuntimeRestPeriod>,
+    /// CURRENT_SEMESTER_OVERRIDE_V1: runtime semester override, e.g. "1151".
+    ///
+    /// Empty / invalid values normalize to None (auto). When present it takes
+    /// precedence over config.toml `[semester] current` (see
+    /// `config::semester_override`); consumers read the parsed cache via the
+    /// synchronous [`semester_override`] accessor.
+    #[serde(default)]
+    pub semester_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +90,7 @@ impl Default for RuntimeSettings {
             group_submit_interval_ms: DEFAULT_GROUP_SUBMIT_INTERVAL_MS,
             auto_stop_time: None,
             rest_periods: Vec::new(),
+            semester_override: None,
         }
     }
 }
@@ -89,12 +98,35 @@ impl Default for RuntimeSettings {
 static SETTINGS: Lazy<RwLock<RuntimeSettings>> =
     Lazy::new(|| RwLock::new(RuntimeSettings::default()));
 
+/// CURRENT_SEMESTER_OVERRIDE_V1：解析後的學期覆蓋快取。
+///
+/// 學期判定会被呼叫在同步的解析函數深處（如 `api::todos` 的課程/作業
+/// 過濾），無法 await tokio 鎖，因此以 std 鎖另行快取解析結果；
+/// [`update`] 時同步刷新。
+static SEMESTER_OVERRIDE: Lazy<std::sync::RwLock<Option<(i32, u32)>>> =
+    Lazy::new(|| std::sync::RwLock::new(None));
+
+/// 目前生效的執行期學期覆蓋（同步讀取，可在同步程式碼中呼叫）。
+///
+/// `None` 代表未覆蓋——呼叫端應退回 config.toml `[semester] current`，
+/// 再退回依日期自動推算（見 `config::semester_override`）。
+pub fn semester_override() -> Option<(i32, u32)> {
+    *SEMESTER_OVERRIDE.read().expect("semester override lock poisoned")
+}
+
+fn refresh_semester_override_cache(raw: Option<&str>) {
+    let parsed = raw.and_then(crate::config::parse_semester_current);
+    *SEMESTER_OVERRIDE.write().expect("semester override lock poisoned") = parsed;
+}
+
 pub async fn snapshot() -> RuntimeSettings {
     SETTINGS.read().await.clone()
 }
 
 pub async fn update(settings: RuntimeSettings) {
-    *SETTINGS.write().await = normalize(settings);
+    let settings = normalize(settings);
+    refresh_semester_override_cache(settings.semester_override.as_deref());
+    *SETTINGS.write().await = settings;
 }
 
 pub async fn poll_interval(default_secs: u64) -> Duration {
@@ -144,6 +176,16 @@ fn normalize(mut settings: RuntimeSettings) -> RuntimeSettings {
         .take(MAX_RUNTIME_REST_PERIODS)
         .filter_map(normalize_rest_period)
         .collect();
+    // CURRENT_SEMESTER_OVERRIDE_V1：空字串＝清除覆蓋；格式無效靜默退回 None
+    // （與 auto_stop_time 同款防禦），避免壞值讓學期判定失效。
+    settings.semester_override = settings.semester_override.and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() || crate::config::parse_semester_current(&value).is_none() {
+            None
+        } else {
+            Some(value)
+        }
+    });
     settings
 }
 
@@ -183,4 +225,42 @@ fn parse_hhmm(value: &str) -> Option<NaiveTime> {
     let hour = hh.parse::<u32>().ok()?;
     let minute = mm.parse::<u32>().ok()?;
     NaiveTime::from_hms_opt(hour, minute, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_semester_override_drops_invalid_and_keeps_valid() {
+        let mk = |value: Option<&str>| RuntimeSettings {
+            semester_override: value.map(str::to_string),
+            ..RuntimeSettings::default()
+        };
+        // 有效值保留（含前後空白 trim）
+        assert_eq!(
+            normalize(mk(Some(" 115-1 "))).semester_override,
+            Some("115-1".to_string())
+        );
+        assert_eq!(normalize(mk(Some("2026 Fall"))).semester_override, Some("2026 Fall".to_string()));
+        // 空字串／格式無效 → None（清除／防禦）
+        assert_eq!(normalize(mk(Some("   "))).semester_override, None);
+        assert_eq!(normalize(mk(Some("not-a-semester"))).semester_override, None);
+        assert_eq!(normalize(mk(Some("115"))).semester_override, None);
+        assert_eq!(normalize(mk(None)).semester_override, None);
+    }
+
+    #[test]
+    fn semester_override_cache_roundtrip_and_clear() {
+        // 單一測試內序列操作全域快取（避免並行測試互相污染），結尾還原。
+        refresh_semester_override_cache(Some("115-1"));
+        assert_eq!(semester_override(), Some((2026, 1)));
+        refresh_semester_override_cache(Some("1142"));
+        assert_eq!(semester_override(), Some((2025, 2)));
+        // 壞值＝清除（與 normalize 的防禦一致）
+        refresh_semester_override_cache(Some("bogus"));
+        assert_eq!(semester_override(), None);
+        refresh_semester_override_cache(None);
+        assert_eq!(semester_override(), None);
+    }
 }

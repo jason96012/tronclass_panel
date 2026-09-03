@@ -537,16 +537,19 @@ pub(crate) fn parse_semester_current(text: &str) -> Option<(i32, u32)> {
     None
 }
 
-/// 全域捷徑：目前設定的學期覆蓋（`[semester] current`）。
+/// 全域捷徑：目前生效的學期覆蓋。
 ///
-/// 設定尚未初始化（測試情境）或未設定／無效時回 `None`，呼叫端退回自動推算。
+/// 優先順序：網頁設定頁的執行期覆蓋（RUNTIME_SEMESTER_OVERRIDE_V1，
+/// 即時生效、重啟後清除）＞ config.toml `[semester] current` ＞ 依日期自動推算。
+/// 設定尚未初始化（測試情境）或皆未設定時回 `None`，呼叫端退回自動推算。
 pub(crate) fn semester_override() -> Option<(i32, u32)> {
-    try_get_config().and_then(|config| config.semester.resolved())
+    crate::runtime_settings::semester_override()
+        .or_else(|| try_get_config().and_then(|config| config.semester.resolved()))
 }
 
 // ======== Homework ========
 /// 作業截止追蹤設定。
-#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HomeworkConfig {
     /// 是否放寬為「包含所有學期」的作業/測驗。
     ///
@@ -562,6 +565,34 @@ pub struct HomeworkConfig {
     /// 過期項目只會顯示在「全部 / 已逾期」分頁，提醒仍以未來截止者為準。
     #[serde(default)]
     pub include_all_semesters: bool,
+
+    /// STRICT_CURRENT_SEMESTER_V1：嚴格模式——「無法判定為當前學期」的作業不顯示。
+    ///
+    /// 預設 `true`（作業頁維持乾淨）：除了既有的兩道防線外，再加第三道——
+    /// 沒有截止時間、且所屬課程無法判定為「當前學期」（`is_current != Some(true)`，
+    /// 含無法判定 `None` 與舊課 `Some(false)`）的作業一律隱藏。
+    /// 有截止時間者仍以學期起點為界（不變）。
+    ///
+    /// 設為 `false` 回到「寧可多顯示」：無法判定＝保留（舊行為，避免誤刪
+    /// 長期開放、無截止時間的作業）。
+    ///
+    /// 注意：修課清單（/api/my-courses）抓取失敗時不套用嚴格過濾
+    /// （沒有課程資料可判斷，避免整頁清空）。
+    #[serde(default = "default_strict_current_semester")]
+    pub strict_current_semester: bool,
+}
+
+fn default_strict_current_semester() -> bool {
+    true
+}
+
+impl Default for HomeworkConfig {
+    fn default() -> Self {
+        Self {
+            include_all_semesters: false,
+            strict_current_semester: default_strict_current_semester(),
+        }
+    }
 }
 
 // ======== Logging ========
@@ -1755,5 +1786,28 @@ rest_weekdays = ["sun", "sun"]
         let f_legacy = write_toml(minimal_toml());
         let cfg_legacy = AppConfig::load(f_legacy.path()).unwrap();
         assert_eq!(cfg_legacy.semester.resolved(), None);
+    }
+
+    #[test]
+    fn test_homework_strict_current_semester_defaults() {
+        // 未設定 [homework]：嚴格模式預設開啟、放寬旗標預設關閉
+        let f = write_toml(minimal_toml());
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.homework.strict_current_semester);
+        assert!(!cfg.homework.include_all_semesters);
+        // 可明確關閉
+        let toml = format!(
+            "{}\n[homework]\nstrict_current_semester = false\n",
+            minimal_toml()
+        );
+        let f2 = write_toml(&toml);
+        let cfg2 = AppConfig::load(f2.path()).unwrap();
+        assert!(!cfg2.homework.strict_current_semester);
+        // [homework] 存在但未寫 strict_current_semester → 仍是預設 true
+        let toml3 = format!("{}\n[homework]\ninclude_all_semesters = true\n", minimal_toml());
+        let f3 = write_toml(&toml3);
+        let cfg3 = AppConfig::load(f3.path()).unwrap();
+        assert!(cfg3.homework.strict_current_semester);
+        assert!(cfg3.homework.include_all_semesters);
     }
 }

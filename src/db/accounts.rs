@@ -63,6 +63,11 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err("列出帳號失敗")?;
 
+        // MASTER_KEY_ROTATION_V1：讀取時背景重加密舊信封（每帳號一次）。
+        for row in &rows {
+            self.rewrap_row_secrets(row).await;
+        }
+
         Ok(rows.into_iter().map(Into::into).collect())
     }
 
@@ -78,6 +83,9 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err_with(|| format!("取得帳號 `{id}` 失敗"))?;
 
+        if let Some(row) = &row {
+            self.rewrap_row_secrets(row).await;
+        }
         Ok(row.map(Into::into))
     }
 
@@ -112,7 +120,44 @@ impl AccountsDb {
             .wrap_err_with(|| format!("以 username `{username}` 查詢帳號失敗"))?
         };
 
+        // MASTER_KEY_ROTATION_V1：讀取時背景重加密舊信封（每帳號一次）。
+        for row in &rows {
+            self.rewrap_row_secrets(row).await;
+        }
+
         Ok(rows.into_iter().map(Into::into).collect())
+    }
+
+    /// MASTER_KEY_ROTATION_V1：把舊版／舊 key 加密的密文背景重加密為目前 key。
+    ///
+    /// 在帳號讀取路徑上呼叫——每個帳號只需重寫一次，完成後不再產生寫入；
+    /// 所有帳號都完成後，operator 即可自 `TRONCLASS_MASTER_KEY_OLD` 移除舊 key。
+    /// 失敗不影響讀取結果（保留原值，下輪讀取再試）。
+    async fn rewrap_row_secrets(&self, row: &AccountRow) {
+        let password = crate::secret_encryption::rewrap_stored(&row.password);
+        let session_cookie = crate::secret_encryption::rewrap_stored(&row.session_cookie);
+        if password.is_none() && session_cookie.is_none() {
+            return;
+        }
+        let new_password = password.unwrap_or_else(|| row.password.clone());
+        let new_cookie = session_cookie.unwrap_or_else(|| row.session_cookie.clone());
+        match sqlx::query("UPDATE accounts SET password = ?, session_cookie = ? WHERE id = ?")
+            .bind(&new_password)
+            .bind(&new_cookie)
+            .bind(&row.id)
+            .execute(&self.pool)
+            .await
+        {
+            Ok(_) => tracing::info!(
+                account_id = %row.id,
+                "master key 輪替：已將儲存密文重加密為目前 key"
+            ),
+            Err(error) => tracing::debug!(
+                account_id = %row.id,
+                %error,
+                "master key 重加密寫回失敗（下輪讀取再試）"
+            ),
+        }
     }
 
     // ── 寫入 ──────────────────────────────────────────────────────────────────

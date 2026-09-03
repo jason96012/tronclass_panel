@@ -179,6 +179,25 @@
     </div>
   </section>
 
+  <!-- RUNTIME_SEMESTER_OVERRIDE_V1: 網頁即時調整學期判定（僅管理員，重啟後退回 config.toml／自動） -->
+  <section class="card" id="semesterCard" hidden>
+    <h1>學期判定</h1>
+    <p class="hint">決定作業學期過濾、課程學期判定與淡江課表同步以哪個學期為準。調整即時生效；服務重啟後退回 config.toml 設定（若有的話）或依日期自動推算。</p>
+    <div class="test-row"><span><b>目前生效</b><i id="semesterStatus">讀取中…</i></span></div>
+    <div class="test-row" style="flex-wrap:wrap;gap:8px" id="semesterPresets">
+      <span style="flex:1 1 100%"><b>快速選擇</b><i>點一下填入下方欄位（國曆年自動換算民國學年）</i></span>
+    </div>
+    <div class="test-row">
+      <span><b>學期覆蓋</b><i>格式例：1151、115-2、115上、115下、2026-1、2026 Fall</i></span>
+      <input id="semesterInput" type="text" inputmode="text" placeholder="例：1151" style="flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit">
+    </div>
+    <div class="test-row" style="flex-wrap:wrap;gap:8px">
+      <button id="semesterApply" class="tbtn" type="button">套用</button>
+      <button id="semesterAuto" class="ghost" type="button">恢復自動</button>
+    </div>
+    <div id="semesterMsg" class="tmsg"></div>
+  </section>
+
   <!-- TEST_NOTIFICATION_CARD_V1: 集中所有測試通知按鈕 -->
   <section class="card">
     <h1>測試通知</h1>
@@ -306,6 +325,104 @@
         show('已播放：' + (cfg.pattern === 'chime' ? '三音提示' : '雙提示音'), 'ok');
       } catch (_) { show('播放失敗', 'bad'); }
     });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+<script>
+/* RUNTIME_SEMESTER_OVERRIDE_V1: 學期判定卡片——僅管理員；走 /admin/api/action runtime_settings */
+(function () {
+  'use strict';
+  function init() {
+    var card = document.getElementById('semesterCard');
+    if (!card) return;
+    var statusEl = document.getElementById('semesterStatus');
+    var input = document.getElementById('semesterInput');
+    var msg = document.getElementById('semesterMsg');
+    var presetsBox = document.getElementById('semesterPresets');
+
+    function show(text, kind) {
+      if (!msg) return;
+      msg.textContent = text || '';
+      msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+    }
+    // 台北時間的「目前學期」[民國學年, 學期]，與後端推算規則一致
+    function currentSem() {
+      var now = new Date(Date.now() + 8 * 3600 * 1000);
+      var y = now.getUTCFullYear(), m = now.getUTCMonth() + 1;
+      if (m >= 8) return [y - 1911, 1];
+      if (m <= 1) return [y - 1912, 1];
+      return [y - 1912, 2];
+    }
+    function shift(sem, delta) {
+      var roc = sem[0], term = sem[1], i;
+      for (i = 0; i < Math.abs(delta); i++) {
+        if (delta > 0) { if (term === 1) term = 2; else { roc += 1; term = 1; } }
+        else { if (term === 2) term = 1; else { roc -= 1; term = 2; } }
+      }
+      return [roc, term];
+    }
+    function semCode(sem) { return String(sem[0]) + String(sem[1]); }
+    function semLabel(sem) { return '民國' + sem[0] + (sem[1] === 1 ? '上' : '下') + '（' + semCode(sem) + '）'; }
+
+    // 快速選擇：上一學期 / 本學期 / 下一學期
+    [['上一學期', -1], ['本學期', 0], ['下一學期', 1]].forEach(function (item) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ghost';
+      var sem = shift(currentSem(), item[1]);
+      btn.textContent = item[0] + '：' + semLabel(sem);
+      btn.addEventListener('click', function () { if (input) { input.value = semCode(sem); show('已填入 ' + semLabel(sem) + '，按「套用」生效'); } });
+      if (presetsBox) presetsBox.appendChild(btn);
+    });
+
+    async function loadStatus() {
+      try {
+        var res = await fetch('/admin/api/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var body = await res.json();
+        if (!body || !body.is_admin) { card.hidden = true; return; }
+        card.hidden = false;
+        var cur = currentSem();
+        var raw = body.settings && body.settings.semester_override;
+        if (raw) {
+          statusEl.textContent = '覆蓋中：' + raw + '（自動推算為 ' + semLabel(cur) + '）';
+        } else {
+          statusEl.textContent = '自動推算：' + semLabel(cur);
+        }
+      } catch (e) {
+        statusEl.textContent = '讀取失敗：' + (e && e.message ? e.message : e);
+      }
+    }
+    async function applyOverride(value) {
+      show('套用中…');
+      try {
+        var res = await fetch('/admin/api/action', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ action: 'runtime_settings', semester_override: value })
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+        if (value) show('已套用學期覆蓋：' + value + '（即時生效）', 'ok');
+        else show('已恢復自動推算（即時生效）', 'ok');
+        loadStatus();
+      } catch (e) {
+        show('套用失敗：' + (e && e.message ? e.message : e), 'bad');
+      }
+    }
+    var applyBtn = document.getElementById('semesterApply');
+    if (applyBtn) applyBtn.addEventListener('click', function () {
+      var v = (input && input.value ? input.value : '').trim();
+      if (!v) { show('請先輸入學期（例：1151），或點「恢復自動」', 'bad'); return; }
+      applyOverride(v);
+    });
+    var autoBtn = document.getElementById('semesterAuto');
+    if (autoBtn) autoBtn.addEventListener('click', function () { applyOverride(''); });
+    loadStatus();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
