@@ -812,6 +812,52 @@ async fn do_poll_and_attend(
 async fn do_reauth(ctx: &mut MonitorContext) -> Result<()> {
     info!("開始重新認證...");
 
+    // MONITOR_ACCOUNT_RELOAD_V1：重新認證前自資料庫重讀帳號。
+    // ctx.account 是「啟動時」的快照——dashboard/CLI 更新帳號密碼後，
+    // 若不重讀，舊密碼會一直被拿去登入（「改回正確密碼仍登入失敗」的根因）。
+    // 手動 reauth 與連續失敗後的自動 reauth 都走這裡，因此兩條路徑同時修復。
+    match ctx.accounts_db.get(&ctx.account.id).await {
+        Ok(Some(raw)) => {
+            if let Some(provider) = ctx.global_config.providers.get(&raw.provider).cloned() {
+                let fresh = AccountConfig {
+                    request_timeout_secs: provider.api.request_timeout_secs,
+                    provider_config: provider,
+                    id: raw.id,
+                    provider: raw.provider,
+                    username: raw.username.clone(),
+                    password: raw.password.clone(),
+                    enabled: raw.enabled,
+                    line_user_id: raw.line_user_id,
+                    discord_user_id: raw.discord_user_id,
+                    session_cookie: raw.session_cookie,
+                    is_admin: raw.is_admin,
+                };
+                if fresh.username != ctx.account.username || fresh.password != ctx.account.password
+                {
+                    info!(
+                        account = %fresh.id,
+                        "偵測到帳號資料變更（帳號／密碼），重新認證改用最新設定"
+                    );
+                }
+                ctx.account = Arc::new(fresh);
+            } else {
+                warn!(
+                    provider = %raw.provider,
+                    "帳號的 provider 已不存在於設定檔，沿用啟動時快照"
+                );
+            }
+        }
+        Ok(None) => {
+            warn!(
+                account = %ctx.account.id,
+                "帳號已自資料庫刪除；沿用啟動時快照嘗試重新認證"
+            );
+        }
+        Err(e) => {
+            warn!(error = %e, "重讀帳號失敗；沿用啟動時快照重新認證");
+        }
+    }
+
     let session = ctx
         .auth_client
         .re_authenticate(&ctx.account)
