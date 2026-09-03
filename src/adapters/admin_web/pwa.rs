@@ -1,14 +1,85 @@
-//! Minimal safe PWA assets for Admin Web.
+//! PWA assets (manifest / service worker / icon) for Admin Web.
 //!
-//! This intentionally does NOT cache/intercept application requests. It only
-//! enables installability (manifest + service worker + icon) without changing
-//! runtime page behavior.
+//! PWA_SHELL_CACHE_V1 — App-shell caching:
+//! the service worker now **pre-caches the dashboard app shell** (every
+//! `/admin/static/*` CSS/JS asset) during `install` and serves those assets
+//! with *stale-while-revalidate* (instant paint from cache, fresh copy fetched
+//! in the background). This matches the project's existing HTTP caching
+//! philosophy (`stale-while-revalidate=86400` on static assets) and makes an
+//! installed PWA start instantly even on a slow upstream.
+//!
+//! Safety rules (see static/README_SAFE_UPDATES.md) are preserved:
+//! - authenticated **HTML pages are never cached** — no stale Dashboard after
+//!   a server restart, no authenticated content persisted on disk;
+//! - `/admin/api/*` **always hits the network** — no data interception;
+//! - **no redirects** are ever issued from the service worker.
 
 use axum::{
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde_json::json;
+
+/// PWA_SHELL_CACHE_V1 — single source of truth for the app-shell asset list.
+///
+/// Must stay in sync with the `/admin/static/*` routes registered in
+/// `build_admin_router()` (mod.rs). Assets injected by `pages.rs`
+/// (`theme.css`, `session-security.js`, `dompurify.min.js`, …) and lazily
+/// loaded libraries (`pdf.min.js`, `office-view.js`, `jszip.min.js`, …) are
+/// included so the whole shell — not just the eagerly referenced subset —
+/// survives an offline start.
+const SHELL_ASSET_URLS: &[&str] = &[
+    "/admin/static/theme.css",
+    "/admin/static/session-security.js",
+    "/admin/static/app-settings.js",
+    "/admin/static/notifications-page.js",
+    "/admin/static/core-api.js",
+    "/admin/static/web-push.js",
+    "/admin/static/js/dompurify.min.js",
+    "/admin/static/js/trusted-types-init.js",
+    "/admin/static/js/jszip.min.js",
+    "/admin/static/js/office-view.js",
+    "/admin/static/js/qrcode.min.js",
+    "/admin/static/js/shares-admin.js",
+    "/admin/static/js/dashboard-particles.js",
+    "/admin/static/js/dashboard-login-card.js",
+    "/admin/static/js/dashboard-live-alerts.js",
+    "/admin/static/js/dashboard-permissions.js",
+    "/admin/static/js/dashboard-cookie-badge.js",
+    "/admin/static/js/dashboard-modal.js",
+    "/admin/static/js/dashboard-header-more.js",
+    "/admin/static/js/dashboard-more-buttons.js",
+    "/admin/static/js/dashboard-more-links.js",
+    "/admin/static/js/dashboard-more-pages.js",
+    "/admin/static/js/dashboard-notify-purge.js",
+    "/admin/static/js/dashboard-desktop-size.js",
+    "/admin/static/js/dashboard-header-spacious.js",
+    "/admin/static/js/dashboard-more-actions.js",
+    "/admin/static/js/mobile-nav.js",
+    "/admin/static/js/pdf.min.js",
+    "/admin/static/js/pdf.worker.min.js",
+    "/admin/static/accounts.js",
+    "/admin/static/mock-rollcall.js",
+    "/admin/static/timetable.js",
+    "/admin/static/maintenance-implementation.js",
+    "/admin/static/maintenance.js",
+    "/admin/static/maintenance-components.css",
+    "/admin/static/account-components.css",
+    "/admin/static/mobile-timetable.css",
+    "/admin/static/mobile-navigation.css",
+    "/admin/static/dashboard.css",
+    "/admin/static/dashboard-late-fixes.css",
+    "/admin/static/dashboard-mobile.css",
+    "/admin/static/dashboard-components.css",
+    "/admin/static/dashboard-access.css",
+    "/admin/static/dashboard-runtime.js",
+    "/admin/static/dashboard-modules.js",
+];
+
+/// Cache-name version stamp. Bump it when the shell asset *set* changes
+/// (stale-while-revalidate already refreshes asset *contents* in the
+/// background, so a bump is only needed to evict entries for removed URLs).
+const SHELL_CACHE_NAME: &str = "tron-shell-v20260903a";
 
 pub(super) async fn manifest_handler() -> Response {
     let manifest = json!({
@@ -51,17 +122,32 @@ pub(super) async fn manifest_handler() -> Response {
 
 pub(super) async fn service_worker_handler() -> Response {
     const SW: &str = r#"
-// Tronclass PWA service worker FAST_PAGE_LOAD_V1.
-// Only /admin/static/* is cached. HTML and /admin/api/* always hit the network.
-const STATIC_CACHE = 'tron-static-v20260826resumeauth';
+// Tronclass PWA service worker PWA_SHELL_CACHE_V1.
+// The app shell (/admin/static/*) is pre-cached on install and served with
+// stale-while-revalidate. HTML and /admin/api/* always hit the network and
+// authenticated pages are deliberately never retained on disk.
+const SHELL_CACHE = '__SHELL_CACHE__';
+const SHELL_ASSETS = __SHELL_ASSETS__;
 self.addEventListener('install', event => {
-  self.skipWaiting();
+  event.waitUntil((async () => {
+    const cache = await caches.open(SHELL_CACHE);
+    // Pre-cache each asset individually: one missing/failed URL must not
+    // abort the whole install (a partial shell still beats no shell).
+    await Promise.all(SHELL_ASSETS.map(async asset => {
+      try {
+        const res = await fetch(asset, { cache: 'no-store' });
+        if (res && res.ok) await cache.put(asset, res);
+      } catch (_) {}
+    }));
+    await self.skipWaiting();
+  })());
 });
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
     // Authenticated HTML is deliberately never retained. Removing every old
-    // HTML cache prevents a stale Dashboard from appearing after server restart.
-    const keep = [STATIC_CACHE];
+    // cache (including legacy tron-static-* names) prevents a stale Dashboard
+    // from appearing after a server restart and evicts removed shell assets.
+    const keep = [SHELL_CACHE];
     const keys = await caches.keys();
     await Promise.all(keys.filter(k => keep.indexOf(k) < 0).map(k => caches.delete(k)));
     await self.clients.claim();
@@ -115,18 +201,33 @@ self.addEventListener('fetch', event => {
   if (url.pathname.indexOf('/admin/api/') === 0) return;
   if (/[?&]logout=/.test(url.search)) return;
   if (url.pathname.indexOf('/admin/static/') === 0) {
+    // Stale-while-revalidate: paint instantly from cache, refresh in the
+    // background. Assets are not content-hashed, so pure cache-first would
+    // keep serving old CSS/JS until the cache name is bumped.
     event.respondWith((async () => {
-      const cache = await caches.open(STATIC_CACHE);
+      const cache = await caches.open(SHELL_CACHE);
       const cached = await cache.match(req);
+      const revalidate = fetch(req).then(res => {
+        if (res && res.ok) { try { cache.put(req, res.clone()); } catch (_) {} }
+        return res;
+      }).catch(() => null);
       if (cached) return cached;
-      const res = await fetch(req);
-      if (res && res.ok) { try { await cache.put(req, res.clone()); } catch (_) {} }
-      return res;
+      const fresh = await revalidate;
+      if (fresh) return fresh;
+      return new Response('offline', { status: 503, statusText: 'Offline' });
     })());
     return;
   }
 });
 "#;
+
+    let body = SW
+        .replace("__SHELL_CACHE__", SHELL_CACHE_NAME)
+        .replace(
+            "__SHELL_ASSETS__",
+            &serde_json::to_string(SHELL_ASSET_URLS)
+                .unwrap_or_else(|_| "[]".to_string()),
+        );
 
     (
         StatusCode::OK,
@@ -137,7 +238,7 @@ self.addEventListener('fetch', event => {
             ),
             (header::CACHE_CONTROL, "no-store"),
         ],
-        SW,
+        body,
     )
         .into_response()
 }
