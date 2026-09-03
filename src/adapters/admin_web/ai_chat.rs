@@ -38,7 +38,7 @@ const PAGE_HTML: &str = include_str!("static/ai.html");
 
 /// AI_CHAT_V3：頁面版本。前端是 `include_str!` 編進二進位的，忘了重新編譯就會
 /// 看到舊畫面卻以為改動沒生效。把版本與編譯時間顯示在側欄，一眼就能分辨。
-const PAGE_VERSION: &str = "v8";
+const PAGE_VERSION: &str = "v9";
 
 fn build_stamp() -> &'static str {
     option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("dev")
@@ -822,6 +822,8 @@ struct ChatJob {
     cache_key: String,
     /// 輪替過程中每把密鑰的結果，失敗時攤開給使用者看。
     attempts: Vec<Value>,
+    /// AI_CHAT_V9（Agent 模式）：這次跑過的每一步工具呼叫，前端畫成時間軸。
+    steps: Vec<Value>,
     created_at: u64,
     updated_at: u64,
 }
@@ -841,6 +843,7 @@ impl ChatJob {
             "error": self.error,
             "code": self.code,
             "attempts": self.attempts,
+            "steps": self.steps,
             "elapsed_secs": now_secs().saturating_sub(self.created_at),
         })
     }
@@ -1704,6 +1707,307 @@ async fn complete_once(
         return Err("上游沒有回傳摘要內容".to_string());
     }
     Ok(text)
+}
+
+/// 送一次帶工具定義的非串流請求，回傳上游的 `message` 物件。
+///
+/// 跟 `complete_once` 的差別：這裡要拿到完整的 `message`（可能含 `tool_calls`），
+/// 不是只要文字。
+async fn complete_with_tools(
+    key: &ApiKey,
+    model: &str,
+    messages: &[Value],
+    tools: &[Value],
+    max_tokens: u32,
+    temperature: f32,
+) -> Result<Value, String> {
+    let base = key.effective_base_url();
+    if base.is_empty() {
+        return Err("沒有 API 網址".to_string());
+    }
+    let model = sanitize_model_name(&key.provider, model)?;
+    let mut payload = json!({
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "temperature": temperature,
+        "stream": false,
+    });
+    if max_tokens > 0 {
+        payload["max_tokens"] = json!(max_tokens);
+    }
+
+    let response = AI_CLIENT
+        .post(format!("{base}/chat/completions"))
+        .bearer_auth(key.secret.trim())
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| detail_snippet(&e.to_string()))?;
+
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    if !(200..300).contains(&status) {
+        let kind = classify_failure(status, &body);
+        let message = extract_error_message(&body);
+        record_failure(&key.id, kind, &message);
+        return Err(format!("HTTP {status}（模型 {model}）：{message}"));
+    }
+    let value: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    value
+        .pointer("/choices/0/message")
+        .cloned()
+        .ok_or_else(|| "上游沒有回傳 message".to_string())
+}
+
+/// 把 `tool_calls` 裡的參數解析出來。上游一律把 arguments 放成 JSON 字串。
+fn parse_tool_arguments(raw: &Value) -> Value {
+    match raw {
+        Value::String(text) => serde_json::from_str(text).unwrap_or_else(|_| json!({})),
+        Value::Object(_) => raw.clone(),
+        _ => json!({}),
+    }
+}
+
+/// AI_CHAT_V9：Agent 模式的主迴圈。
+///
+/// 流程是「問模型 → 它要求呼叫工具 → 我們執行 → 把結果餵回去 → 再問」，
+/// 直到它不再要求工具（那就是最終答案），或撞到 `AGENT_MAX_STEPS` 上限。
+async fn run_agent_job(
+    job_id: String,
+    account: String,
+    mut messages: Vec<Value>,
+    settings: ChatSettings,
+    selection: Option<ModelOption>,
+) {
+    let started = std::time::Instant::now();
+    let provider = selection.as_ref().map(|m| m.provider.clone());
+    let model_override = selection.as_ref().map(|m| m.model.clone());
+    let keys = candidate_keys(provider.as_deref());
+
+    if keys.is_empty() {
+        let _ = job_update(&job_id, |job| {
+            job.done = true;
+            job.ok = false;
+            job.code = "NO_KEY_AVAILABLE".to_string();
+            job.error = "目前沒有可用的密鑰，Agent 無法執行。".to_string();
+        });
+        return;
+    }
+
+    // Agent 需要知道自己有哪些能力，以及「做完要講人話」。
+    let guide = format!(
+        "你現在是 Agent 模式，可以呼叫工具來完成任務，最多 {AGENT_MAX_STEPS} 步。\n\
+         規則：\n\
+         1. 需要算數字時一定要用 calc，不要自己心算。\n\
+         2. 需要知道今天日期時用 now。\n\
+         3. 產出報告、整理表格、寫長篇內容時，用 workspace_write 存成檔案，使用者可以下載。\n\
+         4. 修改既有檔案前，先用 workspace_list 或 workspace_read 確認內容。\n\
+         5. 工具做完後，最後一定要用繁體中文說明你做了什麼、結果是什麼。"
+    );
+    messages.insert(0, json!({ "role": "system", "content": guide }));
+
+    let tools = agent_tools();
+    let mut last_error = "Agent 沒有跑出結果".to_string();
+    let mut last_code = "AGENT_FAILED".to_string();
+
+    for key in keys.iter() {
+        if job_cancelled(&job_id) {
+            break;
+        }
+        let key_name = key.display_name();
+        let model_used = match model_override.as_deref() {
+            Some(name) if !name.trim().is_empty() => name.trim().to_string(),
+            _ => key.effective_model(),
+        };
+        let _ = job_update(&job_id, |job| {
+            job.key_name = key_name.clone();
+            job.model = model_used.clone();
+        });
+
+        // 每換一把密鑰就從乾淨的脈絡重來，不然上一把失敗留下的半截 tool_calls
+        // 會讓新的請求格式不合法。
+        let mut convo = messages.clone();
+        let mut failed = None;
+
+        for step in 0..AGENT_MAX_STEPS {
+            if job_cancelled(&job_id) {
+                let _ = job_update(&job_id, |job| {
+                    job.done = true;
+                    job.ok = true;
+                    job.code = "AI_CANCELLED".to_string();
+                    if job.text.trim().is_empty() {
+                        job.text = "（已停止）".to_string();
+                    }
+                });
+                return;
+            }
+            if started.elapsed().as_secs() >= AI_TOTAL_BUDGET_SECS {
+                failed = Some((
+                    format!("超過總時間預算（{AI_TOTAL_BUDGET_SECS}s）"),
+                    "AI_TIMEOUT".to_string(),
+                ));
+                break;
+            }
+
+            let reply = complete_with_tools(
+                key,
+                &model_used,
+                &convo,
+                &tools,
+                settings.max_tokens,
+                settings.temperature,
+            )
+            .await;
+
+            let message = match reply {
+                Ok(value) => value,
+                Err(e) => {
+                    failed = Some((e, "AGENT_UPSTREAM".to_string()));
+                    break;
+                }
+            };
+
+            let calls = message
+                .get("tool_calls")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            // 沒有要呼叫工具 = 這就是最終答案。
+            if calls.is_empty() {
+                let text = message
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let text = if text.is_empty() {
+                    "（模型沒有給出文字回覆）".to_string()
+                } else {
+                    text
+                };
+                // Agent 走非串流路徑，上游不一定回 usage，用量以 0 記。
+                record_success(&key.id, 0, 0);
+                let files = workspace_list(&account);
+                let _ = job_update(&job_id, |job| {
+                    job.done = true;
+                    job.ok = true;
+                    job.text = text.clone();
+                    job.steps.push(json!({
+                        "kind": "final",
+                        "summary": "完成",
+                        "ok": true,
+                        "files": files
+                            .iter()
+                            .map(|(n, size)| json!({ "name": n, "size": size }))
+                            .collect::<Vec<Value>>(),
+                    }));
+                });
+                return;
+            }
+
+            // 把模型這一輪的 assistant 訊息原樣加回去（一定要，
+            // 否則接下來的 tool 訊息會對不上 tool_call_id）。
+            convo.push(message.clone());
+
+            for call in calls.iter() {
+                let call_id = call
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("call")
+                    .to_string();
+                let fname = call
+                    .pointer("/function/name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let args = call
+                    .pointer("/function/arguments")
+                    .map(parse_tool_arguments)
+                    .unwrap_or_else(|| json!({}));
+
+                let (output, summary, ok) = run_tool(&account, &fname, &args);
+                tracing::info!(tool = %fname, ok, "Agent 執行工具");
+
+                let _ = job_update(&job_id, |job| {
+                    job.steps.push(json!({
+                        "kind": "tool",
+                        "step": step + 1,
+                        "tool": fname,
+                        "summary": summary,
+                        "ok": ok,
+                        "args": args,
+                        "output": output.chars().take(600).collect::<String>(),
+                    }));
+                });
+
+                convo.push(json!({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "name": fname,
+                    "content": output,
+                }));
+            }
+
+            // 最後一步還在要工具：叫它收尾。
+            if step + 1 == AGENT_MAX_STEPS {
+                convo.push(json!({
+                    "role": "user",
+                    "content": "已經達到步數上限，請不要再呼叫工具，直接用繁體中文總結目前的結果。",
+                }));
+                let final_reply =
+                    complete_with_tools(key, &model_used, &convo, &[], settings.max_tokens, settings.temperature)
+                        .await;
+                let text = final_reply
+                    .ok()
+                    .and_then(|m| {
+                        m.get("content")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.trim().to_string())
+                    })
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "已達步數上限，但模型沒有給出總結。".to_string());
+                let files = workspace_list(&account);
+                let _ = job_update(&job_id, |job| {
+                    job.done = true;
+                    job.ok = true;
+                    job.text = text.clone();
+                    job.steps.push(json!({
+                        "kind": "final",
+                        "summary": format!("已達 {AGENT_MAX_STEPS} 步上限，強制收尾"),
+                        "ok": true,
+                        "files": files
+                            .iter()
+                            .map(|(n, size)| json!({ "name": n, "size": size }))
+                            .collect::<Vec<Value>>(),
+                    }));
+                });
+                return;
+            }
+        }
+
+        if let Some((error, code)) = failed {
+            last_error = error.clone();
+            last_code = code;
+            let _ = job_update(&job_id, |job| {
+                job.attempts.push(json!({
+                    "key": key.display_name(),
+                    "ok": false,
+                    "error": error,
+                }));
+            });
+            continue;
+        }
+    }
+
+    let _ = job_update(&job_id, |job| {
+        job.done = true;
+        job.ok = false;
+        job.code = last_code.clone();
+        job.error = format!("Agent 執行失敗：{last_error}");
+    });
 }
 
 /// 挑一個最便宜的可用模型來做摘要 —— 摘要本身不該花大錢。
@@ -2909,6 +3213,398 @@ pub(super) async fn models_handler(
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+// AI_CHAT_V9：Agent 模式
+//
+// 讓模型能「自己動手做」而不是只會講話：它可以要求呼叫工具，我們執行完把結果
+// 餵回去，它再決定下一步，最多跑 AGENT_MAX_STEPS 輪。每一步都記在 job.steps 裡，
+// 前端畫成時間軸，使用者看得到它到底做了什麼 —— 不是黑箱。
+//
+// 工具全部在**每個帳號自己的沙箱資料夾**裡動作，碰不到系統其他檔案。
+// ─────────────────────────────────────────────────────────────
+
+/// 最多幾輪「呼叫工具 → 看結果 → 再想」。超過就強制收尾，避免無限迴圈燒 token。
+const AGENT_MAX_STEPS: usize = 8;
+/// 單一檔案大小上限（64 KB）。
+const AGENT_MAX_FILE_BYTES: usize = 64 * 1024;
+/// 每個帳號最多存幾個檔案。
+const AGENT_MAX_FILES: usize = 50;
+/// 工具回傳給模型的內容上限，太長會把脈絡撐爆。
+const AGENT_TOOL_OUTPUT_MAX: usize = 4_000;
+
+/// 每個帳號的工作區資料夾。帳號 id 先雜湊過再當目錄名，
+/// 避免帳號含有 `/`、`..` 之類的字元直接變成路徑。
+fn workspace_dir(account: &str) -> std::path::PathBuf {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in account.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    std::path::Path::new("config/ai_workspace").join(format!("{hash:016x}"))
+}
+
+/// 檢查模型給的檔名。**這是沙箱的唯一入口，寫錯就等於開後門。**
+///
+/// 只允許單層檔名：不能有路徑分隔、不能有 `..`、不能是絕對路徑、
+/// 不能是隱藏檔，字元集也限制死。
+fn safe_workspace_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("檔名是空的".to_string());
+    }
+    if name.len() > 80 {
+        return Err("檔名太長（上限 80 字元）".to_string());
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err("檔名不能包含路徑，只能是單一檔名".to_string());
+    }
+    if name.contains("..") || name.starts_with('.') {
+        return Err("檔名不能以點開頭，也不能包含 `..`".to_string());
+    }
+    let ok = |c: char| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ' ');
+    if let Some(bad) = name.chars().find(|c| !ok(*c)) {
+        return Err(format!("檔名含有不允許的字元「{bad}」"));
+    }
+    // 副檔名白名單：只讓它產出「看得懂的文字檔」，不要變成放執行檔的地方。
+    const ALLOWED_EXT: &[&str] = &[
+        "txt", "md", "csv", "json", "html", "svg", "log", "yml", "yaml", "ini", "tsv",
+    ];
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    if !ALLOWED_EXT.contains(&ext.as_str()) {
+        return Err(format!(
+            "只能建立這些類型的檔案：{}（收到的是「{name}」）",
+            ALLOWED_EXT.join("、")
+        ));
+    }
+    Ok(name.to_string())
+}
+
+/// 列出某個帳號工作區裡的檔案（檔名 + 大小）。
+fn workspace_list(account: &str) -> Vec<(String, u64)> {
+    let dir = workspace_dir(account);
+    let mut out: Vec<(String, u64)> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            if let Some(name) = entry.file_name().to_str() {
+                out.push((name.to_string(), meta.len()));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+fn workspace_read(account: &str, name: &str) -> Result<String, String> {
+    let name = safe_workspace_name(name)?;
+    let path = workspace_dir(account).join(&name);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("找不到檔案「{name}」"))
+        }
+        Err(e) => Err(format!("讀取「{name}」失敗：{e}")),
+    }
+}
+
+fn workspace_write(account: &str, name: &str, content: &str) -> Result<String, String> {
+    let name = safe_workspace_name(name)?;
+    if content.len() > AGENT_MAX_FILE_BYTES {
+        return Err(format!(
+            "內容有 {} KB，單檔上限 {} KB",
+            content.len() / 1024,
+            AGENT_MAX_FILE_BYTES / 1024
+        ));
+    }
+    let dir = workspace_dir(account);
+    let existing = workspace_list(account);
+    if existing.len() >= AGENT_MAX_FILES && !existing.iter().any(|(n, _)| n == &name) {
+        return Err(format!(
+            "工作區已經有 {AGENT_MAX_FILES} 個檔案，請先刪掉一些"
+        ));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| format!("建立工作區失敗：{e}"))?;
+    let path = dir.join(&name);
+    std::fs::write(&path, content).map_err(|e| format!("寫入「{name}」失敗：{e}"))?;
+    Ok(format!("已寫入「{name}」（{} 位元組）", content.len()))
+}
+
+fn workspace_delete(account: &str, name: &str) -> Result<String, String> {
+    let name = safe_workspace_name(name)?;
+    let path = workspace_dir(account).join(&name);
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(format!("已刪除「{name}」")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("找不到檔案「{name}」"))
+        }
+        Err(e) => Err(format!("刪除「{name}」失敗：{e}")),
+    }
+}
+
+/// 極小的四則運算器。模型算數字常常會錯，給它一個真的會算的工具。
+///
+/// 支援 `+ - * / %`、括號、小數與負號。故意不支援變數與函式呼叫 ——
+/// 這裡不需要一個什麼都能執行的東西。
+fn calc_eval(expr: &str) -> Result<f64, String> {
+    let chars: Vec<char> = expr.chars().filter(|c| !c.is_whitespace()).collect();
+    if chars.is_empty() {
+        return Err("算式是空的".to_string());
+    }
+    if chars.len() > 200 {
+        return Err("算式太長".to_string());
+    }
+    let mut pos = 0usize;
+    let value = calc_expr(&chars, &mut pos)?;
+    if pos != chars.len() {
+        return Err(format!("算式在第 {} 個字元附近有問題", pos + 1));
+    }
+    if !value.is_finite() {
+        return Err("算出來不是有限的數字（可能除以零）".to_string());
+    }
+    Ok(value)
+}
+
+fn calc_expr(c: &[char], pos: &mut usize) -> Result<f64, String> {
+    let mut acc = calc_term(c, pos)?;
+    while *pos < c.len() {
+        match c[*pos] {
+            '+' => {
+                *pos += 1;
+                acc += calc_term(c, pos)?;
+            }
+            '-' => {
+                *pos += 1;
+                acc -= calc_term(c, pos)?;
+            }
+            _ => break,
+        }
+    }
+    Ok(acc)
+}
+
+fn calc_term(c: &[char], pos: &mut usize) -> Result<f64, String> {
+    let mut acc = calc_unary(c, pos)?;
+    while *pos < c.len() {
+        match c[*pos] {
+            '*' => {
+                *pos += 1;
+                acc *= calc_unary(c, pos)?;
+            }
+            '/' => {
+                *pos += 1;
+                let rhs = calc_unary(c, pos)?;
+                if rhs == 0.0 {
+                    return Err("不能除以零".to_string());
+                }
+                acc /= rhs;
+            }
+            '%' => {
+                *pos += 1;
+                let rhs = calc_unary(c, pos)?;
+                if rhs == 0.0 {
+                    return Err("不能對零取餘數".to_string());
+                }
+                acc %= rhs;
+            }
+            _ => break,
+        }
+    }
+    Ok(acc)
+}
+
+fn calc_unary(c: &[char], pos: &mut usize) -> Result<f64, String> {
+    if *pos < c.len() && c[*pos] == '-' {
+        *pos += 1;
+        return Ok(-calc_unary(c, pos)?);
+    }
+    if *pos < c.len() && c[*pos] == '+' {
+        *pos += 1;
+        return calc_unary(c, pos);
+    }
+    calc_atom(c, pos)
+}
+
+fn calc_atom(c: &[char], pos: &mut usize) -> Result<f64, String> {
+    if *pos >= c.len() {
+        return Err("算式結尾不完整".to_string());
+    }
+    if c[*pos] == '(' {
+        *pos += 1;
+        let value = calc_expr(c, pos)?;
+        if *pos >= c.len() || c[*pos] != ')' {
+            return Err("括號沒有收尾".to_string());
+        }
+        *pos += 1;
+        return Ok(value);
+    }
+    let start = *pos;
+    while *pos < c.len() && (c[*pos].is_ascii_digit() || c[*pos] == '.') {
+        *pos += 1;
+    }
+    if start == *pos {
+        return Err(format!("第 {} 個字元不是數字", start + 1));
+    }
+    let text: String = c[start..*pos].iter().collect();
+    text.parse::<f64>()
+        .map_err(|_| format!("「{text}」不是合法的數字"))
+}
+
+/// 給模型看的工具清單（OpenAI function calling 格式）。
+fn agent_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "type": "function",
+            "function": {
+                "name": "workspace_list",
+                "description": "列出工作區裡目前有哪些檔案（含大小）。要修改或引用既有檔案前先呼叫這個。",
+                "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "workspace_read",
+                "description": "讀取工作區裡某個檔案的完整內容。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "檔名，例如 report.md" }
+                    },
+                    "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "workspace_write",
+                "description": "在工作區建立或覆寫一個檔案。適合用來產出報告、整理表格、寫筆記。副檔名只能是 txt/md/csv/json/html/svg/log/yml/yaml/ini/tsv。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "檔名，例如 summary.md" },
+                        "content": { "type": "string", "description": "完整的檔案內容" }
+                    },
+                    "required": ["name", "content"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "workspace_delete",
+                "description": "刪除工作區裡的一個檔案。",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } },
+                    "required": ["name"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "calc",
+                "description": "計算一個算式，支援 + - * / % 與括號。需要算數字時一律用這個，不要自己心算。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "expr": { "type": "string", "description": "例如 (1234 + 567) * 8.5 / 3" }
+                    },
+                    "required": ["expr"]
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "now",
+                "description": "取得現在的日期時間（伺服器時區）。需要算日期、判斷截止日時先問這個。",
+                "parameters": { "type": "object", "properties": {}, "required": [] }
+            }
+        }),
+    ]
+}
+
+/// 執行一個工具呼叫。回 `(給模型看的結果, 給人看的摘要, 成功與否)`。
+fn run_tool(account: &str, name: &str, args: &Value) -> (String, String, bool) {
+    let arg_str = |key: &str| -> String {
+        args.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+
+    let (result, ok) = match name {
+        "workspace_list" => {
+            let files = workspace_list(account);
+            if files.is_empty() {
+                ("工作區目前是空的。".to_string(), true)
+            } else {
+                let listed: Vec<String> = files
+                    .iter()
+                    .map(|(n, size)| format!("{n}（{size} 位元組）"))
+                    .collect();
+                (listed.join("\n"), true)
+            }
+        }
+        "workspace_read" => match workspace_read(account, &arg_str("name")) {
+            Ok(text) => (text, true),
+            Err(e) => (e, false),
+        },
+        "workspace_write" => {
+            match workspace_write(account, &arg_str("name"), &arg_str("content")) {
+                Ok(message) => (message, true),
+                Err(e) => (e, false),
+            }
+        }
+        "workspace_delete" => match workspace_delete(account, &arg_str("name")) {
+            Ok(message) => (message, true),
+            Err(e) => (e, false),
+        },
+        "calc" => {
+            let expr = arg_str("expr");
+            match calc_eval(&expr) {
+                Ok(value) => (format!("{expr} = {value}"), true),
+                Err(e) => (format!("算不出來：{e}"), false),
+            }
+        }
+        "now" => (
+            format!(
+                "現在是 {}",
+                chrono::Local::now().format("%Y-%m-%d %H:%M:%S %A")
+            ),
+            true,
+        ),
+        other => (format!("沒有名叫「{other}」的工具"), false),
+    };
+
+    // 太長的結果會把脈絡撐爆，截斷後告訴模型「還有更多」。
+    let trimmed = if result.chars().count() > AGENT_TOOL_OUTPUT_MAX {
+        let head: String = result.chars().take(AGENT_TOOL_OUTPUT_MAX).collect();
+        format!("{head}\n…（結果過長，只顯示前 {AGENT_TOOL_OUTPUT_MAX} 字）")
+    } else {
+        result
+    };
+
+    let summary = match name {
+        "workspace_list" => "列出工作區檔案".to_string(),
+        "workspace_read" => format!("讀取 {}", arg_str("name")),
+        "workspace_write" => format!("寫入 {}", arg_str("name")),
+        "workspace_delete" => format!("刪除 {}", arg_str("name")),
+        "calc" => format!("計算 {}", arg_str("expr")),
+        "now" => "查詢現在時間".to_string(),
+        other => other.to_string(),
+    };
+    (trimmed, summary, ok)
+}
+
 /// AI_CHAT_V7：一次提問最多能附幾個檔案。
 const MAX_ATTACHMENTS: usize = 6;
 /// 單張圖片解碼後的大小上限（4 MB）。再大就算送得出去，多數服務商也會擋。
@@ -3126,6 +3822,9 @@ pub(super) struct ChatRequest {
     /// AI_CHAT_V7：這次提問附帶的圖片／文字檔。用完即丟，不寫進硬碟。
     #[serde(default)]
     attachments: Vec<Attachment>,
+    /// AI_CHAT_V9：開啟 Agent 模式（可呼叫工具、多步驟執行）。
+    #[serde(default)]
+    agent: bool,
 }
 
 /// 送出訊息 → 建立背景 job → 立刻回 202。
@@ -3370,6 +4069,7 @@ pub(super) async fn chat_handler(
             cached: cache_hit.is_some(),
             cache_key: cache_key.clone(),
             attempts: Vec::new(),
+            steps: Vec::new(),
             created_at: now_secs(),
             updated_at: now_secs(),
         },
@@ -3391,8 +4091,21 @@ pub(super) async fn chat_handler(
         let summary_enabled = settings.summary_enabled;
         let account = account_for_cache.clone();
         let thread = thread_id.clone();
+        let agent_mode = body.agent;
         tokio::spawn(async move {
-            run_chat_job(job_id, messages, settings, selection).await;
+            if agent_mode {
+                // Agent 走工具呼叫迴圈，不是單純的串流生成。
+                run_agent_job(
+                    job_id,
+                    account.clone(),
+                    messages,
+                    settings,
+                    selection,
+                )
+                .await;
+            } else {
+                run_chat_job(job_id, messages, settings, selection).await;
+            }
             // 回覆送出後才在背景濃縮較早的對話，使用者感覺不到延遲。
             if summary_enabled {
                 maybe_summarize(account, thread).await;
@@ -3472,6 +4185,7 @@ pub(super) async fn chat_stream_handler(
         job: job_id,
         account: session.account_id.clone(),
         sent: 0,
+        steps_sent: 0,
         meta_sent: false,
         finished: false,
         idle_ticks: 0,
@@ -3493,11 +4207,13 @@ pub(super) async fn chat_stream_handler(
                         job.model.clone(),
                         job.auto_reason.clone(),
                         job.cached,
+                        job.steps.clone(),
                         job.to_json(),
                     )
                 })
             });
-            let Some((account, text, done, key_name, model, auto_reason, cached, full)) = snapshot
+            let Some((account, text, done, key_name, model, auto_reason, cached, steps, full)) =
+                snapshot
             else {
                 cur.finished = true;
                 return Some((
@@ -3523,6 +4239,18 @@ pub(super) async fn chat_stream_handler(
                 })
                 .to_string();
                 return Some((Ok(Event::default().event("meta").data(payload)), cur));
+            }
+
+            // AI_CHAT_V9：Agent 的每一步都要即時讓使用者看到，
+            // 不然它跑八步的期間畫面是完全靜止的，看起來像當掉。
+            if steps.len() > cur.steps_sent {
+                let step = steps[cur.steps_sent].clone();
+                cur.steps_sent += 1;
+                cur.idle_ticks = 0;
+                return Some((
+                    Ok(Event::default().event("step").data(step.to_string())),
+                    cur,
+                ));
             }
 
             if let Some((delta, next)) = next_delta(&text, cur.sent) {
@@ -3581,9 +4309,82 @@ struct StreamCursor {
     account: String,
     /// 已推送出去的位元組數。
     sent: usize,
+    /// AI_CHAT_V9：已推送出去幾個 Agent 步驟。
+    steps_sent: usize,
     meta_sent: bool,
     finished: bool,
     idle_ticks: u32,
+}
+
+/// AI_CHAT_V9：下載 Agent 產生的檔案。只能拿自己工作區裡的東西。
+pub(super) async fn workspace_file_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<WorkspaceQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    let name = match safe_workspace_name(&query.name) {
+        Ok(name) => name,
+        Err(reason) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": reason, "code": "AI_BAD_FILENAME" })),
+            )
+                .into_response();
+        }
+    };
+    match workspace_read(&session.account_id, &name) {
+        Ok(text) => {
+            let mut response = (StatusCode::OK, text).into_response();
+            let head = response.headers_mut();
+            head.insert(
+                "content-type",
+                HeaderValue::from_static("text/plain; charset=utf-8"),
+            );
+            // 一律當附件下載，絕不讓瀏覽器把使用者產生的 HTML 當網頁執行。
+            if let Ok(value) = HeaderValue::from_str(&format!(
+                "attachment; filename*=UTF-8''{}",
+                percent_encode_filename(&name)
+            )) {
+                head.insert("content-disposition", value);
+            }
+            head.insert(
+                "x-content-type-options",
+                HeaderValue::from_static("nosniff"),
+            );
+            response
+        }
+        Err(reason) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": reason, "code": "AI_FILE_NOT_FOUND" })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct WorkspaceQuery {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// 檔名放進 header 前要 percent-encode，不然中文或空白會讓 header 不合法。
+fn percent_encode_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for byte in name.as_bytes() {
+        let c = *byte as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
 }
 
 /// 輪詢：拿目前已生成的全文。SSE 連不上時的後備方案。
@@ -4257,6 +5058,138 @@ mod ai_chat_tests {
             data: data.to_string(),
             text: text.to_string(),
         }
+    }
+
+    #[test]
+    fn agent_workspace_names_cannot_escape_the_sandbox() {
+        // 沙箱唯一的入口，寫錯就等於開後門。
+        for attack in [
+            "../../../etc/passwd",
+            "/etc/passwd",
+            "C:\\Windows\\system.ini",
+            "a/../../b.txt",
+            "sub/dir/file.txt",
+            ".env",
+            ".htaccess",
+            "shell.sh",
+            "run.py",
+            "app.exe",
+            "x.php",
+            "",
+            "   ",
+        ] {
+            assert!(
+                safe_workspace_name(attack).is_err(),
+                "「{attack}」不應該被放行"
+            );
+        }
+        // 正常檔名要放行。
+        for good in [
+            "report.md",
+            "data.csv",
+            "notes.txt",
+            "chart.svg",
+            "table 1.tsv",
+            "a-b_c.log",
+        ] {
+            assert_eq!(safe_workspace_name(good).unwrap(), good);
+        }
+    }
+
+    #[test]
+    fn workspace_dirs_are_hashed_so_account_ids_never_become_paths() {
+        // 帳號 id 可能含有 `/` 或 `..`，直接拿來當目錄名就是路徑穿越。
+        let sneaky = workspace_dir("../../root");
+        let text = sneaky.to_string_lossy().to_string();
+        assert!(text.starts_with("config/ai_workspace/"));
+        assert!(!text.contains(".."));
+        let tail = text.trim_start_matches("config/ai_workspace/");
+        assert_eq!(tail.len(), 16);
+        assert!(tail.chars().all(|c| c.is_ascii_hexdigit()));
+        // 同帳號穩定、不同帳號不同。
+        assert_eq!(workspace_dir("alice"), workspace_dir("alice"));
+        assert_ne!(workspace_dir("alice"), workspace_dir("bob"));
+    }
+
+    #[test]
+    fn agent_calculator_handles_precedence_and_refuses_nonsense() {
+        for (expr, want) in [
+            ("1+2*3", 7.0),
+            ("(1+2)*3", 9.0),
+            ("10/4", 2.5),
+            ("-5+3", -2.0),
+            ("2*(3+(4-1))", 12.0),
+            ("10%3", 1.0),
+            ("--3", 3.0),
+        ] {
+            let got = calc_eval(expr).unwrap_or_else(|e| panic!("{expr} 應該算得出來：{e}"));
+            assert!((got - want).abs() < 1e-9, "{expr} 得到 {got}，預期 {want}");
+        }
+        // 除以零、語法錯誤、想塞程式碼進來的一律拒絕。
+        for bad in ["1/0", "1+", "(1+2", "abc", "__import__(\"os\")", "1;2", "$(whoami)"] {
+            assert!(calc_eval(bad).is_err(), "「{bad}」不應該算得出來");
+        }
+    }
+
+    #[test]
+    fn tool_arguments_parse_from_both_string_and_object() {
+        // 多數服務商把 arguments 放成 JSON 字串，少數直接給物件。
+        let as_string = parse_tool_arguments(&json!(r#"{"name":"a.md"}"#));
+        assert_eq!(as_string["name"], json!("a.md"));
+        let as_object = parse_tool_arguments(&json!({ "name": "b.md" }));
+        assert_eq!(as_object["name"], json!("b.md"));
+        // 壞掉的 JSON 不能讓整個 Agent 崩掉，退回空物件。
+        assert_eq!(parse_tool_arguments(&json!("not json")), json!({}));
+        assert_eq!(parse_tool_arguments(&json!(42)), json!({}));
+    }
+
+    #[test]
+    fn agent_tool_schema_is_well_formed() {
+        let tools = agent_tools();
+        assert_eq!(tools.len(), 6);
+        for tool in &tools {
+            assert_eq!(tool["type"], json!("function"));
+            let name = tool["function"]["name"].as_str().expect("要有名字");
+            assert!(!name.is_empty());
+            assert!(
+                tool["function"]["description"]
+                    .as_str()
+                    .map(|d| !d.is_empty())
+                    .unwrap_or(false),
+                "{name} 少了說明，模型會不知道何時該用它"
+            );
+            assert_eq!(tool["function"]["parameters"]["type"], json!("object"));
+        }
+        // 檔名參數是必填，否則模型可能不帶檔名就呼叫。
+        let write = tools
+            .iter()
+            .find(|t| t["function"]["name"] == json!("workspace_write"))
+            .expect("要有 workspace_write");
+        assert_eq!(
+            write["function"]["parameters"]["required"],
+            json!(["name", "content"])
+        );
+    }
+
+    #[test]
+    fn unknown_tools_fail_softly_instead_of_panicking() {
+        let (output, summary, ok) = run_tool("test-account", "rm_minus_rf", &json!({}));
+        assert!(!ok);
+        assert!(output.contains("沒有名叫"));
+        assert_eq!(summary, "rm_minus_rf");
+        // 計算工具走得通。
+        let (output, summary, ok) = run_tool("test-account", "calc", &json!({ "expr": "6*7" }));
+        assert!(ok);
+        assert!(output.contains("42"));
+        assert!(summary.contains("6*7"));
+        // 想穿越沙箱的檔名要被工具層擋下，而且不是 panic。
+        let (output, _, ok) = run_tool(
+            "test-account",
+            "workspace_read",
+            &json!({ "name": "../../../etc/passwd" }),
+        );
+        assert!(!ok);
+        assert!(output.contains("路徑"));
     }
 
     #[test]

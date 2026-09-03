@@ -120,6 +120,19 @@
   .msgatt{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
   .msgatt span{font-size:11px;color:var(--dim);border:1px solid var(--line2);border-radius:8px;padding:2px 7px}
   .dropping{outline:2px dashed var(--accent);outline-offset:-6px}
+  /* AI_CHAT_V9：Agent 模式 */
+  .agentbtn{flex:none;display:flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid var(--line2);border-radius:10px;background:var(--bg2);color:var(--dim);cursor:pointer;font-size:12px;white-space:nowrap}
+  .agentbtn.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+  .steps{margin:8px 0 4px;border-left:2px solid var(--line2);padding-left:10px;display:flex;flex-direction:column;gap:6px}
+  .step{font-size:12px;color:var(--dim)}
+  .step .hd{display:flex;align-items:center;gap:6px;cursor:pointer}
+  .step .ic{width:16px;text-align:center}
+  .step .nm{color:var(--fg)}
+  .step.bad .nm{color:#f87171}
+  .step pre{margin:4px 0 0 22px;padding:6px 8px;background:var(--bg2);border:1px solid var(--line2);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:220px;overflow:auto}
+  .files{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  .files a{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--line2);border-radius:9px;padding:4px 9px}
+  .files a:hover{border-color:var(--accent)}
   .cwrap{max-width:760px;margin:0 auto;display:flex;gap:9px;align-items:flex-end;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:8px 8px 8px 14px}
   .cwrap:focus-within{border-color:var(--primary)}
   .cwrap textarea{flex:1;border:none;background:transparent;outline:none;resize:none;font-size:14.5px;line-height:1.6;max-height:200px;padding:7px 0}
@@ -205,6 +218,7 @@
       <div class="attachbar" id="attachBar"></div>
       <div class="cwrap">
         <button class="attbtn" id="attachBtn" type="button" title="附加圖片或文字檔">＋</button>
+        <button class="agentbtn" id="agentBtn" type="button" title="Agent 模式：讓 AI 自己呼叫工具、多步驟完成任務">🤖 Agent</button>
         <textarea id="input" rows="1" placeholder="傳訊息給 AI…（Enter 送出，Shift+Enter 換行，可直接貼上或拖入圖片）"></textarea>
         <button class="sendbtn" id="sendBtn" type="button">↑</button>
       </div>
@@ -422,6 +436,9 @@
   var activeStream=null;
   var streamBuf='';
   var renderTimer=null;
+  // AI_CHAT_V9：Agent 模式
+  var agentOn=false;
+  var stepsBox=null;
 
   // ── Markdown → DOM ─────────────────────────────────────
   // CSP 有 require-trusted-types-for 'script'，innerHTML 會直接 throw，
@@ -848,6 +865,7 @@
     input.value='';
     autoGrow();
 
+    stepsBox=null;
     var inner=q('inner');
     if(!currentMessages.length)clear(inner);
     var shown=text||(payload.some(function(a){return a.kind==='image';})?'（請看這張圖片）':'（請看附件）');
@@ -864,7 +882,7 @@
     scrollDown(true);
     setSending(true);
 
-    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text,model_id:currentModel,attachments:payload},function(r){
+    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text,model_id:currentModel,attachments:payload,agent:agentOn},function(r){
       if(r.error){
         setSending(false);
         showError(bubble,r);
@@ -893,6 +911,55 @@
       if(!done)bubble.appendChild(el('span','cursor'));
       scrollDown(false);
     },90);
+  }
+
+  // ── AI_CHAT_V9：Agent 步驟時間軸 ────────────────────────
+  var TOOL_ICON={workspace_list:'📁',workspace_read:'📖',workspace_write:'💾',
+                 workspace_delete:'🗑️',calc:'🧮',now:'🕐'};
+
+  function ensureStepsBox(bubble){
+    if(stepsBox&&stepsBox.parentNode)return stepsBox;
+    if(!bubble||!bubble.parentNode)return null;
+    stepsBox=el('div','steps');
+    bubble.parentNode.insertBefore(stepsBox,bubble);
+    return stepsBox;
+  }
+
+  function addStep(bubble,step){
+    if(!step)return;
+    if(step.kind==='final'){
+      // 收尾：把產生的檔案列成可下載連結。
+      var files=step.files||[];
+      if(files.length&&bubble&&bubble.parentNode){
+        var row=el('div','files');
+        files.forEach(function(f){
+          var a=document.createElement('a');
+          a.href='/admin/api/ai/workspace/file?name='+encodeURIComponent(f.name);
+          a.setAttribute('download',f.name);
+          a.appendChild(el('span',null,'📄 '+f.name));
+          a.appendChild(el('span','sz',' ('+f.size+' B)'));
+          row.appendChild(a);
+        });
+        bubble.parentNode.appendChild(row);
+      }
+      return;
+    }
+    var box=ensureStepsBox(bubble);
+    if(!box)return;
+    var node=el('div','step'+(step.ok?'':' bad'));
+    var head=el('div','hd');
+    head.appendChild(el('span','ic',TOOL_ICON[step.tool]||'🔧'));
+    head.appendChild(el('span','nm',step.summary||step.tool||'工具'));
+    head.appendChild(el('span',null,step.ok?'':'（失敗）'));
+    var detail=el('pre',null,step.output||'');
+    detail.style.display='none';
+    head.addEventListener('click',function(){
+      detail.style.display=detail.style.display==='none'?'block':'none';
+    });
+    node.appendChild(head);
+    node.appendChild(detail);
+    box.appendChild(node);
+    scrollDown(false);
   }
 
   function stampWho(who,meta){
@@ -941,6 +1008,11 @@
       stampWho(who,meta);
       stampReason(bubble,meta.auto_reason);
     });
+    es.addEventListener('step',function(ev){
+      got=true;
+      var step=null;try{step=JSON.parse(ev.data);}catch(e){}
+      addStep(bubble,step);
+    });
     es.addEventListener('delta',function(ev){
       got=true;
       streamBuf+=ev.data;
@@ -984,6 +1056,15 @@
       if(r.auto_reason&&bubble&&bubble.parentNode&&!bubble.parentNode.querySelector('.autonote')){
         var note=el('div','autonote','⚡ '+r.auto_reason);
         bubble.parentNode.insertBefore(note,bubble);
+      }
+      if(r.steps&&r.steps.length){
+        // 降級到輪詢時，把還沒畫出來的步驟補上（用已畫數量當游標，不會重複）。
+        var drawn=stepsBox&&stepsBox.parentNode?stepsBox.children.length:0;
+        for(var i=drawn;i<r.steps.length;i++){
+          if(r.steps[i]&&r.steps[i].kind==='tool')addStep(bubble,r.steps[i]);
+        }
+        var last=r.steps[r.steps.length-1];
+        if(r.done&&last&&last.kind==='final')addStep(bubble,last);
       }
       if(r.text){
         // 輪詢拿的是全文，直接覆蓋（可能是從 SSE 半途接手過來的）。
@@ -1292,6 +1373,11 @@
   q('sendBtn').addEventListener('click',send);
   // AI_CHAT_V7：三種附檔方式 —— 按鈕、拖進來、直接貼上。
   q('attachBtn').addEventListener('click',function(){q('fileInput').click();});
+  q('agentBtn').addEventListener('click',function(){
+    agentOn=!agentOn;
+    q('agentBtn').className='agentbtn'+(agentOn?' on':'');
+    toast(agentOn?'Agent 模式已開啟：AI 可以呼叫工具、產生檔案':'Agent 模式已關閉');
+  });
   q('fileInput').addEventListener('change',function(ev){
     addFiles(ev.target.files);
     ev.target.value='';

@@ -1257,6 +1257,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route("/admin/api/ai/chat/status", get(ai_chat::chat_status_handler))
         .route("/admin/api/ai/chat/stream", get(ai_chat::chat_stream_handler))
+        .route(
+            "/admin/api/ai/workspace/file",
+            get(ai_chat::workspace_file_handler),
+        )
         .route("/admin/api/ai/chat/stop", post(ai_chat::chat_stop_handler))
         .route("/admin/api/ai/threads", post(ai_chat::threads_handler))
         .route("/admin/push-status", get(web_push::page_handler))
