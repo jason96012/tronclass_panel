@@ -44,6 +44,7 @@ mod rollcalls;
 mod runtime_settings;
 mod secret_encryption;
 mod session_client;
+mod text_utils;
 mod timetable_source;
 mod timetable_sync;
 mod trusted_ip;
@@ -121,6 +122,9 @@ impl AccountCmd {
                 let mut provider = String::new();
                 let mut username = String::new();
                 let mut password = String::new();
+                // CLI_PASSWORD_STDIN_V1：上游密碼可改從 stdin 讀取，
+                // 避免 -P 把密碼留在 shell 歷史紀錄與程序引數清單（/proc、ps 可見）。
+                let mut password_stdin = false;
                 let mut line_user_id = String::new();
                 let mut discord_user_id = String::new();
                 let mut enabled = true;
@@ -140,6 +144,7 @@ impl AccountCmd {
                             *i += 1;
                             password = cli_require_value(args, *i, "--password");
                         }
+                        "--password-stdin" | "--stdin" => password_stdin = true,
                         "--line-user-id" => {
                             *i += 1;
                             line_user_id = cli_require_value(args, *i, "--line-user-id");
@@ -165,8 +170,20 @@ impl AccountCmd {
                     eprintln!("錯誤：account add 需要 -u/--username");
                     std::process::exit(1);
                 }
+                // CLI_PASSWORD_STDIN_V1：兩種密碼來源擇一。
+                if password_stdin {
+                    if !password.is_empty() {
+                        eprintln!("錯誤：--password-stdin 與 -P/--password 不可同時使用");
+                        std::process::exit(1);
+                    }
+                    password = read_password_from_stdin("Tronclass 密碼");
+                } else if !password.is_empty() {
+                    eprintln!(
+                        "⚠️ 密碼以命令列引數傳入，將留在 shell 歷史紀錄與程序引數清單中；建議改用 --password-stdin"
+                    );
+                }
                 if password.is_empty() {
-                    eprintln!("錯誤：account add 需要 -P/--password");
+                    eprintln!("錯誤：account add 需要 -P/--password 或 --password-stdin");
                     std::process::exit(1);
                 }
                 Self::Add {
@@ -233,7 +250,7 @@ impl AccountCmd {
                     eprintln!("錯誤：account dashboard-password 不接受額外引數");
                     std::process::exit(1);
                 }
-                let password = read_dashboard_password_from_stdin();
+                let password = read_password_from_stdin("Dashboard 密碼");
                 Self::SetDashboardPassword { id, password }
             }
             "admin" => {
@@ -299,17 +316,20 @@ fn cli_require_value(args: &[String], i: usize, flag: &str) -> String {
     }
 }
 
-/// Read a Dashboard password from a pipe or redirected stdin.  Requiring stdin
+/// Read a password from a pipe or redirected stdin.  Requiring stdin
 /// keeps it out of shell history and process argument listings.
-fn read_dashboard_password_from_stdin() -> String {
+///
+/// CLI_PASSWORD_STDIN_V1：從 dashboard-password 專用函式一般化，
+/// 供 `account add --password-stdin` 重用（purpose 用於錯誤訊息）。
+fn read_password_from_stdin(purpose: &str) -> String {
     let mut password = String::new();
     if let Err(error) = std::io::stdin().read_to_string(&mut password) {
-        eprintln!("錯誤：無法從 stdin 讀取 Dashboard 密碼：{error}");
+        eprintln!("錯誤：無法從 stdin 讀取 {purpose}：{error}");
         std::process::exit(1);
     }
     let password = password.trim_end_matches(&['\r', '\n'][..]).to_string();
     if password.is_empty() {
-        eprintln!("錯誤：Dashboard 密碼不可為空");
+        eprintln!("錯誤：{purpose}不可為空");
         std::process::exit(1);
     }
     password
@@ -445,7 +465,8 @@ fn print_help() {
     println!("  account add <id>           新增帳號");
     println!("    -p, --provider <name>      Provider 名稱（必填）");
     println!("    -u, --username <user>      使用者名稱（必填）");
-    println!("    -P, --password <pass>      Tronclass 上游密碼（首次網站登入後會強制改 Dashboard 密碼）");
+    println!("    -P, --password <pass>      Tronclass 上游密碼（會留在 shell 歷史紀錄，建議改用 --password-stdin；首次網站登入後會強制改 Dashboard 密碼）");
+    println!("    --password-stdin           從 stdin 讀取上游密碼，不留在 shell 歷史紀錄（建議）");
     println!("    --line-user-id <uid>       Line User ID（選填）");
     println!("    --discord-user-id <id>     Discord User ID（選填）");
     println!("    --admin                    新增時授予 Web 管理頁管理員權限");

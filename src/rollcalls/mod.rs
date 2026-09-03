@@ -1272,10 +1272,10 @@ mod tests {
     fn test_is_auth_error_true() {
         assert!(is_auth_error("Session expired"));
         assert!(is_auth_error("HTTP 401 Unauthorized"));
-        assert!(is_auth_error("403 Forbidden"));
-        assert!(is_auth_error("session cookie invalid"));
+        assert!(is_auth_error("API 返回錯誤狀態 403：Forbidden"));
+        assert!(is_auth_error("Session 已過期（HTTP 401/403），需要重新登錄"));
         assert!(is_auth_error("需要重新登錄"));
-        assert!(is_auth_error("認證失敗"));
+        assert!(is_auth_error("🔴 致命錯誤：session 過期"));
     }
 
     #[test]
@@ -1284,6 +1284,11 @@ mod tests {
         assert!(!is_auth_error("距離不足 42m"));
         assert!(!is_auth_error("Code 0042 incorrect"));
         assert!(!is_auth_error("JSON parse error"));
+        // AUTH_ERROR_NUMERIC_FP_V1：裸數字 / 裸登入字不再是認證錯誤
+        assert!(!is_auth_error("403 Forbidden"));
+        assert!(!is_auth_error("課程 40123 不存在"));
+        assert!(!is_auth_error("認證失敗"));
+        assert!(!is_auth_error("session cookie invalid"));
     }
 
     // ── QR code channel ───────────────────────────────────────────────────────

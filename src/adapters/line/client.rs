@@ -76,7 +76,9 @@ impl LineBotClient {
         let req = ReplyMessageRequest::text(reply_token, text);
 
         debug!(
-            reply_token = %&reply_token[..reply_token.len().min(10)],
+            // REDIRECT_UTF8_SLICE_V1：token 雖然實務上是 ASCII，仍統一改用
+            // 字元截斷，避免未來內容改變時留下 panic 隱患。
+            reply_token = %crate::text_utils::truncate_chars(&reply_token, 10),
             text_len = text.len(),
             "發送 Reply 訊息"
         );
@@ -103,7 +105,8 @@ impl LineBotClient {
         let req = PushMessageRequest::text(to, text);
 
         debug!(
-            to = %&to[..to.len().min(10)],
+            // REDIRECT_UTF8_SLICE_V1：統一改用字元截斷。
+            to = %crate::text_utils::truncate_chars(to, 10),
             text_len = text.len(),
             "發送 Push 訊息"
         );
@@ -362,7 +365,9 @@ fn render_message(message: &OutboundMessage) -> String {
         OutboundMessage::Bulletin(event) => event.render(),
         OutboundMessage::UnknownCommand { text } => format!(
             "❓ 不認識的指令：{}\n\n輸入 /help 或 幫助 查看可用指令。",
-            &text[..text.len().min(50)]
+            // REDIRECT_UTF8_SLICE_V1：這裡截的是使用者輸入的文字，長中文訊息
+            // （>50 bytes ≈ 16 個中文字）在舊寫法下會直接 panic；改字元截斷。
+            crate::text_utils::truncate_chars(text, 50)
         ),
     }
 }
@@ -669,7 +674,8 @@ async fn handle_line_api_response(resp: reqwest::Response, api_name: &str) -> Re
             "Line {} API 失敗（HTTP {}）：{}",
             api_name,
             status,
-            &body[..body.len().min(200)]
+            // REDIRECT_UTF8_SLICE_V1：LINE API 錯誤回應常含中文，改用字元截斷。
+            crate::text_utils::truncate_chars(&body, 200)
         ))
     }
 }

@@ -1,6 +1,12 @@
 //! Discord 通知偏好設定 handlers。
 
 use super::*;
+// HOMEWORK_LADDER_V1：作業提醒階梯的限制常數（定義在 db::preferences）。
+use crate::db::{
+    DEFAULT_HOMEWORK_LADDER_HOURS as DEFAULT_LADDER, HOMEWORK_LADDER_MAX_HOURS as MAX_LADDER_HOURS,
+    HOMEWORK_LADDER_MAX_STAGES as MAX_LADDER_STAGES,
+    HOMEWORK_LADDER_MIN_HOURS as MIN_LADDER_HOURS,
+};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AdminNotificationPreferencesQuery {
@@ -221,4 +227,163 @@ pub(super) async fn admin_notification_preferences_update_handler(
         Json(json!({ "ok": true, "account_id": target })),
     )
         .into_response()
+}
+
+// ─── 作業截止提醒階梯（HOMEWORK_LADDER_V1）──────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminHomeworkLadderQuery {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    account_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminHomeworkLadderUpdateRequest {
+    #[serde(default)]
+    account_id: Option<String>,
+    /// 小時陣列（1～168、最多 8 個）。空陣列＝恢復預設 24/6/1。
+    #[serde(default)]
+    stages: Vec<u64>,
+}
+
+pub(super) async fn admin_homework_ladder_get_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminHomeworkLadderQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) = validate_optional_admin_text(
+        query.account_id.as_deref(),
+        ADMIN_MAX_IDENTIFIER_BYTES,
+        "account_id",
+    ) {
+        return response;
+    }
+    let target = match resolve_notification_target(&session, query.account_id) {
+        Ok(target) => target,
+        Err(resp) => return resp,
+    };
+    match state
+        .accounts_db
+        .get_homework_reminder_ladder_raw(&target)
+        .await
+    {
+        Ok(custom) => {
+            let effective =
+                custom.clone().unwrap_or_else(|| DEFAULT_LADDER.to_vec());
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "account_id": target,
+                    "stages": effective,
+                    "use_default": custom.is_none(),
+                    "default_stages": DEFAULT_LADDER,
+                    "min_hours": MIN_LADDER_HOURS,
+                    "max_hours": MAX_LADDER_HOURS,
+                    "max_stages": MAX_LADDER_STAGES,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("homework ladder database error: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn admin_homework_ladder_update_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    let req: AdminHomeworkLadderUpdateRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid_request" })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(response) = validate_optional_admin_text(
+        req.account_id.as_deref(),
+        ADMIN_MAX_IDENTIFIER_BYTES,
+        "account_id",
+    ) {
+        return response;
+    }
+    let target = match resolve_notification_target(&session, req.account_id) {
+        Ok(target) => target,
+        Err(resp) => return resp,
+    };
+
+    // 驗證：最多 8 個階段、每個 1～168 小時。空陣列視為「恢復預設」。
+    if req.stages.len() > MAX_LADDER_STAGES {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("too many stages; max {MAX_LADDER_STAGES}") })),
+        )
+            .into_response();
+    }
+    if let Some(&bad) = req
+        .stages
+        .iter()
+        .find(|&&h| !(MIN_LADDER_HOURS..=MAX_LADDER_HOURS).contains(&h))
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("stage {bad} out of range {MIN_LADDER_HOURS}..={MAX_LADDER_HOURS} hours") })),
+        )
+            .into_response();
+    }
+
+    match state
+        .accounts_db
+        .set_homework_reminder_ladder(&target, &req.stages)
+        .await
+    {
+        Ok(saved) => {
+            let effective = if saved.is_empty() {
+                DEFAULT_LADDER.to_vec()
+            } else {
+                saved.clone()
+            };
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "homework_ladder_settings",
+                Some(&target),
+                Some(&if saved.is_empty() {
+                    "restore-default".to_string()
+                } else {
+                    serde_json::to_string(&saved).unwrap_or_default()
+                }),
+                "更新作業提醒階梯設定",
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "account_id": target,
+                    "stages": effective,
+                    "use_default": saved.is_empty(),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("save homework ladder failed: {e}") })),
+        )
+            .into_response(),
+    }
 }

@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use chrono::{Local, Timelike};
 use miette::{IntoDiagnostic, Result, WrapErr};
+use once_cell::sync::Lazy;
 use tracing::{debug, info, warn};
 
 use crate::account::AccountConfig;
@@ -465,27 +466,39 @@ fn sanitize_error(message: &str, account: &AccountConfig) -> String {
         out = out.replace(&account.username, "<account>");
     }
 
-    // 去掉 query string 中的敏感參數與任何 cookie 片段。
-    let patterns = [
-        // ROBUST_QUOTE_FREE_REGEX_V1
-        // 這裡刻意「不在原始碼中出現任何雙引號字元」：字元類別裡的 `"` 一律
-        // 用 regex 的十六進位跳脫 \x22 表示。
-        //
-        // 背景：原本寫成 r"...\"..." 會編譯失敗（E0762），因為原始字串不處理
-        // 反斜線跳脫，`\"` 的 `"` 會直接把字串結束掉。改成 r#"..."# 雖然正確，
-        // 但只要有任何環節重新跳脫過內容就可能再次損壞。用 \x22 之後，
-        // 這幾行就只剩單純的 ASCII 字母與反斜線，任何轉檔都不會破壞它。
-        ("(?i)stu_no=[^&\\s\\x22']*", "stu_no=<redacted>"),
-        ("(?i)password=[^&\\s\\x22']*", "password=<redacted>"),
-        ("(?i)(JSESSIONID|session)=[^;\\s\\x22']*", "$1=<redacted>"),
-    ];
-    for (pattern, replacement) in patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            out = re.replace_all(&out, replacement).to_string();
-        }
+    // REGEX_STATIC_V1：三條 redact regex 原本每次呼叫都重新編譯，
+    // 改為 Lazy 編譯一次終身重用（pattern 與替換字串完全不變）。
+    for (re, replacement) in REDACT_RULES.iter() {
+        out = re.replace_all(&out, *replacement).to_string();
     }
     out
 }
+
+// 去 query string 敏感參數與 cookie 片段的規則。
+//
+// ROBUST_QUOTE_FREE_REGEX_V1
+// 這裡刻意「不在原始碼中出現任何雙引號字元」：字元類別裡的 `"` 一律
+// 用 regex 的十六進位跳脫 \x22 表示。
+//
+// 背景：原本寫成 r"...\"..." 會編譯失敗（E0762），因為原始字串不處理
+// 反斜線跳脫，`\"` 的 `"` 會直接把字串結束掉。改成 r#"..."# 雖然正確，
+// 但只要有任何環節重新跳脫過內容就可能再次損壞。用 \x22 之後，
+// 這幾行就只剩單純的 ASCII 字母與反斜線，任何轉檔都不會破壞它。
+static REDACT_RULES: Lazy<Vec<(regex::Regex, &'static str)>> = Lazy::new(|| {
+    [
+        ("(?i)stu_no=[^&\\s\\x22']*", "stu_no=<redacted>"),
+        ("(?i)password=[^&\\s\\x22']*", "password=<redacted>"),
+        ("(?i)(JSESSIONID|session)=[^;\\s\\x22']*", "$1=<redacted>"),
+    ]
+    .into_iter()
+    .map(|(pattern, replacement)| {
+        (
+            regex::Regex::new(pattern).unwrap_or_else(|e| panic!("invalid redact regex: {e}")),
+            replacement,
+        )
+    })
+    .collect()
+});
 
 #[cfg(test)]
 mod tests {

@@ -125,7 +125,8 @@ async fn webhook_handler(
     };
 
     if !state.bot.verify_signature(&body, &signature) {
-        warn!(signature = %&signature[..signature.len().min(20)], "X-Line-Signature 驗證失敗");
+        // REDIRECT_UTF8_SLICE_V1：統一改用字元截斷。
+        warn!(signature = %crate::text_utils::truncate_chars(&signature, 20), "X-Line-Signature 驗證失敗");
         return (StatusCode::BAD_REQUEST, "Invalid signature").into_response();
     }
 

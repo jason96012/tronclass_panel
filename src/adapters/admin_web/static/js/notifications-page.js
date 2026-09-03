@@ -4,7 +4,8 @@
  * 本檔自包含，不依賴 dashboard 的 tab/view 系統：
  * 1) Discord 通知開關：GET/POST /admin/api/notifications/preferences
  * 2) 上課前 Discord 提醒：GET/POST /admin/api/class_reminder
- * 3) 即時點名提示音：localStorage（tronclass_rollcall_sound_settings_v1，
+ * 3) 作業截止提醒階梯：GET/POST /admin/api/homework/ladder（HOMEWORK_LADDER_V1）
+ * 4) 即時點名提示音：localStorage（tronclass_rollcall_sound_settings_v1，
  *    與控制台 dashboard 內的 TronclassRollcallAlertSettings 共用同一個 key）
  * 未登入（401/403）時導回登入頁。
  */
@@ -166,7 +167,74 @@
     }
   }
 
-  // ── 3. 即時點名提示音（與控制台共用同一個 localStorage key） ──────────────
+  // ── 3. 作業截止提醒階梯（HOMEWORK_LADDER_V1）─────────────────────────────
+  function renderHwLadderRow(value) {
+    var box = q('hwLadderRows');
+    if (!box) return;
+    var row = document.createElement('div');
+    row.className = 'row2';
+    row.innerHTML = '<input type="number" min="1" max="168" step="1" data-hw-stage value="' + esc(value) + '">' +
+      '<button type="button" class="sec" data-hw-remove>移除</button>';
+    row.querySelector('[data-hw-remove]').addEventListener('click', function () { row.remove(); });
+    box.appendChild(row);
+  }
+  function renderHwLadder(stages) {
+    var box = q('hwLadderRows');
+    if (!box) return;
+    box.innerHTML = '';
+    (stages || []).forEach(function (h) { renderHwLadderRow(h); });
+  }
+  async function loadHwLadder() {
+    var sel = q('hwLadderAccount');
+    var account = sel && sel.value ? sel.value : '';
+    try {
+      var body = await api('/admin/api/homework/ladder' + (account ? '?account_id=' + encodeURIComponent(account) : ''));
+      renderHwLadder(body.stages || []);
+      q('hwLadderInfo').textContent = '目前設定帳號：' + (body.account_id || account || '-') +
+        (body.use_default ? '（使用預設）' : '（自訂）');
+      setMsg('hwLadderMsg', '');
+    } catch (e) {
+      q('hwLadderInfo').textContent = '讀取失敗：' + (e.message || e);
+    }
+  }
+  function collectHwLadder() {
+    var values = [];
+    var bad = null;
+    Array.prototype.slice.call(document.querySelectorAll('[data-hw-stage]')).forEach(function (input) {
+      var raw = (input.value || '').trim();
+      if (!raw) return;
+      var n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n < 1 || n > 168) { bad = raw; return; }
+      if (values.indexOf(n) === -1) values.push(n);
+    });
+    return bad === null ? { stages: values } : { error: bad };
+  }
+  async function saveHwLadder() {
+    var sel = q('hwLadderAccount');
+    var account = sel && sel.value ? sel.value : '';
+    var collected = collectHwLadder();
+    if (collected.error != null) {
+      setMsg('hwLadderMsg', '階段值無效：' + collected.error + '（需 1～168 的整數）', 'bad');
+      return;
+    }
+    if (collected.stages.length > 8) {
+      setMsg('hwLadderMsg', '最多 8 個階段', 'bad');
+      return;
+    }
+    try {
+      var body = await api('/admin/api/homework/ladder', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ account_id: account || undefined, stages: collected.stages })
+      });
+      renderHwLadder(body.stages || []);
+      setMsg('hwLadderMsg', body.use_default ? '已恢復預設階梯（24/6/1）' : '作業提醒階梯已儲存', 'ok');
+    } catch (e) {
+      setMsg('hwLadderMsg', e.message || '儲存作業提醒階梯失敗', 'bad');
+    }
+  }
+
+  // ── 4. 即時點名提示音（與控制台共用同一個 localStorage key） ──────────────
   var SOUND_KEY = 'tronclass_rollcall_sound_settings_v1';
   function soundGet() {
     try {
@@ -239,10 +307,27 @@
       btn.addEventListener('click', function () { q('classReminderMinutes').value = btn.getAttribute('data-class-min'); });
     });
 
+    var hwReload = q('hwLadderReload');
+    if (hwReload) hwReload.addEventListener('click', function () { fillAccountSelect(q('hwLadderAccount'), loadHwLadder); });
+    var hwSave = q('hwLadderSave');
+    if (hwSave) hwSave.addEventListener('click', saveHwLadder);
+    var hwAdd = q('hwLadderAdd');
+    if (hwAdd) hwAdd.addEventListener('click', function () { renderHwLadderRow(''); });
+    var hwAccount = q('hwLadderAccount');
+    if (hwAccount) hwAccount.addEventListener('change', loadHwLadder);
+    Array.prototype.slice.call(document.querySelectorAll('[data-hw-ladder]')).forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var raw = btn.getAttribute('data-hw-ladder') || '';
+        var stages = raw ? raw.split(',').map(function (s) { return parseInt(s, 10); }).filter(function (n) { return Number.isFinite(n); }) : [];
+        renderHwLadder(stages);
+      });
+    });
+
     bindSoundControls();
 
     fillAccountSelect(q('notifyAccount'), loadNotifyPrefs);
     fillAccountSelect(q('classReminderAccount'), loadClassReminderPrefs);
+    fillAccountSelect(q('hwLadderAccount'), loadHwLadder);
   }
 
   window.TronclassNotificationsPage = { reload: loadNotifyPrefs };

@@ -46,7 +46,7 @@ use crate::adapters::requests::{
     QrCodeReceiver, QrCodeSender, RequestAccountState,
 };
 use crate::adapters::scanner::QrScannerRegistry;
-use crate::api::{is_auth_error, ApiClient};
+use crate::api::{is_auth_error_report, ApiClient};
 use crate::auth::AuthClient;
 use crate::config::{parse_schedule_period, AppConfig, PollingScheduleConfig};
 use crate::db::AccountsDb;
@@ -549,7 +549,10 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                 }
 
                 // 判斷是否需要重新認證
-                if is_auth_error(&e.to_string()) || consecutive_failures >= max_failures {
+                // AUTH_ERROR_TYPED_V1：改用 report 版走完整條錯誤鏈，
+                // 避免 wrap_err 外層訊息（如「取得簽到列表失敗」）掩蓋
+                // 內層真正的 ApiError::Unauthorized。
+                if is_auth_error_report(&e) || consecutive_failures >= max_failures {
                     if consecutive_failures >= max_failures {
                         warn!(
                             consecutive_failures = consecutive_failures,
@@ -1254,6 +1257,7 @@ pub fn current_unix_secs() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::is_auth_error;
     use crate::config::ScheduleWeekday;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1282,17 +1286,22 @@ mod tests {
         assert!(t2 >= t1, "時間戳應單調遞增");
     }
 
-    // ── is_auth_error ─────────────────────────────────────────────────────────
+    // ── is_auth_error（AUTH_ERROR_TYPED_V1：精確標記比對）────────────────────
 
     #[test]
     fn test_is_auth_error_true_cases() {
+        // ApiError::Unauthorized 的標準 Display
+        assert!(is_auth_error("Session 已過期（HTTP 401/403），需要重新登錄"));
+        // monitor 的致命錯誤包裹訊息
+        assert!(is_auth_error("批次簽到中發生致命錯誤（session 可能已過期）"));
+        assert!(is_auth_error("🔴 致命錯誤：簽到 session 過期"));
+        // 明確帶前綴的 HTTP 狀態字串（本專案自己 format 的格式）
+        assert!(is_auth_error("HTTP 401 Unauthorized"));
+        assert!(is_auth_error("HTTP 403: Forbidden"));
+        assert!(is_auth_error("API 返回錯誤狀態 401：token 無效"));
+        // 明確的英文字眼
         assert!(is_auth_error("Unauthorized access"));
-        assert!(is_auth_error("HTTP 401 error"));
-        assert!(is_auth_error("Response status: 403 Forbidden"));
         assert!(is_auth_error("Session expired, please re-login"));
-        assert!(is_auth_error("session cookie invalid"));
-        assert!(is_auth_error("session 可能已過期"));
-        assert!(is_auth_error("批次簽到中發生致命錯誤"));
     }
 
     #[test]
@@ -1303,14 +1312,42 @@ mod tests {
         assert!(!is_auth_error("距離不足 50 公尺"));
         assert!(!is_auth_error("爆破失敗：無正確代碼"));
         assert!(!is_auth_error(""));
+        assert!(!is_auth_error("Error code 4: timeout"));
     }
 
+    /// AUTH_ERROR_NUMERIC_FP_V1：舊版裸 `contains("401")` / `contains("403")`
+    /// 會把這些含數字片段的無關訊息誤判成認證錯誤，觸發不必要的重新登入。
     #[test]
-    fn test_is_auth_error_edge_cases() {
-        // 包含 "4" 和 "01" 但不是 "401"
-        assert!(!is_auth_error("Error code 4: timeout"));
-        // 包含 "Session" 的正常訊息
-        assert!(is_auth_error("Session management failed"));
+    fn test_is_auth_error_rejects_bare_numbers() {
+        assert!(!is_auth_error("取得課程 40123 失敗"));
+        assert!(!is_auth_error("錯誤代碼 4012"));
+        assert!(!is_auth_error("最後距離 403.52 公尺"));
+        assert!(!is_auth_error("rollcall 1740341 已過期"));
+    }
+
+    /// 舊版裸「session／登入／登錄／認證」會把這些無關訊息誤判成認證錯誤。
+    #[test]
+    fn test_is_auth_error_rejects_bare_login_words() {
+        assert!(!is_auth_error("Session management failed"));
+        assert!(!is_auth_error("session cookie invalid"));
+        assert!(!is_auth_error("session 可能已過期")); // 只出現在「致命錯誤」訊息內，單獨出現不代表認證錯誤
+        assert!(!is_auth_error("使用者尚未登入 LINE"));
+        assert!(!is_auth_error("登入頁面載入超時"));
+    }
+
+    /// AUTH_ERROR_TYPED_V1：monitor 主循環改用 report 版——
+    /// wrap_err 的外層訊息不再掩蓋內層的 ApiError::Unauthorized。
+    #[test]
+    fn test_is_auth_error_report_finds_wrapped_cause() {
+        use crate::api::ApiError;
+        let report = miette::miette!(ApiError::Unauthorized).wrap_err("取得簽到列表失敗");
+        // 外層訊息本身沒有任何認證標記…
+        assert!(!is_auth_error("取得簽到列表失敗"));
+        // …但 report 版會走完整條錯誤鏈找到內層原因。
+        assert!(is_auth_error_report(&report));
+        // 一般暫時性錯誤即使被包住也不誤判。
+        let transient = miette::miette!("Network timeout").wrap_err("取得簽到列表失敗");
+        assert!(!is_auth_error_report(&transient));
     }
 
     // ── wait_for_trigger ──────────────────────────────────────────────────────

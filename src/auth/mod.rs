@@ -13,6 +13,8 @@ pub mod providers;
 use std::sync::Arc;
 
 use miette::{IntoDiagnostic, Result, WrapErr};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use reqwest::{cookie::Jar, Client, Url};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -188,26 +190,63 @@ pub(crate) fn extract_hidden_fields(
     Ok(values)
 }
 
-pub(crate) fn extract_input_value(html: &str, field_name: &str) -> Option<String> {
-    let input_re = regex::Regex::new(r#"(?is)<input\b[^>]*>"#).ok()?;
-    let escaped_field_name = regex::escape(field_name);
-    let name_patterns = [
-        format!(r#"(?i)\bname\s*=\s*"{escaped_field_name}""#),
-        format!(r#"(?i)\bname\s*=\s*'{escaped_field_name}'"#),
-    ];
-    let name_regexes = name_patterns
-        .iter()
-        .filter_map(|pattern| regex::Regex::new(pattern).ok())
-        .collect::<Vec<_>>();
-    let value_re = regex::Regex::new(r#"(?i)\bvalue\s*=\s*(?:"([^"]*)"|'([^']*)')"#).ok()?;
+// ─── 共用 HTML 解析 regex（REGEX_STATIC_V1）──────────────────────────────────
+//
+// 登入流程會高頻呼叫這些解析函式：FJU 是「OCR 驗證碼 5 次 × 登入重試 3 次」、
+// TKU 是每個 HTML redirect 追蹤與每個表單欄位解析。原本每次呼叫都
+// `Regex::new` 重新編譯（建 NFA/DFA 並不便宜），一次 FJU 登入最多會重複編譯
+// 數十次。改用 `once_cell::sync::Lazy` 在首次使用時編譯一次、終身重用。
+// Pattern 皆為靜態字面值，`expect("valid regex")` 只會在寫錯時於開發期爆炸。
 
-    for mat in input_re.find_iter(html) {
+static INPUT_TAG_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)<input\b[^>]*>"#).expect("valid regex"));
+static IMG_TAG_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)<img\b[^>]*>"#).expect("valid regex"));
+/// 擷取 `value="…"` / `value='…'` 屬性值（雙引號 → capture 1、單引號 → capture 2）。
+static ATTR_VALUE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\bvalue\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid regex")
+});
+/// 擷取 `name="…"` / `name='…'` 屬性值（雙引號 → capture 1、單引號 → capture 2）。
+static ATTR_NAME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\bname\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid regex")
+});
+/// 擷取 `src="…"` / `src='…'` 屬性值（雙引號 → capture 1、單引號 → capture 2）。
+static ATTR_SRC_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?i)\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')"#).expect("valid regex")
+});
+
+/// CAS 登入頁的錯誤訊息樣式（依優先度排列）。
+static CAS_ERROR_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    [
+        r#"<span id="msg"[^>]*>([^<]+)</span>"#,
+        r#"class="errors?"[^>]*>([^<]+)<"#,
+        r#"<div[^>]*class="[^"]*error[^"]*"[^>]*>([^<]+)<"#,
+        r#"<p class="warning">([^<]+)</p>"#,
+    ]
+    .into_iter()
+    .map(|pattern| Regex::new(pattern).expect("valid regex"))
+    .collect()
+});
+
+pub(crate) fn extract_input_value(html: &str, field_name: &str) -> Option<String> {
+    // REGEX_STATIC_V1：原本為欄位名動態 `regex::escape` + 每次編譯兩條 regex，
+    // 改為以靜態 ATTR_NAME_RE 擷出 name 屬性值後直接字串比對。語意等效：
+    // 原 pattern 帶 (?i)（大小寫視為相同），這裡用 eq_ignore_ascii_case；
+    // 本專案的欄位名（lt / execution / captcha / username …）皆為 ASCII。
+    // 同一 tag 有多個 name 屬性時，captures_iter().any() 與原本
+    // name_regexes.iter().any(is_match) 行為相同（任一命中即匹配）。
+    for mat in INPUT_TAG_RE.find_iter(html) {
         let tag = mat.as_str();
-        if !name_regexes.iter().any(|re| re.is_match(tag)) {
+        let name_matches = ATTR_NAME_RE.captures_iter(tag).any(|caps| {
+            caps.get(1)
+                .or_else(|| caps.get(2))
+                .is_some_and(|m| m.as_str().eq_ignore_ascii_case(field_name))
+        });
+        if !name_matches {
             continue;
         }
 
-        if let Some(caps) = value_re.captures(tag) {
+        if let Some(caps) = ATTR_VALUE_RE.captures(tag) {
             if let Some(value) = caps.get(1).or_else(|| caps.get(2)) {
                 return Some(value.as_str().to_string());
             }
@@ -222,21 +261,13 @@ pub(crate) fn html_has_input_named(html: &str, field_name: &str) -> bool {
 }
 
 pub(crate) fn extract_cas_error(html: &str) -> Option<String> {
-    let patterns = [
-        r#"<span id="msg"[^>]*>([^<]+)</span>"#,
-        r#"class="errors?"[^>]*>([^<]+)<"#,
-        r#"<div[^>]*class="[^"]*error[^"]*"[^>]*>([^<]+)<"#,
-        r#"<p class="warning">([^<]+)</p>"#,
-    ];
-
-    for pattern in &patterns {
-        if let Ok(re) = regex::Regex::new(pattern) {
-            if let Some(caps) = re.captures(html) {
-                if let Some(msg) = caps.get(1) {
-                    let text = msg.as_str().trim().to_string();
-                    if !text.is_empty() {
-                        return Some(text);
-                    }
+    // REGEX_STATIC_V1：四條樣式改為靜態 Lazy，迴圈只做比對、不再編譯。
+    for re in CAS_ERROR_PATTERNS.iter() {
+        if let Some(caps) = re.captures(html) {
+            if let Some(msg) = caps.get(1) {
+                let text = msg.as_str().trim().to_string();
+                if !text.is_empty() {
+                    return Some(text);
                 }
             }
         }
@@ -248,15 +279,13 @@ pub(crate) fn extract_cas_error(html: &str) -> Option<String> {
 ///
 /// 尋找含有 `captcha` 的 `<img>` tag，再依 `base_url` 補全相對路徑。
 pub(crate) fn extract_captcha_url(html: &str, base_url: &str) -> Option<String> {
-    let re = regex::Regex::new(r#"(?i)<img\b[^>]*>"#).ok()?;
-    let src_re = regex::Regex::new(r#"(?i)\bsrc\s*=\s*(?:"([^"]*)"|'([^']*)')"#).ok()?;
-
-    for mat in re.find_iter(html) {
+    // REGEX_STATIC_V1：img tag 與 src 屬性 regex 改為靜態 Lazy。
+    for mat in IMG_TAG_RE.find_iter(html) {
         let tag = mat.as_str();
         if !tag.to_lowercase().contains("captcha") {
             continue;
         }
-        if let Some(caps) = src_re.captures(tag) {
+        if let Some(caps) = ATTR_SRC_RE.captures(tag) {
             let src = caps.get(1).or_else(|| caps.get(2))?.as_str();
             if src.starts_with("http://") || src.starts_with("https://") {
                 return Some(src.to_string());

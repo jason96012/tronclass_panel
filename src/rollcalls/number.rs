@@ -163,7 +163,8 @@ pub async fn brute_force_number_rollcall(
             range_start = chunk_start,
             range_end = chunk_end.saturating_sub(1),
             concurrency = current_concurrency,
-            codes = ?&chunk[..chunk.len().min(3)],
+            // REDIRECT_UTF8_SLICE_V1：chunk 是 Vec（非 str），改用 take(3)。
+            codes = ?chunk.iter().take(3).collect::<Vec<_>>(),
             "開始新批次"
         );
 

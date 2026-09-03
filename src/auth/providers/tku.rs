@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use miette::{IntoDiagnostic, Result, WrapErr};
+use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::{cookie::Jar, header, Client, Url};
 use tracing::{debug, info};
@@ -17,6 +18,47 @@ const HTML_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9
 const IMAGE_ACCEPT: &str = "image/avif,image/webp,image/apng,image/*,*/*;q=0.8";
 const AJAX_ACCEPT: &str = "text/plain, */*; q=0.01";
 const ACCEPT_LANGUAGE: &str = "zh-TW,zh;q=0.9,en;q=0.8";
+
+// ─── SSO HTML 解析 regex（REGEX_STATIC_V1）────────────────────────────────────
+//
+// TKU SSO 登入流程的每個步驟（NEAI 入口偵測、表單解析、每個 input 欄位的
+// 屬性萃取、每個 HTML redirect 追蹤）都會呼叫這些解析函式；重新認證與
+// 課表爬蟲重用 `sso_login_to_service` 時更是整套再跑一次。原本每次呼叫都
+// `Regex::new` 重新編譯，改為 Lazy 編譯一次終身重用。
+
+/// NEAI 登入入口 URL（`https://sso…/NEAI/login{eb|rwd}.jsp?myurl=`）。
+static NAM_ENTRY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)(https?://[^"']+/NEAI/login(?:eb|rwd)\.jsp\?myurl=)"#)
+        .expect("valid regex")
+});
+/// `<form …>…</form>` 區塊（capture 1 = form tag、capture 2 = 表單內容）。
+static FORM_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)(<form\b[^>]*>)(.*?)</form>"#).expect("valid regex"));
+/// 單一 `<input …>` tag。
+static INPUT_TAG_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)<input\b[^>]*>"#).expect("valid regex"));
+/// tag 內的屬性（capture 1 = 屬性名；值為 capture 2 雙引號 / 3 單引號 / 4 無引號）。
+static ATTR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#)
+        .expect("valid regex")
+});
+/// `window.location = "…"` / `location.href='…'` 等 JS 指派式轉址。
+static REDIRECT_LOCATION_ASSIGN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)(?:window|top|parent)?\.?location(?:\.href)?\s*=\s*["']([^"']+)["']"#)
+        .expect("valid regex")
+});
+/// `location.replace("…")` / `location.assign('…')` 等 JS 呼叫式轉址。
+static REDIRECT_LOCATION_CALL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)location\.(?:replace|assign)\s*\(\s*["']([^"']+)["']\s*\)"#)
+        .expect("valid regex")
+});
+/// `<meta http-equiv="refresh" content="…;url=…">` 轉址。
+static REDIRECT_META_REFRESH_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r#"(?is)<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*url\s*=\s*([^"'>\s]+)"#,
+    )
+    .expect("valid regex")
+});
 
 pub fn create_flow() -> Box<dyn AuthFlow> {
     Box::new(TkuAuthFlow)
@@ -306,8 +348,9 @@ async fn follow_html_redirects(
 }
 
 fn extract_nam_entry_url(html: &str) -> Option<String> {
-    let re = Regex::new(r#"(?is)(https?://[^"']+/NEAI/login(?:eb|rwd)\.jsp\?myurl=)"#).ok()?;
-    re.captures(html)
+    // REGEX_STATIC_V1
+    NAM_ENTRY_RE
+        .captures(html)
         .and_then(|caps| caps.get(1))
         .map(|m| decode_html_entities(m.as_str()))
 }
@@ -329,10 +372,8 @@ fn set_iv_jct_cookie(cookie_jar: &Jar, sso_origin: &str) -> std::result::Result<
 }
 
 fn extract_login_form(html: &str, page_url: &Url) -> std::result::Result<LoginForm, AuthError> {
-    let form_re = Regex::new(r#"(?is)(<form\b[^>]*>)(.*?)</form>"#).expect("valid regex");
-    let input_re = Regex::new(r#"(?is)<input\b[^>]*>"#).expect("valid regex");
-
-    for caps in form_re.captures_iter(html) {
+    // REGEX_STATIC_V1
+    for caps in FORM_RE.captures_iter(html) {
         let form_tag = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
         let form_body = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
         let form_attrs = parse_attrs(form_tag);
@@ -342,7 +383,7 @@ fn extract_login_form(html: &str, page_url: &Url) -> std::result::Result<LoginFo
         let mut vidcode_field = None;
         let mut text_fields = Vec::new();
 
-        for input in input_re.find_iter(form_body) {
+        for input in INPUT_TAG_RE.find_iter(form_body) {
             let attrs = parse_attrs(input.as_str());
             let Some(name) = attrs.get("name").cloned() else {
                 continue;
@@ -401,13 +442,10 @@ fn extract_login_form(html: &str, page_url: &Url) -> std::result::Result<LoginFo
 }
 
 fn parse_attrs(tag: &str) -> BTreeMap<String, String> {
-    let attr_re = Regex::new(
-        r#"(?is)\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"#,
-    )
-    .expect("valid regex");
+    // REGEX_STATIC_V1
     let mut attrs = BTreeMap::new();
 
-    for caps in attr_re.captures_iter(tag) {
+    for caps in ATTR_RE.captures_iter(tag) {
         let Some(name) = caps.get(1) else {
             continue;
         };
@@ -427,14 +465,12 @@ fn extract_html_redirect(
     html: &str,
     base_url: &Url,
 ) -> std::result::Result<Option<Url>, AuthError> {
-    let patterns = [
-        r#"(?is)(?:window|top|parent)?\.?location(?:\.href)?\s*=\s*["']([^"']+)["']"#,
-        r#"(?is)location\.(?:replace|assign)\s*\(\s*["']([^"']+)["']\s*\)"#,
-        r#"(?is)<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'][^"']*url\s*=\s*([^"'>\s]+)"#,
-    ];
-
-    for pattern in patterns {
-        let re = Regex::new(pattern).expect("valid regex");
+    // REGEX_STATIC_V1：三條轉址樣式改為靜態 Lazy，依原優先順序嘗試。
+    for re in [
+        &REDIRECT_LOCATION_ASSIGN_RE,
+        &REDIRECT_LOCATION_CALL_RE,
+        &REDIRECT_META_REFRESH_RE,
+    ] {
         if let Some(caps) = re.captures(html) {
             if let Some(target) = caps.get(1) {
                 let target = decode_html_entities(target.as_str().trim());

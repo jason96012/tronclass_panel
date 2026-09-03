@@ -95,6 +95,11 @@ pub use preferences::{
     ClassReminderDueRow, ClassReminderPreferenceRow, DetectionSchedulePreferenceRow,
     NotificationPreferenceRow,
 };
+// HOMEWORK_LADDER_V1：提醒引擎（homework_reminders）與通知頁 API 共用的預設階梯。
+pub(crate) use preferences::{
+    DEFAULT_HOMEWORK_LADDER_HOURS, HOMEWORK_LADDER_MAX_HOURS, HOMEWORK_LADDER_MAX_STAGES,
+    HOMEWORK_LADDER_MIN_HOURS,
+};
 #[allow(unused_imports)]
 pub use sessions::DashboardSessionRow;
 #[allow(unused_imports)]

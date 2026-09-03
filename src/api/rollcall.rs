@@ -670,7 +670,8 @@ impl super::ApiClient {
             let body_str = String::from_utf8_lossy(&body_bytes);
             miette::miette!(ApiError::Json(format!(
                 "{e}: body was `{}`",
-                &body_str[..body_str.len().min(200)]
+                // REDIRECT_UTF8_SLICE_V1：位元組切片切在中文字中間會 panic，改用字元截斷。
+                crate::text_utils::truncate_chars(&body_str, 200)
             )))
         })?;
 

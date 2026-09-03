@@ -329,9 +329,19 @@ pub(super) async fn admin_health_check_handler(
 fn cloudflare_connector_status() -> serde_json::Value {
     let log = std::fs::read_to_string("logs/cloudflared.log").unwrap_or_default();
     let recent: String = log.lines().rev().take(80).collect::<Vec<_>>().join("\n");
-    let error = regex::Regex::new("(?i)connection refused|no connection|failed to serve|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error").ok().map(|r| r.is_match(&recent)).unwrap_or(false);
+    // REGEX_STATIC_V1：健康頁每次載入都會呼叫，regex 不再重複編譯。
+    let error = CLOUDFLARED_ERROR_RE.is_match(&recent);
     json!({ "pid_alive": std::path::Path::new("logs/cloudflared.pid").exists(), "recent_error": error, "log_file": "logs/cloudflared.log" })
 }
+
+/// cloudflared 日誌中的連線錯誤特徵（近 80 行內出現即回報 recent_error）。
+static CLOUDFLARED_ERROR_RE: once_cell::sync::Lazy<regex::Regex> =
+    once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(
+            "(?i)connection refused|no connection|failed to serve|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error",
+        )
+        .expect("valid regex")
+    });
 
 fn watchdog_status() -> serde_json::Value {
     let names = [

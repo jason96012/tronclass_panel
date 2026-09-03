@@ -143,7 +143,11 @@ pub(super) async fn fetch_todos_for_account(
         let api = crate::api::ApiClient::new(client, account.base_url());
         match api.get_todos().await {
             Ok(items) => return Ok(items),
-            Err(e) if !crate::api::is_auth_error(&e.to_string()) => return Err(e),
+            // AUTH_ERROR_TYPED_V1：改用 report 版走完整條錯誤鏈。session 過期
+            // 的 ApiError::Unauthorized 可能被上層 wrap_err 包住而 to_string
+            // 看不到，舊寫法會誤把「可跳過的 session 過期」當成一般錯誤
+            // 中斷整個作業列表；現在正確地只跳過該帳號、改用帳密重登。
+            Err(e) if !crate::api::is_auth_error_report(&e) => return Err(e),
             Err(_) => {
                 info!(account = %account.id, "作業頁：session 已失效，重新登入");
             }

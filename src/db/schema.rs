@@ -545,5 +545,23 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 homework_snapshot 資料表失敗")?;
 
+    // HOMEWORK_LADDER_V1
+    // 每帳號自訂的作業截止提醒階梯（小時陣列，由大到小，如 [72,24,6,1]）。
+    // stages_json 為空字串代表「使用預設 24/6/1」（未設定或明確恢復預設）。
+    // 提醒去重鍵 `homework_reminder_sent.stage` 沿用 "{h}h" 格式，因此
+    // 變更階梯後：新階段會重新發送、移除的階段不再發送，歷史紀錄相容。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS homework_reminder_preferences (
+            account_id TEXT PRIMARY KEY NOT NULL,
+            stages_json TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            updated_time TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 homework_reminder_preferences 資料表失敗")?;
+
     Ok(())
 }

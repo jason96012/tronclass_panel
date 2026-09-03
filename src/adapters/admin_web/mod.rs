@@ -1490,6 +1490,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
+            "/admin/api/homework/ladder",
+            get(notifications::admin_homework_ladder_get_handler)
+                .post(notifications::admin_homework_ladder_update_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
             "/admin/api/timetable",
             get(timetable::admin_timetable_list_handler),
         )

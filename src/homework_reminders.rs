@@ -208,7 +208,9 @@ async fn fetch_todos_with_saved_session(
             let api = ApiClient::new((*client).clone(), account.base_url());
             match api.get_todos().await {
                 Ok(items) => return Ok(items),
-                Err(e) if !crate::api::is_auth_error(&e.to_string()) => return Err(e),
+                // AUTH_ERROR_TYPED_V1：改用 report 版走完整條錯誤鏈，
+                // session 過期（可能被 wrap_err 包住）正確地只跳過此帳號。
+                Err(e) if !crate::api::is_auth_error_report(&e) => return Err(e),
                 Err(_) => {
                     debug!(
                         account = %account.id,
@@ -285,6 +287,22 @@ pub async fn evaluate_and_send_reminders(
         .await
         .unwrap_or_default();
 
+    // HOMEWORK_LADDER_V1
+    // 載入此帳號自訂的提醒階梯（通知設定頁可調，由大到小）；
+    // 未設定時 get_homework_reminder_ladder 會回傳預設 24/6/1。
+    let ladder = match accounts_db.get_homework_reminder_ladder(&account.id).await {
+        Ok(ladder) if !ladder.is_empty() => ladder,
+        Ok(_) => crate::db::DEFAULT_HOMEWORK_LADDER_HOURS.to_vec(),
+        Err(error) => {
+            warn!(
+                account = %account.id,
+                %error,
+                "讀取作業提醒階梯失敗，改用預設 24/6/1"
+            );
+            crate::db::DEFAULT_HOMEWORK_LADDER_HOURS.to_vec()
+        }
+    };
+
     for todo in todos.iter() {
         // HOMEWORK_TRACKED_TYPES_V1
         // 截止提醒只針對「作業」與「測驗/考試」。其餘課程項目（教材 material、
@@ -314,18 +332,13 @@ pub async fn evaluate_and_send_reminders(
             continue;
         }
 
-        // 判斷階梯階段 (Stage)
-        let (stage, stage_badge, time_desc) = if total_minutes <= 60 {
-            ("1h", "最後 1 小時", format!("{total_minutes} 分鐘"))
-        } else if total_minutes <= 6 * 60 {
-            let hours = total_minutes / 60;
-            let mins = total_minutes % 60;
-            ("6h", "6 小時內截止", format!("{hours} 小時 {mins} 分鐘"))
-        } else if total_minutes <= 24 * 60 {
-            let hours = total_minutes / 60;
-            ("24h", "24 小時內截止", format!("約 {hours} 小時"))
-        } else {
-            // 超過 24 小時，暫不發送緊急通知
+        // HOMEWORK_LADDER_V1
+        // 改用每帳號自訂階梯判斷階段，語意與舊版 24/6/1 的 if 鏈相同：
+        // 取「剩餘時間 ≤ 門檻」的最小門檻作為目前階段；
+        // 剩餘時間超過所有門檻則不發送緊急通知。
+        let Some((stage, stage_badge, time_desc)) = pick_ladder_stage(total_minutes, &ladder)
+        else {
+            // 超過最大門檻，暫不發送緊急通知
             continue;
         };
 
@@ -358,7 +371,7 @@ pub async fn evaluate_and_send_reminders(
             account: account.id.clone(),
             course_name: course_name.clone(),
             title: title.clone(),
-            stage_badge: stage_badge.to_string(),
+            stage_badge: stage_badge.clone(),
             deadline: deadline_str.clone(),
             time_remaining: time_desc.clone(),
         });
@@ -386,12 +399,12 @@ pub async fn evaluate_and_send_reminders(
             todo.id,
             &course_name,
             &title,
-            stage_badge,
+            &stage_badge,
         );
 
         // 標記已送出
         accounts_db
-            .mark_homework_reminder_sent(&account.id, &hw_id_str, stage, deadline_timestamp)
+            .mark_homework_reminder_sent(&account.id, &hw_id_str, &stage, deadline_timestamp)
             .await?;
 
         info!(
@@ -405,4 +418,123 @@ pub async fn evaluate_and_send_reminders(
     }
 
     Ok(())
+}
+
+/// HOMEWORK_LADDER_V1
+/// 依自訂階梯（小時，任意順序）挑出目前所處的階段。
+///
+/// 語意與舊版硬編碼 24/6/1 的 if 鏈完全一致：
+/// - 取「剩餘分鐘 ≤ 門檻×60」的**最小**門檻作為階段
+///   （例如預設階梯下剩 300 分鐘 → 6h 階段，而非 24h）；
+/// - 剩餘時間超過所有門檻 → 回傳 `None`（不發送）。
+///
+/// 回傳 `(stage 鍵, 徽章文字, 剩餘時間描述)`：
+/// - stage 鍵沿用 `"{h}h"` 格式，預設階梯產生的 "1h"/"6h"/"24h"
+///   與既有 `homework_reminder_sent` 紀錄完全相容；
+/// - 徽章與時間描述的格式比照舊版（1 小時 →「最後 1 小時」；
+///   ≤6 小時門檻 →「X 小時 Y 分鐘」；更大門檻 →「約 X 小時」）。
+fn pick_ladder_stage(total_minutes: i64, ladder: &[u64]) -> Option<(String, String, String)> {
+    // 由小到大找第一個「剩餘時間 ≤ 門檻」的階段。
+    let mut sorted = ladder.to_vec();
+    sorted.sort_unstable();
+    let threshold_hours = *sorted
+        .iter()
+        .find(|&&h| total_minutes <= (h as i64) * 60)?;
+
+    let stage = format!("{threshold_hours}h");
+    let stage_badge = if threshold_hours == 1 {
+        "最後 1 小時".to_string()
+    } else {
+        format!("{threshold_hours} 小時內截止")
+    };
+    let time_desc = if total_minutes <= 60 {
+        format!("{total_minutes} 分鐘")
+    } else if threshold_hours <= 6 {
+        format!("{} 小時 {} 分鐘", total_minutes / 60, total_minutes % 60)
+    } else {
+        format!("約 {} 小時", total_minutes / 60)
+    };
+
+    Some((stage, stage_badge, time_desc))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 預設階梯的行為必須與舊版硬編碼 if 鏈逐例相同（回歸測試）。
+    #[test]
+    fn test_pick_ladder_stage_default_matches_legacy() {
+        let ladder = [24u64, 6, 1];
+
+        // 剩 45 分鐘 → 1h / 最後 1 小時 / 分鐘描述
+        assert_eq!(
+            pick_ladder_stage(45, &ladder),
+            Some(("1h".into(), "最後 1 小時".into(), "45 分鐘".into()))
+        );
+        // 剛好 60 分鐘 → 舊版走 "1h" 且顯示分鐘
+        assert_eq!(
+            pick_ladder_stage(60, &ladder),
+            Some(("1h".into(), "最後 1 小時".into(), "60 分鐘".into()))
+        );
+        // 剩 5 小時（300 分）→ 6h
+        assert_eq!(
+            pick_ladder_stage(300, &ladder),
+            Some((
+                "6h".into(),
+                "6 小時內截止".into(),
+                "5 小時 0 分鐘".into()
+            ))
+        );
+        // 剩 10 小時（600 分）→ 24h / 約 X 小時
+        assert_eq!(
+            pick_ladder_stage(600, &ladder),
+            Some(("24h".into(), "24 小時內截止".into(), "約 10 小時".into()))
+        );
+        // 剛好 24 小時（1440 分）→ 24h
+        assert_eq!(
+            pick_ladder_stage(1440, &ladder).map(|(s, _, _)| s),
+            Some("24h".to_string())
+        );
+        // 超過 24 小時 → 不發送
+        assert_eq!(pick_ladder_stage(1441, &ladder), None);
+    }
+
+    /// 自訂階梯：72/24/6/1 — 剩 3 天要走 72h 階段。
+    #[test]
+    fn test_pick_ladder_stage_custom_72() {
+        let ladder = [72u64, 24, 6, 1];
+        let (stage, badge, desc) = pick_ladder_stage(3 * 24 * 60, &ladder).unwrap();
+        assert_eq!(stage, "72h");
+        assert_eq!(badge, "72 小時內截止");
+        assert_eq!(desc, "約 72 小時");
+
+        // 剩 30 小時（1800 分）→ 落在 24h 階段（不是 72h）
+        let (stage, _, _) = pick_ladder_stage(1800, &ladder).unwrap();
+        assert_eq!(stage, "24h");
+
+        // 超過 72 小時 → 不發送
+        assert_eq!(pick_ladder_stage(73 * 60, &ladder), None);
+    }
+
+    /// 階梯順序不重要（評估前會排序）；空階梯＝全不發送。
+    #[test]
+    fn test_pick_ladder_stage_unsorted_and_empty() {
+        assert_eq!(
+            pick_ladder_stage(300, &[1u64, 24, 6]).map(|(s, _, _)| s),
+            Some("6h".to_string())
+        );
+        assert_eq!(pick_ladder_stage(60, &[]), None);
+    }
+
+    /// 小時整數邊界：自訂 2 小時門檻在 90 分鐘時的描述格式。
+    #[test]
+    fn test_pick_ladder_stage_custom_small_threshold_desc() {
+        let ladder = [2u64];
+        let (stage, badge, desc) = pick_ladder_stage(90, &ladder).unwrap();
+        assert_eq!(stage, "2h");
+        assert_eq!(badge, "2 小時內截止");
+        // 門檻 ≤ 6 小時 → 詳細格式
+        assert_eq!(desc, "1 小時 30 分鐘");
+    }
 }

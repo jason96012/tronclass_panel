@@ -193,7 +193,8 @@ impl std::fmt::Display for RequestCommand {
             RequestCommand::Start => write!(f, "Start"),
             RequestCommand::ReAuth => write!(f, "ReAuth"),
             RequestCommand::QrCode(data) => {
-                write!(f, "QrCode({}...)", &data[..data.len().min(20)])
+                // REDIRECT_UTF8_SLICE_V1：QR data 可能含任意 UTF-8，改用字元截斷。
+                write!(f, "QrCode({}...)", crate::text_utils::truncate_chars(data, 20))
             }
             RequestCommand::NumberCode(code) => write!(f, "NumberCode({code})"),
             RequestCommand::NumberAutoLookup { account_id } => {

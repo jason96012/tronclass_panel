@@ -170,6 +170,39 @@
       <div id="classReminderMsg" class="msg"></div>
     </section>
 
+    <!-- HOMEWORK_LADDER_V1：作業截止提醒階梯（每帳號可自訂） -->
+    <section class="card grid-single">
+      <div class="sec-head">
+        <div><h2>作業截止提醒階梯</h2><div class="desc">作業／測驗截止前，在各階段剩餘時間發送倒數提醒（Discord 與手機推播）。預設 24 / 6 / 1 小時。</div></div>
+        <button id="hwLadderReload" class="sec" type="button">重新整理</button>
+      </div>
+      <div class="acct-row">
+        <div class="acct-field">
+          <label class="small" for="hwLadderAccount">設定帳號</label>
+          <select id="hwLadderAccount"></select>
+        </div>
+        <div id="hwLadderInfo" class="small">載入中...</div>
+      </div>
+      <div class="row2">
+        <div>
+          <label class="small" for="hwLadderFirst" style="font-weight:900">提醒階段（小時）</label>
+          <div class="small">每個階段輸入 1～168 小時，最多 8 個；清除全部欄位儲存即恢復預設 24 / 6 / 1。</div>
+        </div>
+      </div>
+      <div id="hwLadderRows"></div>
+      <div class="presets">
+        <button type="button" data-hw-ladder="24,6,1">預設 24/6/1</button>
+        <button type="button" data-hw-ladder="72,24,6,1">長期 72/24/6/1</button>
+        <button type="button" data-hw-ladder="12,6,1">當日 12/6/1</button>
+        <button type="button" data-hw-ladder="">恢復預設</button>
+      </div>
+      <div class="actions">
+        <button id="hwLadderSave" class="primary" type="button">儲存提醒階梯</button>
+        <button id="hwLadderAdd" class="sec" type="button">新增階段</button>
+      </div>
+      <div id="hwLadderMsg" class="msg"></div>
+    </section>
+
     <section class="card grid-single">
       <div class="sec-head">
         <div><h2>即時點名提示音</h2><div class="desc">偵測到新點名時播放提示音。設定只儲存在目前這台裝置與瀏覽器。</div></div>
