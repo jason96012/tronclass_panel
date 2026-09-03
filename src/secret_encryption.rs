@@ -94,7 +94,20 @@ impl StoreSecret {
                     StoreSecret(stored.to_string())
                 }
             }
-            None => StoreSecret(stored.to_string()),
+            None => {
+                // MASTER_KEY_ROTATION_V1：未設 key 但值是加密信封＝一定解不開，
+                // 回退原文當密碼必然導致登入失敗。收斂為一次 warn 以便察覺。
+                if is_envelope(stored) {
+                    static WARNED_NO_KEY: once_cell::sync::OnceCell<()> =
+                        once_cell::sync::OnceCell::new();
+                    WARNED_NO_KEY.get_or_init(|| {
+                        warn!(
+                            "資料庫內有加密信封（enc:…）但未設定 TRONCLASS_MASTER_KEY；密碼／cookie 無法解密，該帳號登入將失敗"
+                        );
+                    });
+                }
+                StoreSecret(stored.to_string())
+            }
         }
     }
 }
