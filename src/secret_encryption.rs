@@ -77,15 +77,15 @@ impl StoreSecret {
         match master_key() {
             Some(key) => {
                 if is_envelope(stored) {
-                    match decrypt_any(stored, key) {
+                    match decrypt_layered(stored, key) {
                         Some(plaintext) => StoreSecret(plaintext),
                         None => {
                             // AT_REST_DECRYPT_FAIL_V1
-                            // enc: 開頭但解不開 → 設定的 key 與寫入時皆不一致。此時若
-                            // 回退成原始加密字串當密碼，登入必失敗。明確記錄警告，
-                            // 並回退成原文（讓呼叫端可用原始值，但能從 log 察覺）。
+                            // enc: 開頭但解不開 → 設定的 key 與寫入時皆不一致
+                            // （或雙重加密超過可解層數）。回退成原文僅供辨識，
+                            // 以此值登入必然失敗。明確記錄警告以便察覺。
                             tracing::warn!(
-                                "at-rest 解密失敗：enc 信封無法以目前／舊 master key 解密（key 可能不一致或資料損毀）"
+                                "at-rest 解密失敗：enc 信封無法以目前／舊 master key 解密（key id 不符、key 遺失，或多層污染）；以此帳號登入將失敗，請核對 TRONCLASS_MASTER_KEY(_OLD)"
                             );
                             StoreSecret(stored.to_string())
                         }
@@ -247,6 +247,23 @@ fn decrypt_payload(payload: &str, key: [u8; 32]) -> Option<String> {
     String::from_utf8(plaintext).ok()
 }
 
+/// MASTER_KEY_ROTATION_V1：逐層解開信封（防雙重加密污染）。
+///
+/// 歷史 bug 可能把「解密失敗 fallback 的密文字串」當成密碼回寫，形成
+/// `enc:v2( enc:v1( 明文 ) )` 的多層結構——單層解密「成功」但得到的仍是
+/// 信封字串，登入必然失敗且不出現解密警告。這裡連續解到不是信封為止
+/// （上限 4 層），讓此類污染自動修復。
+fn decrypt_layered(stored: &str, current: [u8; 32]) -> Option<String> {
+    let mut value = stored.to_string();
+    for _ in 0..4 {
+        if !is_envelope(&value) {
+            return Some(value);
+        }
+        value = decrypt_any(&value, current)?;
+    }
+    None
+}
+
 /// MASTER_KEY_ROTATION_V1：此儲存值是否需要重加密至目前 key。
 ///
 /// v1 信封一律需要（輪替後補上 key id 標記）；v2 信封僅在 key id ≠
@@ -268,12 +285,13 @@ pub fn needs_rewrap(stored: &str) -> bool {
 /// MASTER_KEY_ROTATION_V1：把舊信封解密後以目前 key 重加密成 v2。
 ///
 /// 失敗（未啟用加密、非信封、解不開）回 `None`，呼叫端應保留原值。
+/// 使用多層解密——雙重加密的污染值會被重寫為乾淨的單層 v2。
 pub fn rewrap_stored(stored: &str) -> Option<String> {
     let current = master_key()?;
     if !is_envelope(stored) {
         return None;
     }
-    let plaintext = decrypt_any(stored, current)?;
+    let plaintext = decrypt_layered(stored, current)?;
     encrypt_with_key(&plaintext, current)
 }
 
@@ -362,6 +380,31 @@ mod tests {
             STANDARD.encode([2u8; 40])
         );
         assert!(rewrap_stored(&garbage).is_none());
+
+        std::env::remove_var("TRONCLASS_MASTER_KEY");
+        std::env::remove_var("TRONCLASS_MASTER_KEY_OLD");
+    }
+
+    #[test]
+    fn double_encryption_unwraps_and_cleans() {
+        std::env::set_var("TRONCLASS_MASTER_KEY", hex::encode([10u8; 32]));
+        std::env::set_var("TRONCLASS_MASTER_KEY_OLD", hex::encode([9u8; 32]));
+        let cur = [10u8; 32];
+
+        // 模擬污染：解密失敗 fallback 的 v1 密文被當成「密碼」再加密一層 v2
+        let inner = build_v1("real-password", [9u8; 32]).unwrap();
+        let polluted = encrypt_with_key(&inner, cur).unwrap();
+
+        // 多層解開：讀取時直接得到真實明文
+        assert_eq!(StoreSecret::from_stored(&polluted).as_str(), "real-password");
+
+        // rewrap 後寫回乾淨的單層 v2，且仍解出真實明文
+        let cleaned = rewrap_stored(&polluted).unwrap();
+        assert!(cleaned.starts_with("enc:v2:"));
+        assert_eq!(StoreSecret::from_stored(&cleaned).as_str(), "real-password");
+        // 三層也應解開（上限 4 層）
+        let triple = encrypt_with_key(&polluted, cur).unwrap();
+        assert_eq!(StoreSecret::from_stored(&triple).as_str(), "real-password");
 
         std::env::remove_var("TRONCLASS_MASTER_KEY");
         std::env::remove_var("TRONCLASS_MASTER_KEY_OLD");
