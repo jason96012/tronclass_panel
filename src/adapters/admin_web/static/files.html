@@ -1688,6 +1688,8 @@
   // PDFJS_PREVIEW_V1: 把「已取得的 PDF 位元組」逐頁渲染成 canvas（fit-width 堆疊）。
   async function renderPdfData(data){
     const body = q('previewBody');
+    // FILES_LAZY_LIB_V1: PDF.js 改為按需載入（只在真的開 PDF 時才抓 ~320KB）。
+    if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('pdf');
     window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
     const doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
     const wrap = document.createElement('div');
@@ -1720,6 +1722,9 @@
     const fallbackIframe = () => {
       body.innerHTML = '<iframe src="' + url + '#toolbar=1" type="application/pdf"></iframe>';
     };
+    // FILES_LAZY_LIB_V1: 先按需載入 PDF.js，否則下方的 `!window.pdfjsLib` 會誤判為
+    // 「引擎缺失」而退回原生 iframe（首次開 PDF 就降級）。
+    if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('pdf');
     if (!window.pdfjsLib) { reportPreview(path, ext, 'pdf-noengine', 'pdfjsLib missing'); fallbackIframe(); return; }
     body.innerHTML = '<div class="empty">正在載入 PDF…</div>';
     try {
@@ -1782,6 +1787,9 @@
       const isPdf = buf.length > 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46; // %PDF
       if (isPdf) { await renderPdfData(buf); return; }
       if (LEGACY_OFFICE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
+      // FILES_LAZY_LIB_V1: 現代 Office 格式才按需載入 jszip + office-view（~145KB），
+      // 其餘情況退回 Office Online，避免進頁就抓。
+      if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('office');
       if (window.TronOfficeView && window.JSZip) { await renderOfficeLocal(buf, ext, path); return; }
       if (OFFICE_ONLINE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
       reportPreview(path, ext, 'unsupported', 'no engine for ext');
@@ -1844,7 +1852,7 @@
       if (res.ok) { const j = await res.json(); if (j && j.public_path) link = location.origin + j.public_path; }
     } catch (_) {}
     if (!link) { toast('無法產生分享連結'); return; }
-    openShareModal(link);
+    await openShareModal(link);
   }
 
   // TRUSTED_TYPES_V1: 後台 CSP require-trusted-types-for 'script'，innerHTML 需經
@@ -1853,7 +1861,7 @@
   try { if (window.trustedTypes) __TT = trustedTypes.createPolicy('default', { createHTML: function(s){return s;} }); } catch (e) { __TT = null; }
   function setHTMLSafe(el, html) { if (__TT) el.innerHTML = __TT.createHTML(html); else el.innerHTML = html; }
 
-  function openShareModal(link){
+  async function openShareModal(link){
     const old = document.getElementById('share-modal'); if (old) old.remove();
     const ov = document.createElement('div'); ov.id = 'share-modal';
     ov.setAttribute('style','position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99999;padding:16px;');
@@ -1873,6 +1881,8 @@
     document.getElementById('share-link').textContent = link;
     const qrBox = document.getElementById('share-qr');
     try {
+      // FILES_LAZY_LIB_V1: QR 產生器改為按需載入（~20KB），只有按「分享」才抓。
+      if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('qrcode');
       if (typeof qrcode === 'function') {
         const qr = qrcode(0, 'M'); qr.addData(link); qr.make();
         setHTMLSafe(qrBox, qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true }));

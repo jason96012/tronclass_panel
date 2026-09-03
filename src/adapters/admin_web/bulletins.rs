@@ -363,7 +363,13 @@ pub(super) async fn list_handler(
     if let Ok(cache) = BULLETINS_CACHE.lock() {
         if let Some((key, at, items)) = cache.as_ref() {
             if *key == account.id && now.saturating_sub(*at) <= BULLETINS_CACHE_TTL_SECS {
-                return (StatusCode::OK, Json(json!({ "items": items }))).into_response();
+                // FIX: 快取命中時也要帶上 is_admin，否則前端讀不到 body.is_admin，
+                // 會把「＋發佈」按鈕誤判為隱藏（用完一次就消失的假象）。
+                return (
+                    StatusCode::OK,
+                    Json(json!({ "items": items, "is_admin": session.is_admin })),
+                )
+                    .into_response();
             }
         }
     }
@@ -604,6 +610,9 @@ pub(super) async fn admin_create_handler(
         list.insert(0, bulletin.clone());
         persist_admin_bulletins(&list);
     }
+    // ADMIN_BULLETIN_NOTIFY_V1: 發佈後立即對所有啟用帳號推送 Web Push 與 Discord，
+    // 確保「管理員公告」也一定有通知（與課程公告走相同的 AI 摘要邏輯）。
+    notify_admin_bulletin(&state, bulletin.clone()).await;
     (
         StatusCode::OK,
         Json(json!({ "ok": true, "id": bulletin.id })),
@@ -781,6 +790,59 @@ fn spawn_bulletin_notification(
                     error = %error,
                     "公告 Discord 通知失敗"
                 );
+            }
+        }
+    });
+}
+
+// ADMIN_BULLETIN_NOTIFY_V1: 管理員發佈公告後，對所有啟用帳號立即推送 Web Push 與 Discord。
+// 與課程公告一致，先產生 AI 摘要（依 key 快取），再逐帳號發送，確保「管理員公告」定有通知。
+async fn notify_admin_bulletin(state: &AdminWebState, bulletin: AdminBulletin) {
+    let Ok(accounts) = state.accounts_db.list().await else {
+        return;
+    };
+    let enabled: Vec<_> = accounts
+        .into_iter()
+        .filter(|a| a.enabled)
+        .map(|a| (a.id.clone(), a.line_user_id.clone(), a.discord_user_id.clone()))
+        .collect();
+    if enabled.is_empty() {
+        return;
+    }
+    let messenger = state.messenger.clone();
+    tokio::spawn(async move {
+        let key = format!("admin-{}", bulletin.id);
+        let title = bulletin.title.clone();
+        let content = bulletin.content.clone();
+        let source = if content.trim().is_empty() {
+            title.clone()
+        } else {
+            format!("{}\n{}", title, content)
+        };
+        let summary = summary_for_bulletin(&key, &source).await;
+
+        for (account_id, line_user_id, discord_user_id) in enabled {
+            // 手機（Web Push）：body 用摘要，空則退回標題。
+            crate::web_push_notifications::notify_bulletin(
+                &account_id,
+                &key,
+                "管理員公告",
+                &title,
+                &summary,
+            );
+
+            // Discord（及其它可用 adapter）：走通知偏好開關。
+            if let Some(m) = messenger.as_ref() {
+                let target = AdapterAccountTarget::new(account_id.clone(), line_user_id, discord_user_id);
+                let event = OutboundMessage::Bulletin(BulletinEvent {
+                    account: account_id.clone(),
+                    course_name: "管理員公告".to_string(),
+                    title: title.clone(),
+                    summary: summary.clone(),
+                });
+                if let Err(error) = m.push_to_account_or_admin(&target, &event).await {
+                    tracing::warn!(account = %account_id, error = %error, "管理員公告 Discord 通知失敗");
+                }
             }
         }
     });
@@ -1818,8 +1880,13 @@ async fn mymemory_request(
     tl: &str,
 ) -> Result<String, UpstreamError> {
     let engine = TranslateEngine::MyMemory;
-    // MyMemory 用 zh-TW / zh-CN 這種 BCP-47 標記；gtx 的 zh-CN 可直接沿用。
-    let langpair = format!("{sl}|{tl}");
+    // MyMemory 不支援來源自動偵測；上游給了 sl=auto 時，改用「含中日韓字→zh-CN，否則 en」當來源提示。
+    let sl_eff: &str = if sl == "auto" {
+        if contains_cjk(q) { "zh-CN" } else { "en" }
+    } else {
+        sl
+    };
+    let langpair = format!("{sl_eff}|{tl}");
     let request = client
         .get("https://api.mymemory.translated.net/get")
         .query(&[("q", q), ("langpair", langpair.as_str())]);
@@ -2032,18 +2099,11 @@ async fn translate_inner(
         )
             .into_response();
     }
-    let cjk = contains_cjk(&text);
-    let sl: &'static str = if cjk { "zh-CN" } else { "en" };
-    let tl: String = match body.tl.trim() {
-        "en" | "ja" | "ko" | "zh-TW" => body.tl.trim().to_string(),
-        _ => {
-            if cjk {
-                "en".to_string()
-            } else {
-                "zh-TW".to_string()
-            }
-        }
-    };
+    // BULLETIN_TRANSLATE_ZH_V2: 所有公告一律翻成繁體中文（zh-TW）。
+    // 來源語言交給 Google 自動偵測（sl=auto），這樣中英混雜的公告也會被「完整」翻譯
+    // （英文→中文、簡中→繁中）；不會再像固定 sl=zh-CN 那樣把英文留著不翻。
+    let sl: &'static str = "auto";
+    let tl: String = "zh-TW".to_string();
 
     // BULLETIN_TRANSLATE_V5：分段送 Google，確保長公告完整翻譯、不被截斷。
     let units = split_for_translation(&text, TRANSLATE_CHUNK_BYTES);

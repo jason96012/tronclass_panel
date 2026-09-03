@@ -325,24 +325,65 @@ pub(super) async fn admin_shares_page_handler(
 // PREVIEW_ENGINES_V1: 只在「雲端硬碟」頁注入 PDF.js（同源 'self'，合法於 CSP），
 // 不要無差別注入到每個 admin 頁面。
 // 預覽引擎：PDF/Office(轉PDF後) → PDF.js；Office 未轉時 → Microsoft Office Online。
+// PREVIEW_ENGINES_V1: 只在「雲端硬碟」頁注入 PDF.js（同源 'self'，合法於 CSP），
+// 不要無差別注入到每個 admin 頁面。
+// 預覽引擎：PDF/Office(轉PDF後) → PDF.js；Office 未轉時 → Microsoft Office Online。
+// FILES_LAZY_LIB_V1: 四大重庫（jszip/office-view/pdf.min/qrcode，共約 485KB）不再
+// 於進頁時同步載入，改由前端依需求動態載入（按 pdf / office / qrcode 分組）：
+//   只有真的打開 PDF / Office 預覽 / 產生分享 QR 時才抓取對應腳本；已載入者用
+//   promise 快取避免重複。pdf.worker.min.js（~1.08MB）本來就只在渲染 PDF 時才抓，
+//   維持不變。此變更可讓 files 頁冷啟動減少約 485KB 的同步下載與解析。
 pub(super) fn inject_files_office_assets(html: &str) -> String {
-    const OFFICE_ASSETS: &str =
-        // 版本號必須隨內容更新：static_assets.rs 對靜態檔下
-        // `max-age=604800, immutable`，不換 query string 瀏覽器會沿用舊檔一週。
-        r#"<script src="/admin/static/js/jszip.min.js?v=officeview6"></script><script src="/admin/static/js/office-view.js?v=officeview10"></script><script src="/admin/static/js/pdf.min.js?v=pdfjs1"></script><script src="/admin/static/js/qrcode.min.js?v=qrshare1"></script>"#;
-    // OFFICE_INJECT_GUARD_V1: 防重複注入必須用「真正的 <script src> 標籤」，
-    // 不能用裸檔名子字串（files.html 註解也會提到檔名，會讓 guard 永遠成立）。
-    if html.contains(r#"src="/admin/static/js/jszip.min.js"#) {
+    // 版本號必須隨內容更新：static_assets.rs 對靜態檔下
+    // `max-age=604800, immutable`，不換 query string 瀏覽器會沿用舊檔一週。
+    const FILELIB_LOADER: &str = r#"<script id="tronLazyFileLibV1">
+(function(){
+  'use strict';
+  if (window.__tronEnsureFileLib) return;
+  var loaded = {};
+  function loadOne(url){
+    return new Promise(function(res, rej){
+      var s = document.createElement('script');
+      s.src = url;
+      s.async = false;              // 依序執行；office-view 依賴 JSZip
+      s.onload = function(){ res(); };
+      s.onerror = function(){ rej(new Error('load ' + url + ' failed')); };
+      document.head.appendChild(s);
+    });
+  }
+  function ensure(name){
+    if (loaded[name]) return Promise.resolve();
+    if (loaded.__p && loaded.__p[name]) return loaded.__p[name];
+    var urls = {
+      pdf:     ['/admin/static/js/pdf.min.js?v=pdfjs1'],
+      office:  ['/admin/static/js/jszip.min.js?v=officeview6','/admin/static/js/office-view.js?v=officeview10'],
+      qrcode:  ['/admin/static/js/qrcode.min.js?v=qrshare1']
+    };
+    var list = urls[name];
+    if (!list) return Promise.resolve();
+    var chain = Promise.resolve();
+    list.forEach(function(u){ chain = chain.then(function(){ return loadOne(u); }); });
+    var p = chain.then(function(){ loaded[name] = true; });
+    if (!loaded.__p) loaded.__p = {};
+    loaded.__p[name] = p;
+    return p;
+  }
+  window.__tronEnsureFileLib = ensure;
+})();
+</script>"#;
+    // OFFICE_INJECT_GUARD_V1: 用「真正的 <script id=...> 標籤」判斷是否已注入，
+    // 避免重複加上 loader（不能用裸檔名子字串，files.html 註解也會提到檔名）。
+    if html.contains(r#"id="tronLazyFileLibV1""#) {
         return html.to_string();
     }
     if let Some(head_at) = html.find("</head>") {
-        let mut out = String::with_capacity(html.len() + OFFICE_ASSETS.len());
+        let mut out = String::with_capacity(html.len() + FILELIB_LOADER.len());
         out.push_str(&html[..head_at]);
-        out.push_str(OFFICE_ASSETS);
+        out.push_str(FILELIB_LOADER);
         out.push_str(&html[head_at..]);
         out
     } else {
-        html.replacen("<head>", &format!("<head>{OFFICE_ASSETS}"), 1)
+        html.replacen("<head>", &format!("<head>{FILELIB_LOADER}"), 1)
     }
 }
 

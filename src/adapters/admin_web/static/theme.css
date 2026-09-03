@@ -737,3 +737,12 @@ body.auth-ok main{
     display:none !important;
   }
 }
+
+
+/* ─── DASHBOARD_OPTIMIZE_V47_EXTRACT_V1 ───
+   以下 2 條規則原只內嵌在 dashboard.html 的 optimizeV47 區塊，
+   該區塊其餘內容與 theme.css 高度重複(94%+)。為了讓 dashboard 移除那份 ~35KB
+   重複內嵌又可保留這 2 條，統一收進共用的 theme.css。
+   （選擇器都只命中 dashboard 元素，其它頁面不受影響） */
+header.topbar .top-actions>*:not(#logoutBtn){display:none!important}
+html.tron-auth-logged-out:has(#loginCard[data-animated-login-installed]){visibility:visible!important}

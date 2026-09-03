@@ -414,9 +414,9 @@
       if(box){box.remove();tr.textContent='翻譯';return;}
       tr.disabled=true;tr.textContent='翻譯中…';
       var src=(htmlToPlainText(it.title||'')+'\n'+htmlToPlainText(it.content||'')).trim();
-      var hasCJK=/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(src);
+      // BULLETIN_TRANSLATE_ZH_V1: 所有公告一律翻譯成繁體中文。
       // BULLETIN_TRANSLATE_V8：後端改為背景 job，這裡送出後改用輪詢取進度／結果。
-      postJson('/admin/api/bulletins/translate',{text:src,tl:hasCJK?'en':'zh-TW'},function(r){
+      postJson('/admin/api/bulletins/translate',{text:src,tl:'zh-TW'},function(r){
         if(r.error){tr.disabled=false;tr.textContent='重試翻譯';showTranslateError(c,foot,r);return;}
         if(r.job_id&&r.translated==null){pollTranslate(r.job_id,r.total||r.chunks||1,tr,c,foot,renderTranslation);return;}
         tr.disabled=false;renderTranslation(r);
