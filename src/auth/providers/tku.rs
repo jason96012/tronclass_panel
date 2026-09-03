@@ -60,6 +60,12 @@ static REDIRECT_META_REFRESH_RE: Lazy<Regex> = Lazy::new(|| {
     .expect("valid regex")
 });
 
+/// LOGIN_FAIL_DIAG_V2：登入失敗時萃取頁面上的錯誤提示（alert 訊息優先）。
+static ALERT_MSG_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)alert\(\s*['"]([^'"]{2,160})['"]\s*\)"#)
+        .expect("valid regex")
+});
+
 pub fn create_flow() -> Box<dyn AuthFlow> {
     Box::new(TkuAuthFlow)
 }
@@ -227,9 +233,17 @@ pub(crate) async fn sso_login_to_service(
     // 產生誤導性的「SSO 登入後 session 驗證失敗」。
     let path = final_url.path();
     if path.contains("logineb") || path.contains("NEAI") {
-        return auth_failed(
-            "TKU: 帳號或密碼錯誤（登入後仍停在 SSO 登入頁）——請先用瀏覽器確認此帳號可以登入，反覆失敗可能已觸發學校端防護",
-        );
+        // LOGIN_FAIL_DIAG_V2：回抓登入頁，把學校實際回應的錯誤文字帶進訊息，
+        // 分辨「密碼錯誤」vs「驗證碼/鎖定」等原因。只在失敗路徑多一次 GET。
+        let hint = fetch_login_error_hint(client, &final_url).await;
+        let suffix = if hint.is_empty() {
+            String::new()
+        } else {
+            format!("；學校回應：{hint}")
+        };
+        return auth_failed(format!(
+            "TKU: 帳號或密碼錯誤（登入後仍停在 SSO 登入頁{suffix}）——請先用瀏覽器確認此帳號可以登入，反覆失敗可能已觸發學校端防護"
+        ));
     }
     Ok(final_url)
 }
@@ -338,6 +352,51 @@ async fn post_image_validate(
         .await
         .into_diagnostic()
         .wrap_err("TKU: Failed to read ImageValidate response")
+}
+
+/// LOGIN_FAIL_DIAG_V2：GET 登入頁並萃取錯誤提示文字（失敗路徑診斷用）。
+async fn fetch_login_error_hint(client: &Client, url: &Url) -> String {
+    let Ok(resp) = client
+        .get(url.clone())
+        .header(header::ACCEPT, HTML_ACCEPT)
+        .header(header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
+        .send()
+        .await
+    else {
+        return String::new();
+    };
+    let Ok(html) = resp.text().await else {
+        return String::new();
+    };
+    extract_error_hint(&html)
+}
+
+/// LOGIN_FAIL_DIAG_V2：alert('…') 優先；否則找含關鍵字的文字片段。
+fn extract_error_hint(html: &str) -> String {
+    if let Some(caps) = ALERT_MSG_RE.captures(html) {
+        if let Some(m) = caps.get(1) {
+            let text = decode_html_entities(m.as_str()).trim().to_string();
+            if !text.is_empty() {
+                return crate::text_utils::truncate_chars(&text, 80).to_string();
+            }
+        }
+    }
+    // 後備：頁面文字中第一個含關鍵字的短片段（去標籤後掃描）。
+    let stripped: String = html
+        .replace('<', " ")
+        .replace('>', " ");
+    for line in stripped.split_whitespace() {
+        if ["密碼", "帳號", "錯誤", "失敗", "鎖定", "驗證碼", "錯誤嘗試"]
+            .iter()
+            .any(|kw| line.contains(kw))
+        {
+            let text = decode_html_entities(line).trim().to_string();
+            if text.chars().count() >= 2 {
+                return crate::text_utils::truncate_chars(&text, 80).to_string();
+            }
+        }
+    }
+    String::new()
 }
 
 async fn follow_html_redirects(
