@@ -38,7 +38,7 @@ const PAGE_HTML: &str = include_str!("static/ai.html");
 
 /// AI_CHAT_V3：頁面版本。前端是 `include_str!` 編進二進位的，忘了重新編譯就會
 /// 看到舊畫面卻以為改動沒生效。把版本與編譯時間顯示在側欄，一眼就能分辨。
-const PAGE_VERSION: &str = "v9";
+const PAGE_VERSION: &str = "v10";
 
 fn build_stamp() -> &'static str {
     option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("dev")
@@ -82,6 +82,13 @@ const SUMMARY_TRIGGER: usize = 12;
 const SUMMARY_KEEP_RAW: usize = 6;
 /// 摘要本身的長度上限（token）。
 const SUMMARY_MAX_TOKENS: u32 = 320;
+// BULLETIN_AI_SUMMARY_V1：把單則學校公告濃縮成「字數精簡但重點不漏」的摘要。
+const BULLETIN_SUMMARY_MAX_TOKENS: u32 = 420;
+// BULLETIN_NOTIFY_SUMMARY_V2：通知預覽用的摘要。要比條列版更短 ——
+// 像手機／Discord 通知預覽那樣，「一到兩句」就讓人看懂重點。
+const BULLETIN_PREVIEW_MAX_TOKENS: u32 = 160;
+/// 送進摘要模型的上游來源文字上限（位元組）。公告多半不長，但設上限以免錯字溢出。
+const BULLETIN_SUMMARY_MAX_SOURCE: usize = 40_000;
 /// 相同問題的回覆快取。
 const CHAT_CACHE_TTL_SECS: u64 = 24 * 60 * 60;
 const CHAT_CACHE_MAX: usize = 200;
@@ -2104,6 +2111,221 @@ async fn maybe_summarize(account: String, thread_id: String) {
         }
         Err(e) => tracing::warn!("對話摘要失敗（不影響聊天）：{e}"),
     }
+}
+
+// BULLETIN_AI_SUMMARY_V1
+// ─────────────────────────────────────────────────────────────
+// 公告 AI 摘要：與聊天同一套密鑰輪替與 status 輪詢，但只有單次、非串流的小請求。
+// 前端在「課程公告」每張卡片上放「摘要」按鈕，點擊後：
+//   1. POST /admin/api/ai/summarize  → 建立背景 job，立刻回 job_id
+//   2. 前端每 600ms 輪詢 /admin/api/ai/chat/status?job=<id>
+//   3. 完成後回傳一段「字數精簡但重點不漏」的繁體中文條列摘要
+// 用背景 job 的原因與聊天一致：避免反向代理（Cloudflare Tunnel）對長時間
+// 沒有回應的 HTTP 請求回空 502。摘要很短，但偶爾上游慢，job 模式更穩。
+
+/// 摘要用的 system 提示：只保留重點、不臆測、條列、精簡。
+fn bulletin_summary_instruction() -> String {
+    "你是學校公告的摘要助手。請把使用者給的公告濃縮成重點摘要。\
+     要求：1) 用繁體中文。2) 用條列式，每點一行，最多 5 點。\
+     3) 務必保留關鍵資訊：日期與截止期限、地點、需要採取的行動、重要規定、政策變更、\
+     需回覆或參與的項目。4) 不要加入原文沒有的資訊或推測。\
+     5) 整份精簡（約 100–180 字），但重點不可遺漏。".to_string()
+}
+
+/// 通知預覽用的摘要指令：像手機／Discord 的通知預覽一樣，
+/// 只要一到兩句、抓到最關鍵的重點即可，不要條列。
+fn bulletin_preview_instruction() -> String {
+    "你是學校公告的摘要助手。請把使用者給的公告寫成「通知預覽」一句話。\
+     要求：1) 用繁體中文。2) 一到兩句（約 20–45 字），不要列點、不要換行。\
+     3) 只抓最關鍵的訊息：日期與截止期限、需要採取的行動、地點、或重要變更。\
+     4) 不要加入原文沒有的資訊或推測。\
+     5) 讀起來要像手機推播或 Discord 通知預覽那樣一目了然。".to_string()
+}
+
+async fn run_bulletin_summary_job(job_id: String, text: String) {
+    let Some((option, _)) = pick_cheapest_model() else {
+        let _ = job_update(&job_id, |job| {
+            job.done = true;
+            job.ok = false;
+            job.code = "NO_MODEL_AVAILABLE".to_string();
+            job.error = "系統尚未設定任何可用的 AI 模型，請聯絡管理員。".to_string();
+        });
+        return;
+    };
+    let provider = option.provider.clone();
+    let model_used = option.model.clone();
+
+    // BULLETIN_AI_SUMMARY_V2：對同一把密鑰失敗時，往下換其它「同服務商」的密鑰重試。
+    let keys = candidate_keys(Some(&provider));
+    if keys.is_empty() {
+        let _ = job_update(&job_id, |job| {
+            job.done = true;
+            job.ok = false;
+            job.code = "NO_KEY_AVAILABLE".to_string();
+            job.error = "這個模型目前沒有可用的密鑰（額度用盡、被限流或已停用）。".to_string();
+        });
+        return;
+    }
+
+    let messages = vec![
+        json!({ "role": "system", "content": bulletin_summary_instruction() }),
+        json!({ "role": "user", "content": text }),
+    ];
+
+    let mut attempts: Vec<Value> = Vec::new();
+    let mut last_error = "沒有任何密鑰可用".to_string();
+    for key in keys.iter() {
+        if job_cancelled(&job_id) {
+            return;
+        }
+        let key_name = key.display_name();
+        match complete_once(key, &model_used, messages.clone(), BULLETIN_SUMMARY_MAX_TOKENS).await {
+            Ok(summary) => {
+                let _ = job_update(&job_id, |job| {
+                    job.done = true;
+                    job.ok = true;
+                    job.text = summary;
+                    job.key_name = key_name;
+                    job.model = model_used.clone();
+                });
+                return;
+            }
+            Err(e) => {
+                attempts.push(json!({
+                    "key": key_name,
+                    "ok": false,
+                    "status": 0,
+                    "reason": e.clone(),
+                }));
+                last_error = e;
+            }
+        }
+    }
+
+    let _ = job_update(&job_id, |job| {
+        job.done = true;
+        job.ok = false;
+        job.code = "AI_SUMMARY_FAILED".to_string();
+        job.error = last_error;
+        job.attempts = attempts;
+    });
+}
+
+/// 送出公告 → 建立背景摘要 job → 立刻回 job_id。
+#[derive(Debug, Deserialize)]
+pub(super) struct SummarizeRequest {
+    #[serde(default)]
+    token: String,
+    /// 要摘要的公告全文（通常含標題與正文）。由前端先轉成純文字再送。
+    text: String,
+}
+
+pub(super) async fn summarize_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Json(body): Json<SummarizeRequest>,
+) -> Response {
+    let token = session_token(&headers, &body.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+
+    let text = body.text.trim().to_string();
+    if text.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "沒有可摘要的內容", "code": "AI_EMPTY_CONTENT" })),
+        )
+            .into_response();
+    }
+    if text.len() > BULLETIN_SUMMARY_MAX_SOURCE {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("公告太長（上限 {} 位元組），無法摘要", BULLETIN_SUMMARY_MAX_SOURCE),
+                "code": "AI_SUMMARY_TOO_LONG",
+            })),
+        )
+            .into_response();
+    }
+
+    // 先確認有可用模型，才建 job。
+    if pick_cheapest_model().is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "尚未設定 AI 模型，請到對話頁的「API 密鑰」新增，或在「使用者可選的模型」開放模型。",
+                "code": "NO_MODEL_AVAILABLE",
+            })),
+        )
+            .into_response();
+    }
+
+    let job_id = uuid::Uuid::new_v4().to_string();
+    job_insert(
+        &job_id,
+        ChatJob {
+            account: session.account_id,
+            thread_id: String::new(),
+            text: String::new(),
+            done: false,
+            ok: false,
+            cancel: false,
+            error: String::new(),
+            code: String::new(),
+            key_name: String::new(),
+            model: String::new(),
+            auto_reason: String::new(),
+            cached: false,
+            cache_key: String::new(),
+            attempts: Vec::new(),
+            steps: Vec::new(),
+            created_at: now_secs(),
+            updated_at: now_secs(),
+        },
+    );
+
+    let job_id2 = job_id.clone();
+    tokio::spawn(async move {
+        run_bulletin_summary_job(job_id2, text).await;
+    });
+
+    (
+        StatusCode::ACCEPTED,
+        Json(json!({
+            "job_id": job_id,
+            "state": "running",
+            "poll_path": "/admin/api/ai/chat/status",
+            "poll_ms": 600,
+        })),
+    )
+        .into_response()
+}
+
+// BULLETIN_NOTIFY_SUMMARY_V1
+// 供「公告通知」在背景生成本公告的重點摘要（精簡、保留關鍵資訊）。與
+// summarize_handler 共用 pick_cheapest_model + complete_once 的密鑰輪替。
+// 回傳 None 代表摘要無法生成（無模型／密鑰或上游失敗），呼叫端退回標題。
+pub(crate) async fn summarize_bulletin_text(text: String) -> Option<String> {
+    let (option, _) = pick_cheapest_model()?;
+    let provider = option.provider.clone();
+    let model_used = option.model.clone();
+    let keys = candidate_keys(Some(&provider));
+    if keys.is_empty() {
+        return None;
+    }
+    let messages = vec![
+        json!({ "role": "system", "content": bulletin_preview_instruction() }),
+        json!({ "role": "user", "content": text }),
+    ];
+    for key in keys.iter() {
+        // BULLETIN_NOTIFY_SUMMARY_V2：通知預覽用較短的 token 上限，逼模型寫短句。
+        match complete_once(key, &model_used, messages.clone(), BULLETIN_PREVIEW_MAX_TOKENS).await {
+            Ok(summary) if !summary.trim().is_empty() => return Some(summary),
+            _ => continue,
+        }
+    }
+    None
 }
 
 /// 背景生成：依序嘗試每一把可用密鑰，直到有人成功。

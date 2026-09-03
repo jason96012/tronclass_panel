@@ -4,6 +4,8 @@
 //! 再平行（concurrency 8）抓取每門課的 `/api/courses/{id}/bulletins`，
 //! 彙整成單一清單回給前端。公告為課程層級；無公告時回空陣列。
 
+use std::sync::Arc;
+
 use axum::{
     extract::{Query, State},
     http::{HeaderMap, StatusCode},
@@ -12,6 +14,8 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+
+use crate::adapters::events::{AdapterAccountTarget, AdapterMessenger, BulletinEvent, OutboundMessage};
 
 use super::{
     admin_login_redirect, html_page_response, must_change_password_redirect, session_token,
@@ -549,6 +553,7 @@ pub(super) async fn test_handler(
         &key,
         "公告測試",
         "這是一則測試公告通知，點一下即可開啟課程公告頁。",
+        "",  // 測試通知不帶摘要
     );
     (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
@@ -669,7 +674,10 @@ fn save_notified(keys: &[String]) {
     }
 }
 
-pub(super) fn start_bulletin_notifier(state: AdminWebState) {
+pub(super) fn start_bulletin_notifier(
+    state: AdminWebState,
+    messenger: Option<Arc<dyn AdapterMessenger>>,
+) {
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
         let path = bulletin_notified_file();
@@ -690,13 +698,95 @@ pub(super) fn start_bulletin_notifier(state: AdminWebState) {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
-                notify_check(&state).await;
+                notify_check(&state, messenger.clone()).await;
             }
         });
     });
 }
 
-async fn notify_check(state: &AdminWebState) {
+// BULLETIN_NOTIFY_SUMMARY_V1
+// 新公告推播時，先背景生成一份「精簡但重點不漏」的摘要（與公告頁摘要同一套
+// 密鑰輪替），再同時推給 Web Push（手機）與 Discord。同則公告只摘要一次，
+// 避免重複呼叫 AI；摘要失敗時退回標題，不影響通知送出。
+#[derive(Debug, Clone)]
+struct NewBulletin {
+    key: String,
+    account_id: String,
+    line_user_id: String,
+    discord_user_id: String,
+    course: String,
+    title: String,
+    content: String,
+}
+
+static BULLETIN_SUMMARY_CACHE: once_cell::sync::Lazy<std::sync::Mutex<
+    std::collections::HashMap<String, String>,
+>> = once_cell::sync::Lazy::new(|| {
+    std::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+async fn summary_for_bulletin(key: &str, source: &str) -> String {
+    if let Some(cached) = BULLETIN_SUMMARY_CACHE.lock().unwrap().get(key).cloned() {
+        return cached;
+    }
+    let summary = super::ai_chat::summarize_bulletin_text(source.to_string())
+        .await
+        .unwrap_or_default();
+    if !summary.is_empty() {
+        BULLETIN_SUMMARY_CACHE
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), summary.clone());
+    }
+    summary
+}
+
+fn spawn_bulletin_notification(
+    item: NewBulletin,
+    messenger: Option<Arc<dyn AdapterMessenger>>,
+) {
+    tokio::spawn(async move {
+        let source = if item.content.trim().is_empty() {
+            item.title.clone()
+        } else {
+            format!("{}\n{}", item.title, item.content)
+        };
+        let summary = summary_for_bulletin(&item.key, &source).await;
+
+        // 手機（Web Push）：body 用摘要，空則退回標題。
+        crate::web_push_notifications::notify_bulletin(
+            &item.account_id,
+            &item.key,
+            &item.course,
+            &item.title,
+            &summary,
+        );
+
+        // Discord（及其它可用 adapter）：走通知偏好開關。
+        if let Some(m) = messenger {
+            let target = AdapterAccountTarget::new(
+                item.account_id.clone(),
+                item.line_user_id.clone(),
+                item.discord_user_id.clone(),
+            );
+            let event = OutboundMessage::Bulletin(BulletinEvent {
+                account: item.account_id.clone(),
+                course_name: item.course.clone(),
+                title: item.title.clone(),
+                summary,
+            });
+            if let Err(error) = m.push_to_account_or_admin(&target, &event).await {
+                tracing::warn!(
+                    account = %item.account_id,
+                    error = %error,
+                    "公告 Discord 通知失敗"
+                );
+            }
+        }
+    });
+}
+
+async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMessenger>>) {
     let accounts = match state.accounts_db.list().await {
         Ok(l) => l,
         Err(_) => return,
@@ -709,7 +799,7 @@ async fn notify_check(state: &AdminWebState) {
         return;
     };
 
-    let mut current: Vec<(String, String, String, String)> = Vec::new();
+    let mut current: Vec<NewBulletin> = Vec::new();
     for raw in enabled {
         let Some(provider) = config.providers.get(&raw.provider) else {
             continue;
@@ -753,7 +843,16 @@ async fn notify_check(state: &AdminWebState) {
                 .unwrap_or_default()
                 .to_string();
             let title = pick_str(&b, &["title", "name", "subject"]);
-            current.push((key, account.id.clone(), course, title));
+            let content = pick_str(&b, &["content", "body", "text", "description"]);
+            current.push(NewBulletin {
+                key,
+                account_id: account.id.clone(),
+                line_user_id: account.line_user_id.clone(),
+                discord_user_id: account.discord_user_id.clone(),
+                course,
+                title,
+                content,
+            });
         }
     }
 
@@ -761,9 +860,9 @@ async fn notify_check(state: &AdminWebState) {
     let warm = BULLETIN_NOTIFIED_WARM.load(std::sync::atomic::Ordering::SeqCst);
     let mut keys = guard.clone();
     if !warm {
-        for (k, _, _, _) in &current {
-            if !keys.contains(k) {
-                keys.push(k.clone());
+        for item in &current {
+            if !keys.contains(&item.key) {
+                keys.push(item.key.clone());
             }
         }
         *guard = keys.clone();
@@ -772,11 +871,12 @@ async fn notify_check(state: &AdminWebState) {
         return;
     }
     let mut changed = false;
-    for (key, account, course, title) in current {
-        if !keys.contains(&key) {
-            keys.push(key.clone());
+    for item in current {
+        if !keys.contains(&item.key) {
+            keys.push(item.key.clone());
             changed = true;
-            crate::web_push_notifications::notify_bulletin(&account, &key, &course, &title);
+            // 背景生成摘要 + 推送到 Web Push 與 Discord，不阻塞輪詢迴圈。
+            spawn_bulletin_notification(item, messenger.clone());
         }
     }
     if changed {

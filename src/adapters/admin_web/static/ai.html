@@ -6,15 +6,21 @@
 <title>AI 對話</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  html,body{height:100%}
-  body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+  html{height:100%}
+  body{height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden;-webkit-tap-highlight-color:transparent;overscroll-behavior:none}
+  /* 行動瀏覽器：用「動態視窗高」讓網址列收合／展開時畫面不跳動、輸入框不掉出螢幕。 */
+  @supports(height:100dvh){html,body{height:100dvh}}
   button,input,textarea,select{font-family:inherit;color:inherit}
+  button{touch-action:manipulation}
 
   .app{display:flex;height:100%;min-height:0}
 
   /* ── 側欄 ───────────────────────────────── */
   .side{width:264px;flex:0 0 264px;background:var(--card);border-right:1px solid var(--line2);display:flex;flex-direction:column;min-height:0}
   .side-top{padding:12px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid var(--line2)}
+  /* 手機側欄的關閉 ✕（桌面不顯示，留在後面 media query 開啟）*/
+  .sideclose{display:none;align-items:center;justify-content:center;width:30px;height:30px;border-radius:9px;border:1px solid var(--line);background:transparent;color:var(--muted);cursor:pointer;font-size:14px;line-height:1;flex:0 0 auto;margin-left:auto}
+  .sideclose:hover{background:var(--soft);color:var(--text);border-color:var(--line2)}
   .brand{display:flex;align-items:center;gap:8px;font-weight:800;font-size:15px;padding:2px 4px 6px}
   .brand .dot{width:9px;height:9px;border-radius:50%;background:var(--ok);flex:0 0 auto}
   .brand .dot.off{background:var(--bad)}
@@ -120,26 +126,12 @@
   .msgatt{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
   .msgatt span{font-size:11px;color:var(--dim);border:1px solid var(--line2);border-radius:8px;padding:2px 7px}
   .dropping{outline:2px dashed var(--accent);outline-offset:-6px}
-  /* AI_CHAT_V9：Agent 模式 */
-  .agentbtn{flex:none;display:flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid var(--line2);border-radius:10px;background:var(--bg2);color:var(--dim);cursor:pointer;font-size:12px;white-space:nowrap}
-  .agentbtn.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
-  .steps{margin:8px 0 4px;border-left:2px solid var(--line2);padding-left:10px;display:flex;flex-direction:column;gap:6px}
-  .step{font-size:12px;color:var(--dim)}
-  .step .hd{display:flex;align-items:center;gap:6px;cursor:pointer}
-  .step .ic{width:16px;text-align:center}
-  .step .nm{color:var(--fg)}
-  .step.bad .nm{color:#f87171}
-  .step pre{margin:4px 0 0 22px;padding:6px 8px;background:var(--bg2);border:1px solid var(--line2);border-radius:8px;white-space:pre-wrap;word-break:break-word;font-size:11px;max-height:220px;overflow:auto}
-  .files{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
-  .files a{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--accent);text-decoration:none;border:1px solid var(--line2);border-radius:9px;padding:4px 9px}
-  .files a:hover{border-color:var(--accent)}
   .cwrap{max-width:760px;margin:0 auto;display:flex;gap:9px;align-items:flex-end;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:8px 8px 8px 14px}
   .cwrap:focus-within{border-color:var(--primary)}
   .cwrap textarea{flex:1;border:none;background:transparent;outline:none;resize:none;font-size:14.5px;line-height:1.6;max-height:200px;padding:7px 0}
   .sendbtn{background:var(--primary);color:var(--primaryText);border:none;border-radius:11px;width:38px;height:38px;flex:0 0 38px;cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center}
   .sendbtn:disabled{opacity:.45;cursor:not-allowed}
   .sendbtn.stop{background:var(--bad)}
-  .hint{max-width:760px;margin:7px auto 0;font-size:11px;color:var(--muted);text-align:center}
 
   /* ── 面板 ───────────────────────────────── */
   .mask{position:fixed;inset:0;background:rgba(15,23,42,.5);display:none;z-index:40;backdrop-filter:blur(2px)}
@@ -184,10 +176,43 @@
   .toast.bad{border-color:var(--bad);color:var(--bad)}
 
   @media(max-width:820px){
-    .side{position:fixed;top:0;bottom:0;left:0;z-index:45;transform:translateX(-100%);transition:transform .2s ease}
+    .side{position:fixed;top:0;bottom:0;left:0;z-index:45;max-width:86vw;transform:translateX(-100%);transition:transform .2s ease;padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
     .side.open{transform:translateX(0)}
-    .menubtn{display:inline-flex}
+    /* 漢堡 ☰：統一為方正的點按區、字形加大，不再只是小字。 */
+    .iconbtn.menubtn{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:0 0 38px;padding:0;font-size:19px;line-height:1;color:var(--text)}
+    .iconbtn.menubtn:hover{color:var(--primary);border-color:var(--primary)}
+    .sideclose{display:inline-flex}
     .sugg{grid-template-columns:1fr}
+    /* ── 手機版最佳化 ─────────────────────────────── */
+    /* 避免劉海／Home indicator 遮到頂欄與輸入列、也讓面板與 toast 對齊安全區。 */
+    .topbar{padding-top:calc(11px + env(safe-area-inset-top));padding-left:calc(14px + env(safe-area-inset-left));padding-right:calc(14px + env(safe-area-inset-right))}
+    .composer{padding-bottom:calc(16px + env(safe-area-inset-bottom));padding-left:calc(10px + env(safe-area-inset-left));padding-right:calc(10px + env(safe-area-inset-right))}
+    .panel{padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+    .toast{bottom:calc(24px + env(safe-area-inset-bottom));max-width:calc(100vw - 32px)}
+    /* iOS Safari：<16px 的文字輸入框在聚焦時會自動放大導致畫面跳動，統一 16px 修正。 */
+    .cwrap textarea,.field input,.field select,.field textarea{font-size:16px}
+    /* 觸控沒有 hover，讓刪除對話的 ✕ 常駐、加大點按範圍。 */
+    .thread{padding-right:6px}
+    .thread .x{opacity:.6;padding:5px 8px}
+    .thread:hover .x,.thread.active .x{opacity:1}
+    /* 頂欄收窄：模型選單改成可收縮，避免手機窄螢幕上換行或溢出。 */
+    .modelpick{max-width:32vw;min-width:0}
+    /* 聊天區與訊息稍微收緊，水準空間留給內容。 */
+    .stream{padding:14px 0 6px}
+    .inner{padding:0 12px;gap:15px}
+    /* 輸入列更緊湊；密鑰／設定面板內的按鈕列可換行。 */
+    .cwrap{gap:6px;border-radius:14px;padding:6px 6px 6px 11px}
+    .cwrap textarea{max-height:150px}
+    .btnrow{gap:6px}
+  }
+  @media(max-width:480px){
+    .topbar{padding-top:calc(8px + env(safe-area-inset-top));padding-bottom:8px;padding-left:calc(10px + env(safe-area-inset-left));padding-right:calc(10px + env(safe-area-inset-right))}
+    .topbar h1{font-size:14px}
+    .modelpick{max-width:26vw;font-size:12px}
+    .iconbtn{padding:6px 8px;font-size:12px}
+    .cwrap textarea{font-size:16px}
+    .empty h2{font-size:19px}
+    .bubble{font-size:14px}
   }
 </style>
 </head>
@@ -195,7 +220,7 @@
 <div class="app">
   <aside class="side" id="side">
     <div class="side-top">
-      <div class="brand"><span class="dot" id="statusDot"></span><span>AI 對話</span><span class="ver" id="verTag"></span></div>
+      <div class="brand"><span class="dot" id="statusDot"></span><span>AI 對話</span><span class="ver" id="verTag"></span><button class="sideclose" id="sideClose" type="button" title="關閉選單" aria-label="關閉選單">✕</button></div>
       <button class="newbtn" id="newBtn" type="button">＋ 新對話</button>
     </div>
     <div class="threads" id="threadList"></div>
@@ -218,12 +243,10 @@
       <div class="attachbar" id="attachBar"></div>
       <div class="cwrap">
         <button class="attbtn" id="attachBtn" type="button" title="附加圖片或文字檔">＋</button>
-        <button class="agentbtn" id="agentBtn" type="button" title="Agent 模式：讓 AI 自己呼叫工具、多步驟完成任務">🤖 Agent</button>
-        <textarea id="input" rows="1" placeholder="傳訊息給 AI…（Enter 送出，Shift+Enter 換行，可直接貼上或拖入圖片）"></textarea>
+        <textarea id="input" rows="1"></textarea>
         <button class="sendbtn" id="sendBtn" type="button">↑</button>
       </div>
       <input type="file" id="fileInput" multiple style="display:none" accept="image/png,image/jpeg,image/webp,image/gif,text/*,.txt,.md,.csv,.json,.log,.xml,.yml,.yaml,.ini,.conf,.sql,.js,.ts,.py,.rs,.java,.c,.cpp,.h,.css,.html,.sh">
-      <div class="hint" id="hint">回覆由 AI 生成，請自行查證重要資訊。附圖時會自動改用看得懂圖片的模型。</div>
     </div>
   </main>
 </div>
@@ -436,9 +459,6 @@
   var activeStream=null;
   var streamBuf='';
   var renderTimer=null;
-  // AI_CHAT_V9：Agent 模式
-  var agentOn=false;
-  var stepsBox=null;
 
   // ── Markdown → DOM ─────────────────────────────────────
   // CSP 有 require-trusted-types-for 'script'，innerHTML 會直接 throw，
@@ -865,7 +885,6 @@
     input.value='';
     autoGrow();
 
-    stepsBox=null;
     var inner=q('inner');
     if(!currentMessages.length)clear(inner);
     var shown=text||(payload.some(function(a){return a.kind==='image';})?'（請看這張圖片）':'（請看附件）');
@@ -882,7 +901,7 @@
     scrollDown(true);
     setSending(true);
 
-    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text,model_id:currentModel,attachments:payload,agent:agentOn},function(r){
+    postJson('/admin/api/ai/chat',{thread_id:currentThread,message:text,model_id:currentModel,attachments:payload},function(r){
       if(r.error){
         setSending(false);
         showError(bubble,r);
@@ -911,55 +930,6 @@
       if(!done)bubble.appendChild(el('span','cursor'));
       scrollDown(false);
     },90);
-  }
-
-  // ── AI_CHAT_V9：Agent 步驟時間軸 ────────────────────────
-  var TOOL_ICON={workspace_list:'📁',workspace_read:'📖',workspace_write:'💾',
-                 workspace_delete:'🗑️',calc:'🧮',now:'🕐'};
-
-  function ensureStepsBox(bubble){
-    if(stepsBox&&stepsBox.parentNode)return stepsBox;
-    if(!bubble||!bubble.parentNode)return null;
-    stepsBox=el('div','steps');
-    bubble.parentNode.insertBefore(stepsBox,bubble);
-    return stepsBox;
-  }
-
-  function addStep(bubble,step){
-    if(!step)return;
-    if(step.kind==='final'){
-      // 收尾：把產生的檔案列成可下載連結。
-      var files=step.files||[];
-      if(files.length&&bubble&&bubble.parentNode){
-        var row=el('div','files');
-        files.forEach(function(f){
-          var a=document.createElement('a');
-          a.href='/admin/api/ai/workspace/file?name='+encodeURIComponent(f.name);
-          a.setAttribute('download',f.name);
-          a.appendChild(el('span',null,'📄 '+f.name));
-          a.appendChild(el('span','sz',' ('+f.size+' B)'));
-          row.appendChild(a);
-        });
-        bubble.parentNode.appendChild(row);
-      }
-      return;
-    }
-    var box=ensureStepsBox(bubble);
-    if(!box)return;
-    var node=el('div','step'+(step.ok?'':' bad'));
-    var head=el('div','hd');
-    head.appendChild(el('span','ic',TOOL_ICON[step.tool]||'🔧'));
-    head.appendChild(el('span','nm',step.summary||step.tool||'工具'));
-    head.appendChild(el('span',null,step.ok?'':'（失敗）'));
-    var detail=el('pre',null,step.output||'');
-    detail.style.display='none';
-    head.addEventListener('click',function(){
-      detail.style.display=detail.style.display==='none'?'block':'none';
-    });
-    node.appendChild(head);
-    node.appendChild(detail);
-    box.appendChild(node);
-    scrollDown(false);
   }
 
   function stampWho(who,meta){
@@ -1008,11 +978,6 @@
       stampWho(who,meta);
       stampReason(bubble,meta.auto_reason);
     });
-    es.addEventListener('step',function(ev){
-      got=true;
-      var step=null;try{step=JSON.parse(ev.data);}catch(e){}
-      addStep(bubble,step);
-    });
     es.addEventListener('delta',function(ev){
       got=true;
       streamBuf+=ev.data;
@@ -1056,15 +1021,6 @@
       if(r.auto_reason&&bubble&&bubble.parentNode&&!bubble.parentNode.querySelector('.autonote')){
         var note=el('div','autonote','⚡ '+r.auto_reason);
         bubble.parentNode.insertBefore(note,bubble);
-      }
-      if(r.steps&&r.steps.length){
-        // 降級到輪詢時，把還沒畫出來的步驟補上（用已畫數量當游標，不會重複）。
-        var drawn=stepsBox&&stepsBox.parentNode?stepsBox.children.length:0;
-        for(var i=drawn;i<r.steps.length;i++){
-          if(r.steps[i]&&r.steps[i].kind==='tool')addStep(bubble,r.steps[i]);
-        }
-        var last=r.steps[r.steps.length-1];
-        if(r.done&&last&&last.kind==='final')addStep(bubble,last);
       }
       if(r.text){
         // 輪詢拿的是全文，直接覆蓋（可能是從 SSE 半途接手過來的）。
@@ -1350,17 +1306,19 @@
     });
   }
 
-  // ── 面板開關 ───────────────────────────────────────────
-  function openPanel(id){
-    q('mask').className='mask open';
-    q(id).className='panel open';
-  }
-  function closePanels(){
-    q('mask').className='mask';
-    q('keyPanel').className='panel';
-    q('setPanel').className='panel';
-  }
-  function closeSide(){q('side').className='side';}
+  // ── 面板與側欄抽屜開關 ─────────────────────────────────
+  // 手機側欄滑開後會蓋住右上角的 ☰，所以除了 ☰ 切換，還提供：
+  // 1) 抽屜內 brand 列的 ✕（視覺明確）；2) 點擊遮罩（mask）關閉整體。
+  function isSideOpen(){return q('side').className.indexOf('open')>=0;}
+  function panelIsOpen(){return q('keyPanel').className.indexOf('open')>=0||q('setPanel').className.indexOf('open')>=0;}
+  // 遮罩在「任一浮層」(側欄或密鑰/設定面板) 開啟時才出現；關閉任一就同步隱藏，
+  // 避免點掉側欄後蓋住整個畫面的半透明黑幕還留著。
+  function syncMask(){q('mask').className=(panelIsOpen()||isSideOpen())?'mask open':'mask';}
+  function openPanel(id){q(id).className='panel open';syncMask();}
+  function closePanels(){q('keyPanel').className='panel';q('setPanel').className='panel';syncMask();}
+  function setSide(open){q('side').className=open?'side open':'side';syncMask();}
+  function closeSide(){setSide(false);}
+  function closeAll(){q('side').className='side';q('keyPanel').className='panel';q('setPanel').className='panel';syncMask();}
 
   // ── 輸入框 ─────────────────────────────────────────────
   function autoGrow(){
@@ -1373,11 +1331,6 @@
   q('sendBtn').addEventListener('click',send);
   // AI_CHAT_V7：三種附檔方式 —— 按鈕、拖進來、直接貼上。
   q('attachBtn').addEventListener('click',function(){q('fileInput').click();});
-  q('agentBtn').addEventListener('click',function(){
-    agentOn=!agentOn;
-    q('agentBtn').className='agentbtn'+(agentOn?' on':'');
-    toast(agentOn?'Agent 模式已開啟：AI 可以呼叫工具、產生檔案':'Agent 模式已關閉');
-  });
   q('fileInput').addEventListener('change',function(ev){
     addFiles(ev.target.files);
     ev.target.value='';
@@ -1416,10 +1369,8 @@
     if(ev.key==='Enter'&&!ev.shiftKey&&!ev.isComposing){ev.preventDefault();send();}
   });
   q('newBtn').addEventListener('click',startNewThread);
-  q('menuBtn').addEventListener('click',function(){
-    var side=q('side');
-    side.className=side.className.indexOf('open')>=0?'side':'side open';
-  });
+  q('menuBtn').addEventListener('click',function(){setSide(!isSideOpen());});
+  q('sideClose').addEventListener('click',function(){setSide(false);});
   q('renameBtn').addEventListener('click',function(){
     if(!currentThread){toast('先開始一段對話');return;}
     var next=window.prompt('新的對話名稱',q('title').textContent);
@@ -1432,7 +1383,7 @@
   });
   q('keysBtn').addEventListener('click',function(){resetForm();openPanel('keyPanel');});
   q('setBtn').addEventListener('click',function(){fillSettings();openPanel('setPanel');});
-  q('mask').addEventListener('click',closePanels);
+  q('mask').addEventListener('click',closeAll);
   Array.prototype.forEach.call(document.querySelectorAll('[data-close]'),function(b){
     b.addEventListener('click',closePanels);
   });
@@ -1487,7 +1438,7 @@
     modelAction({action:'reset'});
   });
   document.addEventListener('keydown',function(ev){
-    if(ev.key==='Escape')closePanels();
+    if(ev.key==='Escape')closeAll();
   });
 
   // ── 啟動 ───────────────────────────────────────────────

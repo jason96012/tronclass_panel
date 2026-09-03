@@ -141,6 +141,8 @@ pub enum OutboundMessage {
     RollcallFinished(RollcallResultEvent),
     /// 作業截止倒數提醒。獨立成一個 variant，讓它能被通知偏好開關控管。
     HomeworkDeadline(HomeworkDeadlineEvent),
+    /// 新課程公告（含 AI 重點摘要）。供 Web Push 與 Discord 等 adapter 使用。
+    Bulletin(BulletinEvent),
     Help,
     Welcome,
     UnsupportedMedia,
@@ -190,6 +192,29 @@ impl HomeworkDeadlineEvent {
             self.time_remaining,
             self.account
         )
+    }
+}
+
+/// 新課程公告事件（含 AI 重點摘要）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct BulletinEvent {
+    pub account: String,
+    pub course_name: String,
+    pub title: String,
+    /// AI 生成的重點摘要（精簡、保留關鍵資訊）；可能為空字串（摘要失敗時退回標題）。
+    pub summary: String,
+}
+
+impl BulletinEvent {
+    /// 組出各 adapter 共用的通知文字：短、保留重點。
+    pub fn render(&self) -> String {
+        let head = format!("📢 新公告｜{}", self.course_name);
+        let body = if self.summary.trim().is_empty() {
+            format!("【{}】", self.title)
+        } else {
+            format!("【{}】\n{}", self.title, self.summary)
+        };
+        format!("{head}\n{body}\n\n帳號：{}", self.account)
     }
 }
 

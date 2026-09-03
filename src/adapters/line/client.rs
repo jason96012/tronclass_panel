@@ -359,6 +359,7 @@ fn render_message(message: &OutboundMessage) -> String {
             "⚠️ 無法傳送 QR Code：目前沒有等待 QR Code 的簽到，或簽到已逾時。".to_string()
         }
         OutboundMessage::HomeworkDeadline(event) => event.render(),
+        OutboundMessage::Bulletin(event) => event.render(),
         OutboundMessage::UnknownCommand { text } => format!(
             "❓ 不認識的指令：{}\n\n輸入 /help 或 幫助 查看可用指令。",
             &text[..text.len().min(50)]

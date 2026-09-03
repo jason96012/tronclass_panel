@@ -55,8 +55,13 @@ mod bulletins;
 mod detection_schedule;
 
 // BULLETIN_PUSH_V1: 供 main.rs 啟動課程公告 Web Push 背景任務。
-pub(crate) fn start_bulletin_notifier(state: AdminWebState) {
-    bulletins::start_bulletin_notifier(state);
+// BULLETIN_NOTIFY_SUMMARY_V1: 同時把 adapter messenger（Discord 等）往下傳，
+// 讓公告通知帶 AI 重點摘要後同步推送到 Discord。
+pub(crate) fn start_bulletin_notifier(
+    state: AdminWebState,
+    messenger: Option<Arc<dyn AdapterMessenger>>,
+) {
+    bulletins::start_bulletin_notifier(state, messenger);
 }
 mod files;
 mod materials_import;
@@ -1251,6 +1256,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/api/ai/keys/test", post(ai_chat::key_test_handler))
         .route("/admin/api/ai/settings", post(ai_chat::settings_handler))
         .route("/admin/api/ai/models", post(ai_chat::models_handler))
+        // BULLETIN_AI_SUMMARY_V1：公告 AI 摘要（與聊天共用密鑰輪替與 status 輪詢）。
+        .route(
+            "/admin/api/ai/summarize",
+            post(ai_chat::summarize_handler).layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
+        )
         .route(
             "/admin/api/ai/chat",
             post(ai_chat::chat_handler).layer(DefaultBodyLimit::max(ADMIN_AI_CHAT_BODY_LIMIT)),

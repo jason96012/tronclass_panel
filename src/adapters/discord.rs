@@ -66,6 +66,7 @@ fn discord_notification_key(message: &OutboundMessage) -> &'static str {
         OutboundMessage::QrCodeRequested(_) => "qr_code",
         OutboundMessage::RollcallFinished(_) => "rollcall_finished",
         OutboundMessage::HomeworkDeadline(_) => "homework_deadline",
+        OutboundMessage::Bulletin(_) => "bulletin",
         OutboundMessage::Status(_) => "status",
         OutboundMessage::SecurityAlert(_) => "security_alert",
         OutboundMessage::MonitorPaused
@@ -1672,6 +1673,7 @@ fn render_discord_message(message: &OutboundMessage) -> String {
             "目前沒有等待 QR Code 的簽到，或簽到已逾時。".to_string()
         }
         OutboundMessage::HomeworkDeadline(event) => event.render(),
+        OutboundMessage::Bulletin(event) => event.render(),
         OutboundMessage::UnknownCommand { text } => {
             format!("不認識的指令：{}\n\n{}", text.chars().take(80).collect::<String>(), help_text())
         }

@@ -1145,8 +1145,10 @@ async fn main() -> Result<()> {
     };
 
     // BULLETIN_PUSH_V1: 有新課程公告時 Web Push 推播到手機。
+    // BULLETIN_NOTIFY_SUMMARY_V1: 同時傳入 adapter messenger（Discord 等），
+    // 讓公告通知帶 AI 重點摘要後同步推送到 Discord。
     if let Some(state) = admin_web_state.clone() {
-        adapters::admin_web::start_bulletin_notifier(state);
+        adapters::admin_web::start_bulletin_notifier(state, adapter_hub.as_ref().map(Arc::clone));
     }
 
     let webhook_handle = if line_bot.is_some() {

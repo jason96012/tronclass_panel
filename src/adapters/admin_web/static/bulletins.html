@@ -55,6 +55,14 @@
   .transerrrow{display:flex;gap:8px;margin-top:8px}
   .transbox>div:last-child{font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
   .readbtn:hover{color:var(--primary);border-color:var(--primary)}
+  /* BULLETIN_AI_SUMMARY_V1：AI 摘要按鈕與摘要框 */
+  .smbtn{display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid color-mix(in srgb,var(--ok) 45%,transparent);color:var(--ok);border-radius:10px;padding:7px 12px;font-size:12.5px;cursor:pointer;min-height:34px}
+  .smbtn:disabled{opacity:.55;cursor:not-allowed}
+  .smbtn.on{background:color-mix(in srgb,var(--ok) 10%,transparent)}
+  .smbox{margin:10px 0 0;padding:10px 12px;border:1px dashed color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 6%,transparent);border-radius:10px}
+  .smbox .smlab{font-size:11px;font-weight:700;color:var(--ok);margin-bottom:4px}
+  .smbox .smtext{font-size:13.5px;line-height:1.65;white-space:pre-wrap;word-break:break-word}
+  .smbox .smmeta{font-size:10.5px;color:var(--muted);margin-top:6px}
   .readtag{display:inline-flex;font-size:11px;color:var(--muted);border:1px dashed var(--line);border-radius:9px;padding:4px 9px}
   .delbtn{display:inline-flex;align-items:center;background:transparent;border:1px solid color-mix(in srgb,var(--bad) 40%,transparent);color:var(--bad);border-radius:10px;padding:7px 12px;font-size:12.5px;cursor:pointer;min-height:34px}
   .pubform{background:var(--card);border:1px solid var(--line2);border-radius:16px;padding:14px;margin-top:12px;display:flex;flex-direction:column;gap:10px}
@@ -106,7 +114,7 @@
   <div class="filters" id="filters"></div>
   <div class="list" id="list"><div class="skel"></div><div class="skel"></div></div>
 </div>
-<script id="BULLETINS_PAGE_V3">
+<script id="BULLETINS_PAGE_V4">
 (function(){
   'use strict';
   var list=document.getElementById('list'),countEl=document.getElementById('count'),filtersEl=document.getElementById('filters');
@@ -221,6 +229,41 @@
       });
     })();
   }
+  // BULLETIN_AI_SUMMARY_V1：與翻譯相同的「背景 job + 輪詢」模式，但走 AI 密鑰。
+  function pollSummary(jobId,btn,cardEl,footEl,onDone){
+    var tries=0;
+    (function tick(){
+      tries++;
+      if(tries>POLL_MAX){
+        btn.disabled=false;btn.textContent='重試摘要';
+        showSummaryError(cardEl,footEl,{error:'摘要逾時（前端等待超過上限）',status:0,code:'SUMMARY_POLL_TIMEOUT'});
+        return;
+      }
+      getJson('/admin/api/ai/chat/status?job='+encodeURIComponent(jobId),function(r){
+        if(r.error&&r.state==null){
+          btn.disabled=false;btn.textContent='重試摘要';
+          showSummaryError(cardEl,footEl,r);return;
+        }
+        if(r.state==='running'){setTimeout(tick,POLL_MS);return;}
+        btn.disabled=false;
+        if(r.state==='failed'||!r.ok){
+          btn.textContent='重試摘要';
+          showSummaryError(cardEl,footEl,r);return;
+        }
+        onDone(r);
+      });
+    })();
+  }
+  function showSummaryError(cardEl,footEl,r){
+    var old=cardEl.querySelector('.smbox');if(old)old.remove();
+    var box=document.createElement('div');box.className='smbox';
+    var lab=document.createElement('div');lab.className='smlab';lab.textContent='摘要失敗';
+    box.appendChild(lab);
+    var tx=document.createElement('div');tx.className='smtext';
+    tx.textContent=(r.error||'未知錯誤')+(r.code?('（'+r.code+'）'):'');
+    box.appendChild(tx);
+    cardEl.insertBefore(box,footEl);
+  }
   // BULLETIN_TRANSLATE_V6：翻譯失敗時把完整錯誤碼顯示在卡片裡，並可一鍵複製。
   function buildDiagnosticText(r){
     var lines=[];
@@ -330,6 +373,40 @@
     var ct=document.createElement('div');ct.className='content';setContent(ct,it.content);c.appendChild(ct);
     var foot=document.createElement('div');foot.className='cardfoot';
     var sp=document.createElement('span');sp.className='spacer';foot.appendChild(sp);
+    // BULLETIN_AI_SUMMARY_V1：一則公告一個「摘要」按鈕，點擊後把標題＋正文濃縮。
+    var sm=document.createElement('button');sm.type='button';sm.className='smbtn';sm.textContent='摘要';
+    sm.onclick=function(){
+      var box=c.querySelector('.smbox');
+      if(box){box.remove();sm.classList.remove('on');sm.textContent='摘要';return;}
+      sm.disabled=true;sm.textContent='摘要中…';
+      // 用純文字（標題＋正文）送給 AI；保持精簡、去掉過長的空白。
+      var src=(htmlToPlainText(it.title||'')+'\n'+htmlToPlainText(it.content||'')).trim();
+      if(!src){sm.disabled=false;sm.textContent='摘要';return;}
+      postJson('/admin/api/ai/summarize',{text:src},function(r){
+        if(r.error){sm.disabled=false;sm.textContent='重試摘要';showSummaryError(c,foot,r);return;}
+        if(r.job_id){pollSummary(r.job_id,sm,c,foot,renderSummary);return;}
+        sm.disabled=false;renderSummary(r);
+      });
+      function renderSummary(r){
+        sm.disabled=false;sm.classList.add('on');sm.textContent='收起摘要';
+        var d=document.createElement('div');d.className='smbox';
+        var lab=document.createElement('div');lab.className='smlab';
+        lab.textContent='⚡ 重點摘要'+(r.model?(' · '+r.model):'');
+        d.appendChild(lab);
+        var tx=document.createElement('div');tx.className='smtext';
+        tx.textContent=r.text||'（沒有產生內容）';
+        d.appendChild(tx);
+        if(r.key_name){
+          var meta=document.createElement('div');meta.className='smmeta';
+          meta.textContent='由「'+r.key_name+'」生成';
+          d.appendChild(meta);
+        }
+        c.insertBefore(d,foot);
+        // 摘要框出現後滾到可見位置。
+        if(d.scrollIntoView)d.scrollIntoView({block:'nearest'});
+      }
+    };
+    foot.appendChild(sm);
     // BULLETIN_TRANSLATE_V1
     var tr=document.createElement('button');tr.type='button';tr.className='trbtn';tr.textContent='翻譯';
     tr.onclick=function(){

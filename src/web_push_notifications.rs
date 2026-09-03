@@ -253,6 +253,7 @@ pub fn notify_bulletin(
     bulletin_key: &str,
     course_name: &str,
     title: &str,
+    summary: &str,
 ) {
     let Some(service) = SERVICE.get().cloned() else {
         return;
@@ -268,8 +269,12 @@ pub fn notify_bulletin(
     let account_id = account_id.to_string();
     let course_name = course_name.to_string();
     let title = title.to_string();
+    let summary = summary.to_string();
     tokio::spawn(async move {
-        if let Err(error) = service.send_bulletin(&account_id, &course_name, &title).await {
+        if let Err(error) = service
+            .send_bulletin(&account_id, &course_name, &title, &summary)
+            .await
+        {
             warn!(account = %account_id, error = %error, "Web Push 公告通知失敗");
         }
     });
@@ -304,14 +309,22 @@ impl WebPushService {
         account_id: &str,
         course_name: &str,
         title: &str,
+        summary: &str,
     ) -> Result<()> {
         let subscriptions = self.db.list_web_push_subscriptions(account_id).await?;
         if subscriptions.is_empty() {
             return Ok(());
         }
+        // BULLETIN_NOTIFY_SUMMARY_V1：通知主體優先放 AI 重點摘要（精簡但保留截止、
+        // 地點、待辦等關鍵資訊）；摘要為空時退回標題。避免手機彈出一長串。
+        let body = if summary.trim().is_empty() {
+            title.to_string()
+        } else {
+            summary.to_string()
+        };
         let payload = serde_json::to_vec(&json!({
             "title": format!("新公告｜{course_name}"),
-            "body": title,
+            "body": body,
             "url": "/admin/bulletins",
             "tag": format!("tronclass-bulletin-{account_id}"),
         }))
