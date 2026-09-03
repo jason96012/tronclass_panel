@@ -347,7 +347,7 @@ pub async fn evaluate_and_send_reminders(
 
         // 檢查此階梯是否已發過（若老師延期則會自動重置為 false）
         let already_sent = accounts_db
-            .is_homework_reminder_sent(&account.id, &hw_id_str, stage, deadline_timestamp)
+            .is_homework_reminder_sent(&account.id, &hw_id_str, &stage, deadline_timestamp)
             .await?;
 
         if already_sent {
