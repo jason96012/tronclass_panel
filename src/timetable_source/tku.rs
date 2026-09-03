@@ -70,7 +70,8 @@ impl TimetableSource for TkuTimetableSource {
             return Err(miette::miette!("TKU 課表同步：帳號的 username（學號）為空"));
         }
 
-        let yr_sem = current_yr_sem(Local::now().date_naive());
+        // CURRENT_SEMESTER_OVERRIDE_V1：[semester] current 可覆蓋學期代碼
+        let yr_sem = yr_sem_with_override(Local::now().date_naive(), crate::config::semester_override());
         let target = build_result_url(&yr_sem, student_no)?;
 
         // 先走一次 SSO，把 session 綁到 emis 這個 service 上。
@@ -312,6 +313,20 @@ pub(crate) fn current_yr_sem(today: chrono::NaiveDate) -> String {
         _ => (roc_year - 1, 2),
     };
     format!("{academic_year}{semester}")
+}
+
+/// CURRENT_SEMESTER_OVERRIDE_V1：套用 `[semester] current` 覆蓋後的 YrSem。
+///
+/// 覆蓋為 `(西元年, 學期 1|2)`；未覆蓋時退回 [`current_yr_sem`] 依日期推算。
+/// 使用時機：開學初課表尚未換新學期（抓舊學期），或寒假期間預先抓新學期。
+fn yr_sem_with_override(
+    today: chrono::NaiveDate,
+    override_semester: Option<(i32, u32)>,
+) -> String {
+    if let Some((western_year, term)) = override_semester {
+        return format!("{}{}", western_year - 1911, term);
+    }
+    current_yr_sem(today)
 }
 
 fn build_result_url(yr_sem: &str, student_no: &str) -> Result<Url> {
@@ -1521,6 +1536,21 @@ mod tests {
         // 7 月仍是第 2 學期（暑假）。
         let jul = NaiveDate::from_ymd_opt(2026, 7, 1).unwrap();
         assert_eq!(current_yr_sem(jul), "1142");
+    }
+
+    // ── CURRENT_SEMESTER_OVERRIDE_V1 ─────────────────────────────────────────
+
+    #[test]
+    fn yr_sem_honors_semester_override() {
+        let today = NaiveDate::from_ymd_opt(2026, 9, 3).unwrap();
+        // 未覆蓋＝依日期推算
+        assert_eq!(yr_sem_with_override(today, None), "1151");
+        // 開學初課表尚未換新學期時，可覆蓋回上一學期
+        assert_eq!(yr_sem_with_override(today, Some((2025, 2))), "1142");
+        // 寒假期間可預先抓新學期
+        assert_eq!(yr_sem_with_override(today, Some((2027, 1))), "1161");
+        // 覆蓋與自動推算一致時結果相同
+        assert_eq!(yr_sem_with_override(today, Some((2026, 1))), "1151");
     }
 
     #[test]

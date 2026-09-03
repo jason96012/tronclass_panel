@@ -769,22 +769,43 @@ fn detect_course_is_current(obj: &serde_json::Map<String, serde_json::Value>) ->
 ///
 /// 台灣學制：上學期約 8 月開始、下學期約 2 月開始。
 /// 回傳值會再往前寬限 [`SEMESTER_START_GRACE_DAYS`] 天。
+///
+/// CURRENT_SEMESTER_OVERRIDE_V1：設定 `[semester] current` 時以覆蓋為準
+/// （見 [`current_semester_start_with`]）。
 fn current_semester_start(now: DateTime<Utc>) -> DateTime<Utc> {
+    current_semester_start_with(now, crate::config::semester_override())
+}
+
+/// [`current_semester_start`] 的可注入版本（測試用）。
+///
+/// `override_semester = Some((西元年, 學期 1|2))` 時直接以該學期起點
+/// （上學期 8/1、下學期 2/1）為界，不依時鐘推算。
+fn current_semester_start_with(
+    now: DateTime<Utc>,
+    override_semester: Option<(i32, u32)>,
+) -> DateTime<Utc> {
     let taipei = match chrono::FixedOffset::east_opt(8 * 3600) {
         Some(tz) => tz,
         None => return now - chrono::Duration::days(180),
     };
-    let local = now.with_timezone(&taipei);
-    let (year, month) = (local.year(), local.month());
 
-    // 8 月～隔年 1 月 → 上學期（起點為當年 8 月，1 月時為前一年 8 月）
-    // 2 月～7 月       → 下學期（起點為當年 2 月）
-    let (start_year, start_month) = if month >= 8 {
-        (year, 8)
-    } else if month <= 1 {
-        (year - 1, 8)
-    } else {
-        (year, 2)
+    // CURRENT_SEMESTER_OVERRIDE_V1：覆蓋時以該學期起點為界。
+    let (start_year, start_month) = match override_semester {
+        Some((western_year, term)) => (western_year, if term == 1 { 8 } else { 2 }),
+        None => {
+            let local = now.with_timezone(&taipei);
+            let (year, month) = (local.year(), local.month());
+
+            // 8 月～隔年 1 月 → 上學期（起點為當年 8 月，1 月時為前一年 8 月）
+            // 2 月～7 月       → 下學期（起點為當年 2 月）
+            if month >= 8 {
+                (year, 8)
+            } else if month <= 1 {
+                (year - 1, 8)
+            } else {
+                (year, 2)
+            }
+        }
     };
 
     chrono::NaiveDate::from_ymd_opt(start_year, start_month, 1)
@@ -854,24 +875,46 @@ fn extract_scalar_text(val: &serde_json::Value) -> Option<String> {
 /// 比對學期字串（如 `"114-1"`、`"2025 Fall"`、`"1141"`）是否為當前學期。
 ///
 /// 同時支援民國年（台灣學制）與西元年；無法判讀時回傳 `None`。
+///
+/// CURRENT_SEMESTER_OVERRIDE_V1：設定 `[semester] current` 時以覆蓋的
+/// 學期為比對基準（見 [`semester_text_is_current_with`]）。
 fn semester_text_is_current(text: &str, now: DateTime<Utc>) -> Option<bool> {
+    semester_text_is_current_with(text, now, crate::config::semester_override())
+}
+
+/// [`semester_text_is_current`] 的可注入版本（測試用）。
+///
+/// `override_semester = Some((西元年, 學期 1|2))` 時以該學期為比對基準，
+/// 不依時鐘推算（跨學期交界學校資料未更新時，舊學期課程仍視為當前）。
+fn semester_text_is_current_with(
+    text: &str,
+    now: DateTime<Utc>,
+    override_semester: Option<(i32, u32)>,
+) -> Option<bool> {
     let text = text.trim();
     if text.is_empty() {
         return None;
     }
 
     // 以台北時間為準推算當前學年度：8 月起算新學年，上學期為 1、下學期為 2。
-    let taipei = chrono::FixedOffset::east_opt(8 * 3600)?;
-    let local = now.with_timezone(&taipei);
-    let year = local.year();
-    let month = local.month();
+    // CURRENT_SEMESTER_OVERRIDE_V1：有覆蓋時直接採用覆蓋值；
+    // 學期轉 i32 與下方 parse 出的學期碼同型，供後續比較。
+    let (western_year, term) = match override_semester {
+        Some((western_year, term)) => (western_year, term as i32),
+        None => {
+            let taipei = chrono::FixedOffset::east_opt(8 * 3600)?;
+            let local = now.with_timezone(&taipei);
+            let year = local.year();
+            let month = local.month();
 
-    let (western_year, term) = if month >= 8 {
-        (year, 1)
-    } else if month <= 1 {
-        (year - 1, 1)
-    } else {
-        (year - 1, 2)
+            if month >= 8 {
+                (year, 1)
+            } else if month <= 1 {
+                (year - 1, 1)
+            } else {
+                (year - 1, 2)
+            }
+        }
     };
     let roc_year = western_year - 1911;
 
@@ -1242,6 +1285,71 @@ mod tests {
         assert_eq!(semester_text_is_current("115-1", now), Some(true));
         assert_eq!(semester_text_is_current("114-2", now), Some(false));
         assert_eq!(semester_text_is_current("113-1", now), Some(false));
+    }
+
+    // ── CURRENT_SEMESTER_OVERRIDE_V1 ─────────────────────────────────────────
+
+    #[test]
+    fn test_semester_start_with_override() {
+        // 套用相同覆蓋時，起點與查詢時刻無關
+        let a = DateTime::parse_from_rfc3339("2026-09-03T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let b = DateTime::parse_from_rfc3339("2027-01-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let fall = current_semester_start_with(a, Some((2026, 1)));
+        assert_eq!(fall, current_semester_start_with(b, Some((2026, 1))));
+
+        // 115-2（西元 2025 下學期）→ 起點 2025-02-01 台北 0 點，再寬限 14 天
+        let taipei = chrono::FixedOffset::east_opt(8 * 3600).unwrap();
+        let expected = taipei
+            .from_local_datetime(
+                &chrono::NaiveDate::from_ymd_opt(2025, 2, 1)
+                    .unwrap()
+                    .and_hms_opt(0, 0, 0)
+                    .unwrap(),
+            )
+            .single()
+            .unwrap()
+            .with_timezone(&Utc)
+            - chrono::Duration::days(SEMESTER_START_GRACE_DAYS);
+        assert_eq!(current_semester_start_with(a, Some((2025, 2))), expected);
+
+        // 2026-09 與 2027-01 的時鐘推算都落在 115-1（起點 2026-08-01），與覆蓋一致
+        assert_eq!(fall, current_semester_start_with(a, None));
+        assert_eq!(fall, current_semester_start_with(b, None));
+    }
+
+    #[test]
+    fn test_semester_text_is_current_with_override() {
+        let now = DateTime::parse_from_rfc3339("2026-09-03T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // 覆蓋為 114-2（西元 2025 下學期）：跨學期殘留的舊課要視為當前
+        let over = Some((2025, 2));
+        assert_eq!(
+            semester_text_is_current_with("114-2", now, over),
+            Some(true)
+        );
+        assert_eq!(
+            semester_text_is_current_with("1141", now, over),
+            Some(false)
+        );
+        assert_eq!(
+            semester_text_is_current_with("115-1", now, over),
+            Some(false)
+        );
+        // 西元年格式
+        assert_eq!(
+            semester_text_is_current_with("2025 Spring", now, over),
+            Some(true)
+        );
+        // 未覆蓋＝依時鐘（2026-09 → 115-1）
+        assert_eq!(
+            semester_text_is_current_with("115-1", now, None),
+            Some(true)
+        );
     }
 
     #[test]

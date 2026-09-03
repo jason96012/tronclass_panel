@@ -7,6 +7,7 @@ use chrono::{NaiveTime, Weekday};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 /// 全域設定單例
 static CONFIG: OnceCell<AppConfig> = OnceCell::new();
@@ -60,6 +61,9 @@ pub struct AppConfig {
     /// 時區設定
     #[serde(default)]
     pub time: TimeConfig,
+    /// 學期判定設定
+    #[serde(default)]
+    pub semester: SemesterConfig,
     /// 作業截止追蹤設定
     #[serde(default)]
     pub homework: HomeworkConfig,
@@ -428,6 +432,116 @@ impl Default for TimeConfig {
             timezone: default_timezone(),
         }
     }
+}
+
+// ======== Semester ========
+/// 學期判定設定（CURRENT_SEMESTER_OVERRIDE_V1）。
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct SemesterConfig {
+    /// 手動覆蓋「當前學期」，支援格式：
+    /// - 民國學年＋學期：`"1151"`、`"115-1"`、`"115上"`、`"115-2"`、`"115下"`
+    /// - 西元年＋學期：`"2026-1"`、`"2026 Fall"`、`"2025-2"`、`"2025 Spring"`
+    ///
+    /// 未設定或留空＝依台北日期自動推算（8 月起為上學期、2 月起為下學期）。
+    /// 格式無效時記一次 warn 後忽略（退回自動推算）。
+    ///
+    /// 同時影響三處學期判斷：
+    /// 1. 作業頁的學期起點過濾（`api::todos`）
+    /// 2. 課程學期碼是否視為「當前」（`api::todos`）
+    /// 3. 淡江課表同步的 YrSem 代碼（`timetable_source::tku`）
+    ///
+    /// 使用時機：跨學期交界學校資料尚未更新（例：2 月課表仍列上學期）、
+    /// 或學校學期編碼與日期推算不一致時，手動釘選實際學期。
+    #[serde(default)]
+    pub current: Option<String>,
+}
+
+impl SemesterConfig {
+    /// 將 `current` 解析為 `(西元年, 學期 1|2)`。
+    ///
+    /// 未設定或空字串回 `None`（使用自動推算）；格式無效也回 `None`，
+    /// 但只 warn 一次，避免每輪輪詢洗版日誌。
+    pub(crate) fn resolved(&self) -> Option<(i32, u32)> {
+        let text = self.current.as_deref()?.trim();
+        if text.is_empty() {
+            return None;
+        }
+        match parse_semester_current(text) {
+            Some(found) => Some(found),
+            None => {
+                static WARNED: OnceCell<()> = OnceCell::new();
+                WARNED.get_or_init(|| {
+                    warn!(
+                        value = %text,
+                        "semester.current 格式無效，忽略覆蓋（可用例：1151、115-2、115上、2026-1、2026 Fall）"
+                    );
+                });
+                None
+            }
+        }
+    }
+}
+
+/// 解析學期字串為 `(西元年, 學期 1|2)`；無法判讀回 `None`。
+///
+/// 與 `api::todos::semester_text_is_current` 支援的格式一致：
+/// - 前 3 碼為民國學年（100–199）＋第 4 碼學期（1/2），如 `"1151"`、`"115-2"`
+/// - 前 4 碼為西元年（2000–2099）＋第 5 碼學期，如 `"2026-1"`
+/// - 學期也可用文字標記：`上`/`Fall` → 1、`下`/`Spring` → 2，如 `"115上"`、`"2026 Fall"`
+/// - 只給年份而無法判讀學期視為無效（學期決定起點月份，不可用猜的）
+pub(crate) fn parse_semester_current(text: &str) -> Option<(i32, u32)> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let digits: String = text.chars().filter(|c| c.is_ascii_digit()).collect();
+    let lower = text.to_ascii_lowercase();
+    let term_from_text = || {
+        if lower.contains("fall") || lower.contains('上') {
+            Some(1)
+        } else if lower.contains("spring") || lower.contains('下') {
+            Some(2)
+        } else {
+            None
+        }
+    };
+
+    // 民國學年：前 3 碼 100–199。
+    if let Some(roc_year) = digits.get(..3).and_then(|s| s.parse::<i32>().ok()) {
+        if (100..200).contains(&roc_year) {
+            let term = digits
+                .get(3..4)
+                .and_then(|s| s.parse::<u32>().ok())
+                .or_else(term_from_text)?;
+            if term == 1 || term == 2 {
+                return Some((roc_year + 1911, term));
+            }
+            return None;
+        }
+    }
+
+    // 西元年：前 4 碼 2000–2099。
+    if let Some(western_year) = digits.get(..4).and_then(|s| s.parse::<i32>().ok()) {
+        if (2000..2100).contains(&western_year) {
+            let term = digits
+                .get(4..5)
+                .and_then(|s| s.parse::<u32>().ok())
+                .or_else(term_from_text)?;
+            if term == 1 || term == 2 {
+                return Some((western_year, term));
+            }
+            return None;
+        }
+    }
+
+    None
+}
+
+/// 全域捷徑：目前設定的學期覆蓋（`[semester] current`）。
+///
+/// 設定尚未初始化（測試情境）或未設定／無效時回 `None`，呼叫端退回自動推算。
+pub(crate) fn semester_override() -> Option<(i32, u32)> {
+    try_get_config().and_then(|config| config.semester.resolved())
 }
 
 // ======== Homework ========
@@ -1577,5 +1691,69 @@ rest_weekdays = ["sun", "sun"]
         let cfg = AppConfig::load(f.path()).unwrap();
         let s = format!("{cfg}");
         assert!(s.contains("line_bot.enabled: true"), "got: {s}");
+    }
+
+    // ── CURRENT_SEMESTER_OVERRIDE_V1 ──────────────────────────────────────────
+
+    #[test]
+    fn test_parse_semester_current_formats() {
+        // 民國學年＋學期（數字型）
+        assert_eq!(parse_semester_current("1151"), Some((2026, 1)));
+        assert_eq!(parse_semester_current("115-2"), Some((2026, 2)));
+        assert_eq!(parse_semester_current("  115-1  "), Some((2026, 1)));
+        // 文字學期標記
+        assert_eq!(parse_semester_current("115上"), Some((2026, 1)));
+        assert_eq!(parse_semester_current("115下"), Some((2026, 2)));
+        assert_eq!(parse_semester_current("2026 Fall"), Some((2026, 1)));
+        assert_eq!(parse_semester_current("2025 Spring"), Some((2025, 2)));
+        // 西元年＋學期（數字型）
+        assert_eq!(parse_semester_current("2026-1"), Some((2026, 1)));
+        assert_eq!(parse_semester_current("20252"), Some((2025, 2)));
+        // 無效：空字串、只給年份（學期不可猜）、學期碼超出 1/2、純文字
+        assert_eq!(parse_semester_current(""), None);
+        assert_eq!(parse_semester_current("2026"), None);
+        assert_eq!(parse_semester_current("115"), None);
+        assert_eq!(parse_semester_current("1153"), None);
+        assert_eq!(parse_semester_current("abc"), None);
+    }
+
+    #[test]
+    fn test_semester_config_resolved() {
+        let cfg = SemesterConfig {
+            current: Some("115-1".to_string()),
+        };
+        assert_eq!(cfg.resolved(), Some((2026, 1)));
+
+        // 空／未設定 → None（自動推算），不視為錯誤
+        assert_eq!(SemesterConfig { current: None }.resolved(), None);
+        assert_eq!(
+            SemesterConfig {
+                current: Some("   ".to_string()),
+            }
+            .resolved(),
+            None
+        );
+
+        // 格式無效 → None（退回自動推算；warn 已由 OnceCell 收斂為一次）
+        assert_eq!(
+            SemesterConfig {
+                current: Some("not-a-semester".to_string()),
+            }
+            .resolved(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_load_config_with_semester_section() {
+        let toml = format!("{}\n[semester]\ncurrent = \"115-1\"\n", minimal_toml());
+        let f = write_toml(&toml);
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.semester.resolved(), Some((2026, 1)));
+
+        // 未設定 [semester] 的舊設定檔仍可載入（serde 預設）
+        let f_legacy = write_toml(minimal_toml());
+        let cfg_legacy = AppConfig::load(f_legacy.path()).unwrap();
+        assert_eq!(cfg_legacy.semester.resolved(), None);
     }
 }
