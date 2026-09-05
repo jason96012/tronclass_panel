@@ -29,7 +29,8 @@ pub(super) async fn admin_health_api_handler(
     let mut detected_accounts = 0usize;
     let mut latest_poll_timestamp: Option<i64> = None;
     let mut total_failures = 0u32;
-    for account in state.accounts.iter() {
+    let runtime_accounts = state.accounts.snapshot();
+    for account in runtime_accounts.iter() {
         if *account.is_running.lock().await {
             running_accounts += 1;
         }
@@ -85,9 +86,9 @@ pub(super) async fn admin_health_api_handler(
             "loadavg": loadavg.trim(),
             "memory": meminfo,
             "accounts": {
-                "total": state.accounts.len(),
+                "total": runtime_accounts.len(),
                 "running": running_accounts,
-                "paused": state.accounts.len().saturating_sub(running_accounts),
+                "paused": runtime_accounts.len().saturating_sub(running_accounts),
                 "detected": detected_accounts,
                 "total_failures": total_failures,
                 "latest_poll_timestamp": latest_poll_timestamp,
@@ -164,7 +165,8 @@ pub(super) async fn admin_health_check_handler(
     let mut detected = 0usize;
     let mut latest_poll = None::<i64>;
     let mut failures = 0u32;
-    for account in state.accounts.iter() {
+    let runtime_accounts = state.accounts.snapshot();
+    for account in runtime_accounts.iter() {
         if *account.is_running.lock().await {
             running += 1;
         }
@@ -177,7 +179,7 @@ pub(super) async fn admin_health_check_handler(
         }
         failures = failures.saturating_add(status.consecutive_failures);
     }
-    let total = state.accounts.len();
+    let total = runtime_accounts.len();
     let accounts_ok = total > 0 && running > 0;
     checks.push(json!({
         "name": "監控帳號",

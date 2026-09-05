@@ -4,6 +4,7 @@
 //! delegate them here. This module only translates those requests into shared
 //! state reads, monitor control signals, or input-channel delivery.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use miette::Result;
@@ -264,48 +265,146 @@ impl RequestAccountState {
     }
 }
 
+// ACCOUNT_HOT_ADD_V1：runtime 帳號清單改成可在執行期追加的共享登錄簿。
+//
+// 啟動時 main.rs 建立一份，Web 管理頁、LINE、Discord 三個 adapter 共用同一個
+// handle；執行期新增帳號時 `MonitorSpawner` push 進來，所有 adapter 立刻看得到。
+// 內部採 copy-on-write：讀取端拿到 `Arc<Vec<_>>` 快照後就不再持鎖，
+// 因此可以安全地跨 `.await` 使用；寫入（很少發生）才會重建一份 Vec。
+#[derive(Clone, Default)]
+pub struct AccountRegistry {
+    inner: Arc<std::sync::RwLock<AccountRegistrySnapshot>>,
+}
+
+#[derive(Default)]
+struct AccountRegistrySnapshot {
+    list: Arc<Vec<RequestAccountState>>,
+    // PERFORMANCE_ACCOUNT_LOOKUP_V1 延續：account_id -> index，避免每次線性掃描。
+    by_id: HashMap<String, usize>,
+}
+
+impl AccountRegistry {
+    pub fn new(accounts: Vec<RequestAccountState>) -> Self {
+        let mut list: Vec<RequestAccountState> = Vec::with_capacity(accounts.len());
+        let mut by_id = HashMap::with_capacity(accounts.len());
+        for account in accounts {
+            if by_id.contains_key(&account.account_id) {
+                continue;
+            }
+            by_id.insert(account.account_id.clone(), list.len());
+            list.push(account);
+        }
+        Self {
+            inner: Arc::new(std::sync::RwLock::new(AccountRegistrySnapshot {
+                list: Arc::new(list),
+                by_id,
+            })),
+        }
+    }
+
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, AccountRegistrySnapshot> {
+        self.inner
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// 目前所有 runtime 帳號的快照（便宜的 Arc clone，不持鎖）。
+    pub fn snapshot(&self) -> Arc<Vec<RequestAccountState>> {
+        Arc::clone(&self.read().list)
+    }
+
+    /// 目前所有 runtime 帳號的 owned 複本（每個欄位都是 Arc，clone 成本很低）。
+    pub fn all(&self) -> Vec<RequestAccountState> {
+        self.read().list.iter().cloned().collect()
+    }
+
+    pub fn find(&self, account_id: &str) -> Option<RequestAccountState> {
+        let guard = self.read();
+        guard
+            .by_id
+            .get(account_id)
+            .and_then(|index| guard.list.get(*index))
+            .cloned()
+    }
+
+    pub fn len(&self) -> usize {
+        self.read().list.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.read().list.is_empty()
+    }
+
+    /// 追加一個 runtime 帳號；account_id 已存在時回傳 false 且不變更。
+    pub fn push(&self, account: RequestAccountState) -> bool {
+        let mut guard = self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if guard.by_id.contains_key(&account.account_id) {
+            return false;
+        }
+        let mut list = Vec::with_capacity(guard.list.len() + 1);
+        list.extend(guard.list.iter().cloned());
+        guard.by_id.insert(account.account_id.clone(), list.len());
+        list.push(account);
+        guard.list = Arc::new(list);
+        true
+    }
+}
+
+impl From<Vec<RequestAccountState>> for AccountRegistry {
+    fn from(accounts: Vec<RequestAccountState>) -> Self {
+        Self::new(accounts)
+    }
+}
+
 /// Shared state used by adapter request handlers.
 #[derive(Clone)]
 pub struct RequestState {
     pub messenger: Arc<dyn AdapterMessenger>,
-    pub accounts: Arc<Vec<RequestAccountState>>,
+    pub accounts: AccountRegistry,
     pub binding_kind: AdapterBindingKind,
 }
 
 impl RequestState {
-    pub fn new(messenger: Arc<dyn AdapterMessenger>, accounts: Vec<RequestAccountState>) -> Self {
+    pub fn new(
+        messenger: Arc<dyn AdapterMessenger>,
+        accounts: impl Into<AccountRegistry>,
+    ) -> Self {
         Self::new_with_binding(messenger, accounts, AdapterBindingKind::Line)
     }
 
     pub fn new_with_binding(
         messenger: Arc<dyn AdapterMessenger>,
-        accounts: Vec<RequestAccountState>,
+        accounts: impl Into<AccountRegistry>,
         binding_kind: AdapterBindingKind,
     ) -> Self {
         Self {
             messenger,
-            accounts: Arc::new(accounts),
+            accounts: accounts.into(),
             binding_kind,
         }
     }
 
-    fn first_account(&self) -> Option<&RequestAccountState> {
-        self.accounts.first()
+    fn first_account(&self) -> Option<RequestAccountState> {
+        self.accounts.snapshot().first().cloned()
     }
 
-    async fn account_for_user(&self, user_id: &str) -> Option<&RequestAccountState> {
+    async fn account_for_user(&self, user_id: &str) -> Option<RequestAccountState> {
         if user_id.is_empty() {
             return None;
         }
 
-        for account in self.accounts.iter() {
+        let accounts = self.accounts.snapshot();
+        for account in accounts.iter() {
             let target = account.target.lock().await;
             let bound_user_id = match self.binding_kind {
                 AdapterBindingKind::Line => target.line_user_id.as_str(),
                 AdapterBindingKind::Discord => target.discord_user_id.as_str(),
             };
             if !bound_user_id.is_empty() && bound_user_id == user_id {
-                return Some(account);
+                return Some(account.clone());
             }
         }
 
@@ -321,20 +420,19 @@ impl RequestState {
     }
 
     pub async fn set_discord_user_id(&self, account_id: &str, discord_user_id: &str) -> bool {
-        for account in self.accounts.iter() {
-            if account.account_id == account_id {
-                let mut target = account.target.lock().await;
-                target.discord_user_id = discord_user_id.to_string();
-                return true;
-            }
+        if let Some(account) = self.accounts.find(account_id) {
+            let mut target = account.target.lock().await;
+            target.discord_user_id = discord_user_id.to_string();
+            return true;
         }
 
         false
     }
 
     pub async fn discord_bindings(&self) -> Vec<(String, String)> {
-        let mut bindings = Vec::with_capacity(self.accounts.len());
-        for account in self.accounts.iter() {
+        let accounts = self.accounts.snapshot();
+        let mut bindings = Vec::with_capacity(accounts.len());
+        for account in accounts.iter() {
             let target = account.target.lock().await;
             bindings.push((account.username.clone(), target.discord_user_id.clone()));
         }
@@ -534,8 +632,8 @@ pub async fn execute_command(
                 return Ok(());
             }
 
-            let targets: Vec<&RequestAccountState> = if is_admin {
-                state.accounts.iter().collect()
+            let targets: Vec<RequestAccountState> = if is_admin {
+                state.accounts.all()
             } else {
                 match state.account_for_user(user_id).await {
                     Some(account) => vec![account],
@@ -584,12 +682,8 @@ pub async fn execute_command(
             }
         }
         RequestCommand::NumberAutoLookup { account_id } => {
-            let targets: Vec<&RequestAccountState> = if let Some(account_id) = account_id {
-                let Some(account) = state
-                    .accounts
-                    .iter()
-                    .find(|account| account.account_id == account_id)
-                else {
+            let targets: Vec<RequestAccountState> = if let Some(account_id) = account_id {
+                let Some(account) = state.accounts.find(&account_id) else {
                     reply_if_possible(
                         reply_token,
                         state,
@@ -601,7 +695,7 @@ pub async fn execute_command(
 
                 if !is_admin {
                     let bound_account = state.account_for_user(user_id).await;
-                    if bound_account.map(|bound| bound.account_id.as_str())
+                    if bound_account.as_ref().map(|bound| bound.account_id.as_str())
                         != Some(account.account_id.as_str())
                     {
                         reply_not_authorized(reply_token, state).await?;
@@ -610,7 +704,7 @@ pub async fn execute_command(
                 }
                 vec![account]
             } else if is_admin {
-                state.accounts.iter().collect()
+                state.accounts.all()
             } else {
                 match state.account_for_user(user_id).await {
                     Some(account) => vec![account],
@@ -712,15 +806,16 @@ async fn admin_status_message(state: &RequestState) -> StatusMessage {
     if state.accounts.is_empty() {
         return StatusMessage::NoAccounts;
     }
+    let runtime_accounts = state.accounts.snapshot();
 
-    if state.accounts.len() == 1 {
-        let account = &state.accounts[0];
+    if runtime_accounts.len() == 1 {
+        let account = &runtime_accounts[0];
         let status = account.monitor_status.lock().await;
         return StatusMessage::Single(status.clone());
     }
 
-    let mut accounts = Vec::with_capacity(state.accounts.len());
-    for account in state.accounts.iter() {
+    let mut accounts = Vec::with_capacity(runtime_accounts.len());
+    for account in runtime_accounts.iter() {
         let status = account.monitor_status.lock().await;
         accounts.push(AccountStatusMessage {
             account_id: account.account_id.clone(),
@@ -732,7 +827,7 @@ async fn admin_status_message(state: &RequestState) -> StatusMessage {
 }
 
 async fn set_all_running(state: &RequestState, is_running: bool) {
-    for account in state.accounts.iter() {
+    for account in state.accounts.snapshot().iter() {
         let mut running = account.is_running.lock().await;
         *running = is_running;
 
@@ -742,13 +837,13 @@ async fn set_all_running(state: &RequestState, is_running: bool) {
 }
 
 fn notify_all_force_poll(state: &RequestState) {
-    for account in state.accounts.iter() {
+    for account in state.accounts.snapshot().iter() {
         account.force_poll_tx.notify_one();
     }
 }
 
 fn notify_all_reauth(state: &RequestState) {
-    for account in state.accounts.iter() {
+    for account in state.accounts.snapshot().iter() {
         account.reauth_tx.notify_one();
     }
 }
@@ -979,7 +1074,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            *state.accounts[0].is_running.lock().await,
+            *state.accounts.snapshot()[0].is_running.lock().await,
             "非管理員不應能暫停監控"
         );
     }

@@ -172,7 +172,8 @@ pub(super) async fn admin_rollcall_events_handler(
         return unauthorized_response();
     }
 
-    let accounts = Arc::clone(&state.accounts);
+    // ACCOUNT_HOT_ADD_V1：持有登錄簿而非固定快照，熱新增的帳號也會進入 SSE。
+    let accounts = state.accounts.clone();
     let account_id = session.account_id;
     let is_admin = session.is_admin;
     let stream = futures::stream::unfold(
@@ -180,7 +181,8 @@ pub(super) async fn admin_rollcall_events_handler(
         |(accounts, account_id, is_admin, mut last_seen)| async move {
             tokio::time::sleep(Duration::from_millis(350)).await;
             let mut detected = Vec::new();
-            for account in accounts.iter() {
+            let runtime_accounts = accounts.snapshot();
+            for account in runtime_accounts.iter() {
                 if !is_admin && account.account_id != account_id {
                     continue;
                 }
@@ -463,12 +465,12 @@ pub(super) async fn admin_public_status_handler(
         .into_response()
 }
 
-pub(super) fn resolve_visible_accounts<'a>(
-    state: &'a AdminWebState,
+pub(super) fn resolve_visible_accounts(
+    state: &AdminWebState,
     session: &AdminSession,
-) -> Vec<&'a RequestAccountState> {
+) -> Vec<RequestAccountState> {
     if session.is_admin {
-        state.accounts.iter().collect()
+        state.accounts.all()
     } else {
         state
             .account_by_id(&session.account_id)

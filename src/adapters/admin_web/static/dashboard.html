@@ -2250,6 +2250,9 @@ if(q('quickPromoteAdminBtn')){
       var isAdmin = q('addAccAdmin').checked;
       var msg = q('addAccountMsg');
       if(!provider || !username || !password){ msg.textContent='請填寫 Provider、帳號/學號 與 密碼'; return; }
+      /* ACCOUNT_HOT_ADD_V1：後端會先寫入 DB 再實際登入學校系統並啟動監控，可能需要數十秒 */
+      msg.textContent = '正在寫入並登入帳號、啟動監控，請稍候（可能需要數十秒）…';
+      q('addAccountSubmit').disabled = true;
       try {
         var res = await api('/admin/api/action', { method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({ action:'add_account', id:id||undefined, provider:provider, username:username, password:password, discord_user_id:discord||undefined, line_user_id:line||undefined, is_admin:isAdmin }) });
         if(res && res.ok){
@@ -2261,6 +2264,7 @@ if(q('quickPromoteAdminBtn')){
           msg.textContent = (res && res.error) || '新增失敗';
         }
       } catch(e){ msg.textContent = (e && e.message) || '新增失敗'; }
+      finally { q('addAccountSubmit').disabled = false; }
     };
   }q('refreshHealth').onclick=loadHealth;q('closeHistory').onclick=()=>q('historyModal').classList.remove('visible');document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));document.body.addEventListener('click',e=>{const sw=e.target.closest('[data-switch]');if(sw)return switchView(sw.dataset.switch);const a=e.target.closest('[data-action]');if(a)return doAction(a.dataset.action,a.dataset.account)});document.querySelectorAll('.mobile-nav button[data-view]').forEach(b=>b.onclick=()=>switchView(b.dataset.view));q('mobileMore').onclick=()=>q('mobileSheet').classList.add('visible');q('mobileSheet').onclick=e=>{if(e.target===q('mobileSheet'))q('mobileSheet').classList.remove('visible')};q('mRefresh').onclick=()=>location.reload();q('mLogout').onclick=function(){if(window.tronAuth&&window.tronAuth.logout)window.tronAuth.logout()};const savedUsername=localStorage.getItem(LS_SAVED_USER)||'';if(savedUsername)q('loginUsername').value=savedUsername;syncLinks();switchView((location.hash||'#overview').slice(1));
 // TRONCLASS_DASHBOARD_RUNTIME_API_V1: external modules use only this stable surface.

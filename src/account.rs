@@ -160,6 +160,17 @@ impl AccountsFile {
                     )
                 })?;
 
+            // PROVIDER_KIND_NO_PANIC_V1：啟用中的帳號若指到沒有登入流程的 provider
+            // （kind = tronclass／未設定，且名稱不是 fju/tku），在啟動與 `--validate`
+            // 階段就明確拒絕，而不是等第一次登入時 panic。
+            if crate::auth::providers::resolve_flow_kind(&account.provider, &provider.kind).is_none() {
+                return Err(miette::miette!(
+                    "account `{}`：{}",
+                    account.id,
+                    crate::auth::providers::unsupported_provider_message(&account.provider)
+                ));
+            }
+
             let request_timeout_secs = provider.api.request_timeout_secs;
             resolved.push(AccountConfig {
                 id: account.id.clone(),

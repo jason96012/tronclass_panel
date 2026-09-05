@@ -8,7 +8,7 @@
 //! 但有一個關鍵差異——
 //!
 //! ```text
-//! auth::providers::get_auth_flow()  →  Box<dyn AuthFlow>     （不支援時 panic!）
+//! auth::providers::get_auth_flow()  →  Result<Box<dyn AuthFlow>>（不支援時回 Err）
 //! timetable_source::get_source()    →  Option<Box<dyn ...>>  （不支援時 None）
 //! ```
 //!

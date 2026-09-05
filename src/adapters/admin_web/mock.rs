@@ -128,11 +128,7 @@ pub(super) async fn admin_mock_start_handler(
 
     let mut targets = Vec::with_capacity(selected.len());
     for id in &selected {
-        let Some(account) = state
-            .accounts
-            .iter()
-            .find(|account| &account.account_id == id)
-        else {
+        let Some(account) = state.accounts.find(id) else {
             return (
                 StatusCode::NOT_FOUND,
                 Json(json!({ "error": format!("account not found: {id}") })),
@@ -480,11 +476,7 @@ pub(super) async fn handle_mock_rollcall_action(
             .into_response();
     };
 
-    let Some(account) = state
-        .accounts
-        .iter()
-        .find(|account| account.account_id == account_id)
-    else {
+    let Some(account) = state.accounts.find(&account_id) else {
         return (
             StatusCode::NOT_FOUND,
             Json(json!({ "error": format!("account not found: {account_id}") })),

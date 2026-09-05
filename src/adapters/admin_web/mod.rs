@@ -40,7 +40,7 @@ use crate::adapters::events::{
     AdapterMessenger, NumberCodeRequest, OutboundMessage, QrCodeRequest, RollcallHistoryEntry,
     SecurityAlertEvent,
 };
-use crate::adapters::requests::{NumberCodeInput, RequestAccountState};
+use crate::adapters::requests::{AccountRegistry, NumberCodeInput, RequestAccountState};
 use crate::adapters::scanner::QrScannerRegistry;
 use crate::db::{AccountsDb, MaterialEventInput};
 use crate::runtime_settings::{RuntimeRestPeriod, RuntimeSettings};
@@ -713,8 +713,11 @@ async fn alert_abnormal_traffic(state: &AdminWebState, source: &str, username: &
 
 #[derive(Clone)]
 pub struct AdminWebState {
-    accounts: Arc<Vec<RequestAccountState>>,
-    accounts_by_id: Arc<HashMap<String, usize>>,
+    // ACCOUNT_HOT_ADD_V1：改用可執行期追加的共享登錄簿（與 LINE／Discord 同一份）。
+    accounts: AccountRegistry,
+    // ACCOUNT_HOT_ADD_V1：新增帳號後直接熱啟動監控循環；None 代表本次啟動沒有
+    // 監控 runtime（例如測試），此時退回「請重啟服務」的舊行為。
+    monitor_spawner: Option<crate::monitor::MonitorSpawner>,
     accounts_db: AccountsDb,
     scanner: Option<Arc<QrScannerRegistry>>,
     messenger: Option<Arc<dyn AdapterMessenger>>,
@@ -745,7 +748,7 @@ struct SessionTokens {
 impl AdminWebState {
     pub fn new(
         legacy_access_token: impl Into<String>,
-        accounts: Vec<RequestAccountState>,
+        accounts: impl Into<AccountRegistry>,
         accounts_db: AccountsDb,
         scanner: Option<Arc<QrScannerRegistry>>,
         messenger: Option<Arc<dyn AdapterMessenger>>,
@@ -757,16 +760,9 @@ impl AdminWebState {
         let _legacy_access_token = legacy_access_token.into();
         let sessions: Arc<RwLock<HashMap<String, AdminSession>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        // PERFORMANCE_ACCOUNT_LOOKUP_V1:
-        // Keep a stable account_id -> Vec index map so frequent per-account
-        // Admin API routing does not linearly scan all runtime accounts.
-        let accounts_by_id = Arc::new(
-            accounts
-                .iter()
-                .enumerate()
-                .map(|(index, account)| (account.account_id.clone(), index))
-                .collect::<HashMap<_, _>>(),
-        );
+        // PERFORMANCE_ACCOUNT_LOOKUP_V1 / ACCOUNT_HOT_ADD_V1:
+        // account_id -> index 查表現在由 AccountRegistry 內部維護。
+        let accounts: AccountRegistry = accounts.into();
 
         // Background session cleanup every 5 minutes & initial database session hydration
         let sessions_clone = Arc::clone(&sessions);
@@ -810,8 +806,8 @@ impl AdminWebState {
         });
 
         let state = Self {
-            accounts: Arc::new(accounts),
-            accounts_by_id,
+            accounts,
+            monitor_spawner: None,
             accounts_db,
             scanner,
             messenger,
@@ -823,10 +819,14 @@ impl AdminWebState {
         state
     }
 
-    fn account_by_id(&self, account_id: &str) -> Option<&RequestAccountState> {
-        self.accounts_by_id
-            .get(account_id)
-            .and_then(|index| self.accounts.get(*index))
+    /// ACCOUNT_HOT_ADD_V1：掛上監控 spawner，讓 Web 新增帳號後不必重啟即可開始監控。
+    pub fn with_monitor_spawner(mut self, spawner: crate::monitor::MonitorSpawner) -> Self {
+        self.monitor_spawner = Some(spawner);
+        self
+    }
+
+    fn account_by_id(&self, account_id: &str) -> Option<RequestAccountState> {
+        self.accounts.find(account_id)
     }
 
     /// 從監控器記憶體中的 `MonitorStatus` 取出已驗證的 user_name。
@@ -2654,7 +2654,7 @@ mod tests {
     async fn legacy_access_token_is_not_a_web_login_bypass() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("1234567890", vec![], db, None, None, 10);
+        let state = AdminWebState::new("1234567890", AccountRegistry::default(), db, None, None, 10);
         assert!(state.authorize("1234567890").await.is_none());
     }
 
@@ -2662,7 +2662,7 @@ mod tests {
     async fn http_only_cookie_authenticates_legacy_marker_requests() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("cookie-user".to_string(), false, false)
             .await;
@@ -2708,7 +2708,7 @@ mod tests {
         })
         .await
         .unwrap();
-        let state = AdminWebState::new("legacy-token", vec![], db, None, None, 10);
+        let state = AdminWebState::new("legacy-token", AccountRegistry::default(), db, None, None, 10);
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
 
@@ -2759,7 +2759,7 @@ mod tests {
         let db = AccountsDb::open(file.path()).await.unwrap();
 
         // 建立初始狀態並產生 Session
-        let state1 = AdminWebState::new("", vec![], db.clone(), None, None, 10);
+        let state1 = AdminWebState::new("", AccountRegistry::default(), db.clone(), None, None, 10);
         let tokens = state1
             .create_session("student-persisted".to_string(), true, false)
             .await;
@@ -2770,7 +2770,7 @@ mod tests {
         assert!(auth1.is_admin);
 
         // 模擬伺服器重啟：建立全新的 AdminWebState，快取初時為空或從 SQLite 讀取
-        let state2 = AdminWebState::new("", vec![], db.clone(), None, None, 10);
+        let state2 = AdminWebState::new("", AccountRegistry::default(), db.clone(), None, None, 10);
 
         // 透過 authorize 測試從 SQLite 讀回 Session
         let auth2 = state2.authorize(&session_token).await.unwrap();
@@ -2783,7 +2783,7 @@ mod tests {
         assert!(state2.authorize(&session_token).await.is_none());
 
         // 重啟後的 state3 也應無法使用已登出的 session
-        let state3 = AdminWebState::new("", vec![], db, None, None, 10);
+        let state3 = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         assert!(state3.authorize(&session_token).await.is_none());
     }
 
@@ -2926,7 +2926,7 @@ mod tests {
         // End-to-end: the middleware must reject before the handler runs.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("csrf-user".to_string(), true, false)
             .await;
@@ -2955,7 +2955,7 @@ mod tests {
         // The shipped frontend uses fetch(), which always sends Origin on POST.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("csrf-user".to_string(), true, false)
             .await;
@@ -3016,7 +3016,7 @@ mod tests {
         // authenticate, because the strip middleware only covered /admin/api/.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let victim = state
             .create_session("victim".to_string(), false, false)
             .await;
@@ -3044,7 +3044,7 @@ mod tests {
     async fn page_route_still_authenticates_via_cookie() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("cookie-user".to_string(), false, false)
             .await;
@@ -3070,7 +3070,7 @@ mod tests {
     async fn root_redirect_drops_token_but_keeps_other_params() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let app = build_admin_router(state);
         let response = app
             .oneshot(
@@ -3166,7 +3166,7 @@ mod tests {
         // as `__Host-...; Secure` over plaintext.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("victim".to_string(), false, false)
             .await;
@@ -3227,7 +3227,7 @@ mod tests {
         // causing the documented endless-401 login loop.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("cookie-user".to_string(), false, false)
             .await;
@@ -3256,7 +3256,7 @@ mod tests {
         // comparison must not accept an attacker-declared host.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("csrf-user".to_string(), true, false)
             .await;
@@ -3294,7 +3294,7 @@ mod tests {
         // host of its choosing.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let app = build_admin_router(state);
 
         let response = router_response_from_peer(
@@ -3357,7 +3357,7 @@ mod tests {
         // the gate needs to inspect, so a gate written against it is dead code.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("bootstrap-user".to_string(), false, true)
             .await;
@@ -3381,7 +3381,7 @@ mod tests {
         // Regression: this 403 was unreachable before the fix.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("bootstrap-user".to_string(), false, true)
             .await;
@@ -3423,7 +3423,7 @@ mod tests {
         // reachable — and must report the flag the frontend redirects on.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("bootstrap-user".to_string(), false, true)
             .await;
@@ -3485,7 +3485,7 @@ mod tests {
         // must_change_password == false must pass through untouched.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("normal-user".to_string(), false, false)
             .await;
@@ -3607,7 +3607,7 @@ mod tests {
     async fn rotate_session_rejects_malformed_token_without_touching_the_db() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
 
         for value in [
             "",
@@ -3630,7 +3630,7 @@ mod tests {
         // The tightened format must not break the real rotation flow.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("rotate-user".to_string(), false, false)
             .await;
@@ -3660,7 +3660,7 @@ mod tests {
     async fn refresh_endpoint_rejects_oversized_cookie_end_to_end() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let app = build_admin_router(state);
 
         let junk = "a".repeat(4096);
@@ -3715,7 +3715,7 @@ mod tests {
         // so the admin backend is refused.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
 
         // `shell_request_secret_valid` returns false when the secret env var is
         // unset, so an unauthenticated caller is rejected outright here. Either
@@ -3748,7 +3748,7 @@ mod tests {
         // hand must still be confined to the user backend.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("regular-user".to_string(), false, false)
             .await;
@@ -3786,7 +3786,7 @@ mod tests {
         // No session, no ticket, no secret: refused before any upstream call.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
 
         let response = filebrowser_shell_response(state, &[("x-fb-admin", "yes")]).await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -3799,7 +3799,7 @@ mod tests {
         // A syntactically plausible but unsigned cookie must not authenticate.
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let tokens = state
             .create_session("ticket-user".to_string(), true, false)
             .await;
@@ -3828,7 +3828,7 @@ mod tests {
     async fn root_redirect_without_params_is_clean() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", vec![], db, None, None, 10);
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
         let app = build_admin_router(state);
         let response = app
             .oneshot(

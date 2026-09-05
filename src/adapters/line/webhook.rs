@@ -393,7 +393,7 @@ mod tests {
     fn test_state(scanner: Option<Arc<QrScannerRegistry>>) -> LineWebhookState {
         let bot = test_bot();
         let messenger = Arc::clone(&bot) as Arc<dyn crate::adapters::events::AdapterMessenger>;
-        let requests = RequestState::new(messenger, vec![]);
+        let requests = RequestState::new(messenger, requests::AccountRegistry::default());
         LineWebhookState::new(bot, requests, scanner)
     }
 

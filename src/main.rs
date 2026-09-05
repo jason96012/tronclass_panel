@@ -1146,10 +1146,23 @@ async fn main() -> Result<()> {
     }
 
     // ── 5. 啟動 Webhook 伺服器（背景任務） ───────────────────────────────────
-    let webhook_accounts = contexts
-        .iter()
-        .filter_map(|ctx| ctx.request_account.clone())
-        .collect::<Vec<_>>();
+    // ACCOUNT_HOT_ADD_V1：Web／LINE／Discord 共用同一份可執行期追加的 runtime 帳號登錄簿，
+    // 搭配 MonitorSpawner 讓新增帳號後不必重啟服務即可開始監控。
+    let webhook_accounts = adapters::requests::AccountRegistry::new(
+        contexts
+            .iter()
+            .filter_map(|ctx| ctx.request_account.clone())
+            .collect::<Vec<_>>(),
+    );
+    let monitor_spawner = monitor::MonitorSpawner::new(
+        Arc::clone(&config),
+        accounts_db.clone(),
+        adapter_hub.as_ref().map(Arc::clone),
+        interactive_adapter,
+        scanner_registry.as_ref().map(Arc::clone),
+        Arc::clone(&force_cascade),
+        webhook_accounts.clone(),
+    );
 
     let admin_web_state = if config.adapters.admin_web.enabled {
         let default_poll_interval_secs = config
@@ -1158,14 +1171,17 @@ async fn main() -> Result<()> {
             .map(|provider| provider.api.poll_interval_secs)
             .min()
             .unwrap_or(10);
-        Some(adapters::admin_web::AdminWebState::new(
-            config.adapters.admin_web.access_token.clone(),
-            webhook_accounts.clone(),
-            accounts_db.clone(),
-            scanner_registry.as_ref().map(Arc::clone),
-            adapter_hub.as_ref().map(Arc::clone),
-            default_poll_interval_secs,
-        ))
+        Some(
+            adapters::admin_web::AdminWebState::new(
+                config.adapters.admin_web.access_token.clone(),
+                webhook_accounts.clone(),
+                accounts_db.clone(),
+                scanner_registry.as_ref().map(Arc::clone),
+                adapter_hub.as_ref().map(Arc::clone),
+                default_poll_interval_secs,
+            )
+            .with_monitor_spawner(monitor_spawner.clone()),
+        )
     } else {
         None
     };
@@ -1263,7 +1279,8 @@ async fn main() -> Result<()> {
             request_state,
             accounts_db.clone(),
             &config.adapters.discord,
-        );
+        )
+        .with_monitor_spawner(monitor_spawner.clone());
 
         info!("啟動 Discord Bot...");
         Some(tokio::spawn(async move {

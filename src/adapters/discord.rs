@@ -265,6 +265,8 @@ pub struct DiscordRuntime {
     register_commands: bool,
     guild_ids: Vec<String>,
     pending_accounts: Arc<Mutex<HashMap<String, PendingAccountRequest>>>,
+    // ACCOUNT_HOT_ADD_V1：新增／核准帳號後在背景熱啟動監控循環；None 時退回「請重啟服務」。
+    monitor_spawner: Option<crate::monitor::MonitorSpawner>,
 }
 
 #[derive(Clone)]
@@ -303,7 +305,78 @@ impl DiscordRuntime {
             register_commands: config.register_commands,
             guild_ids: config.guild_ids.clone(),
             pending_accounts: Arc::new(Mutex::new(HashMap::new())),
+            monitor_spawner: None,
         }
+    }
+
+    /// ACCOUNT_HOT_ADD_V1：掛上監控 spawner，讓 Discord 新增帳號後不必重啟即可開始監控。
+    pub fn with_monitor_spawner(mut self, spawner: crate::monitor::MonitorSpawner) -> Self {
+        self.monitor_spawner = Some(spawner);
+        self
+    }
+
+    /// ACCOUNT_HOT_ADD_V1：在背景熱啟動剛寫入 DB 的帳號，並回傳要附在回覆裡的狀態說明。
+    ///
+    /// Discord interaction 必須在 3 秒內回覆，而登入學校系統可能要數十秒，
+    /// 所以這裡只負責開背景任務；結果透過 DM 通知管理員與被綁定的使用者。
+    fn start_monitor_in_background(&self, account: &CreatedAccount) -> String {
+        let Some(spawner) = self.monitor_spawner.clone() else {
+            return "新帳號會在服務重新啟動後開始監控。".to_string();
+        };
+
+        let bot = Arc::clone(&self.bot);
+        let account_id = account.account_id.clone();
+        let username = account.username.clone();
+        let bound_user_id = account.discord_user_id.clone();
+        tokio::spawn(async move {
+            match spawner.spawn_account(&account_id).await {
+                Ok(started) => {
+                    info!(account = %started.account_id, "Discord 新增的帳號已熱啟動監控");
+                    let who = if started.user_name.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("（{}）", started.user_name.trim())
+                    };
+                    let admin_text = OutboundMessage::Text(format!(
+                        "帳號 `{account_id}`{who} 登入成功，已開始監控，不需重啟服務。"
+                    ));
+                    if !bot.admin_user_id.is_empty() {
+                        let _ = bot.push(&bot.admin_user_id, &admin_text).await;
+                    }
+                    if !bound_user_id.is_empty() && bound_user_id != bot.admin_user_id {
+                        let _ = bot
+                            .push(
+                                &bound_user_id,
+                                &OutboundMessage::Text(format!(
+                                    "你的 Tronclass username `{username}` 已登入成功並開始監控。"
+                                )),
+                            )
+                            .await;
+                    }
+                }
+                Err(reason) => {
+                    warn!(account = %account_id, reason = %reason, "Discord 新增的帳號熱啟動監控失敗");
+                    let admin_text = OutboundMessage::Text(format!(
+                        "帳號 `{account_id}` 已寫入資料庫，但即時啟動監控失敗：{reason}\n請確認帳號密碼後重啟服務再試。"
+                    ));
+                    if !bot.admin_user_id.is_empty() {
+                        let _ = bot.push(&bot.admin_user_id, &admin_text).await;
+                    }
+                    if !bound_user_id.is_empty() && bound_user_id != bot.admin_user_id {
+                        let _ = bot
+                            .push(
+                                &bound_user_id,
+                                &OutboundMessage::Text(format!(
+                                    "你的 Tronclass username `{username}` 已建立，但目前無法登入：{reason}\n請聯絡管理員確認密碼。"
+                                )),
+                            )
+                            .await;
+                    }
+                }
+            }
+        });
+
+        "正在背景登入並啟動監控（不需重啟服務），完成後會私訊通知結果。".to_string()
     }
 }
 
@@ -769,8 +842,9 @@ impl DiscordRuntime {
         {
             Ok(account) => {
                 self.notify_created_account(&account).await;
+                let monitor_note = self.start_monitor_in_background(&account);
                 OutboundMessage::Text(format!(
-                    "已新增 Tronclass 帳號 `{}`（provider: `{}`，id: `{}`）。新帳號會在服務重新啟動後開始監控。",
+                    "已新增 Tronclass 帳號 `{}`（provider: `{}`，id: `{}`）。{monitor_note}",
                     account.username, account.provider, account.account_id
                 ))
             }
@@ -810,6 +884,10 @@ impl DiscordRuntime {
         {
             return Err("新增失敗：provider、username、password 或識別碼過長。".to_string());
         }
+        // PROVIDER_KIND_NO_PANIC_V1
+        if let Err(message) = crate::auth::providers::check_provider_supported(provider) {
+            return Err(format!("新增失敗：{message}"));
+        }
 
         let account = RawAccountConfig {
             id: account_id.to_string(),
@@ -842,8 +920,14 @@ impl DiscordRuntime {
             return;
         }
 
+        // ACCOUNT_HOT_ADD_V1：有 spawner 時監控會在背景立即啟動，結果另行通知。
+        let monitor_note = if self.monitor_spawner.is_some() {
+            "系統正在為你啟動監控，完成後會再通知你。"
+        } else {
+            "新帳號會在服務重新啟動後開始監控。"
+        };
         let welcome = OutboundMessage::Text(format!(
-            "你的 Discord 已綁定 Tronclass username `{}`。新帳號會在服務重新啟動後開始監控。",
+            "你的 Discord 已綁定 Tronclass username `{}`。{monitor_note}",
             account.username
         ));
         let _ = self.bot.push(&account.discord_user_id, &welcome).await;
@@ -969,8 +1053,9 @@ impl DiscordRuntime {
         {
             Ok(account) => {
                 self.notify_created_account(&account).await;
+                let monitor_note = self.start_monitor_in_background(&account);
                 OutboundMessage::Text(format!(
-                    "已核准並新增 Tronclass username `{}`（provider: `{}`）。新帳號會在服務重新啟動後開始監控。",
+                    "已核准並新增 Tronclass username `{}`（provider: `{}`）。{monitor_note}",
                     account.username, account.provider
                 ))
             }
@@ -1560,7 +1645,7 @@ fn account_review_action_rows(token: &str) -> Vec<CreateActionRow> {
 
 fn render_pending_account_request(request: &PendingAccountRequest) -> String {
     format!(
-        "待審核 Tronclass 帳號新增\n申請人：<@{}>\nProvider：`{}`\nUsername：`{}`\n\n密碼不會顯示在控制台；核准後會寫入 accounts.db 並綁定申請人。新帳號會在服務重新啟動後開始監控。",
+        "待審核 Tronclass 帳號新增\n申請人：<@{}>\nProvider：`{}`\nUsername：`{}`\n\n密碼不會顯示在控制台；核准後會寫入 accounts.db、綁定申請人並立即在背景啟動監控（不需重啟服務）。",
         request.discord_user_id, request.provider, request.username
     )
 }
@@ -1814,13 +1899,14 @@ mod tests {
             bot,
             requests: RequestState::new_with_binding(
                 messenger,
-                vec![],
+                requests::AccountRegistry::default(),
                 requests::AdapterBindingKind::Discord,
             ),
             accounts_db: db,
             register_commands: false,
             guild_ids: vec![],
             pending_accounts: Arc::new(Mutex::new(HashMap::new())),
+            monitor_spawner: None,
         }
     }
 

@@ -86,7 +86,8 @@ impl AuthClient {
             crate::api::build_http_client(Arc::clone(&cookie_jar), account.request_timeout_secs)
                 .into_diagnostic()
                 .wrap_err("Failed to build HTTP client")?;
-        let flow = providers::get_auth_flow(account);
+        // PROVIDER_KIND_NO_PANIC_V1：不支援的 provider kind 回 Err 而非 panic。
+        let flow = providers::get_auth_flow(account)?;
 
         let mut auth_client = AuthClient {
             cookie_jar: Arc::clone(&cookie_jar),

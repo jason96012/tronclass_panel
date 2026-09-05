@@ -165,7 +165,7 @@ pub(super) async fn admin_action_handler(
     let targets = if action_name == "force" && !session.is_admin {
         // 一般使用者按任一 Force 時，立即喚醒所有帳號一起檢查，避免等待
         // 先由該使用者帳號偵測到點名後才 cascade，造成速度過慢。
-        state.accounts.iter().collect::<Vec<_>>()
+        state.accounts.all()
     } else {
         match resolve_targets(&state, &session, account_id.as_deref()) {
             Ok(targets) => targets,
@@ -174,7 +174,7 @@ pub(super) async fn admin_action_handler(
     };
 
     let mut affected = 0usize;
-    for account in targets {
+    for account in &targets {
         match action_name.as_str() {
             "force" | "force_all" => {
                 account.force_poll_tx.notify_one();
@@ -267,6 +267,16 @@ pub(super) async fn handle_admin_account_action(
                     .into_response();
             }
 
+            // PROVIDER_KIND_NO_PANIC_V1：provider 不存在或 kind 無登入流程時直接 400，
+            // 不寫入 DB（否則下次重啟會因這個帳號無法通過 resolve 而整個起不來）。
+            if let Err(message) = crate::auth::providers::check_provider_supported(&provider) {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": message })),
+                )
+                    .into_response();
+            }
+
             let account = RawAccountConfig {
                 id: account_id.clone(),
                 provider,
@@ -280,22 +290,66 @@ pub(super) async fn handle_admin_account_action(
                 dashboard_password_hash: String::new(),
             };
 
-            match state.accounts_db.insert(&account).await {
-                Ok(()) => (
-                    StatusCode::OK,
-                    Json(json!({
-                        "ok": true,
-                        "affected": 1,
-                        "message": format!("已新增帳號 {account_id}；請重啟服務後才會開始監控。網站登入需由管理員另行設定 Dashboard 密碼。")
-                    })),
-                )
-                    .into_response(),
-                Err(e) => (
+            if let Err(e) = state.accounts_db.insert(&account).await {
+                return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": format!("新增帳號失敗：{e}") })),
                 )
-                    .into_response(),
+                    .into_response();
             }
+
+            // ACCOUNT_HOT_ADD_V1：寫入 DB 後直接熱啟動監控循環（會實際登入一次）。
+            // 登入失敗時帳號仍保留在 DB（密碼可能只是暫時打錯／學校系統暫時異常），
+            // 使用者可修正後用「重登」或重啟服務再試；訊息中明確說明目前狀態。
+            let (monitor_started, message) = match state.monitor_spawner.as_ref() {
+                Some(spawner) => match spawner.spawn_account(&account_id).await {
+                    Ok(started) => {
+                        info!(account = %started.account_id, actor = %session.account_id, "Web 新增的帳號已熱啟動監控");
+                        super::status::invalidate_admin_status_cache().await;
+                        let who = if started.user_name.trim().is_empty() {
+                            String::new()
+                        } else {
+                            format!("（{}）", started.user_name.trim())
+                        };
+                        (
+                            true,
+                            format!(
+                                "已新增帳號 {account_id}{who}，登入成功並已開始監控，不需重啟服務。網站登入需由管理員另行設定 Dashboard 密碼。"
+                            ),
+                        )
+                    }
+                    Err(reason) => (
+                        false,
+                        format!(
+                            "已新增帳號 {account_id} 到資料庫，但即時啟動監控失敗：{reason}。請確認帳號密碼後重啟服務再試。"
+                        ),
+                    ),
+                },
+                None => (
+                    false,
+                    format!(
+                        "已新增帳號 {account_id}；請重啟服務後才會開始監控。網站登入需由管理員另行設定 Dashboard 密碼。"
+                    ),
+                ),
+            };
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "add_account_hot_start",
+                Some(account_id.as_str()),
+                Some(if monitor_started { "started" } else { "not_started" }),
+                message.clone(),
+            );
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "affected": 1,
+                    "monitor_started": monitor_started,
+                    "message": message,
+                })),
+            )
+                .into_response()
         }
         "reset_password" => {
             let Some(account_id) = action
@@ -472,11 +526,11 @@ pub(super) async fn handle_admin_account_action(
     }
 }
 
-pub(super) fn resolve_targets<'a>(
-    state: &'a AdminWebState,
+pub(super) fn resolve_targets(
+    state: &AdminWebState,
     session: &AdminSession,
     account_id: Option<&str>,
-) -> Result<Vec<&'a RequestAccountState>, Response> {
+) -> Result<Vec<RequestAccountState>, Response> {
     if session.is_admin {
         if let Some(account_id) = account_id {
             let Some(account) = state.account_by_id(account_id) else {
@@ -488,7 +542,7 @@ pub(super) fn resolve_targets<'a>(
             };
             Ok(vec![account])
         } else {
-            Ok(state.accounts.iter().collect())
+            Ok(state.accounts.all())
         }
     } else {
         let target_id = account_id.unwrap_or(&session.account_id);

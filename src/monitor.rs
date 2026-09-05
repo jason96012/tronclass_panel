@@ -36,14 +36,14 @@ use miette::{Result, WrapErr};
 use tokio::sync::{Mutex, Notify};
 use tracing::{debug, error, info, instrument, warn};
 
-use crate::account::AccountConfig;
+use crate::account::{AccountConfig, AccountsFile};
 use crate::adapters::events::{
     AdapterAccountTarget, AdapterMessenger, MonitorStatus, OutboundMessage, RollcallHistoryEntry,
     SystemStartedEvent,
 };
 use crate::adapters::requests::{
-    create_number_code_channel, create_qrcode_channel, NumberCodeReceiver, NumberCodeSender,
-    QrCodeReceiver, QrCodeSender, RequestAccountState,
+    create_number_code_channel, create_qrcode_channel, AccountRegistry, NumberCodeReceiver,
+    NumberCodeSender, QrCodeReceiver, QrCodeSender, RequestAccountState,
 };
 use crate::adapters::scanner::QrScannerRegistry;
 use crate::api::{is_auth_error_report, ApiClient};
@@ -58,7 +58,9 @@ const FORCE_CASCADE_DEDUPE_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone)]
 pub struct ForceCascade {
-    peers: Arc<Vec<ForceCascadePeer>>,
+    // ACCOUNT_HOT_ADD_V1：peers 改為可在執行期追加（熱新增帳號時 add_peer）。
+    // 只在同步區段短暫持鎖，不跨 await。
+    peers: Arc<std::sync::RwLock<Vec<ForceCascadePeer>>>,
     recent_rollcalls: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
@@ -71,14 +73,26 @@ struct ForceCascadePeer {
 impl ForceCascade {
     pub fn new(peers: Vec<(String, Arc<Notify>)>) -> Self {
         Self {
-            peers: Arc::new(
+            peers: Arc::new(std::sync::RwLock::new(
                 peers
                     .into_iter()
                     .map(|(account_id, notify)| ForceCascadePeer { account_id, notify })
                     .collect(),
-            ),
+            )),
             recent_rollcalls: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// ACCOUNT_HOT_ADD_V1：執行期加入新的 cascade 對象（同 id 已存在則略過）。
+    pub fn add_peer(&self, account_id: String, notify: Arc<Notify>) {
+        let mut peers = self
+            .peers
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if peers.iter().any(|peer| peer.account_id == account_id) {
+            return;
+        }
+        peers.push(ForceCascadePeer { account_id, notify });
     }
 
     async fn notify_peers_once(
@@ -117,12 +131,18 @@ impl ForceCascade {
         }
 
         let mut notified = 0usize;
-        for peer in self.peers.iter() {
-            if peer.account_id == source_account_id {
-                continue;
+        {
+            let peers = self
+                .peers
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for peer in peers.iter() {
+                if peer.account_id == source_account_id {
+                    continue;
+                }
+                peer.notify.notify_one();
+                notified += 1;
             }
-            peer.notify.notify_one();
-            notified += 1;
         }
 
         info!(
@@ -294,6 +314,159 @@ impl MonitorContext {
             force_cascade: None,
             status,
         })
+    }
+}
+
+// ─── 執行期熱新增帳號 ─────────────────────────────────────────────────────────
+
+// ACCOUNT_HOT_ADD_V1
+// 啟動時 main.rs 建好一份 `MonitorSpawner`，交給 Web 管理頁與 Discord bot；
+// 新增帳號寫入 accounts.db 後直接呼叫 `spawn_account`，不必重啟服務：
+//   DB 讀回 → AccountsFile::resolve（沿用啟動時同一套驗證）→ MonitorContext::new（真的登入）
+//   → 註冊到共享 AccountRegistry + ForceCascade → tokio::spawn(run_monitor_loop)。
+// 熱啟動的循環不掛在 main 的 JoinSet 上：它意外結束時只記錄／通知，不會拖垮整個服務。
+
+/// 熱啟動成功後回傳給呼叫端的資訊。
+#[derive(Debug, Clone)]
+pub struct HotAddedMonitor {
+    pub account_id: String,
+    /// 登入後取得的顯示名稱（可能為空字串）。
+    pub user_name: String,
+}
+
+#[derive(Clone)]
+pub struct MonitorSpawner {
+    global_config: Arc<AppConfig>,
+    accounts_db: AccountsDb,
+    messenger: Option<Arc<dyn AdapterMessenger>>,
+    interactive_adapter: bool,
+    scanner_registry: Option<Arc<QrScannerRegistry>>,
+    force_cascade: Arc<ForceCascade>,
+    registry: AccountRegistry,
+}
+
+impl MonitorSpawner {
+    pub fn new(
+        global_config: Arc<AppConfig>,
+        accounts_db: AccountsDb,
+        messenger: Option<Arc<dyn AdapterMessenger>>,
+        interactive_adapter: bool,
+        scanner_registry: Option<Arc<QrScannerRegistry>>,
+        force_cascade: Arc<ForceCascade>,
+        registry: AccountRegistry,
+    ) -> Self {
+        Self {
+            global_config,
+            accounts_db,
+            messenger,
+            interactive_adapter,
+            scanner_registry,
+            force_cascade,
+            registry,
+        }
+    }
+
+    /// 以 accounts.db 內既有的帳號 id 熱啟動監控循環。
+    ///
+    /// 會實際登入一次（與服務啟動時相同），因此可能耗時數秒到數十秒；
+    /// Discord 這類有回覆時限的呼叫端請放到背景任務執行。
+    pub async fn spawn_account(&self, account_id: &str) -> std::result::Result<HotAddedMonitor, String> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return Err("帳號 id 不可為空".to_string());
+        }
+        if self.registry.find(account_id).is_some() {
+            return Err(format!("帳號 `{account_id}` 已在監控中"));
+        }
+
+        let raw = match self.accounts_db.get(account_id).await {
+            Ok(Some(raw)) => raw,
+            Ok(None) => return Err(format!("資料庫中找不到帳號 `{account_id}`")),
+            Err(e) => return Err(format!("讀取帳號 `{account_id}` 失敗：{}", report_chain_text(&e))),
+        };
+        if !raw.enabled {
+            return Err(format!("帳號 `{account_id}` 已停用（enabled = false）"));
+        }
+
+        // 沿用啟動時同一套驗證（provider 存在、kind 有登入流程、欄位不為空）。
+        let mut resolved = AccountsFile {
+            accounts: vec![raw],
+        }
+        .resolve(&self.global_config)
+        .map_err(|e| format!("帳號設定無效：{}", report_chain_text(&e)))?;
+        let Some(account) = resolved.pop() else {
+            return Err(format!("帳號 `{account_id}` 無法解析為可監控的設定"));
+        };
+        let account = Arc::new(account);
+
+        let mut ctx = MonitorContext::new(
+            Arc::clone(&self.global_config),
+            Arc::clone(&account),
+            self.accounts_db.clone(),
+            self.messenger.as_ref().map(Arc::clone),
+            self.interactive_adapter,
+            self.scanner_registry.as_ref().map(Arc::clone),
+        )
+        .await
+        .map_err(|e| format!("登入失敗：{}", report_chain_text(&e)))?;
+        ctx.force_cascade = Some(Arc::clone(&self.force_cascade));
+
+        let user_name = ctx.status.lock().await.user_name.clone();
+        if let Some(request_account) = ctx.request_account.clone() {
+            // 先進登錄簿（同 id 併發新增時只有一個會成功），再加入 cascade。
+            if !self.registry.push(request_account.clone()) {
+                return Err(format!("帳號 `{account_id}` 已在監控中"));
+            }
+            self.force_cascade
+                .add_peer(account.id.clone(), Arc::clone(&request_account.force_poll_tx));
+        }
+
+        let task_account_id = account.id.clone();
+        let task_messenger = self.messenger.as_ref().map(Arc::clone);
+        let task_target = ctx.adapter_target.lock().await.clone();
+        tokio::spawn(async move {
+            match run_monitor_loop(ctx).await {
+                Ok(()) => warn!(account = %task_account_id, "熱啟動的監控循環提前正常結束"),
+                Err(e) => {
+                    error!(account = %task_account_id, error = %e, "熱啟動的監控循環異常結束");
+                    notify_background(
+                        task_messenger,
+                        task_target,
+                        OutboundMessage::Text(format!(
+                            "[{task_account_id}] 監控循環異常結束：{e}\n請重啟服務以恢復此帳號的監控。"
+                        )),
+                    );
+                }
+            }
+        });
+
+        info!(
+            account = %account.id,
+            user_name = %user_name,
+            "已於執行期熱啟動監控循環（未重啟服務）"
+        );
+        Ok(HotAddedMonitor {
+            account_id: account.id.clone(),
+            user_name,
+        })
+    }
+}
+
+/// 把 miette 錯誤鏈攤平成一行給使用者看（外層 wrap_err 訊息 + 內層真正原因）。
+fn report_chain_text(report: &miette::Report) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for cause in report.chain() {
+        let text = cause.to_string();
+        let text = text.trim();
+        if text.is_empty() || parts.iter().any(|existing| existing == text) {
+            continue;
+        }
+        parts.push(text.to_string());
+    }
+    if parts.is_empty() {
+        report.to_string()
+    } else {
+        parts.join("；")
     }
 }
 
