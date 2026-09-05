@@ -9,8 +9,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    admin_login_redirect, html_page_response, must_change_password_redirect, session_token,
-    unauthorized_response, AdminQuery, AdminWebState,
+    admin_login_redirect, check_test_notification_rate, html_page_response,
+    must_change_password_redirect, session_token, unauthorized_response, AdminQuery,
+    AdminWebState,
 };
 
 const PAGE_HTML: &str = include_str!("static/push_status.html");
@@ -271,6 +272,10 @@ pub(super) async fn test_handler(
         Ok(value) => value,
         Err(response) => return response,
     };
+    // TEST_NOTIFICATION_RATE_LIMIT_V1
+    if let Err(response) = check_test_notification_rate(&state, "push", &account_id).await {
+        return response;
+    }
     const TEST_DELAY_SECS: u64 = 10;
     let subscription_count = match state
         .accounts_db

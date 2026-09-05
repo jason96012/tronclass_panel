@@ -201,7 +201,7 @@
   <!-- MORNING_DIGEST_V1: 晨間摘要推送設定（僅管理員；持久化於 config/digest.json） -->
   <section class="card" id="digestCard" hidden>
     <h1>晨間摘要推送</h1>
-    <p class="hint">每天定時推送一則摘要：今日課表、48 小時內截止作業、最新公告（送到各帳號已訂閱推播的裝置）。資料取自背景快取，不對學校發額外請求；設定即時生效並永久保存。</p>
+    <p class="hint">每天定時推送一則摘要：48 小時內截止作業與最新公告（送到各帳號已訂閱推播的裝置）。週六、週日不發送；各帳號可在「通知設定」頁個別關閉。資料取自背景快取，不對學校發額外請求；設定即時生效並永久保存。</p>
     <div class="test-row">
       <span><b>啟用</b><i>關閉後完全不發送晨間摘要</i></span>
       <input id="digestEnabled" type="checkbox" checked style="width:22px;min-height:22px">
@@ -210,9 +210,9 @@
       <span><b>通知時間</b><i>伺服器本地時間（HH:MM）。小技巧：把時間設為「下一分鐘」即可立即測試推送</i></span>
       <input id="digestTime" type="time" value="08:00" style="flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit">
     </div>
-    <div class="test-row" style="flex-wrap:wrap;gap:8px">
+    <!-- DIGEST_SAVE_RIGHT_V1：儲存鈕靠右；測試鈕已移至下方「測試通知」卡（DIGEST_TEST_IN_TEST_CARD_V1） -->
+    <div class="test-row" style="justify-content:flex-end">
       <button id="digestSave" class="tbtn" type="button">儲存</button>
-      <button id="digestTest" class="ghost" type="button">發送測試</button>
     </div>
     <div id="digestMsg" class="tmsg"></div>
   </section>
@@ -232,6 +232,11 @@
     <div class="test-row">
       <span><b>課程公告通知測試</b><i>走真實公告推播路徑，確認有新公告時手機能收到「新公告」通知並開啟公告頁。</i></span>
       <button id="testBulletinBtn" class="tbtn" type="button">發送測試</button>
+    </div>
+    <!-- DIGEST_TEST_IN_TEST_CARD_V1：晨間摘要測試推送（送到目前登入者已訂閱推播的裝置） -->
+    <div class="test-row" id="testDigestRow">
+      <span><b>晨間摘要推送測試</b><i>立即以真實摘要內容（48 小時內作業、最新公告）推送到此帳號已訂閱背景推播的裝置；不受週末與每帳號開關限制。</i></span>
+      <button id="testDigestBtn" class="tbtn" type="button">發送測試</button>
     </div>
     <div class="test-row">
       <span><b>點名提示音測試</b><i>以此裝置目前儲存的音效與音量播放，與控制台及通知頁的提示音設定共用。</i></span>
@@ -265,6 +270,7 @@
     var pushBtn = document.getElementById('testPushBtn');
     var soundBtn = document.getElementById('testSoundBtn');
     var bulletinBtn = document.getElementById('testBulletinBtn');
+    var digestBtn = document.getElementById('testDigestBtn'); /* DIGEST_TEST_IN_TEST_CARD_V1 */
     var msg = document.getElementById('testNotifyMsg');
     if (!discordBtn && !pushBtn && !soundBtn) return;
     function show(text, kind) {
@@ -318,6 +324,22 @@
         var r = await postJson('/admin/api/bulletins/test');
         if (r && r.ok === false) throw new Error(r.error || '無法發送測試');
         show('已發送公告測試推播到此帳號的訂閱裝置，點通知會開啟課程公告頁。', 'ok');
+      });
+    });
+    /* DIGEST_TEST_IN_TEST_CARD_V1：晨間摘要測試——走 /admin/api/action { action: 'digest_test' }，只推給目前登入者 */
+    if (digestBtn) digestBtn.addEventListener('click', function () {
+      runButton(digestBtn, async function () {
+        show('推送中…');
+        var res = await fetch('/admin/api/action', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ action: 'digest_test' })
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+        var n = Number(body.devices || 0);
+        if (n > 0) show('測試摘要已推送到你的 ' + n + ' 台裝置', 'ok');
+        else show('沒有可推送的裝置：請先在手機 Dashboard 訂閱背景推播', 'bad');
       });
     });
     if (soundBtn) soundBtn.addEventListener('click', function () {
@@ -499,24 +521,7 @@
       show('儲存失敗：' + (e && e.message ? e.message : e), 'bad');
     }
   });
-  var testBtn = document.getElementById('digestTest');
-  if (testBtn) testBtn.addEventListener('click', async function () {
-    show('推送中…');
-    try {
-      var res = await fetch('/admin/api/action', {
-        method: 'POST', credentials: 'same-origin',
-        headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
-        body: JSON.stringify({ action: 'digest_test' })
-      });
-      var body = await res.json().catch(function () { return {}; });
-      if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
-      var n = body.devices || 0;
-      if (n > 0) show('測試摘要已推送到你的 ' + n + ' 台裝置', 'ok');
-      else show('沒有可推送的裝置：先在手機 Dashboard 訂閱背景推播', 'bad');
-    } catch (e) {
-      show('推送失敗：' + (e && e.message ? e.message : e), 'bad');
-    }
-  });
+  /* DIGEST_TEST_IN_TEST_CARD_V1：測試按鈕邏輯已移至上方「測試通知」卡的腳本 */
   load();
 })();
 </script>

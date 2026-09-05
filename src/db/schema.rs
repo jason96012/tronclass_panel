@@ -411,6 +411,16 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 web_push_subscriptions index 失敗")?;
 
+    // PUSH_STALE_CLEANUP_V1：每個訂閱端點的「連續失敗次數」；成功即歸零，
+    // 達門檻（或遇到永久性錯誤）即刪除並通知使用者重新啟用。
+    ensure_table_column(
+        pool,
+        "web_push_subscriptions",
+        "consecutive_failures",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+    .await?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS class_reminder_sent (
             account_id TEXT NOT NULL DEFAULT '',

@@ -116,6 +116,27 @@ pub(super) async fn admin_action_handler(
         .filter(|v| !v.is_empty())
         .map(ToOwned::to_owned);
 
+    // DIGEST_TEST_IN_TEST_CARD_V1：晨間摘要測試推送只送到「目前登入者」自己的裝置，
+    // 與 /admin/api/push/test、/admin/api/bulletins/test 相同，不需管理員權限；
+    // 提前處理，避免落入下方 targets 迴圈被判為 unknown action。
+    if action_name == "digest_test" {
+        // TEST_NOTIFICATION_RATE_LIMIT_V1
+        if let Err(response) =
+            check_test_notification_rate(&state, "digest", &session.account_id).await
+        {
+            return response;
+        }
+        crate::logs::record_audit(
+            "web",
+            &session.account_id,
+            &action_name,
+            None,
+            None,
+            "Web 設定頁：晨間摘要測試推送",
+        );
+        return handle_admin_account_action(&state, &session, &action_name, action).await;
+    }
+
     if matches!(
         action_name.as_str(),
         "add_account"
@@ -365,8 +386,7 @@ pub(super) async fn handle_admin_account_action(
             }
         }
         "mock_rollcall" => super::mock::handle_mock_rollcall_action(state, action).await,
-        "digest_settings"
-            | "digest_test" => {
+        "digest_settings" => {
             // MORNING_DIGEST_V1：晨間摘要設定（持久化於 config/digest.json）。
             let current = super::morning_digest::digest_settings();
             let enabled = action.digest_enabled.unwrap_or(current.enabled);

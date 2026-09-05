@@ -106,7 +106,7 @@
 <main>
   <div class="page-head">
     <h1>通知設定</h1>
-    <p>集中管理 Discord 通知、上課前提醒與即時點名提示音。電腦版與手機版皆已最佳化。</p>
+    <p>集中管理 Discord 通知、上課前提醒、晨間摘要與即時點名提示音。電腦版與手機版皆已最佳化。</p>
   </div>
 
   <section class="card">
@@ -168,6 +168,29 @@
         <a class="sec" href="/admin#timetable">前往課表</a>
       </div>
       <div id="classReminderMsg" class="msg"></div>
+    </section>
+
+    <!-- DIGEST_PER_ACCOUNT_V1：晨間摘要每帳號開關（全域時間／啟用在設定頁） -->
+    <section class="card grid-single">
+      <div class="sec-head">
+        <div><h2>晨間摘要推播</h2><div class="desc">每天固定時間推播一則摘要到已訂閱背景推播的裝置：48 小時內截止作業與最新公告。週六、週日不發送。發送時間由管理員在設定頁統一調整。</div></div>
+        <button id="digestPrefReload" class="sec" type="button">重新整理</button>
+      </div>
+      <div class="acct-row">
+        <div class="acct-field">
+          <label class="small" for="digestPrefAccount">設定帳號</label>
+          <select id="digestPrefAccount"></select>
+        </div>
+        <div id="digestPrefInfo" class="small">載入中...</div>
+      </div>
+      <label class="toggle-row">
+        <input id="digestPrefEnabled" type="checkbox">
+        <span><b>接收晨間摘要</b><i>關閉後此帳號不會收到晨間摘要，不影響作業截止提醒與公告通知。</i></span>
+      </label>
+      <div class="actions">
+        <button id="digestPrefSave" class="primary" type="button">儲存晨間摘要設定</button>
+      </div>
+      <div id="digestPrefMsg" class="msg"></div>
     </section>
 
     <!-- HOMEWORK_LADDER_V1：作業截止提醒階梯（每帳號可自訂） -->

@@ -67,6 +67,8 @@ fn discord_notification_key(message: &OutboundMessage) -> &'static str {
         OutboundMessage::RollcallFinished(_) => "rollcall_finished",
         OutboundMessage::HomeworkDeadline(_) => "homework_deadline",
         OutboundMessage::Bulletin(_) => "bulletin",
+        // PUSH_STALE_CLEANUP_V1：歸到「其他通知」，使用者可在通知頁一併關閉。
+        OutboundMessage::PushSubscriptionExpired(_) => "other",
         OutboundMessage::Status(_) => "status",
         OutboundMessage::SecurityAlert(_) => "security_alert",
         OutboundMessage::MonitorPaused
@@ -1674,6 +1676,7 @@ fn render_discord_message(message: &OutboundMessage) -> String {
         }
         OutboundMessage::HomeworkDeadline(event) => event.render(),
         OutboundMessage::Bulletin(event) => event.render(),
+        OutboundMessage::PushSubscriptionExpired(event) => event.render(),
         OutboundMessage::UnknownCommand { text } => {
             format!("不認識的指令：{}\n\n{}", text.chars().take(80).collect::<String>(), help_text())
         }

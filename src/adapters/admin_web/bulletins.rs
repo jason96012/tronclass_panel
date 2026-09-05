@@ -18,8 +18,9 @@ use serde_json::{json, Value};
 use crate::adapters::events::{AdapterAccountTarget, AdapterMessenger, BulletinEvent, OutboundMessage};
 
 use super::{
-    admin_login_redirect, html_page_response, must_change_password_redirect, session_token,
-    unauthorized_response, AdminQuery, AdminSession, AdminWebState,
+    admin_login_redirect, check_test_notification_rate, html_page_response,
+    must_change_password_redirect, session_token, unauthorized_response, AdminQuery,
+    AdminSession, AdminWebState,
 };
 
 const PAGE_HTML: &str = include_str!("static/bulletins.html");
@@ -283,7 +284,8 @@ fn persist_bulletin_reads(store: &BulletinReadStore) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(s) = serde_json::to_string(store) {
-        if let Err(e) = std::fs::write(path, s) {
+        // ATOMIC_WRITE_V1
+        if let Err(e) = crate::atomic_write::write_atomic(path, s) {
             tracing::warn!("無法寫入 bulletin_reads.json：{e}");
         }
     }
@@ -320,7 +322,8 @@ fn persist_admin_bulletins(list: &[AdminBulletin]) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(s) = serde_json::to_string_pretty(list) {
-        if let Err(e) = std::fs::write(path, s) {
+        // ATOMIC_WRITE_V1
+        if let Err(e) = crate::atomic_write::write_atomic(path, s) {
             tracing::warn!("無法寫入 admin_bulletins.json：{e}");
         }
     }
@@ -552,6 +555,12 @@ pub(super) async fn test_handler(
     let Some(session) = state.authorize_any(&token).await else {
         return unauthorized_response();
     };
+    // TEST_NOTIFICATION_RATE_LIMIT_V1
+    if let Err(response) =
+        check_test_notification_rate(&state, "bulletin", &session.account_id).await
+    {
+        return response;
+    }
     let key = format!("test-{}", now_secs());
     crate::web_push_notifications::notify_bulletin(
         &session.account_id,
@@ -697,7 +706,10 @@ fn save_notified(keys: &[String]) {
     if let Ok(s) = serde_json::to_string(&BulletinNotifiedStore {
         keys: keys.to_vec(),
     }) {
-        let _ = std::fs::write(path, s);
+        // ATOMIC_WRITE_V1：半截檔會讓已通知清單歸零 → 重啟後所有公告重複推播。
+        if let Err(e) = crate::atomic_write::write_atomic(path, s) {
+            tracing::warn!("無法寫入 bulletin_notified.json：{e}");
+        }
     }
 }
 

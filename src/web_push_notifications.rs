@@ -19,6 +19,9 @@ use serde_json::json;
 use sha2::Sha256;
 use tracing::{debug, warn};
 
+use crate::adapters::events::{
+    AdapterAccountTarget, AdapterMessenger, OutboundMessage, PushSubscriptionExpiredEvent,
+};
 use crate::db::{AccountsDb, WebPushSubscriptionRow};
 
 const VAPID_PRIVATE_KEY_SETTING: &str = "vapid_private_key_v1";
@@ -34,6 +37,32 @@ static SEND_SEMAPHORE: Lazy<tokio::sync::Semaphore> =
 
 /// Dedup window for notifications.
 const DEDUPE_WINDOW: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// PUSH_STALE_CLEANUP_V1：同一端點連續失敗達此次數即視為失效並移除。
+/// 404/410（Gone）不等待、立即移除；其他狀態（400/401/403 金鑰／簽章問題、
+/// 5xx／網路錯誤）需連續失敗到門檻，避免推播服務短暫故障就把訂閱清掉。
+const STALE_SUBSCRIPTION_FAILURE_THRESHOLD: i64 = 5;
+/// 同一帳號的「訂閱失效」提醒最短間隔（避免多裝置／多次通知同日重複打擾）。
+const EXPIRED_NOTICE_COOLDOWN: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// PUSH_STALE_CLEANUP_V1：送出「推播失效」提醒的 Discord／LINE messenger（由 main 注入）。
+static EXPIRED_NOTICE_MESSENGER: OnceCell<Arc<dyn AdapterMessenger>> = OnceCell::new();
+static EXPIRED_NOTICE_RECENT: Lazy<Mutex<HashMap<String, Instant>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 由 main 在 adapter 建好後呼叫；未呼叫時失效訂閱仍會移除，只是不發提醒。
+pub fn set_expired_notice_messenger(messenger: Arc<dyn AdapterMessenger>) {
+    let _ = EXPIRED_NOTICE_MESSENGER.set(messenger);
+}
+
+/// PUSH_STALE_CLEANUP_V1：單一裝置的發送結果（供 send_to_many 判斷是否要通知）。
+enum SendOutcome {
+    Delivered,
+    /// 暫時性失敗：計數 +1 但尚未達門檻。
+    Failed(String),
+    /// 已判定失效並從資料庫移除。
+    Removed(String),
+}
 
 /// Check-and-record a notification key in the dedupe map.
 ///
@@ -383,6 +412,8 @@ impl WebPushService {
         Ok(())
     }
 
+    /// 單一裝置發送。成功回 Ok(())；失敗回 Err，並由 PUSH_STALE_CLEANUP_V1 的計數決定
+    /// 是否移除訂閱（見 `send_one_tracked`）。
     async fn send_one(&self, subscription: &WebPushSubscriptionRow, payload: &[u8]) -> Result<()> {
         let endpoint = reqwest::Url::parse(&subscription.endpoint)
             .map_err(|error| miette::miette!("Web Push endpoint 無效：{error}"))?;
@@ -408,12 +439,6 @@ impl WebPushService {
             debug!(account = %subscription.account_id, "Web Push 已送達推播服務");
             return Ok(());
         }
-        if matches!(status.as_u16(), 404 | 410) {
-            let _ = self
-                .db
-                .delete_web_push_subscription(&subscription.account_id, &subscription.endpoint)
-                .await;
-        }
         let detail = response
             .text()
             .await
@@ -432,6 +457,77 @@ impl WebPushService {
         }
     }
 
+    /// PUSH_STALE_CLEANUP_V1：包住 send_one，維護每端點的連續失敗計數並在
+    /// 永久性錯誤（404/410）或達門檻時移除訂閱。
+    ///
+    /// 判定規則：
+    /// - 成功 → 計數歸零（原本非 0 才寫 DB）。
+    /// - HTTP 404 / 410 → 端點已不存在，立即移除。
+    /// - 其他失敗（含 400/401/403、5xx、網路錯誤、解密／簽章錯誤）→ 計數 +1，
+    ///   達 `STALE_SUBSCRIPTION_FAILURE_THRESHOLD` 才移除。這樣 VAPID 金鑰輪替、
+    ///   推播服務短暫故障都能被涵蓋，又不會一次抖動就清掉訂閱。
+    async fn send_one_tracked(
+        &self,
+        subscription: &WebPushSubscriptionRow,
+        payload: &[u8],
+    ) -> SendOutcome {
+        match self.send_one(subscription, payload).await {
+            Ok(()) => {
+                if subscription.consecutive_failures != 0 {
+                    let _ = self
+                        .db
+                        .reset_web_push_failures(&subscription.account_id, &subscription.endpoint)
+                        .await;
+                }
+                SendOutcome::Delivered
+            }
+            Err(error) => {
+                let message = format!("{error}");
+                let gone = http_status_of(&message)
+                    .map(|code| matches!(code, 404 | 410))
+                    .unwrap_or(false);
+                if gone {
+                    let _ = self
+                        .db
+                        .delete_web_push_subscription(&subscription.account_id, &subscription.endpoint)
+                        .await;
+                    warn!(
+                        account = %subscription.account_id,
+                        error = %message,
+                        "Web Push 端點已不存在，訂閱已移除"
+                    );
+                    return SendOutcome::Removed(short_reason(&message));
+                }
+                let failures = match self
+                    .db
+                    .bump_web_push_failures(&subscription.account_id, &subscription.endpoint)
+                    .await
+                {
+                    Ok(Some(count)) => count,
+                    // 端點已被別的流程移除或 DB 錯誤：以記憶體中的值 +1 估算，不阻擋流程。
+                    _ => subscription.consecutive_failures + 1,
+                };
+                if failures >= STALE_SUBSCRIPTION_FAILURE_THRESHOLD {
+                    let _ = self
+                        .db
+                        .delete_web_push_subscription(&subscription.account_id, &subscription.endpoint)
+                        .await;
+                    warn!(
+                        account = %subscription.account_id,
+                        failures,
+                        error = %message,
+                        "Web Push 連續失敗達門檻，訂閱已移除"
+                    );
+                    return SendOutcome::Removed(format!(
+                        "連續 {failures} 次失敗（{}）",
+                        short_reason(&message)
+                    ));
+                }
+                SendOutcome::Failed(message)
+            }
+        }
+    }
+
     /// Send a payload to every subscription, bounding concurrency with the
     /// global semaphore so a burst of notifications or many devices cannot
     /// flood the push service with parallel connections. Returns (success,
@@ -443,27 +539,40 @@ impl WebPushService {
     ) -> (usize, usize) {
         // PUSH_HEALTH_V1: 同一批訂閱屬於同一個帳號，發送後記錄結果供管理員查看推播是否失效。
         let account_id = subscriptions.first().map(|sub| sub.account_id.clone());
+        let total = subscriptions.len();
         // Fan out in parallel, each send holding one permit from SEND_SEMAPHORE.
         let futures = subscriptions.into_iter().map(|sub| {
             let payload = payload.to_vec();
             async move {
                 let _permit = SEND_SEMAPHORE.acquire().await;
-                self.send_one(&sub, &payload).await
+                self.send_one_tracked(&sub, &payload).await
             }
         });
         let results = futures::future::join_all(futures).await;
         let mut ok = 0usize;
         let mut failed = 0usize;
+        let mut removed = 0usize;
         let mut first_error: Option<String> = None;
+        let mut removal_reason: Option<String> = None;
         for result in results {
             match result {
-                Ok(()) => ok += 1,
-                Err(error) => {
+                SendOutcome::Delivered => ok += 1,
+                SendOutcome::Failed(error) => {
                     failed += 1;
                     if first_error.is_none() {
-                        first_error = Some(format!("{error}"));
+                        first_error = Some(error.clone());
                     }
                     warn!(error = %error, "Web Push 單一裝置發送失敗");
+                }
+                SendOutcome::Removed(reason) => {
+                    failed += 1;
+                    removed += 1;
+                    if first_error.is_none() {
+                        first_error = Some(reason.clone());
+                    }
+                    if removal_reason.is_none() {
+                        removal_reason = Some(reason);
+                    }
                 }
             }
         }
@@ -472,8 +581,107 @@ impl WebPushService {
                 .db
                 .record_web_push_health(account_id, ok, failed, first_error.as_deref())
                 .await;
+            // PUSH_STALE_CLEANUP_V1：有訂閱被移除 → 透過 Discord／LINE 提醒該使用者重新啟用。
+            if removed > 0 {
+                let remaining = total.saturating_sub(removed);
+                self.notify_subscription_expired(
+                    account_id,
+                    removed,
+                    remaining,
+                    removal_reason.unwrap_or_else(|| "推播服務拒絕".to_string()),
+                )
+                .await;
+            }
         }
         (ok, failed)
+    }
+
+    /// PUSH_STALE_CLEANUP_V1：以 Discord／LINE DM 通知帳號擁有者推播訂閱已失效。
+    /// 走 `push_to_account_or_admin`，所以 Discord 的「其他通知」偏好關閉時不會打擾；
+    /// 沒綁定 Discord/LINE 時會退回管理員（讓管理員知道某帳號收不到推播）。
+    async fn notify_subscription_expired(
+        &self,
+        account_id: &str,
+        removed_devices: usize,
+        remaining_devices: usize,
+        reason: String,
+    ) {
+        let Some(messenger) = EXPIRED_NOTICE_MESSENGER.get() else {
+            debug!(account = %account_id, "未設定 messenger，略過推播失效提醒");
+            return;
+        };
+        {
+            let mut recent = EXPIRED_NOTICE_RECENT
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = Instant::now();
+            if let Some(&at) = recent.get(account_id) {
+                if now.duration_since(at) < EXPIRED_NOTICE_COOLDOWN {
+                    debug!(account = %account_id, "推播失效提醒在冷卻期內，略過");
+                    return;
+                }
+            }
+            if recent.len() >= MAX_DEDUPE_ENTRIES {
+                recent.retain(|_, at| now.duration_since(*at) < EXPIRED_NOTICE_COOLDOWN);
+            }
+            recent.insert(account_id.to_string(), now);
+        }
+        let account = match self.db.get(account_id).await {
+            Ok(Some(account)) => account,
+            Ok(None) => {
+                debug!(account = %account_id, "帳號不存在，略過推播失效提醒");
+                return;
+            }
+            Err(error) => {
+                warn!(account = %account_id, %error, "讀取帳號失敗，略過推播失效提醒");
+                return;
+            }
+        };
+        let dashboard_url = crate::config::try_get_config()
+            .map(|config| config.adapters.discord.public_base_url.trim().trim_end_matches('/'))
+            .filter(|base| !base.is_empty())
+            .map(|base| format!("{base}/admin/push-status"))
+            .unwrap_or_default();
+        let event = OutboundMessage::PushSubscriptionExpired(PushSubscriptionExpiredEvent {
+            account: account_id.to_string(),
+            removed_devices,
+            remaining_devices,
+            reason,
+            dashboard_url,
+        });
+        let target = AdapterAccountTarget::new(
+            account.id.clone(),
+            account.line_user_id.clone(),
+            account.discord_user_id.clone(),
+        );
+        if let Err(error) = messenger.push_to_account_or_admin(&target, &event).await {
+            warn!(account = %account_id, %error, "推播失效提醒發送失敗");
+        } else {
+            warn!(
+                account = %account_id,
+                removed_devices,
+                remaining_devices,
+                "已通知使用者手機推播訂閱失效"
+            );
+        }
+    }
+}
+
+/// PUSH_STALE_CLEANUP_V1：從 send_one 的錯誤字串抽出 HTTP 狀態碼（格式固定為「HTTP <code>」）。
+fn http_status_of(message: &str) -> Option<u16> {
+    let idx = message.find("HTTP ")?;
+    let digits: String = message[idx + 5..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+/// PUSH_STALE_CLEANUP_V1：把錯誤訊息縮成適合放進 DM 的一行（去掉回應內文）。
+fn short_reason(message: &str) -> String {
+    match http_status_of(message) {
+        Some(code) => format!("HTTP {code}"),
+        None => crate::text_utils::truncate_chars(message, 60).to_string(),
     }
 }
 
@@ -587,4 +795,33 @@ fn encrypt_payload(payload: &[u8], p256dh: &str, auth: &str) -> Result<Vec<u8>> 
     body.extend_from_slice(sender_public.as_bytes());
     body.extend_from_slice(&ciphertext);
     Ok(body)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_status_extraction() {
+        assert_eq!(http_status_of("Apple 推播服務回應 HTTP 410：gone"), Some(410));
+        assert_eq!(http_status_of("Apple 推播服務回應 HTTP 403"), Some(403));
+        assert_eq!(http_status_of("Web Push HTTP 發送失敗：timeout"), None);
+        assert_eq!(short_reason("Apple 推播服務回應 HTTP 403：VapidPkHashMismatch"), "HTTP 403");
+        assert!(short_reason("Web Push HTTP 發送失敗：連線逾時").chars().count() <= 60);
+    }
+
+    #[test]
+    fn expired_event_render_plain_text() {
+        let event = PushSubscriptionExpiredEvent {
+            account: "u1".to_string(),
+            removed_devices: 1,
+            remaining_devices: 0,
+            reason: "HTTP 410".to_string(),
+            dashboard_url: String::new(),
+        };
+        let text = event.render();
+        assert!(text.contains("手機推播訂閱已失效"));
+        assert!(text.contains("完全收不到"));
+        assert!(!text.chars().any(|c| (c as u32) >= 0x1F000), "不含表情符號");
+    }
 }

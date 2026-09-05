@@ -5,6 +5,7 @@
  * 1) Discord 通知開關：GET/POST /admin/api/notifications/preferences
  * 2) 上課前 Discord 提醒：GET/POST /admin/api/class_reminder
  * 3) 作業截止提醒階梯：GET/POST /admin/api/homework/ladder（HOMEWORK_LADDER_V1）
+ * 3b) 晨間摘要每帳號開關：GET/POST /admin/api/digest/preference（DIGEST_PER_ACCOUNT_V1）
  * 4) 即時點名提示音：localStorage（tronclass_rollcall_sound_settings_v1，
  *    與控制台 dashboard 內的 TronclassRollcallAlertSettings 共用同一個 key）
  * 未登入（401/403）時導回登入頁。
@@ -132,6 +133,37 @@
   }
   function setAllNotify(v) {
     document.querySelectorAll('[data-notify-key]').forEach(function (cb) { cb.checked = v; });
+  }
+
+  // ── 1b. 晨間摘要每帳號開關（DIGEST_PER_ACCOUNT_V1）─────────────────────
+  async function loadDigestPref() {
+    var sel = q('digestPrefAccount');
+    var account = sel && sel.value ? sel.value : '';
+    try {
+      var body = await api('/admin/api/digest/preference' + (account ? '?account_id=' + encodeURIComponent(account) : ''));
+      q('digestPrefEnabled').checked = body.enabled !== false;
+      var info = '目前設定帳號：' + (body.account_id || account || '-');
+      if (body.global_enabled === false) info += '（管理員已全域關閉晨間摘要）';
+      else if (body.time) info += '，每天 ' + body.time + ' 發送';
+      q('digestPrefInfo').textContent = info;
+      setMsg('digestPrefMsg', '');
+    } catch (e) {
+      q('digestPrefInfo').textContent = '讀取失敗：' + (e.message || e);
+    }
+  }
+  async function saveDigestPref() {
+    var sel = q('digestPrefAccount');
+    var account = sel && sel.value ? sel.value : '';
+    try {
+      await api('/admin/api/digest/preference', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ account_id: account || undefined, enabled: !!q('digestPrefEnabled').checked })
+      });
+      setMsg('digestPrefMsg', '晨間摘要設定已儲存', 'ok');
+    } catch (e) {
+      setMsg('digestPrefMsg', e.message || '儲存晨間摘要設定失敗', 'bad');
+    }
   }
 
   // ── 2. 上課前 Discord 提醒 ───────────────────────────────────────────────
@@ -307,6 +339,13 @@
       btn.addEventListener('click', function () { q('classReminderMinutes').value = btn.getAttribute('data-class-min'); });
     });
 
+    var dgReload = q('digestPrefReload');
+    if (dgReload) dgReload.addEventListener('click', function () { fillAccountSelect(q('digestPrefAccount'), loadDigestPref); });
+    var dgSave = q('digestPrefSave');
+    if (dgSave) dgSave.addEventListener('click', saveDigestPref);
+    var dgAccount = q('digestPrefAccount');
+    if (dgAccount) dgAccount.addEventListener('change', loadDigestPref);
+
     var hwReload = q('hwLadderReload');
     if (hwReload) hwReload.addEventListener('click', function () { fillAccountSelect(q('hwLadderAccount'), loadHwLadder); });
     var hwSave = q('hwLadderSave');
@@ -328,6 +367,7 @@
     fillAccountSelect(q('notifyAccount'), loadNotifyPrefs);
     fillAccountSelect(q('classReminderAccount'), loadClassReminderPrefs);
     fillAccountSelect(q('hwLadderAccount'), loadHwLadder);
+    if (q('digestPrefAccount')) fillAccountSelect(q('digestPrefAccount'), loadDigestPref);
   }
 
   window.TronclassNotificationsPage = { reload: loadNotifyPrefs };

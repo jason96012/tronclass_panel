@@ -1,9 +1,14 @@
 //! MORNING_DIGEST_V1：晨間摘要推送。
 //!
 //! 每天（預設 08:00，可在設定頁調整）為每個啟用帳號推送一則 Web Push：
-//! 今日課表＋48 小時內截止的未繳作業＋最新公告。資料全部取自既有
-//! 快取／DB（timetable_entries、homework_snapshot、公告輪詢的最新結果），
+//! 48 小時內截止的未繳作業＋最新公告（DIGEST_CONTENT_V2：不含課表）。
+//! 資料全部取自既有快取／DB（homework_snapshot、公告輪詢的最新結果），
 //! **不對學校端發任何額外請求**。
+//!
+//! DIGEST_PER_ACCOUNT_V1：每帳號可在 /admin/notifications 個別關閉
+//! （notification_preferences：channel=`digest`、key=`morning`，預設開啟）。
+//! DIGEST_REST_DAY_V1：週六、週日不發；`config/digest.json` 可選填
+//! `holidays: ["YYYY-MM-DD", …]` 作為國定假日。設定頁「發送測試」不受限制。
 //!
 //! 設定持久化於 `config/digest.json`（與 bulletin_notified.json 同目錄），
 //! 重啟不流失；時間以伺服器本地時間為準。發送窗＝目標時間起 30 分鐘內
@@ -31,6 +36,9 @@ pub(super) struct DigestSettings {
     pub enabled: bool,
     /// HH:MM（伺服器本地時間）
     pub time: String,
+    /// DIGEST_REST_DAY_V1：額外假日（YYYY-MM-DD）。週末已內建不發，這裡放國定假日。
+    #[serde(default)]
+    pub holidays: Vec<String>,
 }
 
 impl Default for DigestSettings {
@@ -38,9 +46,14 @@ impl Default for DigestSettings {
         Self {
             enabled: true,
             time: "08:00".to_string(),
+            holidays: Vec::new(),
         }
     }
 }
+
+/// DIGEST_PER_ACCOUNT_V1：每帳號開關在 notification_preferences 的 channel / key。
+pub(super) const DIGEST_PREF_CHANNEL: &str = "digest";
+pub(super) const DIGEST_PREF_KEY: &str = "morning";
 
 fn digest_file() -> PathBuf {
     std::path::Path::new("config/digest.json").to_path_buf()
@@ -86,13 +99,14 @@ pub(super) async fn set_digest_settings(enabled: bool, time: String) -> miette::
         .ok_or_else(|| miette::miette!("時間格式錯誤：{time:?}（應為 HH:MM，例 08:00）"))?;
     let (h, m) = (normalized / 60, normalized % 60);
     let normalized_text = format!("{h:02}:{m:02}");
-    let settings = DigestSettings {
-        enabled,
-        time: normalized_text.clone(),
-    };
+    // 保留檔案內既有的 holidays（設定頁目前只編輯 enabled / time）。
+    let mut settings = DIGEST.read().await.clone();
+    settings.enabled = enabled;
+    settings.time = normalized_text.clone();
     let text = serde_json::to_string_pretty(&settings)
         .map_err(|e| miette::miette!("序列化摘要設定失敗：{e}"))?;
-    std::fs::write(digest_file(), text)
+    // ATOMIC_WRITE_V1
+    crate::atomic_write::write_atomic(digest_file(), text)
         .map_err(|e| miette::miette!("寫入 config/digest.json 失敗：{e}"))?;
     *DIGEST.write().await = settings;
     Ok(normalized_text)
@@ -126,12 +140,26 @@ pub(super) fn start(state: AdminWebState) {
                 continue;
             }
             let today = now.date_naive();
+            // DIGEST_REST_DAY_V1：週末／假日整天略過。
+            if is_rest_day(today, &settings.holidays) {
+                continue;
+            }
             let accounts = match state.accounts_db.list().await {
                 Ok(list) => list,
                 Err(_) => continue,
             };
             for raw in accounts {
                 if !raw.enabled || last_sent.get(&raw.id) == Some(&today) {
+                    continue;
+                }
+                // DIGEST_PER_ACCOUNT_V1：帳號個別關閉則略過（DB 讀取失敗時視為開啟，避免整體停擺）。
+                let account_enabled = state
+                    .accounts_db
+                    .notification_preference_enabled(&raw.id, DIGEST_PREF_CHANNEL, DIGEST_PREF_KEY)
+                    .await
+                    .unwrap_or(true);
+                if !account_enabled {
+                    last_sent.insert(raw.id.clone(), today);
                     continue;
                 }
                 match build_and_send(&state, &raw.id, &raw.username).await {
@@ -160,46 +188,23 @@ fn in_fire_window(target_min: u32, now_min: u32) -> bool {
     now_min >= target_min && now_min < target_min.saturating_add(FIRE_WINDOW_MINUTES)
 }
 
-/// chrono Weekday → timetable_entries 的 weekday 鍵（mon..sun）。
-fn weekday_key(w: Weekday) -> &'static str {
-    match w {
-        Weekday::Mon => "mon",
-        Weekday::Tue => "tue",
-        Weekday::Wed => "wed",
-        Weekday::Thu => "thu",
-        Weekday::Fri => "fri",
-        Weekday::Sat => "sat",
-        Weekday::Sun => "sun",
+/// DIGEST_REST_DAY_V1：週六、週日，或列在 holidays（YYYY-MM-DD）內的日期，不發摘要。
+fn is_rest_day(date: NaiveDate, holidays: &[String]) -> bool {
+    if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
+        return true;
     }
+    holidays.iter().any(|raw| {
+        NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
+            .map(|holiday| holiday == date)
+            .unwrap_or(false)
+    })
 }
 
 /// 組裝並推送單一帳號的摘要。回傳成功送達的裝置數。
 async fn build_and_send(state: &AdminWebState, account_id: &str, username: &str) -> miette::Result<usize> {
-    let now_local = Local::now();
-    let today_key = weekday_key(now_local.weekday());
+    // DIGEST_CONTENT_V2：摘要只含作業與公告，不再列今日課表。
 
-    // 一、今日課表（DB timetable_entries；不發上游請求）
-    let mut class_lines: Vec<String> = Vec::new();
-    if let Ok(rows) = state.accounts_db.list_timetable_entries_for_account(account_id).await {
-        let mut today: Vec<_> = rows
-            .into_iter()
-            .filter(|row| row.weekday == today_key)
-            .collect();
-        today.sort_by(|a, b| a.start_time.cmp(&b.start_time));
-        for row in today.iter().take(8) {
-            let place = if row.classroom.trim().is_empty() {
-                String::new()
-            } else {
-                format!(" @{}", row.classroom.trim())
-            };
-            class_lines.push(format!("{} {}{}", row.start_time, row.course_name, place));
-        }
-        if today.len() > 8 {
-            class_lines.push(format!("…另有 {} 節", today.len() - 8));
-        }
-    }
-
-    // 二、48 小時內截止的未繳作業（homework_snapshot）
+    // 一、48 小時內截止的未繳作業（homework_snapshot）
     let cutoff = Utc::now() + ChronoDuration::hours(48);
     let mut homework_lines: Vec<String> = Vec::new();
     if let Ok(Some((items_json, _))) = state.accounts_db.get_homework_snapshot(account_id).await {
@@ -235,29 +240,25 @@ async fn build_and_send(state: &AdminWebState, account_id: &str, username: &str)
         }
     }
 
-    // 三、最新公告（公告輪詢的最新一輪結果；不發上游請求）
+    // 二、最新公告（公告輪詢的最新一輪結果；不發上游請求）
     let bulletin_lines = super::bulletins::latest_bulletin_titles(account_id, 3);
 
-    let body = render_digest_body(&class_lines, &homework_lines, &bulletin_lines);
-    let title = format!("🌅 晨間摘要｜{username}");
+    let body = render_digest_body(&homework_lines, &bulletin_lines);
+    // DIGEST_PLAIN_TEXT_V1：通知標題與內文一律不含表情符號。
+    let title = format!("晨間摘要｜{username}");
     crate::web_push_notifications::send_digest(account_id, &title, &body).await
 }
 
-/// 组装三段落文字（獨立函數以便單元測試）。
-fn render_digest_body(class_lines: &[String], homework_lines: &[String], bulletin_lines: &[String]) -> String {
+/// 組裝作業／公告兩段落文字（獨立函數以便單元測試）。DIGEST_CONTENT_V2：不含課表。
+fn render_digest_body(homework_lines: &[String], bulletin_lines: &[String]) -> String {
     let mut sections: Vec<String> = Vec::new();
-    sections.push(if class_lines.is_empty() {
-        "📅 今日沒課 🎉".to_string()
-    } else {
-        format!("📅 今日課表（{} 節）\n{}", class_lines.len().min(8), class_lines.join("\n"))
-    });
     sections.push(if homework_lines.is_empty() {
-        "📌 48 小時內沒有截止作業".to_string()
+        "48 小時內沒有截止作業".to_string()
     } else {
-        format!("📌 48 小時內截止\n{}", homework_lines.join("\n"))
+        format!("48 小時內截止\n{}", homework_lines.join("\n"))
     });
     if !bulletin_lines.is_empty() {
-        sections.push(format!("📢 最新公告\n{}", bulletin_lines.join("\n")));
+        sections.push(format!("最新公告\n{}", bulletin_lines.join("\n")));
     }
     let body = sections.join("\n\n");
     // Web Push body 過長會被平臺截斷，主動控制在上限內（char 邊界安全截斷）。
@@ -303,30 +304,34 @@ mod tests {
     }
 
     #[test]
-    fn weekday_key_mapping() {
-        assert_eq!(weekday_key(Weekday::Mon), "mon");
-        assert_eq!(weekday_key(Weekday::Sun), "sun");
+    fn rest_day_detection() {
+        // 2026-09-05 是週六、2026-09-07 是週一
+        let sat = NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
+        let mon = NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+        assert!(is_rest_day(sat, &[]));
+        assert!(!is_rest_day(mon, &[]));
+        assert!(is_rest_day(mon, &["2026-09-07".to_string()]), "列入 holidays 即為假日");
+        assert!(!is_rest_day(mon, &["not-a-date".to_string()]), "格式錯誤忽略");
     }
 
     #[test]
     fn render_body_sections() {
-        let empty = render_digest_body(&[], &[], &[]);
-        assert!(empty.contains("今日沒課"));
+        let empty = render_digest_body(&[], &[]);
         assert!(empty.contains("沒有截止作業"));
         assert!(!empty.contains("最新公告"), "無公告不出該段");
+        assert!(!empty.contains("課表"), "DIGEST_CONTENT_V2：不含課表");
 
         let full = render_digest_body(
-            &["08:10 微積分 @B101".to_string()],
             &["線性代數：作業三（5 小時後截止）".to_string()],
             &["停課通知".to_string()],
         );
-        assert!(full.contains("今日課表（1 節）"));
+        assert!(full.contains("48 小時內截止"));
         assert!(full.contains("線性代數"));
         assert!(full.contains("最新公告"));
 
         // 超長截斷（char 邊界）
-        let long: Vec<String> = (0..200).map(|i| format!("課程{i}xxxxxxxxxxxxxxxxxxxx")).collect();
-        let body = render_digest_body(&long, &[], &[]);
+        let long: Vec<String> = (0..200).map(|i| format!("作業{i}xxxxxxxxxxxxxxxxxxxx")).collect();
+        let body = render_digest_body(&long, &[]);
         assert!(body.chars().count() <= 900);
         assert!(body.ends_with('…'));
     }

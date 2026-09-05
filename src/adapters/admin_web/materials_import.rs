@@ -774,7 +774,10 @@ fn write_manifest(root: &Path, report: &ImportReport) {
         "links_created": report.links_created,
         "failed": report.failed,
     });
-    let _ = std::fs::write(dest, serde_json::to_string_pretty(&obj).unwrap_or_default());
+    // ATOMIC_WRITE_V1
+    if let Err(e) = crate::atomic_write::write_atomic(&dest, serde_json::to_string_pretty(&obj).unwrap_or_default()) {
+        tracing::warn!("無法寫入匯入 manifest：{e}");
+    }
 }
 
 /// 移除路徑分隔/非法字元,確保只用單一段。

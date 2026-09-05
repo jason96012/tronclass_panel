@@ -143,6 +143,8 @@ pub enum OutboundMessage {
     HomeworkDeadline(HomeworkDeadlineEvent),
     /// 新課程公告（含 AI 重點摘要）。供 Web Push 與 Discord 等 adapter 使用。
     Bulletin(BulletinEvent),
+    /// PUSH_STALE_CLEANUP_V1：手機 Web Push 訂閱失效、已被系統移除，提醒使用者重新啟用。
+    PushSubscriptionExpired(PushSubscriptionExpiredEvent),
     Help,
     Welcome,
     UnsupportedMedia,
@@ -191,6 +193,50 @@ impl HomeworkDeadlineEvent {
             self.deadline,
             self.time_remaining,
             self.account
+        )
+    }
+}
+
+/// PUSH_STALE_CLEANUP_V1：手機推播訂閱失效事件。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PushSubscriptionExpiredEvent {
+    pub account: String,
+    /// 該帳號本次被移除的裝置數。
+    pub removed_devices: usize,
+    /// 移除後仍有效的裝置數（0 代表這個帳號已完全收不到手機推播）。
+    pub remaining_devices: usize,
+    /// 最後一次失敗的原因（已截短），例如「HTTP 403」「連續 5 次失敗」。
+    pub reason: String,
+    /// 重新啟用推播的頁面網址；未設定 public_base_url 時為空。
+    pub dashboard_url: String,
+}
+
+impl PushSubscriptionExpiredEvent {
+    /// 組出各 adapter 共用的訊息文字（不含表情符號）。
+    pub fn render(&self) -> String {
+        let scope = if self.remaining_devices == 0 {
+            "這個帳號目前已完全收不到手機背景推播（點名、作業、公告、晨間摘要）。".to_string()
+        } else {
+            format!(
+                "仍有 {} 台裝置有效，但失效的那台不會再收到手機推播。",
+                self.remaining_devices
+            )
+        };
+        let how = if self.dashboard_url.trim().is_empty() {
+            "請用手機開啟 Dashboard，到「手機推播狀態」重新啟用背景推播。".to_string()
+        } else {
+            format!(
+                "請用手機開啟 {} 重新啟用背景推播。",
+                self.dashboard_url.trim()
+            )
+        };
+        format!(
+            "手機推播訂閱已失效\n\n\
+             帳號：{}\n\
+             已移除裝置：{} 台\n\
+             原因：{}\n\n\
+             {}\n{}",
+            self.account, self.removed_devices, self.reason, scope, how
         )
     }
 }

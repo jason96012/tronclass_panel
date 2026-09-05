@@ -552,10 +552,8 @@ static OFFICE_PREVIEW_SECRET: once_cell::sync::Lazy<String> = once_cell::sync::L
     let mut b = [0u8; 32];
     getrandom::getrandom(&mut b).expect("getrandom");
     let secret = hex::encode(b);
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = std::fs::write(path, &secret) {
+    // ATOMIC_WRITE_V1：HMAC 金鑰，權限 0600 且原子落盤（半截金鑰 = 所有分享連結失效）。
+    if let Err(e) = crate::atomic_write::write_atomic_with_mode(path, &secret, 0o600) {
         tracing::warn!("無法持久化 office preview 金鑰，重啟後舊分享連結將失效：{e}");
     }
     secret
@@ -678,10 +676,8 @@ fn persist_share_links(list: &[ShareLinkRecord]) {
         }
     }
     let path = share_links_file();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = std::fs::write(path, out) {
+    // ATOMIC_WRITE_V1
+    if let Err(e) = crate::atomic_write::write_atomic(path, out) {
         tracing::warn!("無法寫入 share_links.jsonl：{e}");
     }
 }

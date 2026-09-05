@@ -30,6 +30,7 @@
 mod account;
 mod adapters;
 mod api;
+mod atomic_write;
 mod auth;
 mod class_reminders;
 mod config;
@@ -1041,6 +1042,10 @@ async fn main() -> Result<()> {
                 as Arc<dyn adapters::events::AdapterMessenger>,
         )
     };
+    // PUSH_STALE_CLEANUP_V1：Web Push 訂閱失效時，透過 Discord／LINE 提醒該使用者重新啟用。
+    if let Some(hub) = adapter_hub.as_ref() {
+        web_push_notifications::set_expired_notice_messenger(Arc::clone(hub));
+    }
     // CLASS_REMINDER_SCHEDULER_START_V1
     // 只透過 Discord bot 發送「上課前提醒」DM；每位使用者可在 Web 通知頁設定分鐘數。
     if let Some(bot) = discord_bot.as_ref() {

@@ -619,15 +619,9 @@ fn persist_chat_store(store: &ChatStore) {
     }
     match serde_json::to_string_pretty(store) {
         Ok(text) => {
-            if let Err(e) = std::fs::write(&path, text) {
+            // ATOMIC_WRITE_V1：temp → fsync → rename；檔案含明文密鑰，權限在 rename 前就收到 0600。
+            if let Err(e) = crate::atomic_write::write_atomic_with_mode(&path, text, 0o600) {
                 tracing::warn!("無法寫入 ai_chat.json：{e}");
-                return;
-            }
-            // 檔案含明文密鑰，權限收到 0600。
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
             }
         }
         Err(e) => tracing::warn!("ai_chat.json 序列化失敗：{e}"),
@@ -742,7 +736,8 @@ fn persist_threads(map: &ThreadMap) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(text) = serde_json::to_string(map) {
-        if let Err(e) = std::fs::write(path, text) {
+        // ATOMIC_WRITE_V1
+        if let Err(e) = crate::atomic_write::write_atomic(path, text) {
             tracing::warn!("無法寫入 ai_chat_threads.json：{e}");
         }
     }
@@ -3553,7 +3548,8 @@ fn workspace_write(account: &str, name: &str, content: &str) -> Result<String, S
     }
     std::fs::create_dir_all(&dir).map_err(|e| format!("建立工作區失敗：{e}"))?;
     let path = dir.join(&name);
-    std::fs::write(&path, content).map_err(|e| format!("寫入「{name}」失敗：{e}"))?;
+    // ATOMIC_WRITE_V1：AI 工作區檔案也走原子寫入，避免模型寫到一半失敗留下半截檔。
+    crate::atomic_write::write_atomic(&path, content).map_err(|e| format!("寫入「{name}」失敗：{e}"))?;
     Ok(format!("已寫入「{name}」（{} 位元組）", content.len()))
 }
 

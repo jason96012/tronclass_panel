@@ -11,6 +11,8 @@ pub struct WebPushSubscriptionRow {
     pub endpoint: String,
     pub p256dh: String,
     pub auth: String,
+    /// PUSH_STALE_CLEANUP_V1：目前連續失敗次數（成功即歸零）。
+    pub consecutive_failures: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -63,7 +65,8 @@ impl AccountsDb {
                 account_id = excluded.account_id,
                 p256dh = excluded.p256dh,
                 auth = excluded.auth,
-                updated_at = excluded.updated_at",
+                updated_at = excluded.updated_at,
+                consecutive_failures = 0",
         )
         .bind(endpoint.trim())
         .bind(account_id.trim())
@@ -83,7 +86,7 @@ impl AccountsDb {
         account_id: &str,
     ) -> Result<Vec<WebPushSubscriptionRow>> {
         sqlx::query_as::<_, WebPushSubscriptionRow>(
-            "SELECT account_id, endpoint, p256dh, auth
+            "SELECT account_id, endpoint, p256dh, auth, consecutive_failures
              FROM web_push_subscriptions WHERE account_id = ?
              ORDER BY updated_at DESC LIMIT 16",
         )
@@ -216,6 +219,42 @@ impl AccountsDb {
             .into_diagnostic()
             .wrap_err("清除舊版 Web Push 自動綁定資料失敗")?;
         Ok(result.rows_affected())
+    }
+
+    /// PUSH_STALE_CLEANUP_V1：成功送達 → 連續失敗歸零（只在原本非 0 時寫入，減少 fsync）。
+    pub async fn reset_web_push_failures(&self, account_id: &str, endpoint: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE web_push_subscriptions SET consecutive_failures = 0
+             WHERE account_id = ? AND endpoint = ? AND consecutive_failures != 0",
+        )
+        .bind(account_id.trim())
+        .bind(endpoint.trim())
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("重設 Web Push 失敗計數失敗")?;
+        Ok(())
+    }
+
+    /// PUSH_STALE_CLEANUP_V1：失敗一次 → 計數 +1，回傳更新後的次數（端點已不存在時回 None）。
+    pub async fn bump_web_push_failures(
+        &self,
+        account_id: &str,
+        endpoint: &str,
+    ) -> Result<Option<i64>> {
+        let row = sqlx::query_as::<_, (i64,)>(
+            "UPDATE web_push_subscriptions
+             SET consecutive_failures = consecutive_failures + 1
+             WHERE account_id = ? AND endpoint = ?
+             RETURNING consecutive_failures",
+        )
+        .bind(account_id.trim())
+        .bind(endpoint.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("累計 Web Push 失敗計數失敗")?;
+        Ok(row.map(|(count,)| count))
     }
 
     pub async fn delete_web_push_subscription(

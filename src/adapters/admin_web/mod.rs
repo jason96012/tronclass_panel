@@ -54,6 +54,7 @@ mod blacklist;
 mod class_reminder;
 mod bulletins;
 mod detection_schedule;
+mod digest_pref;
 
 // BULLETIN_PUSH_V1: 供 main.rs 啟動課程公告 Web Push 背景任務。
 // BULLETIN_NOTIFY_SUMMARY_V1: 同時把 adapter messenger（Discord 等）往下傳，
@@ -128,6 +129,10 @@ const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
 const IP_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
 const MAX_RATE_LIMIT_KEYS: usize = 4096;
+/// TEST_NOTIFICATION_RATE_LIMIT_V1：各「發送測試」端點每帳號每分鐘上限
+/// （digest_test／push/test／bulletins/test／homework/test-notification 共用同一套邏輯，
+/// 但各自獨立計數）。防止登入者把測試端點當推播轟炸工具，也避免 Web Push 額度被耗盡。
+const TEST_NOTIFICATION_MAX_PER_WINDOW: u32 = 3;
 const MAX_SECURITY_WATCH_KEYS: usize = 4096;
 const SECURITY_FAIL_ALERT_THRESHOLD: u32 = 5;
 /// A source IP is automatically blocked on its sixth failed password login
@@ -228,6 +233,35 @@ fn rate_limited_response() -> Response {
         Json(json!({ "error": "too many attempts; please wait" })),
     )
         .into_response()
+}
+
+/// TEST_NOTIFICATION_RATE_LIMIT_V1：測試通知端點的每帳號節流。
+/// `kind` 區分端點（digest / push / bulletin / homework），同一帳號各端點獨立計數；
+/// 超過上限回 429 並附中文訊息，前端 runButton 會原樣顯示。
+async fn check_test_notification_rate(
+    state: &AdminWebState,
+    kind: &str,
+    account_id: &str,
+) -> Result<(), Response> {
+    let key = format!("test-notify:{kind}:{}", account_id.trim());
+    if state
+        .rate_limiter
+        .check_limit(&key, TEST_NOTIFICATION_MAX_PER_WINDOW)
+        .await
+    {
+        Ok(())
+    } else {
+        warn!(kind, account = %account_id, "測試通知端點觸發節流");
+        Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": format!(
+                    "測試通知太頻繁：每分鐘最多 {TEST_NOTIFICATION_MAX_PER_WINDOW} 次，請稍後再試"
+                )
+            })),
+        )
+            .into_response())
+    }
 }
 
 fn blocked_ip_response() -> Response {
@@ -1482,6 +1516,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/class_reminder",
             get(class_reminder::admin_class_reminder_get_handler)
                 .post(class_reminder::admin_class_reminder_update_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // DIGEST_PER_ACCOUNT_V1：晨間摘要每帳號開關
+        .route(
+            "/admin/api/digest/preference",
+            get(digest_pref::get_handler)
+                .post(digest_pref::update_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(

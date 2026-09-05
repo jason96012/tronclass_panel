@@ -41,6 +41,10 @@ pub(super) async fn admin_homework_test_notification_handler(
     };
 
     let account_id = session.account_id.clone();
+    // TEST_NOTIFICATION_RATE_LIMIT_V1
+    if let Err(response) = check_test_notification_rate(&state, "homework", &account_id).await {
+        return response;
+    }
     let Ok(Some(account)) = state.accounts_db.get(&account_id).await else {
         return (
             StatusCode::NOT_FOUND,

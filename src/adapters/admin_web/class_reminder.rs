@@ -37,7 +37,8 @@ fn default_minutes_before() -> i64 {
     10
 }
 
-fn resolve_class_reminder_target(
+/// DIGEST_PER_ACCOUNT_V1：晨間摘要偏好端點沿用同一套「管理員可指定帳號、一般使用者僅限自己」規則。
+pub(super) fn resolve_class_reminder_target(
     session: &AdminSession,
     requested: Option<String>,
 ) -> Result<String, Response> {
