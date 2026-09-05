@@ -308,6 +308,8 @@ pub(super) async fn admin_status_handler(
             settings: crate::runtime_settings::snapshot().await,
             digest: super::morning_digest::digest_status(),
             accounts: vec![],
+            // ACCOUNT_HOT_ADD_FEEDBACK_V1：首次登入尚未改密碼前不暴露任何帳號資料。
+            inactive_accounts: vec![],
         });
         admin_status_short_cache_put(cache_key, response_json.clone()).await;
         return (StatusCode::OK, Json(response_json)).into_response();
