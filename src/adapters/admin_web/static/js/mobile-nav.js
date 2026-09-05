@@ -21,11 +21,20 @@
   // 更多面板內 a/button 字級統一（避免某些頁的 button 預設字級較小）。
   var st = document.createElement('style');
   st.textContent = '#ttMobileNavV2{display:none!important}' +
-    /* 手機：底部導覽列不遮內容（雲端硬碟未載入此腳本，不受影響） */
+    /* 手機：底部導覽列不遮內容（雲端硬碟未載入此腳本，不受影響）。
+       NAV_BOTTOM_CLEARANCE_V2：內容避讓 150px＋safe-area——與雲端硬碟
+       .content 的 150px 對齊，捲到底時最後一行文字剛好落在導覽列上方。
+       一、body{height:100%} 的頁面 padding-bottom 會失效（固定高度盒不隨內容長高），
+           強制 height:auto＋min-height:100% 讓底部避讓在所有頁面生效。
+       二、.shell（點名排程頁）等其餘頂層包裝器一併避讓。
+       三、scroll-padding-bottom：錨點跳轉（#hash）不落在導覽列後面。 */
     '@media(max-width:820px){' +
-    'body{padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))!important}' +
-    'main,.page,.wrap{padding-bottom:calc(120px + env(safe-area-inset-bottom,0px))!important}' +
+    'html{scroll-padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}' +
+    'body{height:auto!important;min-height:100%!important;padding-bottom:calc(112px + env(safe-area-inset-bottom,0px))!important}' +
+    'main,.page,.wrap,.shell{padding-bottom:calc(150px + env(safe-area-inset-bottom,0px))!important}' +
     '}' +
+    /* 更多面板在矮螢幕可自行捲動，尾端不會被螢幕底緣吃掉 */
+    '#mobileMoreFinalV2 .sheet{max-height:calc(100vh - 130px);max-height:calc(100dvh - 130px);overflow:auto}' +
     '#mobileMoreFinalV2 .more-grid a,#mobileMoreFinalV2 .more-grid button{font-size:15px!important;font-weight:900!important;min-height:48px!important}' +
     /* 深色模式（手動 data-theme）：導覽列容器/按鈕/面板跟隨 */
     'html[data-theme="dark"] #mobileNavFinalV2{background:rgba(15,23,42,.94)!important;border-color:rgba(148,163,184,.18)!important}' +

@@ -48,6 +48,7 @@ use crate::trusted_ip::ClientIp;
 
 mod actions;
 mod ai_chat;
+mod asset_versions;
 mod auth;
 mod blacklist;
 mod class_reminder;
@@ -2343,6 +2344,9 @@ fn is_html_document(response: &Response) -> bool {
 /// Serve a static in-binary HTML page with a content-derived ETag so repeat
 /// navigations get a 304 instead of the full payload.
 fn html_page_response(headers: &HeaderMap, html: String) -> Response {
+    // ASSET_VERSION_AUTO_V1：先統一改寫 /admin/static/... 版號（?sv=<build id>），
+    // 再計算 nonce 與 ETag——ETag 自然隨資產內容變動。
+    let html = asset_versions::rewrite_asset_versions(&html).into_owned();
     let nonce = generate_csp_nonce();
     let html = add_csp_nonce_to_inline_tags(&html, &nonce);
 

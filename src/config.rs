@@ -67,6 +67,10 @@ pub struct AppConfig {
     /// 作業截止追蹤設定
     #[serde(default)]
     pub homework: HomeworkConfig,
+
+    /// 公告輪詢設定
+    #[serde(default)]
+    pub bulletins: BulletinsConfig,
     /// 日誌設定
     pub logging: LoggingConfig,
     /// 監控設定
@@ -580,10 +584,43 @@ pub struct HomeworkConfig {
     /// （沒有課程資料可判斷，避免整頁清空）。
     #[serde(default = "default_strict_current_semester")]
     pub strict_current_semester: bool,
+
+    /// HOMEWORK_NIGHT_PAUSE_V1：夜間暫停背景預抓器。
+    ///
+    /// 預抓器每 4 分鐘為所有啟用帳號打一輪 /api/todos（讓網頁一開即最新）。
+    /// 深夜沒人開頁，這些請求毫無效益，還平白增加學校端流量與防護風險。
+    /// 預設 `true`：夜間時段跳過預抓輪次。
+    ///
+    /// 15 分鐘的截止提醒排程器**不受影響**（自行強制抓取、single-flight
+    /// 合併），24h/6h/1h 階梯提醒夜間照常運作；夜間請求量從每 4 分鐘
+    /// 一輪降為每 15 分鐘一輪。
+    #[serde(default = "default_prefetch_night_pause")]
+    pub prefetch_night_pause: bool,
+
+    /// 夜間暫停窗起點（HH:MM，24 小時制，伺服器本地時間）。預設 "00:00"。
+    #[serde(default = "default_prefetch_night_start")]
+    pub prefetch_night_start: String,
+
+    /// 夜間暫停窗終點（HH:MM，伺服器本地時間）。預設 "08:00"。
+    /// 支援跨午夜設定（例如 start="23:30"、end="06:00"）。
+    #[serde(default = "default_prefetch_night_end")]
+    pub prefetch_night_end: String,
 }
 
 fn default_strict_current_semester() -> bool {
     true
+}
+
+fn default_prefetch_night_pause() -> bool {
+    true
+}
+
+fn default_prefetch_night_start() -> String {
+    "00:00".to_string()
+}
+
+fn default_prefetch_night_end() -> String {
+    "08:00".to_string()
 }
 
 impl Default for HomeworkConfig {
@@ -591,6 +628,59 @@ impl Default for HomeworkConfig {
         Self {
             include_all_semesters: false,
             strict_current_semester: default_strict_current_semester(),
+            prefetch_night_pause: default_prefetch_night_pause(),
+            prefetch_night_start: default_prefetch_night_start(),
+            prefetch_night_end: default_prefetch_night_end(),
+        }
+    }
+}
+
+/// 公告輪詢設定（BULLETIN_POLL_TAME_V1）。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BulletinsConfig {
+    /// 公告背景輪詢間隔（秒）。預設 300（5 分鐘；舊行為 120 秒）。
+    /// 實際下限 60 秒：低於此值以 60 計，防止設定失誤打爆學校端。
+    #[serde(default = "default_bulletin_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+
+    /// 夜間暫停輪詢（預設 true）：窗內跳過輪詢；恢復後第一輪補抓，
+    /// 夜間累積的新公告一次推送（不漏通知，只是晚幾小時）。
+    #[serde(default = "default_bulletin_night_pause")]
+    pub night_pause: bool,
+
+    /// 夜間暫停窗起點（HH:MM，24 小時制，伺服器本地時間）。預設 "00:00"。
+    #[serde(default = "default_bulletin_night_start")]
+    pub night_pause_start: String,
+
+    /// 夜間暫停窗終點（HH:MM）。預設 "08:00"。支援跨午夜
+    /// （例如 start="23:30"、end="06:00"）。
+    #[serde(default = "default_bulletin_night_end")]
+    pub night_pause_end: String,
+}
+
+fn default_bulletin_poll_interval_secs() -> u64 {
+    300
+}
+
+fn default_bulletin_night_pause() -> bool {
+    true
+}
+
+fn default_bulletin_night_start() -> String {
+    "00:00".to_string()
+}
+
+fn default_bulletin_night_end() -> String {
+    "08:00".to_string()
+}
+
+impl Default for BulletinsConfig {
+    fn default() -> Self {
+        Self {
+            poll_interval_secs: default_bulletin_poll_interval_secs(),
+            night_pause: default_bulletin_night_pause(),
+            night_pause_start: default_bulletin_night_start(),
+            night_pause_end: default_bulletin_night_end(),
         }
     }
 }
@@ -1809,5 +1899,64 @@ rest_weekdays = ["sun", "sun"]
         let cfg3 = AppConfig::load(f3.path()).unwrap();
         assert!(cfg3.homework.strict_current_semester);
         assert!(cfg3.homework.include_all_semesters);
+    }
+
+    #[test]
+    fn test_homework_night_pause_defaults() {
+        // HOMEWORK_NIGHT_PAUSE_V1：未設定 [homework] → 預設開啟、00:00–08:00
+        let f = write_toml(minimal_toml());
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert!(cfg.homework.prefetch_night_pause);
+        assert_eq!(cfg.homework.prefetch_night_start, "00:00");
+        assert_eq!(cfg.homework.prefetch_night_end, "08:00");
+
+        // 可自訂與關閉
+        let toml = format!(
+            "{}\n[homework]\nprefetch_night_pause = false\n",
+            minimal_toml()
+        );
+        let f2 = write_toml(&toml);
+        let cfg2 = AppConfig::load(f2.path()).unwrap();
+        assert!(!cfg2.homework.prefetch_night_pause);
+
+        let toml3 = format!(
+            "{}\n[homework]\nprefetch_night_start = \"23:30\"\nprefetch_night_end = \"07:00\"\n",
+            minimal_toml()
+        );
+        let f3 = write_toml(&toml3);
+        let cfg3 = AppConfig::load(f3.path()).unwrap();
+        assert!(cfg3.homework.prefetch_night_pause, "未寫 pause 旗標仍為預設開");
+        assert_eq!(cfg3.homework.prefetch_night_start, "23:30");
+        assert_eq!(cfg3.homework.prefetch_night_end, "07:00");
+    }
+
+    #[test]
+    fn test_bulletins_poll_defaults() {
+        // BULLETIN_POLL_TAME_V1：未設定 [bulletins] → 5 分鐘、夜間暫停 00:00–08:00
+        let f = write_toml(minimal_toml());
+        let cfg = AppConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.bulletins.poll_interval_secs, 300);
+        assert!(cfg.bulletins.night_pause);
+        assert_eq!(cfg.bulletins.night_pause_start, "00:00");
+        assert_eq!(cfg.bulletins.night_pause_end, "08:00");
+
+        // 可自訂與關閉夜間暫停
+        let toml = format!(
+            "{}\n[bulletins]\npoll_interval_secs = 600\nnight_pause = false\n",
+            minimal_toml()
+        );
+        let f2 = write_toml(&toml);
+        let cfg2 = AppConfig::load(f2.path()).unwrap();
+        assert_eq!(cfg2.bulletins.poll_interval_secs, 600);
+        assert!(!cfg2.bulletins.night_pause);
+
+        let toml3 = format!(
+            "{}\n[bulletins]\nnight_pause_start = \"23:30\"\nnight_pause_end = \"07:00\"\n",
+            minimal_toml()
+        );
+        let f3 = write_toml(&toml3);
+        let cfg3 = AppConfig::load(f3.path()).unwrap();
+        assert_eq!(cfg3.bulletins.night_pause_start, "23:30");
+        assert_eq!(cfg3.bulletins.night_pause_end, "07:00");
     }
 }

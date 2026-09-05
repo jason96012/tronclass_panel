@@ -5,7 +5,14 @@ use super::pages;
 
 const ADMIN_STATIC_CACHE_CONTROL: &str = "public, max-age=604800, immutable, stale-while-revalidate=86400";
 
-pub(super) fn admin_static_asset(content_type: &'static str, body: impl IntoResponse) -> Response {
+pub(super) fn admin_static_asset(content_type: &'static str, body: &str) -> Response {
+    // ASSET_VERSION_AUTO_V1：JS/CSS 內部互相引用的 /admin/static/... 版號
+    // （如 mobile-nav.js 注入 mobile-navigation.css?v=…）也在輸出時統一改寫。
+    let body = if content_type.starts_with("text/") || content_type.contains("javascript") {
+        super::asset_versions::rewrite_asset_versions(body).into_owned()
+    } else {
+        body.to_string()
+    };
     let mut response = body.into_response();
     response
         .headers_mut()
@@ -18,7 +25,7 @@ pub(super) fn admin_static_asset(content_type: &'static str, body: impl IntoResp
 }
 
 pub(super) async fn admin_theme_css_handler() -> Response {
-    admin_static_asset("text/css; charset=utf-8", pages::theme_css())
+    admin_static_asset("text/css; charset=utf-8", &pages::theme_css())
 }
 
 pub(super) async fn admin_session_security_js_handler() -> Response {

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, Timelike, Utc};
 use tracing::{debug, info, warn};
 
 use crate::account::AccountConfig;
@@ -82,6 +82,15 @@ pub fn start_homework_prefetcher(
     tokio::spawn(async move {
         info!(
             interval_secs = PREFETCH_INTERVAL_SECS,
+            night_pause = %if app_config.homework.prefetch_night_pause {
+                format!(
+                    "{}–{}",
+                    app_config.homework.prefetch_night_start,
+                    app_config.homework.prefetch_night_end
+                )
+            } else {
+                "off".to_string()
+            },
             "作業清單背景預抓器已啟動（開頁即為最新資料）"
         );
 
@@ -90,11 +99,71 @@ pub fn start_homework_prefetcher(
         let mut ticker = tokio::time::interval(Duration::from_secs(PREFETCH_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+        // HOMEWORK_NIGHT_PAUSE_V1：進入夜間窗時只記一條 info，其餘輪次靜默跳過。
+        let mut night_logged = false;
+
         loop {
             ticker.tick().await;
+            // 夜間暫停預抓（提醒排程器照跑，截止通知不斷線）。
+            // chrono 的 DateTime 沒有「當日分鐘數」捷徑（那在 NaiveTime 上），
+            // 以 hour()*60+minute() 自行組出。
+            let now = Local::now();
+            let minute_of_day = now.hour() * 60 + now.minute();
+            if prefetch_night_pause_active(&app_config.homework, minute_of_day) {
+                if !night_logged {
+                    info!(
+                        start = %app_config.homework.prefetch_night_start,
+                        end = %app_config.homework.prefetch_night_end,
+                        "夜間時段：暫停作業預抓（截止提醒每 15 分鐘照常檢查）"
+                    );
+                    night_logged = true;
+                }
+                continue;
+            }
+            night_logged = false;
             prefetch_all_accounts(&accounts_db, &app_config, messenger.as_deref()).await;
         }
     })
+}
+
+/// HOMEWORK_NIGHT_PAUSE_V1：解析 "HH:MM" → 當日分鐘數（0..=1439）。
+/// 格式不合法（長度、分隔、範圍）回 None，呼叫端以「不暫停」處理，
+/// 避免一個打錯的設定把預抓整天關掉。
+pub(crate) fn parse_hh_mm(value: &str) -> Option<u32> {
+    let (h, m) = value.trim().split_once(':')?;
+    let h: u32 = h.parse().ok()?;
+    let m: u32 = m.parse().ok()?;
+    if h > 23 || m > 59 {
+        return None;
+    }
+    Some(h * 60 + m)
+}
+
+/// 目前（當日分鐘數）是否落於夜間窗。支援跨午夜窗（start > end）；
+/// start == end 視為零長度＝不暫停（防止誤配把輪詢全天關閉）；
+/// 格式不合法＝不暫停（fail-open）。作業預抓與公告輪詢共用此語意。
+pub(crate) fn night_window_active(start: &str, end: &str, minute_of_day: u32) -> bool {
+    let (Some(start), Some(end)) = (parse_hh_mm(start), parse_hh_mm(end)) else {
+        return false;
+    };
+    if start == end {
+        return false;
+    }
+    if start < end {
+        minute_of_day >= start && minute_of_day < end
+    } else {
+        minute_of_day >= start || minute_of_day < end
+    }
+}
+
+/// 目前是否落於夜間暫停窗（以當日分鐘數表示本地時間）。
+fn prefetch_night_pause_active(cfg: &crate::config::HomeworkConfig, minute_of_day: u32) -> bool {
+    cfg.prefetch_night_pause
+        && night_window_active(
+            &cfg.prefetch_night_start,
+            &cfg.prefetch_night_end,
+            minute_of_day,
+        )
 }
 
 /// 為所有啟用中的帳號預抓作業清單並回填快取／快照。
@@ -536,5 +605,54 @@ mod tests {
         assert_eq!(badge, "2 小時內截止");
         // 門檻 ≤ 6 小時 → 詳細格式
         assert_eq!(desc, "1 小時 30 分鐘");
+    }
+
+    #[test]
+    fn night_pause_parse_hh_mm() {
+        assert_eq!(parse_hh_mm("00:00"), Some(0));
+        assert_eq!(parse_hh_mm("06:00"), Some(360));
+        assert_eq!(parse_hh_mm("23:59"), Some(1439));
+        assert_eq!(parse_hh_mm(" 6:05 "), Some(365));
+        assert_eq!(parse_hh_mm("24:00"), None, "小時越界");
+        assert_eq!(parse_hh_mm("00:60"), None, "分鐘越界");
+        assert_eq!(parse_hh_mm("0600"), None, "缺少分隔符");
+        assert_eq!(parse_hh_mm(""), None);
+        assert_eq!(parse_hh_mm("ab:cd"), None);
+    }
+
+    fn night_cfg(pause: bool, start: &str, end: &str) -> crate::config::HomeworkConfig {
+        crate::config::HomeworkConfig {
+            prefetch_night_pause: pause,
+            prefetch_night_start: start.to_string(),
+            prefetch_night_end: end.to_string(),
+            ..crate::config::HomeworkConfig::default()
+        }
+    }
+
+    #[test]
+    fn night_pause_window_semantics() {
+        // 預設窗 00:00–06:00
+        let cfg = night_cfg(true, "00:00", "06:00");
+        assert!(prefetch_night_pause_active(&cfg, 0));
+        assert!(prefetch_night_pause_active(&cfg, 359), "05:59 仍於窗內");
+        assert!(!prefetch_night_pause_active(&cfg, 360), "06:00 起恢復");
+        assert!(!prefetch_night_pause_active(&cfg, 12 * 60));
+
+        // 跨午夜窗 23:30–06:00
+        let wrap = night_cfg(true, "23:30", "06:00");
+        assert!(prefetch_night_pause_active(&wrap, 23 * 60 + 30));
+        assert!(prefetch_night_pause_active(&wrap, 1410 + 20), "23:50");
+        assert!(prefetch_night_pause_active(&wrap, 2), "00:02 跨午夜仍在窗內");
+        assert!(!prefetch_night_pause_active(&wrap, 6 * 60));
+
+        // 關閉旗標 → 永不暫停
+        assert!(!prefetch_night_pause_active(&night_cfg(false, "00:00", "06:00"), 0));
+
+        // start == end → 零長度窗，視為不暫停（防誤配全天關閉）
+        assert!(!prefetch_night_pause_active(&night_cfg(true, "03:00", "03:00"), 180));
+
+        // 格式不合法 → 不暫停（fail-open，寧可多抓不可整夜不抓）
+        assert!(!prefetch_night_pause_active(&night_cfg(true, "bananas", "06:00"), 0));
+        assert!(!prefetch_night_pause_active(&night_cfg(true, "00:00", "99:99"), 300));
     }
 }

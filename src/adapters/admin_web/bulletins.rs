@@ -702,10 +702,52 @@ pub(super) fn start_bulletin_notifier(
         BULLETIN_NOTIFIED_WARM.store(existed, std::sync::atomic::Ordering::SeqCst);
 
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(std::time::Duration::from_secs(120));
-            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // BULLETIN_POLL_TAME_V1：間隔與夜間暫停改由 [bulletins] 設定驅動
+            //（預設 5 分鐘、00:00–08:00 暫停；每輪重讀設定）。
+            // 夜間跳過輪詢；08:00 恢復後第一輪補抓，夜間累積的新公告
+            // 一次推送——不漏通知，只是晚幾小時。已通知清單持久化於磁碟，
+            // 重啟亦不會重複推送。
+            use chrono::Timelike;
+            let mut night_logged = false;
             loop {
-                tick.tick().await;
+                let (interval_secs, night_pause, night_start, night_end) =
+                    match crate::config::try_get_config() {
+                        Some(cfg) => (
+                            cfg.bulletins.poll_interval_secs.max(60),
+                            cfg.bulletins.night_pause,
+                            cfg.bulletins.night_pause_start.clone(),
+                            cfg.bulletins.night_pause_end.clone(),
+                        ),
+                        None => (
+                            300u64,
+                            true,
+                            "00:00".to_string(),
+                            "08:00".to_string(),
+                        ),
+                    };
+                tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                // DateTime 無「當日分鐘數」捷徑，以 hour()*60+minute() 組出。
+                let now = chrono::Local::now();
+                let minute_of_day = now.hour() * 60 + now.minute();
+                if night_pause
+                    && crate::homework_reminders::night_window_active(
+                        &night_start,
+                        &night_end,
+                        minute_of_day,
+                    )
+                {
+                    if !night_logged {
+                        tracing::info!(
+                            start = %night_start,
+                            end = %night_end,
+                            interval_secs,
+                            "夜間時段：暫停公告輪詢（恢復後第一輪補抓推送）"
+                        );
+                        night_logged = true;
+                    }
+                    continue;
+                }
+                night_logged = false;
                 notify_check(&state, messenger.clone()).await;
             }
         });
