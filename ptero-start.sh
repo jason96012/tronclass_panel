@@ -162,7 +162,7 @@ cloudflare_validate_config() {
 }
 
 start_tunnel() {
-  local token
+  local token size_before
   token="$(read_token)"
   if [[ -z "$token" ]]; then
     echo "[ptero-start] 沒有 Tunnel token。請新增檔案 config/cf.token（內容只有 Cloudflare 複製的 token）"
@@ -197,9 +197,16 @@ start_tunnel() {
       mv -f logs/cloudflared.log logs/cloudflared.log.1 2>/dev/null || true
     fi
   fi
+  # TUNNEL_RESTART_LOOP_FIX_V1：啟動前先記下檔尾位置，watchdog 只會檢查這之後的 log。
+  size_before="$(stat -c%s logs/cloudflared.log 2>/dev/null || echo 0)"
+  [[ "$size_before" =~ ^[0-9]+$ ]] || size_before=0
+  printf '%s\n' "$size_before" > logs/cloudflared-watchdog.offset
+  rm -f logs/cloudflared-log-failures logs/cloudflared-http-failures
   nohup ./cloudflared tunnel --no-autoupdate run --token "$token" >> logs/cloudflared.log 2>&1 &
   echo $! > logs/cloudflared.pid
   disown || true
+  # 初次啟動也套用寬限期（watchdog_check_tunnel_connector 以此時間戳計算）。
+  date +%s > logs/cloudflared-watchdog.last
   sleep 2
   echo "[ptero-start] cloudflared 最近 log："
   tail -n 15 logs/cloudflared.log 2>/dev/null | tr -d '\000' || true
@@ -776,11 +783,37 @@ watchdog_pid_alive() {
   [[ "$cmdline" =~ $expected ]]
 }
 
+# TUNNEL_RESTART_LOOP_FIX_V1
+# 之前的 watchdog 會陷入「無限重啟迴圈」：
+#   1. cloudflared.log 是 >> 追加、永不清除；
+#   2. 邊緣節點一次正常的瞬斷（connection lost / quic connection closed）被 grep 到 → 重啟；
+#   3. 重啟後檔案還是同一份，最後 80 行裡那條錯誤仍在 → 15 秒後再重啟；
+#   4. 重啟本身又製造新的 connection lost → 永遠跳不出來。
+# 修法：只看「上次重啟之後」新增的 log（記錄 byte offset）、把單次瞬斷與
+# 持續失敗分開（要連續 N 次檢查都失敗才重啟）、並把重啟間隔拉長。
+watchdog_tunnel_mark_log_offset() {
+  local size
+  size="$(stat -c%s logs/cloudflared.log 2>/dev/null || echo 0)"
+  [[ "$size" =~ ^[0-9]+$ ]] || size=0
+  printf '%s\n' "$size" > logs/cloudflared-watchdog.offset
+}
+
+# 讀出上次標記之後新寫入的 log（檔案被輪替變小時，從頭讀）。
+watchdog_tunnel_new_log() {
+  local offset size
+  offset="$(cat logs/cloudflared-watchdog.offset 2>/dev/null || echo 0)"
+  [[ "$offset" =~ ^[0-9]+$ ]] || offset=0
+  size="$(stat -c%s logs/cloudflared.log 2>/dev/null || echo 0)"
+  [[ "$size" =~ ^[0-9]+$ ]] || size=0
+  (( offset > size )) && offset=0
+  tail -c +"$((offset + 1))" logs/cloudflared.log 2>/dev/null | tr -d '\000' || true
+}
+
 watchdog_restart_tunnel() {
   local now last=0 pid
   now="$(date +%s)"
   last="$(cat logs/cloudflared-watchdog.last 2>/dev/null || echo 0)"
-  if (( now - last < ${CLOUDFLARE_RESTART_BACKOFF_SECS:-30} )); then return; fi
+  if (( now - last < ${CLOUDFLARE_RESTART_BACKOFF_SECS:-120} )); then return; fi
   printf '%s\n' "$now" > logs/cloudflared-watchdog.last
   pid="$(cat logs/cloudflared.pid 2>/dev/null || true)"
   # CLOUDFLARED_LOG_APPEND_V1：一定要等舊行程真的結束再啟新的。
@@ -800,24 +833,74 @@ watchdog_restart_tunnel() {
   echo "[watchdog] Cloudflare Tunnel connector 異常，重新啟動（$(date -Iseconds)）" >> logs/cloudflared-watchdog.log
   rm -f logs/cloudflared.pid
   start_tunnel
+  # TUNNEL_RESTART_LOOP_FIX_V1：重啟後從「現在的檔尾」開始看，舊錯誤不再算數；
+  # 失敗計數歸零，並給新程序一段寬限期（以 last 時間戳計算）。
+  watchdog_tunnel_mark_log_offset
+  rm -f logs/cloudflared-log-failures logs/cloudflared-http-failures
 }
 
 watchdog_check_tunnel_connector() {
   watchdog_pid_alive logs/cloudflared.pid || return 0
-  local recent public_url
-  # 舊檔案可能已經含有 NUL 空洞，讀取時直接濾掉，避免 bash 一直噴警告。
-  recent="$(tail -n 80 logs/cloudflared.log 2>/dev/null | tr -d '\000' || true)"
-  if printf '%s\n' "$recent" | grep -Eiq 'connection refused|no connection|failed to serve|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error'; then
-    watchdog_restart_tunnel
-    return
+  local new_log public_url now last
+  # TUNNEL_RESTART_LOOP_FIX_V1：剛（重）啟動的 connector 給它時間完成 4 條 QUIC 連線，
+  # 這段期間 log 裡必然有連線建立中的雜訊，不檢查。
+  now="$(date +%s)"
+  last="$(cat logs/cloudflared-watchdog.last 2>/dev/null || echo 0)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if (( now - last < ${CLOUDFLARE_STARTUP_GRACE_SECS:-90} )); then
+    return 0
   fi
+  [[ -f logs/cloudflared-watchdog.offset ]] || watchdog_tunnel_mark_log_offset
+
+  # ── 1) log 判定：只看新寫入的部分，而且要分「還在壞」與「已經自己恢復」──
+  # 舊檔案可能已經含有 NUL 空洞，讀取時直接濾掉，避免 bash 一直噴警告。
+  new_log="$(watchdog_tunnel_new_log)"
+  local log_failures=0
+  log_failures="$(cat logs/cloudflared-log-failures 2>/dev/null || echo 0)"
+  [[ "$log_failures" =~ ^[0-9]+$ ]] || log_failures=0
+  if [[ -n "$new_log" ]]; then
+    # 這些是「致命、不會自己好」的訊息：token 失效、tunnel 被刪、被 Cloudflare 拒絕。
+    if printf '%s\n' "$new_log" | grep -Eiq 'Unauthorized|invalid tunnel|tunnel not found|failed to serve|Token is invalid|credentials'; then
+      echo "[watchdog] cloudflared 出現致命錯誤（設定／token 問題），重新啟動（$(date -Iseconds)）" >> logs/cloudflared-watchdog.log
+      watchdog_restart_tunnel
+      return
+    fi
+    # 這些是「邊緣節點瞬斷」：cloudflared 自己會在幾秒內重連，看到「Registered tunnel
+    # connection」或「Connection ... registered」代表已恢復；只有錯誤持續且沒有恢復訊息
+    # 才累計失敗，連續 N 次檢查（預設 4 次 ≈ 1 分鐘）都如此才重啟。
+    local has_error=0 has_recovery=0
+    printf '%s\n' "$new_log" | grep -Eiq 'connection refused|no connection|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error|failed to dial|Retrying connection' && has_error=1
+    printf '%s\n' "$new_log" | grep -Eiq 'Registered tunnel connection|Connection .* registered|Updated to new configuration' && has_recovery=1
+    if (( has_error == 1 && has_recovery == 0 )); then
+      log_failures=$((log_failures + 1)); printf '%s\n' "$log_failures" > logs/cloudflared-log-failures
+      echo "[watchdog] cloudflared 新 log 有連線錯誤且尚未見到重連成功（${log_failures}/${CLOUDFLARE_LOG_FAILURE_THRESHOLD:-4}）" >> logs/cloudflared-watchdog.log
+      if (( log_failures >= ${CLOUDFLARE_LOG_FAILURE_THRESHOLD:-4} )); then
+        watchdog_restart_tunnel
+        return
+      fi
+    else
+      # 沒有錯誤、或已經看到重連成功：視為健康，歸零並把游標往前推，
+      # 這樣已經處理過的舊錯誤不會在下一輪再被算一次。
+      rm -f logs/cloudflared-log-failures
+      watchdog_tunnel_mark_log_offset
+    fi
+  fi
+
+  # ── 2) 公開網址探測：單次失敗可能只是 Cloudflare 邊緣／DNS 抖動，連續 N 次才重啟 ──
   public_url="${CLOUDFLARE_PUBLIC_URL:-}"
   if [[ -n "$public_url" ]]; then
+    local http_failures=0
+    http_failures="$(cat logs/cloudflared-http-failures 2>/dev/null || echo 0)"
+    [[ "$http_failures" =~ ^[0-9]+$ ]] || http_failures=0
     if watchdog_http_ok "$public_url"; then
+      rm -f logs/cloudflared-http-failures
       echo "[watchdog] Cloudflare public URL OK：$public_url" >> logs/cloudflared-watchdog.log
     else
-      echo "[watchdog] Cloudflare public URL health check 失敗：$public_url" >> logs/cloudflared-watchdog.log
-      watchdog_restart_tunnel
+      http_failures=$((http_failures + 1)); printf '%s\n' "$http_failures" > logs/cloudflared-http-failures
+      echo "[watchdog] Cloudflare public URL health check 失敗（${http_failures}/${WATCHDOG_FAILURE_THRESHOLD:-3}）：$public_url" >> logs/cloudflared-watchdog.log
+      if (( http_failures >= ${WATCHDOG_FAILURE_THRESHOLD:-3} )); then
+        watchdog_restart_tunnel
+      fi
     fi
   fi
 }

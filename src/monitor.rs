@@ -343,6 +343,9 @@ pub struct MonitorSpawner {
     scanner_registry: Option<Arc<QrScannerRegistry>>,
     force_cascade: Arc<ForceCascade>,
     registry: AccountRegistry,
+    /// ACCOUNT_HOT_ADD_FEEDBACK_V1：每個帳號最近一次熱啟動失敗的原因，
+    /// 讓 Web 狀態頁／健康檢查能持續顯示「為什麼還沒在監控」，而不是只閃一次 toast。
+    last_errors: Arc<std::sync::Mutex<HashMap<String, String>>>,
 }
 
 impl MonitorSpawner {
@@ -363,6 +366,36 @@ impl MonitorSpawner {
             scanner_registry,
             force_cascade,
             registry,
+            last_errors: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// ACCOUNT_HOT_ADD_FEEDBACK_V1：該帳號是否已有監控循環在跑。
+    pub fn is_active(&self, account_id: &str) -> bool {
+        self.registry.find(account_id).is_some()
+    }
+
+    /// ACCOUNT_HOT_ADD_FEEDBACK_V1：該帳號最近一次熱啟動失敗的原因（成功後會清除）。
+    pub fn last_error(&self, account_id: &str) -> Option<String> {
+        self.last_errors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(account_id)
+            .cloned()
+    }
+
+    fn record_result(&self, account_id: &str, result: &std::result::Result<HotAddedMonitor, String>) {
+        let mut errors = self
+            .last_errors
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match result {
+            Ok(_) => {
+                errors.remove(account_id);
+            }
+            Err(reason) => {
+                errors.insert(account_id.to_string(), reason.clone());
+            }
         }
     }
 
@@ -371,7 +404,15 @@ impl MonitorSpawner {
     /// 會實際登入一次（與服務啟動時相同），因此可能耗時數秒到數十秒；
     /// Discord 這類有回覆時限的呼叫端請放到背景任務執行。
     pub async fn spawn_account(&self, account_id: &str) -> std::result::Result<HotAddedMonitor, String> {
-        let account_id = account_id.trim();
+        let account_id = account_id.trim().to_string();
+        let result = self.spawn_account_inner(&account_id).await;
+        if !account_id.is_empty() {
+            self.record_result(&account_id, &result);
+        }
+        result
+    }
+
+    async fn spawn_account_inner(&self, account_id: &str) -> std::result::Result<HotAddedMonitor, String> {
         if account_id.is_empty() {
             return Err("帳號 id 不可為空".to_string());
         }

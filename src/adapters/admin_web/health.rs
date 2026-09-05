@@ -181,12 +181,30 @@ pub(super) async fn admin_health_check_handler(
     }
     let total = runtime_accounts.len();
     let accounts_ok = total > 0 && running > 0;
+    // ACCOUNT_HOT_ADD_FEEDBACK_V1：在 DB 且 enabled 但沒有監控循環的帳號也要浮上來。
+    let inactive: Vec<serde_json::Value> = match state.monitor_spawner.as_ref() {
+        Some(spawner) => state
+            .accounts_db
+            .list()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|row| row.enabled && !spawner.is_active(&row.id))
+            .map(|row| json!({ "account_id": row.id, "last_error": spawner.last_error(&row.id) }))
+            .collect(),
+        None => Vec::new(),
+    };
+    let inactive_note = if inactive.is_empty() {
+        String::new()
+    } else {
+        format!("，另有 {} 個帳號在資料庫中但未在監控", inactive.len())
+    };
     checks.push(json!({
         "name": "監控帳號",
         "ok": accounts_ok,
-        "level": if accounts_ok { if running < total || failures > 0 { "warn" } else { "ok" } } else { "bad" },
-        "message": format!("運行 {running}/{total}，偵測 {detected}，失敗加總 {failures}"),
-        "details": json!({ "latest_poll_timestamp": latest_poll }),
+        "level": if accounts_ok { if running < total || failures > 0 || !inactive.is_empty() { "warn" } else { "ok" } } else { "bad" },
+        "message": format!("運行 {running}/{total}，偵測 {detected}，失敗加總 {failures}{inactive_note}"),
+        "details": json!({ "latest_poll_timestamp": latest_poll, "inactive_accounts": inactive }),
     }));
 
     // 3. materials directory write test
@@ -328,21 +346,113 @@ pub(super) async fn admin_health_check_handler(
         .into_response()
 }
 
+// TUNNEL_RESTART_LOOP_FIX_V1
+// 之前這裡看的是 cloudflared.log「最後 80 行」：檔案是追加寫、永不清除，
+// 一次正常瞬斷的錯誤行會一直留在尾巴，卡片就永遠顯示「近期有連線錯誤」，
+// 前端又把它算進 Watchdog 的「有服務停止」，造成兩張卡同時紅。
+// 改成與 ptero-start.sh 同一套判定：只看 watchdog 游標（cloudflared-watchdog.offset）
+// 之後新寫入的內容，而且看到重連成功訊息就視為已恢復；另外統計最近一小時
+// watchdog 重啟了幾次，讓「一直在重啟」這件事直接顯示在卡片上。
 fn cloudflare_connector_status() -> serde_json::Value {
-    let log = std::fs::read_to_string("logs/cloudflared.log").unwrap_or_default();
-    let recent: String = log.lines().rev().take(80).collect::<Vec<_>>().join("\n");
+    let log_bytes = std::fs::read("logs/cloudflared.log").unwrap_or_default();
+    let offset = std::fs::read_to_string("logs/cloudflared-watchdog.offset")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(0);
+    let start = if offset > log_bytes.len() { 0 } else { offset };
+    let new_part = String::from_utf8_lossy(&log_bytes[start..]).replace('\0', "");
+    // 太長時只看尾端 32 KB 即可（游標之後通常很短，這是保護）。
+    let new_part = if new_part.len() > 32 * 1024 {
+        let cut = new_part.len() - 32 * 1024;
+        let mut idx = cut;
+        while idx < new_part.len() && !new_part.is_char_boundary(idx) {
+            idx += 1;
+        }
+        new_part[idx..].to_string()
+    } else {
+        new_part
+    };
     // REGEX_STATIC_V1：健康頁每次載入都會呼叫，regex 不再重複編譯。
-    let error = CLOUDFLARED_ERROR_RE.is_match(&recent);
-    json!({ "pid_alive": std::path::Path::new("logs/cloudflared.pid").exists(), "recent_error": error, "log_file": "logs/cloudflared.log" })
+    let fatal = CLOUDFLARED_FATAL_RE.is_match(&new_part);
+    let transient = CLOUDFLARED_ERROR_RE.is_match(&new_part);
+    let recovered = CLOUDFLARED_RECOVERY_RE.is_match(&new_part);
+    let error = fatal || (transient && !recovered);
+
+    // 最近一小時 watchdog 重啟次數（從 cloudflared-watchdog.log 的重啟行解析 ISO 時間）。
+    let now = chrono::Local::now();
+    let watchdog_log = std::fs::read_to_string("logs/cloudflared-watchdog.log").unwrap_or_default();
+    let mut restarts_last_hour = 0usize;
+    let mut last_restart: Option<String> = None;
+    for line in watchdog_log.lines().rev().take(400) {
+        if !line.contains("重新啟動") {
+            continue;
+        }
+        let Some(ts) = CLOUDFLARED_RESTART_TS_RE
+            .captures(line)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+        else {
+            continue;
+        };
+        if last_restart.is_none() {
+            last_restart = Some(ts.clone());
+        }
+        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(&ts) {
+            if now.signed_duration_since(parsed.with_timezone(&chrono::Local)).num_seconds() <= 3600 {
+                restarts_last_hour += 1;
+            }
+        }
+    }
+    let log_failures = std::fs::read_to_string("logs/cloudflared-log-failures")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    let http_failures = std::fs::read_to_string("logs/cloudflared-http-failures")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+
+    json!({
+        "pid_alive": std::path::Path::new("logs/cloudflared.pid").exists(),
+        "recent_error": error,
+        "fatal_error": fatal,
+        "recovered": recovered,
+        "restart_loop": restarts_last_hour >= 3,
+        "restarts_last_hour": restarts_last_hour,
+        "last_restart": last_restart,
+        "log_failures": log_failures,
+        "http_failures": http_failures,
+        "log_file": "logs/cloudflared.log",
+    })
 }
 
-/// cloudflared 日誌中的連線錯誤特徵（近 80 行內出現即回報 recent_error）。
+/// cloudflared 日誌中的「瞬斷」特徵（cloudflared 會自行重連，不代表要重啟）。
 static CLOUDFLARED_ERROR_RE: once_cell::sync::Lazy<regex::Regex> =
     once_cell::sync::Lazy::new(|| {
         regex::Regex::new(
-            "(?i)connection refused|no connection|failed to serve|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error",
+            "(?i)connection refused|no connection|unable to reach|context deadline exceeded|connection lost|quic connection closed|serve connection error|failed to dial|Retrying connection",
         )
         .expect("valid regex")
+    });
+
+/// 致命錯誤（token／tunnel 設定問題），不會自己好。
+static CLOUDFLARED_FATAL_RE: once_cell::sync::Lazy<regex::Regex> =
+    once_cell::sync::Lazy::new(|| {
+        regex::Regex::new("(?i)Unauthorized|invalid tunnel|tunnel not found|failed to serve|Token is invalid|credentials")
+            .expect("valid regex")
+    });
+
+/// 重連成功特徵：看到就代表前面的瞬斷已恢復。
+static CLOUDFLARED_RECOVERY_RE: once_cell::sync::Lazy<regex::Regex> =
+    once_cell::sync::Lazy::new(|| {
+        regex::Regex::new("(?i)Registered tunnel connection|Connection .* registered|Updated to new configuration")
+            .expect("valid regex")
+    });
+
+/// watchdog 重啟行內的 ISO 8601 時間戳（`date -Iseconds` 格式）。
+static CLOUDFLARED_RESTART_TS_RE: once_cell::sync::Lazy<regex::Regex> =
+    once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:?\d{2})").expect("valid regex")
     });
 
 fn watchdog_status() -> serde_json::Value {

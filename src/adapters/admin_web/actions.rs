@@ -140,6 +140,7 @@ pub(super) async fn admin_action_handler(
     if matches!(
         action_name.as_str(),
         "add_account"
+            | "start_monitor"
             | "set_admin"
             | "unset_admin"
             | "reset_password"
@@ -340,16 +341,87 @@ pub(super) async fn handle_admin_account_action(
                 Some(if monitor_started { "started" } else { "not_started" }),
                 message.clone(),
             );
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "ok": true,
-                    "affected": 1,
-                    "monitor_started": monitor_started,
-                    "message": message,
-                })),
-            )
-                .into_response()
+            // ACCOUNT_HOT_ADD_FEEDBACK_V1：帳號已寫入 DB 所以仍是 200，但前端要能
+            // 明確分辨「已開始監控」與「已入庫但沒在監控」：後者以 `warning` 帶原因，
+            // 前端會用紅字留在對話框內，而不是綠色 toast 一閃而過。
+            let mut body = json!({
+                "ok": true,
+                "affected": 1,
+                "account_id": account_id,
+                "monitor_started": monitor_started,
+                "message": message,
+            });
+            if !monitor_started {
+                body["warning"] = json!(message);
+            }
+            (StatusCode::OK, Json(body)).into_response()
+        }
+        // ACCOUNT_HOT_ADD_FEEDBACK_V1：帳號已在 DB 但沒有監控循環（熱啟動登入失敗、
+        // 或 CLI 離線新增）時，管理員可在狀態頁按「啟動監控」重試，不必重啟服務。
+        "start_monitor" => {
+            let target = action
+                .account_id
+                .or(action.id)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if target.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "account_id is required" })),
+                )
+                    .into_response();
+            }
+            let Some(spawner) = state.monitor_spawner.as_ref() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "此執行環境沒有監控 runtime，請重啟服務" })),
+                )
+                    .into_response();
+            };
+            match spawner.spawn_account(&target).await {
+                Ok(started) => {
+                    super::status::invalidate_admin_status_cache().await;
+                    crate::logs::record_audit(
+                        "web",
+                        &session.account_id,
+                        "start_monitor",
+                        Some(target.as_str()),
+                        Some("started"),
+                        format!("Web 管理頁：手動啟動帳號 {} 的監控", started.account_id),
+                    );
+                    let who = if started.user_name.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("（{}）", started.user_name.trim())
+                    };
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "ok": true,
+                            "affected": 1,
+                            "monitor_started": true,
+                            "message": format!("帳號 {target}{who} 登入成功，已開始監控。"),
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(reason) => {
+                    crate::logs::record_audit(
+                        "web",
+                        &session.account_id,
+                        "start_monitor",
+                        Some(target.as_str()),
+                        Some("failed"),
+                        format!("Web 管理頁：啟動帳號 {target} 的監控失敗：{reason}"),
+                    );
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("啟動監控失敗：{reason}") })),
+                    )
+                        .into_response()
+                }
+            }
         }
         "reset_password" => {
             let Some(account_id) = action

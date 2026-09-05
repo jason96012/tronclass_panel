@@ -319,7 +319,14 @@ impl DiscordRuntime {
     ///
     /// Discord interaction 必須在 3 秒內回覆，而登入學校系統可能要數十秒，
     /// 所以這裡只負責開背景任務；結果透過 DM 通知管理員與被綁定的使用者。
-    fn start_monitor_in_background(&self, account: &CreatedAccount) -> String {
+    ///
+    /// ACCOUNT_HOT_ADD_FEEDBACK_V1：結果除了 DM 管理員，也會回貼到下指令／按核准的那個頻道
+    /// （`origin_channel`），沒有的話退回 admin_channel；失敗訊息會 @管理員，確保一定看得到。
+    fn start_monitor_in_background(
+        &self,
+        account: &CreatedAccount,
+        origin_channel: Option<ChannelId>,
+    ) -> String {
         let Some(spawner) = self.monitor_spawner.clone() else {
             return "新帳號會在服務重新啟動後開始監控。".to_string();
         };
@@ -328,7 +335,24 @@ impl DiscordRuntime {
         let account_id = account.account_id.clone();
         let username = account.username.clone();
         let bound_user_id = account.discord_user_id.clone();
+        let report_channel = origin_channel.or_else(|| bot.admin_channel_id());
         tokio::spawn(async move {
+            let announce = |text: String| {
+                let bot = Arc::clone(&bot);
+                async move {
+                    let message = OutboundMessage::Text(text);
+                    if !bot.admin_user_id.is_empty() {
+                        let _ = bot.push(&bot.admin_user_id, &message).await;
+                    }
+                    if let Some(channel_id) = report_channel {
+                        if let Err(e) =
+                            send_outbound_to_channel(&bot.http, channel_id, &message).await
+                        {
+                            warn!(error = %e, "回貼熱啟動結果到 Discord 頻道失敗");
+                        }
+                    }
+                }
+            };
             match spawner.spawn_account(&account_id).await {
                 Ok(started) => {
                     info!(account = %started.account_id, "Discord 新增的帳號已熱啟動監控");
@@ -337,12 +361,10 @@ impl DiscordRuntime {
                     } else {
                         format!("（{}）", started.user_name.trim())
                     };
-                    let admin_text = OutboundMessage::Text(format!(
+                    announce(format!(
                         "帳號 `{account_id}`{who} 登入成功，已開始監控，不需重啟服務。"
-                    ));
-                    if !bot.admin_user_id.is_empty() {
-                        let _ = bot.push(&bot.admin_user_id, &admin_text).await;
-                    }
+                    ))
+                    .await;
                     if !bound_user_id.is_empty() && bound_user_id != bot.admin_user_id {
                         let _ = bot
                             .push(
@@ -356,12 +378,16 @@ impl DiscordRuntime {
                 }
                 Err(reason) => {
                     warn!(account = %account_id, reason = %reason, "Discord 新增的帳號熱啟動監控失敗");
-                    let admin_text = OutboundMessage::Text(format!(
-                        "帳號 `{account_id}` 已寫入資料庫，但即時啟動監控失敗：{reason}\n請確認帳號密碼後重啟服務再試。"
-                    ));
-                    if !bot.admin_user_id.is_empty() {
-                        let _ = bot.push(&bot.admin_user_id, &admin_text).await;
-                    }
+                    let mention = if bot.admin_user_id.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("<@{}> ", bot.admin_user_id.trim())
+                    };
+                    announce(format!(
+                        "{mention}帳號 `{account_id}` 已寫入資料庫，但監控【沒有】啟動：{reason}\n\
+                         目前這個帳號不會被點名偵測。請確認帳號密碼後，到 Web 管理頁「帳號」→「未在監控的帳號」按「啟動監控」重試，或重啟服務。"
+                    ))
+                    .await;
                     if !bound_user_id.is_empty() && bound_user_id != bot.admin_user_id {
                         let _ = bot
                             .push(
@@ -533,6 +559,7 @@ impl DiscordRuntime {
                         &password,
                         &discord_user_id,
                         &account_id,
+                        Some(command.channel_id),
                     )
                     .await;
                 reply_interaction(ctx, &command, message, true).await
@@ -717,7 +744,10 @@ impl DiscordRuntime {
             }
 
             let message = match action {
-                AccountReviewAction::Approve => self.approve_pending_account(token).await,
+                AccountReviewAction::Approve => {
+                    self.approve_pending_account(token, Some(component.channel_id))
+                        .await
+                }
                 AccountReviewAction::Reject => self.reject_pending_account(token).await,
             };
             reply_component(ctx, &component, message, true).await?;
@@ -835,6 +865,7 @@ impl DiscordRuntime {
         password: &str,
         discord_user_id: &str,
         account_id: &str,
+        origin_channel: Option<ChannelId>,
     ) -> OutboundMessage {
         match self
             .create_account(provider, username, password, discord_user_id, account_id)
@@ -842,7 +873,7 @@ impl DiscordRuntime {
         {
             Ok(account) => {
                 self.notify_created_account(&account).await;
-                let monitor_note = self.start_monitor_in_background(&account);
+                let monitor_note = self.start_monitor_in_background(&account, origin_channel);
                 OutboundMessage::Text(format!(
                     "已新增 Tronclass 帳號 `{}`（provider: `{}`，id: `{}`）。{monitor_note}",
                     account.username, account.provider, account.account_id
@@ -1036,7 +1067,11 @@ impl DiscordRuntime {
         ))
     }
 
-    async fn approve_pending_account(&self, token: &str) -> OutboundMessage {
+    async fn approve_pending_account(
+        &self,
+        token: &str,
+        origin_channel: Option<ChannelId>,
+    ) -> OutboundMessage {
         let Some(request) = self.pending_accounts.lock().await.remove(token) else {
             return OutboundMessage::Text("這筆帳號申請不存在或已處理。".to_string());
         };
@@ -1053,7 +1088,7 @@ impl DiscordRuntime {
         {
             Ok(account) => {
                 self.notify_created_account(&account).await;
-                let monitor_note = self.start_monitor_in_background(&account);
+                let monitor_note = self.start_monitor_in_background(&account, origin_channel);
                 OutboundMessage::Text(format!(
                     "已核准並新增 Tronclass username `{}`（provider: `{}`）。{monitor_note}",
                     account.username, account.provider
@@ -1992,7 +2027,7 @@ mod tests {
         let runtime = test_runtime(db.clone()).await;
 
         let message = runtime
-            .add_account("fju", "student001", "secret", "", "")
+            .add_account("fju", "student001", "secret", "", "", None)
             .await;
         assert!(render_discord_message(&message).contains("student001"));
 
@@ -2018,7 +2053,7 @@ mod tests {
             },
         );
 
-        let message = runtime.approve_pending_account("token").await;
+        let message = runtime.approve_pending_account("token", None).await;
         assert!(render_discord_message(&message).contains("已核准"));
 
         let account = db.get("student002").await.unwrap().unwrap();

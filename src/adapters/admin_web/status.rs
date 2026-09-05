@@ -21,6 +21,18 @@ pub(super) struct AdminStatusResponse {
     /// MORNING_DIGEST_V1：晨間摘要設定（設定頁顯示用）。
     digest: super::morning_digest::DigestStatusInfo,
     accounts: Vec<AdminAccountStatus>,
+    /// ACCOUNT_HOT_ADD_FEEDBACK_V1：已在 accounts.db 且 enabled，但目前沒有監控循環的帳號
+    /// （熱啟動登入失敗／CLI 離線新增）。只有管理員看得到；一般使用者永遠是空陣列。
+    inactive_accounts: Vec<InactiveAccountStatus>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct InactiveAccountStatus {
+    account_id: String,
+    username: String,
+    provider: String,
+    /// 最近一次熱啟動失敗原因；None 代表從未嘗試過（例如 CLI 新增後尚未重啟）。
+    last_error: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -384,6 +396,12 @@ pub(super) async fn admin_status_handler(
     let settings = crate::runtime_settings::snapshot().await;
     let settings_elapsed = settings_started.elapsed();
     let account_count = accounts.len();
+    // ACCOUNT_HOT_ADD_FEEDBACK_V1：管理員額外列出「在 DB 但沒在監控」的帳號與原因。
+    let inactive_accounts = if session.is_admin {
+        collect_inactive_accounts(&state).await
+    } else {
+        Vec::new()
+    };
     let response_json = json!(AdminStatusResponse {
         current_account_id: session.account_id.clone(),
         is_admin: session.is_admin,
@@ -392,6 +410,7 @@ pub(super) async fn admin_status_handler(
         settings,
         digest: super::morning_digest::digest_status(),
         accounts,
+        inactive_accounts,
     });
 
     admin_status_short_cache_put(cache_key, response_json.clone()).await;
@@ -463,6 +482,28 @@ pub(super) async fn admin_public_status_handler(
         })),
     )
         .into_response()
+}
+
+// ACCOUNT_HOT_ADD_FEEDBACK_V1
+async fn collect_inactive_accounts(state: &AdminWebState) -> Vec<InactiveAccountStatus> {
+    let Some(spawner) = state.monitor_spawner.as_ref() else {
+        return Vec::new();
+    };
+    let Ok(rows) = state.accounts_db.list().await else {
+        return Vec::new();
+    };
+    let mut inactive = rows
+        .into_iter()
+        .filter(|row| row.enabled && !spawner.is_active(&row.id))
+        .map(|row| InactiveAccountStatus {
+            last_error: spawner.last_error(&row.id),
+            account_id: row.id,
+            username: row.username,
+            provider: row.provider,
+        })
+        .collect::<Vec<_>>();
+    inactive.sort_by(|a, b| a.account_id.cmp(&b.account_id));
+    inactive
 }
 
 pub(super) fn resolve_visible_accounts(
