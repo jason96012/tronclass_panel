@@ -198,6 +198,24 @@
     <div id="semesterMsg" class="tmsg"></div>
   </section>
 
+  <!-- MORNING_DIGEST_V1: 晨間摘要推送設定（僅管理員；持久化於 config/digest.json） -->
+  <section class="card" id="digestCard" hidden>
+    <h1>晨間摘要推送</h1>
+    <p class="hint">每天定時推送一則摘要：今日課表、48 小時內截止作業、最新公告（送到各帳號已訂閱推播的裝置）。資料取自背景快取，不對學校發額外請求；設定即時生效並永久保存。</p>
+    <div class="test-row">
+      <span><b>啟用</b><i>關閉後完全不發送晨間摘要</i></span>
+      <input id="digestEnabled" type="checkbox" checked style="width:22px;min-height:22px">
+    </div>
+    <div class="test-row">
+      <span><b>通知時間</b><i>伺服器本地時間（HH:MM）。小技巧：把時間設為「下一分鐘」即可立即測試推送</i></span>
+      <input id="digestTime" type="time" value="08:00" style="flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit">
+    </div>
+    <div class="test-row" style="flex-wrap:wrap;gap:8px">
+      <button id="digestSave" class="tbtn" type="button">儲存</button>
+    </div>
+    <div id="digestMsg" class="tmsg"></div>
+  </section>
+
   <!-- TEST_NOTIFICATION_CARD_V1: 集中所有測試通知按鈕 -->
   <section class="card">
     <h1>測試通知</h1>
@@ -430,5 +448,56 @@
 </script>
 <style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){.top a[href^="/admin"]{display:none!important}}</style>
 <script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
+
+/* MORNING_DIGEST_V1: 晨間摘要設定卡片 */
+(function () {
+  'use strict';
+  var card = document.getElementById('digestCard');
+  if (!card) return;
+  var enabledEl = document.getElementById('digestEnabled');
+  var timeEl = document.getElementById('digestTime');
+  var msg = document.getElementById('digestMsg');
+  function show(text, kind) {
+    if (!msg) return;
+    msg.textContent = text || '';
+    msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+  }
+  async function load() {
+    try {
+      var res = await fetch('/admin/api/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var body = await res.json();
+      if (!body || !body.is_admin) { card.hidden = true; return; }
+      card.hidden = false;
+      var digest = body.digest || {};
+      if (enabledEl) enabledEl.checked = digest.enabled !== false;
+      if (timeEl && digest.time) timeEl.value = digest.time;
+    } catch (e) {
+      show('讀取失敗：' + (e && e.message ? e.message : e), 'bad');
+    }
+  }
+  var saveBtn = document.getElementById('digestSave');
+  if (saveBtn) saveBtn.addEventListener('click', async function () {
+    show('儲存中…');
+    try {
+      var res = await fetch('/admin/api/action', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+          action: 'digest_settings',
+          digest_enabled: !!(enabledEl && enabledEl.checked),
+          digest_time: (timeEl && timeEl.value ? timeEl.value : '').trim()
+        })
+      });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+      var t = body.digest && body.digest.time ? body.digest.time : '';
+      show('已儲存：每天 ' + (t || '08:00') + ' 推送晨間摘要（即時生效）', 'ok');
+    } catch (e) {
+      show('儲存失敗：' + (e && e.message ? e.message : e), 'bad');
+    }
+  });
+  load();
+})();
 </body>
 </html>

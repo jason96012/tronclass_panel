@@ -182,6 +182,31 @@ pub async fn send_homework_test(
     Ok(total)
 }
 
+/// MORNING_DIGEST_V1：發送晨間摘要給帳號已訂閱推播的裝置。
+/// tag 以「帳號＋日期」為後綴——同日重發會覆蓋同一則通知，不會洗版。
+pub async fn send_digest(account_id: &str, title: &str, body: &str) -> Result<usize> {
+    let service = SERVICE
+        .get()
+        .ok_or_else(|| miette::miette!("Web Push 尚未初始化"))?;
+    let subscriptions = service.db.list_web_push_subscriptions(account_id).await?;
+    let payload = serde_json::to_vec(&json!({
+        "title": title,
+        "body": body,
+        "url": "/admin/dashboard#overview",
+        "tag": format!(
+            "tronclass-digest-{account_id}-{}",
+            chrono::Local::now().format("%Y%m%d")
+        ),
+    }))
+    .map_err(|error| miette::miette!("序列化晨間摘要 payload 失敗：{error}"))?;
+    let total = subscriptions.len();
+    let (ok, _failed) = service.send_to_many(subscriptions, &payload).await;
+    if total > 0 && ok == 0 {
+        return Err(miette::miette!("晨間摘要全部發送失敗"));
+    }
+    Ok(total)
+}
+
 /// Queue one account-owner notification. Repeated monitor passes for the same
 /// rollcall are suppressed for two hours.
 pub fn notify_rollcall(

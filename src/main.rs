@@ -1172,6 +1172,11 @@ async fn main() -> Result<()> {
         adapters::admin_web::start_bulletin_notifier(state, adapter_hub.as_ref().map(Arc::clone));
     }
 
+    // MORNING_DIGEST_V1：晨間摘要推送（今日課表＋48h 截止作業＋最新公告）。
+    if let Some(state) = admin_web_state.clone() {
+        adapters::admin_web::start_morning_digest(state);
+    }
+
     let webhook_handle = if line_bot.is_some() {
         if let Some(bot) = line_bot.as_ref() {
             let request_state = adapters::requests::RequestState::new(

@@ -124,6 +124,7 @@ pub(super) async fn admin_action_handler(
             | "reset_password"
             | "mock_rollcall"
             | "runtime_settings"
+            | "digest_settings"
     ) {
         if !session.is_admin {
             return unauthorized_response();
@@ -363,6 +364,35 @@ pub(super) async fn handle_admin_account_action(
             }
         }
         "mock_rollcall" => super::mock::handle_mock_rollcall_action(state, action).await,
+        "digest_settings" => {
+            // MORNING_DIGEST_V1：晨間摘要設定（持久化於 config/digest.json）。
+            let current = super::morning_digest::digest_settings();
+            let enabled = action.digest_enabled.unwrap_or(current.enabled);
+            let time = action
+                .digest_time
+                .clone()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or(current.time);
+            match super::morning_digest::set_digest_settings(enabled, time).await {
+                Ok(normalized) => {
+                    super::status::invalidate_admin_status_cache().await;
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "ok": true,
+                            "digest": { "enabled": enabled, "time": normalized }
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(error) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{error}") })),
+                )
+                    .into_response(),
+            }
+        }
         "runtime_settings" => {
             let current = crate::runtime_settings::snapshot().await;
             let settings = RuntimeSettings {

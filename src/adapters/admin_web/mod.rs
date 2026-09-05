@@ -64,9 +64,15 @@ pub(crate) fn start_bulletin_notifier(
 ) {
     bulletins::start_bulletin_notifier(state, messenger);
 }
+
+/// MORNING_DIGEST_V1：晨間摘要排程器（每日定時推送課表/作業/公告摘要）。
+pub(crate) fn start_morning_digest(state: AdminWebState) {
+    morning_digest::start(state);
+}
 mod files;
 mod materials_import;
 mod homework;
+mod morning_digest;
 mod notifications;
 mod pages;
 mod passkey;
@@ -2501,6 +2507,11 @@ struct AdminActionRequest {
     /// CURRENT_SEMESTER_OVERRIDE_V1：Some("1151") 覆蓋學期、Some("") 清除、None 不變。
     #[serde(default)]
     semester_override: Option<String>,
+    /// MORNING_DIGEST_V1：晨間摘要設定（None 不變）。
+    #[serde(default)]
+    digest_enabled: Option<bool>,
+    #[serde(default)]
+    digest_time: Option<String>,
 }
 
 fn admin_login_redirect(next_path: &str) -> Response {

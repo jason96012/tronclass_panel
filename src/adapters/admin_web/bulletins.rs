@@ -667,6 +667,25 @@ fn bulletin_notified_file() -> std::path::PathBuf {
 
 static BULLETIN_NOTIFIED: once_cell::sync::Lazy<std::sync::Mutex<Vec<String>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+// MORNING_DIGEST_V1：最新一輪輪詢的公告標題（per account），供晨間摘要
+// 組「最新公告」段落。只留在記憶體——重啟後為空，摘要該段自動略過。
+static LATEST_BULLETINS: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, Vec<String>>>,
+> = once_cell::sync::Lazy::new(|| {
+    std::sync::Mutex::new(std::collections::HashMap::new())
+});
+
+/// 某帳號最新一輪輪詢看到的前 `n` 則公告標題。
+pub(super) fn latest_bulletin_titles(account_id: &str, n: usize) -> Vec<String> {
+    let guard = LATEST_BULLETINS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    guard
+        .get(account_id)
+        .map(|titles| titles.iter().take(n).cloned().collect())
+        .unwrap_or_default()
+}
 static BULLETIN_NOTIFIED_WARM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
@@ -955,6 +974,21 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
                 title,
                 content,
             });
+        }
+    }
+
+    // MORNING_DIGEST_V1：記錄本輪各帳號的最新公告標題（覆蓋前輪），
+    // 供晨間摘要的「最新公告」段落使用。
+    {
+        let mut latest = LATEST_BULLETINS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        latest.clear();
+        for item in &current {
+            latest
+                .entry(item.account_id.clone())
+                .or_default()
+                .push(item.title.clone());
         }
     }
 

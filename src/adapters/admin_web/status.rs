@@ -18,6 +18,8 @@ pub(super) struct AdminStatusResponse {
     must_change_password: bool,
     default_poll_interval_secs: u64,
     settings: RuntimeSettings,
+    /// MORNING_DIGEST_V1：晨間摘要設定（設定頁顯示用）。
+    digest: super::morning_digest::DigestStatusInfo,
     accounts: Vec<AdminAccountStatus>,
 }
 
@@ -290,6 +292,7 @@ pub(super) async fn admin_status_handler(
             must_change_password: true,
             default_poll_interval_secs: state.default_poll_interval_secs,
             settings: crate::runtime_settings::snapshot().await,
+            digest: super::morning_digest::digest_status(),
             accounts: vec![],
         });
         admin_status_short_cache_put(cache_key, response_json.clone()).await;
@@ -385,6 +388,7 @@ pub(super) async fn admin_status_handler(
         must_change_password: false,
         default_poll_interval_secs: state.default_poll_interval_secs,
         settings,
+        digest: super::morning_digest::digest_status(),
         accounts,
     });
 
