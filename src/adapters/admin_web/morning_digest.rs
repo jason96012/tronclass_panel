@@ -269,6 +269,23 @@ fn render_digest_body(class_lines: &[String], homework_lines: &[String], bulleti
     }
 }
 
+/// MORNING_DIGEST_V1：立即為指定帳號組裝並推送一則摘要（設定頁「發送測試」）。
+pub(super) async fn send_test_now(
+    state: &AdminWebState,
+    account_id: &str,
+) -> miette::Result<usize> {
+    let username = state
+        .accounts_db
+        .get(account_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|account| account.username.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| account_id.to_string());
+    build_and_send(state, account_id, &username).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

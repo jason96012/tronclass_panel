@@ -138,7 +138,7 @@ pub(super) async fn admin_action_handler(
             None,
             "Web 管理頁管理員操作請求",
         );
-        return handle_admin_account_action(&state, &action_name, action).await;
+        return handle_admin_account_action(&state, &session, &action_name, action).await;
     }
 
     let targets = if action_name == "force" && !session.is_admin {
@@ -210,6 +210,7 @@ pub(super) async fn admin_action_handler(
 
 pub(super) async fn handle_admin_account_action(
     state: &AdminWebState,
+    session: &AdminSession,
     action_name: &str,
     action: AdminActionRequest,
 ) -> Response {
@@ -364,7 +365,8 @@ pub(super) async fn handle_admin_account_action(
             }
         }
         "mock_rollcall" => super::mock::handle_mock_rollcall_action(state, action).await,
-        "digest_settings" => {
+        "digest_settings"
+            | "digest_test" => {
             // MORNING_DIGEST_V1：晨間摘要設定（持久化於 config/digest.json）。
             let current = super::morning_digest::digest_settings();
             let enabled = action.digest_enabled.unwrap_or(current.enabled);
@@ -386,6 +388,21 @@ pub(super) async fn handle_admin_account_action(
                     )
                         .into_response()
                 }
+                Err(error) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("{error}") })),
+                )
+                    .into_response(),
+            }
+        }
+        "digest_test" => {
+            // MORNING_DIGEST_V1：立即推送一則測試摘要到「目前登入者」的裝置。
+            match super::morning_digest::send_test_now(&state, &session.account_id).await {
+                Ok(devices) => (
+                    StatusCode::OK,
+                    Json(json!({ "ok": true, "devices": devices })),
+                )
+                    .into_response(),
                 Err(error) => (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": format!("{error}") })),

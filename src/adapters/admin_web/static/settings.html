@@ -212,6 +212,7 @@
     </div>
     <div class="test-row" style="flex-wrap:wrap;gap:8px">
       <button id="digestSave" class="tbtn" type="button">儲存</button>
+      <button id="digestTest" class="ghost" type="button">發送測試</button>
     </div>
     <div id="digestMsg" class="tmsg"></div>
   </section>
@@ -449,6 +450,7 @@
 <style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){.top a[href^="/admin"]{display:none!important}}</style>
 <script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
 
+<script>
 /* MORNING_DIGEST_V1: 晨間摘要設定卡片 */
 (function () {
   'use strict';
@@ -497,7 +499,26 @@
       show('儲存失敗：' + (e && e.message ? e.message : e), 'bad');
     }
   });
+  var testBtn = document.getElementById('digestTest');
+  if (testBtn) testBtn.addEventListener('click', async function () {
+    show('推送中…');
+    try {
+      var res = await fetch('/admin/api/action', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ action: 'digest_test' })
+      });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+      var n = body.devices || 0;
+      if (n > 0) show('測試摘要已推送到你的 ' + n + ' 台裝置', 'ok');
+      else show('沒有可推送的裝置：先在手機 Dashboard 訂閱背景推播', 'bad');
+    } catch (e) {
+      show('推送失敗：' + (e && e.message ? e.message : e), 'bad');
+    }
+  });
   load();
 })();
+</script>
 </body>
 </html>
