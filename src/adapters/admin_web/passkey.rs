@@ -372,24 +372,35 @@ pub(super) async fn admin_passkey_login_start_handler(
         Ok(wa) => wa,
         Err(resp) => return resp,
     };
-    let Some(account) = resolve_passkey_login_account(&state, &req.username).await else {
-        return passkey_login_decoy_response(&wa);
+    // PASSKEY_USERNAMELESS_V1：帳號留空 → 免輸帳號流程；finish 階段改以
+    // assertion 的 credential id 反查擁有者。挑戰內容與有帳號流程完全相同。
+    let usernameless = req.username.trim().is_empty();
+    let account = if usernameless {
+        None
+    } else {
+        match resolve_passkey_login_account(&state, &req.username).await {
+            Some(account) => Some(account),
+            None => return passkey_login_decoy_response(&wa),
+        }
     };
-    let credentials = match state
-        .accounts_db
-        .list_passkey_credentials(&account.id)
-        .await
-    {
-        Ok(credentials) => credentials,
-        Err(_) => return passkey_login_decoy_response(&wa),
-    };
-    if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT || credentials.is_empty() {
-        return passkey_login_decoy_response(&wa);
+    if let Some(account) = &account {
+        let credentials = match state
+            .accounts_db
+            .list_passkey_credentials(&account.id)
+            .await
+        {
+            Ok(credentials) => credentials,
+            Err(_) => return passkey_login_decoy_response(&wa),
+        };
+        if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT || credentials.is_empty() {
+            return passkey_login_decoy_response(&wa);
+        }
     }
     // Keep allowCredentials empty even after finding the account. This makes
     // the public challenge shape identical for existing and unknown accounts;
-    // the browser must use a discoverable passkey, while the server still
-    // scopes the finish step to the account named by the user.
+    // the browser uses a discoverable passkey, and the finish step is scoped
+    // to the named account — or, in the usernameless flow, resolved there
+    // from the asserted credential id.
     let (challenge, auth_state) = wa.start_authentication(&[]);
     let ceremony_id = Uuid::new_v4().simple().to_string();
     cleanup_passkey_states().await;
@@ -400,7 +411,8 @@ pub(super) async fn admin_passkey_login_start_handler(
     pending.insert(
         ceremony_id.clone(),
         PasskeyAuthenticationCeremony {
-            account_id: account.id,
+            // 空字串＝免輸帳號儀式：finish 階段以 credential id 反查。
+            account_id: account.map(|account| account.id).unwrap_or_default(),
             state: auth_state,
             expires_at: Instant::now() + Duration::from_secs(300),
         },
@@ -455,45 +467,6 @@ pub(super) async fn admin_passkey_login_finish_handler(
                 .into_response();
         }
     };
-    if !state
-        .rate_limiter
-        .check_limit(
-            &format!("passkey-finish-account:{}", ceremony.account_id),
-            RATE_LIMIT_MAX_ATTEMPTS,
-        )
-        .await
-    {
-        warn!(account = %ceremony.account_id, ip = %ip, "passkey finish rate limited by account");
-        alert_abnormal_traffic(
-            &state,
-            "通行密鑰驗證",
-            &ceremony.account_id,
-            &ip,
-        )
-        .await;
-        return rate_limited_response();
-    }
-    let mut credentials = match state
-        .accounts_db
-        .list_passkey_credentials(&ceremony.account_id)
-        .await
-    {
-        Ok(credentials) => credentials,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
-            )
-                .into_response();
-        }
-    };
-    if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "this account has too many stored passkeys; remove legacy entries before login" })),
-        )
-            .into_response();
-    }
     let asserted_id = match CredentialId::from_b64url(&req.response.id) {
         Ok(id) => id,
         Err(_) => {
@@ -504,23 +477,106 @@ pub(super) async fn admin_passkey_login_finish_handler(
                 .into_response();
         }
     };
-    let Some(stored) = credentials
-        .iter_mut()
-        .find(|credential| credential.id == asserted_id)
-    else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unknown passkey credential" })),
-        )
-            .into_response();
+    // PASSKEY_USERNAMELESS_V1：儀式未綁帳號（免輸帳號流程）時，以 assertion
+    // 的 credential id 反查擁有者；查無 → 與帳密錯誤同一個 401，不洩漏密鑰
+    // 是否存在。有綁帳號 → 維持原本的帳號範圍限制。
+    let (account_id, mut stored) = if ceremony.account_id.is_empty() {
+        match state
+            .accounts_db
+            .find_passkey_credential_owner(&asserted_id.to_b64url())
+            .await
+        {
+            Ok(Some((account_id, stored))) => {
+                match state
+                    .accounts_db
+                    .count_passkey_credentials(&account_id)
+                    .await
+                {
+                    Ok(count) if count <= MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT as i64 => {}
+                    Ok(_) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": "this account has too many stored passkeys; remove legacy entries before login" })),
+                        )
+                            .into_response();
+                    }
+                    Err(e) => {
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": format!("database error: {e}") })),
+                        )
+                            .into_response();
+                    }
+                }
+                (account_id, stored)
+            }
+            Ok(None) => {
+                warn!(ip = %ip, "usernameless passkey login with unknown credential");
+                return unauthorized_response();
+            }
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("database error: {e}") })),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        let credentials = match state
+            .accounts_db
+            .list_passkey_credentials(&ceremony.account_id)
+            .await
+        {
+            Ok(credentials) => credentials,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("database error: {e}") })),
+                )
+                    .into_response();
+            }
+        };
+        if credentials.len() > MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "this account has too many stored passkeys; remove legacy entries before login" })),
+            )
+                .into_response();
+        }
+        match credentials
+            .into_iter()
+            .find(|credential| credential.id == asserted_id)
+        {
+            Some(stored) => (ceremony.account_id.clone(), stored),
+            None => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unknown passkey credential" })),
+                )
+                    .into_response();
+            }
+        }
     };
-    let outcome = match wa.finish_authentication(&ceremony.state, &req.response, stored) {
+    if !state
+        .rate_limiter
+        .check_limit(
+            &format!("passkey-finish-account:{account_id}"),
+            RATE_LIMIT_MAX_ATTEMPTS,
+        )
+        .await
+    {
+        warn!(account = %account_id, ip = %ip, "passkey finish rate limited by account");
+        alert_abnormal_traffic(&state, "通行密鑰驗證", &account_id, &ip).await;
+        return rate_limited_response();
+    }
+    let outcome = match wa.finish_authentication(&ceremony.state, &req.response, &mut stored) {
         Ok(outcome) => outcome,
         Err(e) => {
             record_persistent_login_event(
                 &state,
-                &ceremony.account_id,
-                Some(&ceremony.account_id),
+                &account_id,
+                Some(&account_id),
                 "login_failed",
                 "fail",
                 "Web 管理頁通行密鑰驗證失敗",
@@ -537,10 +593,10 @@ pub(super) async fn admin_passkey_login_finish_handler(
     stored.counter = outcome.new_counter;
     let _ = state
         .accounts_db
-        .upsert_passkey_credential(&ceremony.account_id, stored)
+        .upsert_passkey_credential(&account_id, &stored)
         .await;
 
-    let account = match state.accounts_db.get(&ceremony.account_id).await {
+    let account = match state.accounts_db.get(&account_id).await {
         Ok(Some(account)) => account,
         Ok(None) => {
             return (

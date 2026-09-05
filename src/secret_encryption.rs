@@ -80,14 +80,16 @@ impl StoreSecret {
                     match decrypt_layered(stored, key) {
                         Some(plaintext) => StoreSecret(plaintext),
                         None => {
-                            // AT_REST_DECRYPT_FAIL_V1
+                            // AT_REST_DECRYPT_FAIL_V1 + DECRYPT_FAIL_NO_SUBMIT_V1
                             // enc: 開頭但解不開 → 設定的 key 與寫入時皆不一致
-                            // （或雙重加密超過可解層數）。回退成原文僅供辨識，
-                            // 以此值登入必然失敗。明確記錄警告以便察覺。
-                            tracing::warn!(
-                                "at-rest 解密失敗：enc 信封無法以目前／舊 master key 解密（key id 不符、key 遺失，或多層污染）；以此帳號登入將失敗，請核對 TRONCLASS_MASTER_KEY(_OLD)"
+                            // （或雙重加密超過可解層數）。絕不回傳原始密文——
+                            // 舊行為把密文當密碼送出，會在學校端累計失敗、
+                            // 觸發防護鎖定（真實事故）。改回空字串，登入入口
+                            // 會直接阻止送出任何請求。
+                            tracing::error!(
+                                "at-rest 解密失敗：enc 信封無法以目前／舊 master key 解密；已將密碼視為空白並阻止登入送出（請檢查 TRONCLASS_MASTER_KEY(_OLD) 或重新儲存該帳號密碼）"
                             );
-                            StoreSecret(stored.to_string())
+                            StoreSecret(String::new())
                         }
                     }
                 } else {
@@ -95,18 +97,18 @@ impl StoreSecret {
                 }
             }
             None => {
-                // MASTER_KEY_ROTATION_V1：未設 key 但值是加密信封＝一定解不開，
-                // 回退原文當密碼必然導致登入失敗。收斂為一次 warn 以便察覺。
+                // MASTER_KEY_ROTATION_V1：未設 key 但值是加密信封＝一定解不開。
+                // DECRYPT_FAIL_NO_SUBMIT_V1：回空字串（非密文），登入入口阻止送出。
                 if is_envelope(stored) {
                     static WARNED_NO_KEY: once_cell::sync::OnceCell<()> =
                         once_cell::sync::OnceCell::new();
                     WARNED_NO_KEY.get_or_init(|| {
                         warn!(
-                            "資料庫內有加密信封（enc:…）但未設定 TRONCLASS_MASTER_KEY；密碼／cookie 無法解密，該帳號登入將失敗"
+                            "資料庫內有加密信封（enc:…）但未設定 TRONCLASS_MASTER_KEY；密碼以空白處理，登入將被阻止"
                         );
                     });
                 }
-                StoreSecret(stored.to_string())
+                StoreSecret(String::new())
             }
         }
     }
@@ -414,5 +416,29 @@ mod tests {
 
         std::env::remove_var("TRONCLASS_MASTER_KEY");
         std::env::remove_var("TRONCLASS_MASTER_KEY_OLD");
+    }
+
+    #[test]
+    fn decrypt_failure_never_yields_envelope_password() {
+        // DECRYPT_FAIL_NO_SUBMIT_V1：解密失敗→空字串（登入入口會阻止送出），
+        // 絕不回傳原始密文（舊行為會把密文當密碼送出，在學校端累計失敗）。
+        let other_key = [11u8; 32];
+        let envelope = build_v1("real-password", other_key).unwrap();
+        assert!(looks_like_envelope(&envelope));
+
+        // 有設 key，但信封用別把 key 加密 → 空字串
+        std::env::set_var("TRONCLASS_MASTER_KEY", hex::encode([10u8; 32]));
+        assert_eq!(StoreSecret::from_stored(&envelope).as_str(), "");
+
+        // 沒設 key 但值是信封 → 空字串
+        std::env::remove_var("TRONCLASS_MASTER_KEY");
+        assert_eq!(StoreSecret::from_stored(&envelope).as_str(), "");
+
+        // 正常情境對照：用正確 key 讀 v1 → 明文（行為不變）
+        std::env::set_var("TRONCLASS_MASTER_KEY", hex::encode(other_key));
+        assert_eq!(StoreSecret::from_stored(&envelope).as_str(), "real-password");
+        // 純文字（未加密部署）不受影響
+        assert_eq!(StoreSecret::from_stored("plain-password").as_str(), "plain-password");
+        std::env::remove_var("TRONCLASS_MASTER_KEY");
     }
 }

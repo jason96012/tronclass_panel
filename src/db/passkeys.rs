@@ -102,4 +102,35 @@ impl AccountsDb {
         .wrap_err_with(|| format!("計算 `{account_id}` passkey credentials 失敗"))?;
         Ok(row.0)
     }
+
+    /// PASSKEY_USERNAMELESS_V1：以 credential id 反查擁有者帳號與憑證本體，
+    /// 供免輸帳號的 passkey 登入在 finish 階段解析身分。
+    /// 理論上同一 credential id 可能註冊到多個帳號（同一人重複註冊），
+    /// 取最早建立的一筆即可；正常流程 credential id 全域唯一。
+    pub async fn find_passkey_credential_owner(
+        &self,
+        credential_id: &str,
+    ) -> Result<Option<(String, PasskeyCredential)>> {
+        if credential_id.is_empty() || credential_id.len() > 4096 {
+            return Ok(None);
+        }
+        let row = sqlx::query_as::<_, (String, String)>(
+            "SELECT account_id, credential_json FROM passkey_credentials
+             WHERE credential_id = ? AND length(CAST(credential_json AS BLOB)) <= ?
+             ORDER BY id ASC LIMIT 1",
+        )
+        .bind(credential_id)
+        .bind(MAX_PASSKEY_CREDENTIAL_JSON_BYTES as i64)
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("以 credential id 反查 passkey 擁有者失敗")?;
+        let Some((account_id, json)) = row else {
+            return Ok(None);
+        };
+        let credential = serde_json::from_str::<PasskeyCredential>(&json)
+            .into_diagnostic()
+            .wrap_err("解析 passkey credential JSON 失敗")?;
+        Ok(Some((account_id, credential)))
+    }
 }

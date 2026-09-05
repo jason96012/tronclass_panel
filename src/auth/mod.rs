@@ -59,6 +59,27 @@ pub struct AuthClient {
 
 impl AuthClient {
     #[instrument(skip(account), fields(account_id = %account.id, username = %account.username, provider = %account.provider))]
+    /// DECRYPT_FAIL_NO_SUBMIT_V1：確認密碼「可以安全送出」。
+    ///
+    /// 儲存密碼解密失敗時會是空字串（見 `StoreSecret::from_stored`），
+    /// 或因任何路徑殘留信封樣式——兩者都直接回錯、不發登入請求，
+    /// 避免在學校端累計失敗次數觸發防護鎖定。
+    fn ensure_password_submittable(account: &AccountConfig) -> Result<()> {
+        if crate::secret_encryption::looks_like_envelope(&account.password) {
+            return Err(miette::miette!(
+                "帳號 {} 的儲存密碼無法解密（密文未被解開）——已阻止送出登入請求；請檢查 TRONCLASS_MASTER_KEY(_OLD) 是否與加密時一致，或在 Dashboard 重新儲存該帳號密碼",
+                account.id
+            ));
+        }
+        if account.password.trim().is_empty() {
+            return Err(miette::miette!(
+                "帳號 {} 沒有可用的登入密碼（儲存密文解密失敗或從未設定）——已阻止送出登入請求",
+                account.id
+            ));
+        }
+        Ok(())
+    }
+
     pub async fn new(account: &AccountConfig) -> Result<(Self, AuthSession)> {
         let cookie_jar = Arc::new(Jar::default());
         let client =
@@ -102,6 +123,10 @@ impl AuthClient {
     }
 
     async fn authenticate(&self, account: &AccountConfig) -> Result<AuthSession> {
+        // DECRYPT_FAIL_NO_SUBMIT_V1：即將以帳密登入——密碼呈信封樣式（未被
+        // 解密）或空白時直接回錯、不發請求，避免在學校端累計失敗觸發鎖定。
+        // （放在這裡而非 new() 開頭：有效 session cookie 的捷徑不受影響。）
+        Self::ensure_password_submittable(account)?;
         self.flow
             .login(&self.client, &self.cookie_jar, &self.base_url, account)
             .await
@@ -145,6 +170,10 @@ impl AuthClient {
     #[instrument(skip(self, account), fields(account_id = %account.id, provider = %account.provider))]
     pub async fn re_authenticate(&mut self, account: &AccountConfig) -> Result<AuthSession> {
         info!("Session 可能已過期，嘗試重新認證...");
+
+        // DECRYPT_FAIL_NO_SUBMIT_V1：同 new()——密碼不可送出時直接失敗，
+        // 不發出任何網路請求。
+        Self::ensure_password_submittable(account)?;
 
         self.cookie_jar = Arc::new(Jar::default());
         self.client = crate::api::build_http_client(

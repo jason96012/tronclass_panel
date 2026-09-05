@@ -22,6 +22,8 @@
   #passkeyBtn{margin-top:8px;background:transparent;color:var(--text);border:1px solid var(--line)}
   #msg{min-height:18px;margin-top:12px;text-align:center;font-size:13px;font-weight:800;color:var(--muted)}
   #msg.bad{color:#b91c1c} #msg.ok{color:#15803d}
+  /* MSG_CONTRAST_V1：暗色模式下改用亮紅／亮綠，避免深色字踩在深色底上難辨識 */
+  @media(prefers-color-scheme:dark){ #msg.bad{color:#f87171} #msg.ok{color:#4ade80} }
 </style>
 </head>
 <body>
@@ -66,8 +68,9 @@
     }catch(e){ set((e&&e.message)||'登入失敗','bad'); }
   }
   async function passkeyLogin(){
+    // PASSKEY_USERNAMELESS_V1：帳號可留空——直接以可發現通行密鑰識別身分；
+    // 有填帳號時 server 仍會將儀式綁定到該帳號。
     var u=($('loginUsername').value||'').trim();
-    if(!u){ set('請先輸入帳號，再使用通行密鑰。','bad'); return; }
     if(!window.PublicKeyCredential){ set('此瀏覽器不支援通行密鑰。','bad'); return; }
     set('啟動通行密鑰…','');
     try{
@@ -81,7 +84,7 @@
       if(!assertion) throw new Error('未取得通行密鑰');
       var fin=await fetch('/admin/api/passkey/login/finish',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({ceremony_id:sj.ceremony_id,response:{id:assertion.id,authenticatorData:b64e(assertion.response.authenticatorData),signature:b64e(assertion.response.signature),clientDataJSON:b64e(assertion.response.clientDataJSON),userHandle:assertion.response.userHandle?b64e(assertion.response.userHandle):null}})});
       var dj=await fin.json().catch(function(){return {};});
-      if(!fin.ok) throw new Error(dj.error||'通行密鑰登入失敗');
+      if(!fin.ok){ throw new Error(dj.error==='unauthorized'?'通行密鑰驗證失敗：此密鑰未被登記或帳號已停用。':(dj.error||'通行密鑰登入失敗')); }
       if(dj.must_change_password){ set('首次登入，請設定 Dashboard 密碼…','ok'); location.replace('/admin/password?first=1'); return; }
       set('登入成功，正在進入…','ok');
       location.replace(nextUrl());

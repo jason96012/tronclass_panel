@@ -102,6 +102,7 @@
       '<a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a>' +
       '<a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a>' +
       '<a id="moreBulletinsFinalV2" class="button secondary" href="/admin/bulletins">學校公告</a>' +
+      '<a id="moreAiFinalV2" class="button secondary" href="/admin/ai">AI 對話</a>' +
       (isAdmin ? '<a id="moreActivityFinalV2" class="button secondary" href="/admin/activity">登入/檔案紀錄</a>' : '') +
       (isAdmin ? '<a id="moreBlacklistFinalV2" class="button secondary" href="/admin/blacklist">黑名單</a>' : '') +
       '<button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button>' +

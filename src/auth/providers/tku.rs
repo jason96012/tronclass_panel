@@ -226,16 +226,17 @@ pub(crate) async fn sso_login_to_service(
         .await
         .into_diagnostic()
         .wrap_err("TKU: Failed to read NEAI login response")?;
-    let final_url = follow_html_redirects(client, body, final_url).await?;
+    let (final_url, final_html) = follow_html_redirects(client, body, final_url).await?;
 
     // LOGIN_FAIL_DIAG_V1：SSO 後仍停在登入頁＝帳密被拒絕（或觸發學校端
     // 驗證／鎖定）。舊版這裡不檢查，錯誤會延後到 session 驗證才爆，
     // 產生誤導性的「SSO 登入後 session 驗證失敗」。
     let path = final_url.path();
     if path.contains("logineb") || path.contains("NEAI") {
-        // LOGIN_FAIL_DIAG_V2：回抓登入頁，把學校實際回應的錯誤文字帶進訊息，
-        // 分辨「密碼錯誤」vs「驗證碼/鎖定」等原因。只在失敗路徑多一次 GET。
-        let hint = fetch_login_error_hint(client, &final_url).await;
+        // LOGIN_FAIL_DIAG_V2：直接從登入流程「停留的最後頁面」萃取錯誤文字。
+        // 不做額外 GET——無 context 的重新請求會讓頁面 JS 初始化失敗，
+        // 萃取出「載入登入頁面時發生錯誤」這種自己造成的雜訊。
+        let hint = extract_error_hint(&final_html);
         let suffix = if hint.is_empty() {
             String::new()
         } else {
@@ -354,23 +355,6 @@ async fn post_image_validate(
         .wrap_err("TKU: Failed to read ImageValidate response")
 }
 
-/// LOGIN_FAIL_DIAG_V2：GET 登入頁並萃取錯誤提示文字（失敗路徑診斷用）。
-async fn fetch_login_error_hint(client: &Client, url: &Url) -> String {
-    let Ok(resp) = client
-        .get(url.clone())
-        .header(header::ACCEPT, HTML_ACCEPT)
-        .header(header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
-        .send()
-        .await
-    else {
-        return String::new();
-    };
-    let Ok(html) = resp.text().await else {
-        return String::new();
-    };
-    extract_error_hint(&html)
-}
-
 /// LOGIN_FAIL_DIAG_V2：alert('…') 優先；否則找含關鍵字的文字片段。
 fn extract_error_hint(html: &str) -> String {
     if let Some(caps) = ALERT_MSG_RE.captures(html) {
@@ -403,7 +387,7 @@ async fn follow_html_redirects(
     client: &Client,
     mut html: String,
     mut current_url: Url,
-) -> Result<Url> {
+) -> Result<(Url, String)> {
     for _ in 0..10 {
         let Some(next_url) = extract_html_redirect(&html, &current_url).into_diagnostic()? else {
             break;
@@ -427,7 +411,7 @@ async fn follow_html_redirects(
             .wrap_err("TKU: Failed to read HTML redirect response")?;
     }
 
-    Ok(current_url)
+    Ok((current_url, html))
 }
 
 fn extract_nam_entry_url(html: &str) -> Option<String> {
