@@ -24,9 +24,6 @@ pub(super) struct AdminStatusResponse {
     /// ACCOUNT_HOT_ADD_FEEDBACK_V1：已在 accounts.db 且 enabled，但目前沒有監控循環的帳號
     /// （熱啟動登入失敗／CLI 離線新增）。只有管理員看得到；一般使用者永遠是空陣列。
     inactive_accounts: Vec<InactiveAccountStatus>,
-    /// REST_DAY_NO_POLL_V1：今天若是週末／國定假日，這裡是原因文字（例如「週六」「國定假日」），
-    /// 表示所有帳號今天不做自動輪詢；上課日為 null。
-    rest_day: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -313,7 +310,6 @@ pub(super) async fn admin_status_handler(
             accounts: vec![],
             // ACCOUNT_HOT_ADD_FEEDBACK_V1：首次登入尚未改密碼前不暴露任何帳號資料。
             inactive_accounts: vec![],
-            rest_day: None,
         });
         admin_status_short_cache_put(cache_key, response_json.clone()).await;
         return (StatusCode::OK, Json(response_json)).into_response();
@@ -417,8 +413,6 @@ pub(super) async fn admin_status_handler(
         digest: super::morning_digest::digest_status(),
         accounts,
         inactive_accounts,
-        // REST_DAY_NO_POLL_V1
-        rest_day: crate::holidays::rest_day_reason(chrono::Local::now().date_naive()),
     });
 
     admin_status_short_cache_put(cache_key, response_json.clone()).await;
