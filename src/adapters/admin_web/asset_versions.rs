@@ -197,6 +197,11 @@ const ASSETS: &[(&str, &str)] = &[
         "/admin/static/js/mobile-nav.js",
         include_str!("static/js/mobile-nav.js"),
     ),
+    // ONBOARDING_GUIDE_V1
+    (
+        "/admin/static/js/dashboard-onboarding.js",
+        include_str!("static/js/dashboard-onboarding.js"),
+    ),
     (
         "/admin/static/js/pdf.min.js",
         include_str!("static/js/pdf.min.js"),

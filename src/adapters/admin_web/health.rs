@@ -100,7 +100,9 @@ pub(super) async fn admin_health_api_handler(
                 "systemctl": systemctl,
                 "watchdog": watchdog,
                 "cloudflare": cloudflare_connector_status(),
-            }
+            },
+            // LOG_DISK_GUARD_V1：logs/、config/ 兩個目錄各占多少硬碟，讓維護頁一眼看到。
+            "storage": storage_usage(),
         })),
     )
         .into_response()
@@ -454,6 +456,59 @@ static CLOUDFLARED_RESTART_TS_RE: once_cell::sync::Lazy<regex::Regex> =
     once_cell::sync::Lazy::new(|| {
         regex::Regex::new(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:?\d{2})").expect("valid regex")
     });
+
+/// LOG_DISK_GUARD_V1：統計 logs/ 與 config/ 的大小（只走一層，檔案數很少，成本可忽略）。
+fn dir_size_shallow(dir: &str) -> (u64, usize, Option<(String, u64)>) {
+    let mut total = 0u64;
+    let mut files = 0usize;
+    let mut largest: Option<(String, u64)> = None;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let len = meta.len();
+            total += len;
+            files += 1;
+            if largest.as_ref().map(|(_, l)| len > *l).unwrap_or(true) {
+                largest = Some((entry.file_name().to_string_lossy().into_owned(), len));
+            }
+        }
+    }
+    (total, files, largest)
+}
+
+fn storage_usage() -> serde_json::Value {
+    let (logs_bytes, logs_files, logs_largest) = dir_size_shallow("logs");
+    let (config_bytes, config_files, config_largest) = dir_size_shallow("config");
+    let max_log = std::env::var("LOG_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(10 * 1024 * 1024);
+    let keep = std::env::var("LOG_ROTATE_KEEP")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(5);
+    json!({
+        "logs": {
+            "bytes": logs_bytes,
+            "label": format_bytes_label(logs_bytes),
+            "files": logs_files,
+            "largest": logs_largest.as_ref().map(|(n, l)| json!({ "name": n, "bytes": l, "label": format_bytes_label(*l) })),
+            "rotate_max_bytes": max_log,
+            "rotate_keep": keep,
+            // 每個 .log 的理論上限 = 現用檔 + keep 份備份
+            "per_log_cap_label": format_bytes_label(max_log * (keep + 1)),
+        },
+        "config": {
+            "bytes": config_bytes,
+            "label": format_bytes_label(config_bytes),
+            "files": config_files,
+            "largest": config_largest.as_ref().map(|(n, l)| json!({ "name": n, "bytes": l, "label": format_bytes_label(*l) })),
+        }
+    })
+}
 
 fn watchdog_status() -> serde_json::Value {
     let names = [

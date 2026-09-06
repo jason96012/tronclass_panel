@@ -1165,6 +1165,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/js/mobile-nav.js",
             get(static_assets::shared_mobile_nav_js_handler),
         )
+        // ONBOARDING_GUIDE_V1
+        .route(
+            "/admin/static/js/dashboard-onboarding.js",
+            get(static_assets::admin_dashboard_onboarding_js_handler),
+        )
         // PDFJS_PREVIEW_V1
         .route(
             "/admin/static/js/pdf.min.js",

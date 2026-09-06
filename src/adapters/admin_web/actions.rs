@@ -137,6 +137,27 @@ pub(super) async fn admin_action_handler(
         return handle_admin_account_action(&state, &session, &action_name, action).await;
     }
 
+    // BINDING_SELF_SERVICE_V1：綁定／解除 Discord、LINE 通知管道。
+    // 一般使用者只能改自己的帳號；管理員可指定 account_id。與 digest_test 一樣
+    // 提前處理，避免落入下方 targets 迴圈被判為 unknown action。
+    if action_name == "set_binding" {
+        let target_id = account_id
+            .clone()
+            .unwrap_or_else(|| session.account_id.clone());
+        if !session.is_admin && target_id != session.account_id {
+            return unauthorized_response();
+        }
+        crate::logs::record_audit(
+            "web",
+            &session.account_id,
+            &action_name,
+            Some(target_id.as_str()),
+            None,
+            "Web 通知頁：更新 Discord／LINE 綁定",
+        );
+        return handle_set_binding(&state, &target_id, action).await;
+    }
+
     if matches!(
         action_name.as_str(),
         "add_account"
@@ -596,6 +617,118 @@ pub(super) async fn handle_admin_account_action(
         )
             .into_response(),
     }
+}
+
+/// BINDING_SELF_SERVICE_V1：更新帳號的 Discord／LINE 綁定。
+///
+/// 只更新請求中有帶的欄位（`discord_user_id` / `line_user_id`），帶空字串代表解除。
+/// 寫入 accounts.db 後同步更新 runtime `AdapterAccountTarget`，讓下一次通知立即生效；
+/// 與 Discord `/bind-account` 走同一組 DB／runtime 寫入路徑。
+async fn handle_set_binding(
+    state: &AdminWebState,
+    target_id: &str,
+    action: AdminActionRequest,
+) -> Response {
+    let discord = action
+        .discord_user_id
+        .as_deref()
+        .map(str::trim)
+        .map(ToOwned::to_owned);
+    let line = action
+        .line_user_id
+        .as_deref()
+        .map(str::trim)
+        .map(ToOwned::to_owned);
+    if discord.is_none() && line.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "discord_user_id 或 line_user_id 至少需要一個" })),
+        )
+            .into_response();
+    }
+    if let Some(value) = discord.as_deref() {
+        if !value.is_empty() && !value.chars().all(|c| c.is_ascii_digit()) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "Discord User ID 必須是純數字（在 Discord 開啟開發者模式後右鍵使用者 → 複製使用者 ID）" })),
+            )
+                .into_response();
+        }
+    }
+    if let Some(value) = line.as_deref() {
+        if !value.is_empty()
+            && !(value.starts_with('U') && value.len() == 33 && value[1..].chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "LINE User ID 格式錯誤：應為 U 開頭、共 33 碼（可在 LINE Bot 對話輸入「我的ID」取得）" })),
+            )
+                .into_response();
+        }
+    }
+
+    // 先確認帳號存在（inactive 帳號也允許綁定，所以查 DB 而不是 runtime）。
+    match state.accounts_db.get(target_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("account not found: {target_id}") })),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+            )
+                .into_response();
+        }
+    }
+
+    let runtime = state.account_by_id(target_id);
+    if let Some(value) = discord.as_deref() {
+        if let Err(e) = state.accounts_db.set_discord_user_id(target_id, value).await {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("更新 Discord 綁定失敗：{e}") })),
+            )
+                .into_response();
+        }
+        if let Some(account) = runtime.as_ref() {
+            account.target.lock().await.discord_user_id = value.to_string();
+        }
+    }
+    if let Some(value) = line.as_deref() {
+        if let Err(e) = state.accounts_db.set_line_user_id(target_id, value).await {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": format!("更新 LINE 綁定失敗：{e}") })),
+            )
+                .into_response();
+        }
+        if let Some(account) = runtime.as_ref() {
+            account.target.lock().await.line_user_id = value.to_string();
+        }
+    }
+    super::status::invalidate_admin_status_cache().await;
+    info!(
+        account = %target_id,
+        discord = ?discord,
+        line = ?line,
+        "BINDING_SELF_SERVICE_V1 通知管道綁定已更新"
+    );
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "account_id": target_id,
+            "discord_user_id": discord,
+            "line_user_id": line,
+            "message": "綁定已更新，之後的通知會立即使用新的設定"
+        })),
+    )
+        .into_response()
 }
 
 pub(super) fn resolve_targets(

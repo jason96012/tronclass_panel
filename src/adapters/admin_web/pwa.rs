@@ -56,6 +56,7 @@ const SHELL_ASSET_URLS: &[&str] = &[
     "/admin/static/js/dashboard-header-spacious.js",
     "/admin/static/js/dashboard-more-actions.js",
     "/admin/static/js/mobile-nav.js",
+    "/admin/static/js/dashboard-onboarding.js",
     "/admin/static/js/pdf.min.js",
     "/admin/static/js/pdf.worker.min.js",
     "/admin/static/accounts.js",

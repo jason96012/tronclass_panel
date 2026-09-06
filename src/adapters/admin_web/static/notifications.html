@@ -46,6 +46,13 @@
   .acct-row{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap;padding:13px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-bottom:12px}
   .acct-field{flex:1 1 230px;max-width:300px}
   .acct-field select{margin-top:6px}
+  /* BINDING_SELF_SERVICE_V1 */
+  .bind-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .bind-field{display:flex;flex-direction:column;gap:6px;padding:13px;border:1px solid var(--line);border-radius:16px;background:var(--card)}
+  .bind-field span b{display:block;font-size:14px;font-weight:800}
+  .bind-field span i{display:block;font-style:normal;color:var(--muted);font-size:12px;line-height:1.5;font-weight:650;margin-top:3px}
+  .bind-field input{width:100%;min-height:44px;border:1px solid var(--line);border-radius:12px;background:var(--soft);color:var(--text);font:inherit;font-weight:700;padding:0 12px;box-sizing:border-box}
+  @media(max-width:720px){.bind-grid{grid-template-columns:1fr}}
   #classReminderInfo{padding-bottom:11px}
   .toggle-row{display:flex;align-items:center;gap:12px;padding:13px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-bottom:12px;cursor:pointer}
   .toggle-row input{width:20px;height:20px;accent-color:var(--primary);flex:0 0 auto}
@@ -108,6 +115,35 @@
     <h1>通知設定</h1>
     <p>集中管理 Discord 通知、上課前提醒、晨間摘要與即時點名提示音。電腦版與手機版皆已最佳化。</p>
   </div>
+
+  <!-- BINDING_SELF_SERVICE_V1：通知管道綁定（Discord／LINE User ID） -->
+  <section class="card" id="binding">
+    <div class="sec-head">
+      <div><h2>通知管道綁定</h2><div class="desc">點名、QR Code、數字碼與結果通知會送到這裡綁定的 Discord／LINE 帳號。留空並儲存代表解除綁定。</div></div>
+      <button id="bindingReload" class="sec" type="button">重新整理</button>
+    </div>
+    <div class="acct-row">
+      <div class="acct-field">
+        <label class="small" for="bindingAccount">設定帳號</label>
+        <select id="bindingAccount"></select>
+      </div>
+      <div id="bindingInfo" class="small">載入中...</div>
+    </div>
+    <div class="bind-grid">
+      <label class="bind-field">
+        <span><b>Discord User ID</b><i>Discord → 設定 → 進階 → 開啟「開發者模式」，回到任一對話對自己頭像按右鍵（手機長按）→「複製使用者 ID」。純數字。</i></span>
+        <input id="bindingDiscord" type="text" inputmode="numeric" autocomplete="off" placeholder="例如 123456789012345678">
+      </label>
+      <label class="bind-field">
+        <span><b>LINE User ID</b><i>把 LINE Bot 加為好友後傳任意訊息，Bot 會回覆你的 User ID（U 開頭 33 碼）。未啟用 LINE Bot 可留空。</i></span>
+        <input id="bindingLine" type="text" autocomplete="off" placeholder="例如 Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx">
+      </label>
+    </div>
+    <div class="actions">
+      <button id="bindingSave" class="primary" type="button">儲存綁定</button>
+    </div>
+    <div id="bindingMsg" class="msg"></div>
+  </section>
 
   <section class="card">
     <div class="sec-head">

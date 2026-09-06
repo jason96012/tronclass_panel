@@ -54,10 +54,12 @@
   }
 
   var lastStatus = null;
+  var forceStatusRefresh = false; /* BINDING_SELF_SERVICE_V1：儲存綁定後略過 runtime 快取 */
   async function loadStatus() {
     if (lastStatus) return lastStatus;
+    var force = forceStatusRefresh; forceStatusRefresh = false;
     lastStatus = await (window.TronclassRuntime && window.TronclassRuntime.statusSummary
-      ? window.TronclassRuntime.statusSummary(false)
+      ? window.TronclassRuntime.statusSummary(force)
       : api('/admin/api/status?include_history=false&history_limit=0'));
     return lastStatus;
   }
@@ -90,6 +92,50 @@
       sel.innerHTML = '';
       sel.appendChild(new Option('載入失敗', ''));
       sel.disabled = true;
+    }
+  }
+
+  // ── 0. 通知管道綁定（BINDING_SELF_SERVICE_V1）──────────────────────────────
+  function bindingAccountRow(accountId) {
+    var st = lastStatus;
+    var accounts = st && Array.isArray(st.accounts) ? st.accounts : [];
+    return accounts.find(function (a) { return (a.account_id || a.id) === accountId; }) || null;
+  }
+  async function loadBinding() {
+    var sel = q('bindingAccount');
+    var account = sel.value;
+    // /admin/api/status 已含 line_user_id / discord_user_id，不需要額外 API；
+    // 重新整理時清掉快取讓 status 重抓。
+    var row = bindingAccountRow(account);
+    q('bindingDiscord').value = row ? (row.discord_user_id || '') : '';
+    q('bindingLine').value = row ? (row.line_user_id || '') : '';
+    var d = row && row.discord_user_id ? '已綁定 Discord' : '未綁定 Discord';
+    var l = row && row.line_user_id ? '已綁定 LINE' : '未綁定 LINE';
+    q('bindingInfo').textContent = row ? (d + '｜' + l) : '找不到帳號資料';
+    setMsg('bindingMsg', '');
+  }
+  async function saveBinding() {
+    var btn = q('bindingSave');
+    var account = q('bindingAccount').value;
+    var discord = q('bindingDiscord').value.trim();
+    var line = q('bindingLine').value.trim();
+    if (discord && !/^\d{5,32}$/.test(discord)) { setMsg('bindingMsg', 'Discord User ID 必須是純數字。', 'bad'); return; }
+    if (line && !/^U[0-9a-fA-F]{32}$/.test(line)) { setMsg('bindingMsg', 'LINE User ID 應為 U 開頭共 33 碼。', 'bad'); return; }
+    btn.disabled = true;
+    setMsg('bindingMsg', '儲存中…');
+    try {
+      var res = await api('/admin/api/action', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'set_binding', account_id: account || undefined, discord_user_id: discord, line_user_id: line })
+      });
+      setMsg('bindingMsg', (res && res.message) || '綁定已更新', 'good');
+      lastStatus = null; forceStatusRefresh = true;
+      await fillAccountSelect(q('bindingAccount'), loadBinding);
+    } catch (e) {
+      setMsg('bindingMsg', e.message || '儲存失敗', 'bad');
+    } finally {
+      btn.disabled = false;
     }
   }
 
@@ -364,6 +410,19 @@
 
     bindSoundControls();
 
+    if (q('bindingAccount')) {
+      fillAccountSelect(q('bindingAccount'), loadBinding);
+      q('bindingAccount').addEventListener('change', loadBinding);
+      q('bindingSave').addEventListener('click', saveBinding);
+      q('bindingReload').addEventListener('click', function () { lastStatus = null; forceStatusRefresh = true; fillAccountSelect(q('bindingAccount'), loadBinding); });
+      /* 從新手導覽的「去綁定」按鈕帶 #binding 進來時，捲到綁定區並聚焦輸入框 */
+      if (location.hash === '#binding') {
+        setTimeout(function () {
+          var sec = q('binding'); if (sec && sec.scrollIntoView) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          var inp = q('bindingDiscord'); if (inp && !inp.value) { try { inp.focus({ preventScroll: true }); } catch (_) {} }
+        }, 350);
+      }
+    }
     fillAccountSelect(q('notifyAccount'), loadNotifyPrefs);
     fillAccountSelect(q('classReminderAccount'), loadClassReminderPrefs);
     fillAccountSelect(q('hwLadderAccount'), loadHwLadder);

@@ -276,6 +276,7 @@ impl QrScannerRegistry {
             pending_accounts,
             all_accounts,
             last_error: None,
+            expires_in_secs: secs_until(entry.expires_at, now),
         })
     }
 
@@ -430,6 +431,7 @@ impl QrScannerRegistry {
             entry.accounts.keys(),
         );
         status.last_error = entry.last_error.clone();
+        status.expires_in_secs = secs_until(entry.expires_at, now);
         Ok(status)
     }
 
@@ -814,7 +816,13 @@ fn status_result_from_sets<'a>(
         pending_accounts,
         all_accounts,
         last_error: None,
+        expires_in_secs: 0,
     }
+}
+
+/// ROLLCALL_INPUT_COUNTDOWN_V1：把 `expires_at` 換算成「還剩幾秒」（已過期回 0）。
+fn secs_until(expires_at: Instant, now: Instant) -> u64 {
+    expires_at.saturating_duration_since(now).as_secs()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -869,6 +877,9 @@ pub struct ScannerStatusResult {
     pub all_accounts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// ROLLCALL_INPUT_COUNTDOWN_V1：距離這個 rollcall 等待輸入逾時還剩幾秒
+    /// （以最晚加入的帳號為準）。頁面用它顯示倒數；0 代表已到期。
+    pub expires_in_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

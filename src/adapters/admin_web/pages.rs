@@ -59,6 +59,8 @@ pub(super) const DASHBOARD_HEADER_SPACIOUS_JS: &str = include_str!("static/js/da
 pub(super) const DASHBOARD_MORE_ACTIONS_JS: &str = include_str!("static/js/dashboard-more-actions.js");
 // SHARED_MOBILE_NAV_V1: 全頁共用手機導覽列。
 pub(super) const SHARED_MOBILE_NAV_JS: &str = include_str!("static/js/mobile-nav.js");
+// ONBOARDING_GUIDE_V1: 第一次進入 Dashboard 的新手導覽。
+pub(super) const DASHBOARD_ONBOARDING_JS: &str = include_str!("static/js/dashboard-onboarding.js");
 // SHARE_V1: 免登入分享預覽頁的外掛 JS/CSS（符合 CSP，不用 inline）。
 pub(super) const SHARE_PREVIEW_JS: &str = include_str!("static/js/share-preview.js");
 pub(super) const SHARE_CSS: &str = include_str!("static/css/share.css");

@@ -724,6 +724,10 @@ rotate_one_log() {
   : > "$file"
   chmod 600 "$file" 2>/dev/null || true
   rm -f "${file}.$((keep+1))"
+  # LOG_DISK_GUARD_V1：若 LOG_ROTATE_KEEP 被調小，把多出來的舊份也清掉。
+  for ((i=keep+2; i<=20; i++)); do
+    [[ -f "${file}.${i}" ]] && rm -f "${file}.${i}"
+  done
   echo "[watchdog] rotated $file (${size} bytes)" >> logs/watchdog.log
 }
 
@@ -893,8 +897,12 @@ watchdog_check_tunnel_connector() {
     http_failures="$(cat logs/cloudflared-http-failures 2>/dev/null || echo 0)"
     [[ "$http_failures" =~ ^[0-9]+$ ]] || http_failures=0
     if watchdog_http_ok "$public_url"; then
+      # LOG_DISK_GUARD_V1：只在「剛從失敗恢復」時寫一行，不再每 15 秒寫一次 OK
+      #（原本一年會累積約 180 MB 的 OK 行）。
+      if [[ -f logs/cloudflared-http-failures ]]; then
+        echo "[watchdog] Cloudflare public URL 已恢復：$public_url（$(date -Iseconds)）" >> logs/cloudflared-watchdog.log
+      fi
       rm -f logs/cloudflared-http-failures
-      echo "[watchdog] Cloudflare public URL OK：$public_url" >> logs/cloudflared-watchdog.log
     else
       http_failures=$((http_failures + 1)); printf '%s\n' "$http_failures" > logs/cloudflared-http-failures
       echo "[watchdog] Cloudflare public URL health check 失敗（${http_failures}/${WATCHDOG_FAILURE_THRESHOLD:-3}）：$public_url" >> logs/cloudflared-watchdog.log
@@ -984,6 +992,10 @@ watchdog_loop() {
   local bin="$1" child="$2" started_at now elapsed
   started_at="$(date +%s)"
   while kill -0 "$child" 2>/dev/null; do
+    # LOG_DISK_GUARD_V1：rotate_logs 以前只有定義沒有被呼叫，logs/*.log 會一直長大。
+    # 每輪檢查一次大小（每檔一個 wc -c，很便宜），超過 LOG_MAX_BYTES（預設 10 MB）
+    # 就 copytruncate 輪替，最多保留 LOG_ROTATE_KEEP（預設 5）份 → 每個 log 上限約 60 MB。
+    rotate_logs
     watchdog_start_tunnel
     if hot_rebuild_if_needed "$bin"; then
       kill "$child" 2>/dev/null || true

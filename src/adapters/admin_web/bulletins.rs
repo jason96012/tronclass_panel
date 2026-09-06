@@ -698,6 +698,18 @@ pub(super) fn latest_bulletin_titles(account_id: &str, n: usize) -> Vec<String> 
 static BULLETIN_NOTIFIED_WARM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// LOG_DISK_GUARD_V1：已通知公告 key 的上限。以前只增不減，config/bulletin_notified.json
+/// 會隨學期無限長大。key 依時間順序 push，只保留最新 N 筆即可（舊公告早已不在
+/// iClass 列表中，不會再被判成「新公告」重複推播）。
+const BULLETIN_NOTIFIED_MAX_KEYS: usize = 3000;
+
+fn cap_notified_keys(keys: &mut Vec<String>) {
+    if keys.len() > BULLETIN_NOTIFIED_MAX_KEYS {
+        let drop = keys.len() - BULLETIN_NOTIFIED_MAX_KEYS;
+        keys.drain(..drop);
+    }
+}
+
 fn save_notified(keys: &[String]) {
     let path = bulletin_notified_file();
     if let Some(parent) = path.parent() {
@@ -1013,6 +1025,7 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
                 keys.push(item.key.clone());
             }
         }
+        cap_notified_keys(&mut keys);
         *guard = keys.clone();
         BULLETIN_NOTIFIED_WARM.store(true, std::sync::atomic::Ordering::SeqCst);
         save_notified(&keys);
@@ -1028,6 +1041,7 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
         }
     }
     if changed {
+        cap_notified_keys(&mut keys);
         *guard = keys.clone();
         save_notified(&keys);
     }

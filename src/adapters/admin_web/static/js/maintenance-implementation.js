@@ -65,6 +65,8 @@
       card('服務',active?(svc.indexOf('running')===0?'執行中':'active'):String(cmd.systemctl||'-'),'PID '+(h.pid||'-')+'｜Uptime '+((h.uptime&&h.uptime.label)||'-'),active?'ok':'bad'),
       card('最後輪詢',acc.latest_poll_timestamp?new Date(Number(acc.latest_poll_timestamp)*1000).toLocaleString():'尚未','失敗 '+(acc.total_failures||0),(acc.total_failures||0)>0?'warn':'ok'),
       card('Load',h.loadavg||'-','系統負載'),
+      /* LOG_DISK_GUARD_V1：log／設定檔占用；超過 300 MB 視為異常（正常應在數十 MB 內） */
+      (function(){ var st=h.storage||{}, lg=st.logs||{}, cf=st.config||{}; var lb=Number(lg.bytes||0); return card('Log 占用', lg.label||'-', 'logs/ '+(lg.files||0)+' 檔（最大 '+((lg.largest&&lg.largest.name+' '+lg.largest.label)||'-')+'）｜每檔上限 '+(lg.per_log_cap_label||'-')+'｜config/ '+(cf.label||'-'), lb>300*1024*1024?'bad':lb>100*1024*1024?'warn':'ok'); })(),
       card('Cloudflare Connector',cf.restart_loop?('一小時內重啟 '+cf.restarts_last_hour+' 次'):cf.fatal_error?'Token / Tunnel 設定錯誤':cf.recent_error?'連線中斷、重連中':(cf.pid_alive?'程序正常':'未啟動'),cf.restart_loop?('最後一次 '+(cf.last_restart||'-')+'｜請看 logs/cloudflared-watchdog.log'):cf.fatal_error?'請檢查 config/cf.token 與 Cloudflare 上的 Tunnel 是否仍存在':cf.recent_error?('log 失敗計數 '+(cf.log_failures||0)+'｜HTTP 失敗計數 '+(cf.http_failures||0)):('PID + 新增 log 檢查'+(cf.restarts_last_hour?('｜一小時內重啟 '+cf.restarts_last_hour+' 次'):'')),cfBad?'bad':cfWarn?'warn':(cf.pid_alive?'ok':'warn')),
       card('Watchdog',wd.enabled?(wdDown.length?'有服務停止':'監控中'):'未啟用','PID + HTTP 檢查｜間隔 '+(wd.interval_secs||15)+' 秒｜'+(wdServices.map(function(x){return x.label+': '+(x.alive?'正常':'停止')}).join('、')||'尚無 PID'),wd.enabled?(wdDown.length?'bad':'ok'):'warn')
     ].join('');
