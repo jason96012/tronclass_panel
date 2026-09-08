@@ -37,6 +37,7 @@ mod config;
 mod dashboard_auth;
 mod db;
 mod detection_schedule;
+mod holidays;
 mod homework_cache;
 mod homework_reminders;
 mod logs;

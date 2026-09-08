@@ -601,17 +601,46 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
     // Discord/LINE rebind), so one read per iteration is sufficient.
     let mut cached_target;
     let mut last_timetable_window_state: Option<(bool, bool)> = None;
+    // REST_DAY_NO_POLL_V1：同一個休息日只記一次 log。
+    let mut last_rest_day_logged: Option<chrono::NaiveDate> = None;
 
     loop {
         // ── 等待觸發（定時、強制 or 重新認證）──────────────────────────────────
         let normal_poll_interval =
             crate::runtime_settings::poll_interval(provider_poll_interval_secs).await;
-        let timetable_policy = timetable_poll_policy(&ctx, normal_poll_interval).await;
+        // REST_DAY_NO_POLL_V1：週六、週日與國定假日整天不做自動輪詢。
+        // 休息日只等「下一個上課日 00:00」或最多 30 分鐘（讓 config/holidays.json
+        // 的修改半小時內生效）；期間仍可被「立即檢查」／重新認證喚醒，
+        // 這兩種觸發走下面同一套流程（Timer 觸發才會被休息日擋掉）。
+        let rest_today = Local::now().date_naive();
+        let rest_day_reason = crate::holidays::rest_day_reason(rest_today);
+        if let Some(reason) = rest_day_reason {
+            if last_rest_day_logged != Some(rest_today) {
+                info!(
+                    account = %ctx.account.id,
+                    reason = %reason,
+                    next_working_day = ?crate::holidays::next_working_day_after(rest_today),
+                    "今天是{reason}，暫停自動輪詢（手動「立即檢查」仍可用）"
+                );
+                last_rest_day_logged = Some(rest_today);
+            }
+        }
+        let timetable_policy = if rest_day_reason.is_some() {
+            TimetablePollPolicy {
+                interval: rest_day_wait(Local::now()),
+                controls_schedule: true,
+                inside_window: false,
+                polling_allowed: false,
+            }
+        } else {
+            timetable_poll_policy(&ctx, normal_poll_interval).await
+        };
         let timetable_state = (
             timetable_policy.inside_window,
             timetable_policy.polling_allowed,
         );
-        if timetable_policy.controls_schedule
+        if rest_day_reason.is_none()
+            && timetable_policy.controls_schedule
             && last_timetable_window_state != Some(timetable_state)
         {
             info!(
@@ -676,6 +705,12 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
 
         if trigger == MonitorTrigger::Timer {
             let now = Local::now();
+            // REST_DAY_NO_POLL_V1：等待結束時再確認一次（可能已跨日到上課日，
+            // 也可能 holidays.json 剛被改成放假）。
+            if crate::holidays::is_rest_day(now.date_naive()) {
+                debug!(account = %ctx.account.id, "休息日（週末／國定假日），略過本次定時輪詢");
+                continue;
+            }
             if timetable_policy.controls_schedule {
                 // Re-evaluate after every wait so boundaries are applied exactly:
                 // 07:00 resumes immediately, while 19:00 suppresses the poll that
@@ -1204,6 +1239,14 @@ async fn timetable_poll_policy(
         inside_window: evaluation.active,
         polling_allowed: true,
     }
+}
+
+/// REST_DAY_NO_POLL_V1：休息日要睡多久——到隔天 00:00:05 為止，但最多 30 分鐘
+/// （這樣 holidays.json 的 workdays 覆寫、或跨日到上課日都能在半小時內反應）。
+fn rest_day_wait(now: chrono::DateTime<Local>) -> Duration {
+    let secs_today = u64::from(now.hour()) * 3600 + u64::from(now.minute()) * 60 + u64::from(now.second());
+    let until_midnight = (24u64 * 3600).saturating_sub(secs_today) + 5;
+    Duration::from_secs(until_midnight.clamp(5, 30 * 60))
 }
 
 async fn wait_for_trigger(

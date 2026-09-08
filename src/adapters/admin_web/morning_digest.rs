@@ -189,8 +189,13 @@ fn in_fire_window(target_min: u32, now_min: u32) -> bool {
 }
 
 /// DIGEST_REST_DAY_V1：週六、週日，或列在 holidays（YYYY-MM-DD）內的日期，不發摘要。
+/// REST_DAY_NO_POLL_V1：另外沿用全域 `crate::holidays`（內建國定假日 + config/holidays.json），
+/// 與監控輪詢的休息日判定一致。
 fn is_rest_day(date: NaiveDate, holidays: &[String]) -> bool {
     if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
+        return true;
+    }
+    if crate::holidays::is_rest_day(date) {
         return true;
     }
     holidays.iter().any(|raw| {
