@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::{Datelike, Local, Timelike, Weekday};
 use tracing::{debug, info, warn};
 
-use crate::adapters::events::{AdapterMessenger, OutboundMessage};
+use crate::adapters::events::{AdapterMessenger, ClassReminderEvent, OutboundMessage};
 use crate::db::{AccountsDb, ClassReminderDueRow};
 
 const CHECK_INTERVAL_SECS: u64 = 60;
@@ -78,9 +78,10 @@ async fn run_once(
         }
 
         let minutes_until = (start_minutes - now_minutes).max(0);
-        let message = render_message(&entry, minutes_until, minutes_before);
+        // DISCORD_NOTIFY_UNIFY_V1：結構化事件，由 Discord adapter 統一 render。
+        let message = build_event(&entry, minutes_until, minutes_before);
         if let Err(e) = discord
-            .push(&entry.discord_user_id, &OutboundMessage::Text(message))
+            .push(&entry.discord_user_id, &OutboundMessage::ClassReminder(message))
             .await
         {
             warn!(
@@ -148,11 +149,11 @@ fn period_start_minutes(period: i64) -> Option<i64> {
     }
 }
 
-fn render_message(
+fn build_event(
     entry: &ClassReminderDueRow,
     minutes_until: i64,
     configured_minutes: i64,
-) -> String {
+) -> ClassReminderEvent {
     let start = if entry.start_time.trim().is_empty() {
         period_start_minutes(entry.period_start)
             .map(format_minutes)
@@ -183,24 +184,15 @@ fn render_message(
         "節次未設定".to_string()
     };
 
-    let headline = if minutes_until <= 0 {
-        "現在上課".to_string()
-    } else {
-        format!("{} 分鐘後上課", minutes_until)
-    };
-
-    format!(
-        "⏰ 上課提醒\n{}\n\n課程：{}\n時間：{}{}（{}）\n教室：{}\n老師：{}\n帳號：{}\n\n你設定的是上課前 {} 分鐘提醒。",
-        headline,
-        entry.course_name.trim(),
-        start,
-        end,
-        period,
-        room,
+    ClassReminderEvent {
+        account: entry.account_id.clone(),
+        course_name: entry.course_name.trim().to_string(),
+        time_text: format!("{start}{end}（{period}）"),
+        classroom: room,
         teacher,
-        entry.account_id,
-        configured_minutes
-    )
+        minutes_until,
+        configured_minutes,
+    }
 }
 
 fn format_minutes(minutes: i64) -> String {

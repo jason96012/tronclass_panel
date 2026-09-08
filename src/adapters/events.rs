@@ -147,6 +147,14 @@ pub enum OutboundMessage {
     PushSubscriptionExpired(PushSubscriptionExpiredEvent),
     /// ROLLCALL_INPUT_REMINDER_V1：數字／QR 點名等了 N 秒仍沒有任何輸入，再催一次。
     RollcallInputReminder(RollcallInputReminderEvent),
+    /// DISCORD_NOTIFY_UNIFY_V1：監控循環自身的事件（重登成功／失敗、循環異常結束）。
+    MonitorEvent(MonitorEventNotice),
+    /// DISCORD_NOTIFY_UNIFY_V1：監控警示／恢復（給管理員）。
+    AdminAlert(AdminAlertNotice),
+    /// DISCORD_NOTIFY_UNIFY_V1：上課前提醒。
+    ClassReminder(ClassReminderEvent),
+    /// DISCORD_NOTIFY_UNIFY_V1：課表自動同步後有差異。
+    TimetableChanged(TimetableChangedEvent),
     Help,
     Welcome,
     UnsupportedMedia,
@@ -162,6 +170,159 @@ pub enum OutboundMessage {
     QrNoBoundAccount,
     QrNoPendingRequest,
     UnknownCommand { text: String },
+}
+
+/// DISCORD_NOTIFY_UNIFY_V1：監控循環事件種類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MonitorEventKind {
+    /// 手動或自動重新認證成功。
+    ReauthSucceeded,
+    /// 手動 /reauth 失敗。
+    ReauthFailed,
+    /// 輪詢出錯，正在自動重新認證。
+    AutoReauthStarted,
+    /// 自動重新認證失敗（會依退避重試）。
+    AutoReauthFailed,
+    /// 監控循環異常結束，需要重啟。
+    LoopCrashed,
+}
+
+/// DISCORD_NOTIFY_UNIFY_V1：監控循環事件（取代原本手寫的 ✅❌⚠️ 純文字）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonitorEventNotice {
+    pub kind: MonitorEventKind,
+    pub account: String,
+    /// 錯誤訊息（成功事件為空）。
+    pub error: String,
+    /// FAILURE_DIAGNOSIS_V1：對 error 的分類與建議；成功事件為 None。
+    pub diagnosis: Option<crate::monitor_alerts::FailureDiagnosis>,
+}
+
+impl MonitorEventNotice {
+    pub fn title(&self) -> &'static str {
+        match self.kind {
+            MonitorEventKind::ReauthSucceeded => "重新認證成功",
+            MonitorEventKind::ReauthFailed => "重新認證失敗",
+            MonitorEventKind::AutoReauthStarted => "簽到監控遇到錯誤，正在自動重新認證",
+            MonitorEventKind::AutoReauthFailed => "自動重新認證失敗",
+            MonitorEventKind::LoopCrashed => "監控循環異常結束",
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        matches!(self.kind, MonitorEventKind::ReauthSucceeded)
+    }
+
+    /// 各 adapter 共用的純文字（不含表情符號）。
+    pub fn render(&self) -> String {
+        let mut lines = vec![format!("{}：{}", self.title(), self.account)];
+        if !self.error.trim().is_empty() {
+            lines.push(format!("錯誤：{}", self.error.trim()));
+        }
+        if let Some(d) = &self.diagnosis {
+            lines.push(format!("原因：{}", d.label));
+            lines.push(format!("建議：{}", d.advice));
+        }
+        match self.kind {
+            MonitorEventKind::LoopCrashed => lines.push("請重啟服務以恢復此帳號的監控。".to_string()),
+            MonitorEventKind::AutoReauthFailed => {
+                lines.push("系統會以逐步拉長的間隔自動重試；也可輸入 /reauth 立即再試。".to_string())
+            }
+            MonitorEventKind::AutoReauthStarted => lines.push("不需要操作，成功後會再通知。".to_string()),
+            _ => {}
+        }
+        lines.join("\n")
+    }
+}
+
+/// DISCORD_NOTIFY_UNIFY_V1：管理員監控警示／恢復。
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdminAlertNotice {
+    pub account: String,
+    /// "警告" / "嚴重" / "已恢復"。
+    pub grade: String,
+    pub is_recovery: bool,
+    pub title: String,
+    pub body: String,
+}
+
+impl AdminAlertNotice {
+    pub fn render(&self) -> String {
+        format!("{}\n\n{}", self.title, self.body)
+    }
+}
+
+/// DISCORD_NOTIFY_UNIFY_V1：上課前提醒事件。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClassReminderEvent {
+    pub account: String,
+    pub course_name: String,
+    /// 例如 "08:10 - 09:00（第 1-2 節）"。
+    pub time_text: String,
+    pub classroom: String,
+    pub teacher: String,
+    pub minutes_until: i64,
+    pub configured_minutes: i64,
+}
+
+impl ClassReminderEvent {
+    pub fn headline(&self) -> String {
+        if self.minutes_until <= 0 {
+            "現在上課".to_string()
+        } else {
+            format!("{} 分鐘後上課", self.minutes_until)
+        }
+    }
+
+    pub fn render(&self) -> String {
+        format!(
+            "上課提醒｜{}\n\n課程：{}\n時間：{}\n教室：{}\n老師：{}\n帳號：{}\n\n你設定的是上課前 {} 分鐘提醒。",
+            self.headline(),
+            self.course_name,
+            self.time_text,
+            self.classroom,
+            self.teacher,
+            self.account,
+            self.configured_minutes
+        )
+    }
+}
+
+/// DISCORD_NOTIFY_UNIFY_V1：課表自動更新事件。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimetableChangedEvent {
+    pub account: String,
+    /// 已 humanize 的新增項目（最多 5 筆）。
+    pub added: Vec<String>,
+    pub added_total: usize,
+    pub removed: Vec<String>,
+    pub removed_total: usize,
+}
+
+impl TimetableChangedEvent {
+    pub fn render(&self) -> String {
+        let mut lines = vec!["課表已自動更新".to_string()];
+        if self.added_total > 0 {
+            lines.push(format!("新增 {} 堂：", self.added_total));
+            for item in &self.added {
+                lines.push(format!("  ＋ {item}"));
+            }
+            if self.added_total > self.added.len() {
+                lines.push(format!("  …等 {} 堂", self.added_total));
+            }
+        }
+        if self.removed_total > 0 {
+            lines.push(format!("移除 {} 堂：", self.removed_total));
+            for item in &self.removed {
+                lines.push(format!("  － {item}"));
+            }
+            if self.removed_total > self.removed.len() {
+                lines.push(format!("  …等 {} 堂", self.removed_total));
+            }
+        }
+        lines.push(format!("帳號：{}", self.account));
+        lines.join("\n")
+    }
 }
 
 /// 作業截止倒數提醒事件。
@@ -336,6 +497,9 @@ pub struct SecurityAlertEvent {
     /// Discord unblock authorization; never rendered as a credential.
     pub account_id: String,
     pub allow_owner_unblock: bool,
+    /// LOGIN_TIERED_LOCKOUT_V1：第一層鎖定（帳號密碼登入暫時鎖住、IP 尚未封鎖）。
+    /// Discord 端據此改渲染「取消這次鎖定」＋「封鎖此 IP」兩顆按鈕給帳號持有人。
+    pub login_locked: bool,
 }
 
 /// Outbound event emitted when a monitored account starts.

@@ -20,7 +20,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
-use crate::adapters::events::{AdapterMessenger, OutboundMessage};
+use crate::adapters::events::{AdminAlertNotice, AdapterMessenger, OutboundMessage};
 use crate::db::AccountsDb;
 
 /// 連續失敗達到這個次數就升為「警告」。
@@ -307,16 +307,27 @@ async fn admin_recipients(
     (discord_ids, account_ids)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn broadcast_to_admins(
     db: &AccountsDb,
     messenger: Option<&dyn AdapterMessenger>,
+    account_id: &str,
+    grade_label: &str,
+    is_recovery: bool,
     title: String,
     body: String,
     tag: String,
 ) {
     let (discord_ids, account_ids) = admin_recipients(db, messenger).await;
     if let Some(messenger) = messenger {
-        let message = OutboundMessage::Text(format!("{title}\n\n{body}"));
+        // DISCORD_NOTIFY_UNIFY_V1：結構化事件，Discord 端依等級上色。
+        let message = OutboundMessage::AdminAlert(AdminAlertNotice {
+            account: account_id.to_string(),
+            grade: grade_label.to_string(),
+            is_recovery,
+            title: title.clone(),
+            body: body.clone(),
+        });
         for to in &discord_ids {
             if let Err(error) = messenger.push(to, &message).await {
                 warn!(to = %to, error = %error, "監控警示 Discord 推送失敗");
@@ -366,7 +377,7 @@ pub async fn report_failure(
         advice_for(grade, cause)
     );
     let tag = format!("tronclass-monitor-alert-{account_id}");
-    broadcast_to_admins(db, messenger, title, body, tag).await;
+    broadcast_to_admins(db, messenger, account_id, grade.label(), false, title, body, tag).await;
 }
 
 /// 輪詢成功（或重新認證成功）時呼叫；只有先前送過警示的帳號才會送恢復訊息。
@@ -391,7 +402,7 @@ pub async fn report_recovery(
         format_duration(outage)
     );
     let tag = format!("tronclass-monitor-alert-{account_id}");
-    broadcast_to_admins(db, messenger, title, body, tag).await;
+    broadcast_to_admins(db, messenger, account_id, "已恢復", true, title, body, tag).await;
 }
 
 #[cfg(test)]

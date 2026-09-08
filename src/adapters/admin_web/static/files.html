@@ -104,7 +104,7 @@
       if (u.searchParams.get('logout') === '1') {
         localStorage.removeItem(LS_SESSION);
         sessionStorage.removeItem(LS_SESSION);
-        localStorage.setItem(LS_LOGOUT, '1');
+        localStorage.removeItem(LS_LOGOUT); /* LOGOUT_SERVER_SIDE_V1 */
       } else if (token) {
         localStorage.setItem(LS_SESSION, token);
         sessionStorage.setItem(LS_SESSION, token);
@@ -147,10 +147,10 @@
   var LO = 'tronclass_dashboard_manual_logout';
   try {
     var p = new URLSearchParams(location.search);
-    if (p.get('logout') === '1' || localStorage.getItem(LO) === '1') {
-      location.replace('/admin?logout=1');
-      return;
-    }
+    /* LOGOUT_SERVER_SIDE_V1：登出已改為伺服器端（POST /admin/logout 清 cookie）；
+       不再以 ?logout=1 / tronclass_dashboard_manual_logout 判斷，只清掉遺留旗標。 */
+    try { localStorage.removeItem(LO); } catch (_) {}
+    if (p.has('logout')) { p.delete('logout'); history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p.toString() : '') + location.hash); }
     document.documentElement.classList.add('tron-auth-pending');
     fetch('/admin/api/status', {credentials:'same-origin', cache:'no-store'}).then(function(r){
       if (r.ok) {

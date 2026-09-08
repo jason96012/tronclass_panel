@@ -38,8 +38,8 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::account::{AccountConfig, AccountsFile};
 use crate::adapters::events::{
-    AdapterAccountTarget, AdapterMessenger, MonitorStatus, OutboundMessage, RollcallHistoryEntry,
-    SystemStartedEvent,
+    AdapterAccountTarget, AdapterMessenger, MonitorEventKind, MonitorEventNotice, MonitorStatus,
+    OutboundMessage, RollcallHistoryEntry, SystemStartedEvent,
 };
 use crate::adapters::requests::{
     create_number_code_channel, create_qrcode_channel, AccountRegistry, NumberCodeReceiver,
@@ -478,9 +478,16 @@ impl MonitorSpawner {
                     notify_background(
                         task_messenger,
                         task_target,
-                        OutboundMessage::Text(format!(
-                            "[{task_account_id}] 監控循環異常結束：{e}\n請重啟服務以恢復此帳號的監控。"
-                        )),
+                        // DISCORD_NOTIFY_UNIFY_V1：結構化事件，各 adapter 自行 render。
+                        OutboundMessage::MonitorEvent(MonitorEventNotice {
+                            kind: MonitorEventKind::LoopCrashed,
+                            account: task_account_id.clone(),
+                            error: report_chain_text(&e),
+                            diagnosis: Some(crate::monitor_alerts::diagnose(
+                                &report_chain_text(&e),
+                                is_auth_error_report(&e),
+                            )),
+                        }),
                     );
                 }
             }
@@ -697,7 +704,15 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                     notify_background(
                         ctx.messenger.clone(),
                         cached_target.clone(),
-                        OutboundMessage::Text(format!("❌ [{}] 重新認證失敗：{e}", account_label)),
+                        OutboundMessage::MonitorEvent(MonitorEventNotice {
+                            kind: MonitorEventKind::ReauthFailed,
+                            account: account_label.clone(),
+                            error: format!("{e:#}"),
+                            diagnosis: Some(crate::monitor_alerts::diagnose(
+                                &format!("{e:#}"),
+                                is_auth_error_report(&e),
+                            )),
+                        }),
                     );
                 } else {
                     consecutive_failures = 0;
@@ -705,7 +720,12 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                     notify_background(
                         ctx.messenger.clone(),
                         cached_target.clone(),
-                        OutboundMessage::Text(format!("✅ [{}] 重新認證成功！", account_label)),
+                        OutboundMessage::MonitorEvent(MonitorEventNotice {
+                            kind: MonitorEventKind::ReauthSucceeded,
+                            account: account_label.clone(),
+                            error: String::new(),
+                            diagnosis: None,
+                        }),
                     );
                 }
                 continue;
@@ -863,10 +883,12 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                         let _ = bot
                             .push_to_account_or_admin(
                                 &cached_target,
-                                &OutboundMessage::Text(format!(
-                                    "⚠️ [{}] 簽到監控遇到錯誤，嘗試重新認證...\n錯誤：{e}",
-                                    account_label
-                                )),
+                                &OutboundMessage::MonitorEvent(MonitorEventNotice {
+                                    kind: MonitorEventKind::AutoReauthStarted,
+                                    account: account_label.clone(),
+                                    error: error_text.clone(),
+                                    diagnosis: Some(crate::monitor_alerts::diagnose(&error_text, auth_error)),
+                                }),
                             )
                             .await;
                     }
@@ -885,10 +907,12 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                                 let _ = bot
                                     .push_to_account_or_admin(
                                         &cached_target,
-                                        &OutboundMessage::Text(format!(
-                                            "✅ [{}] 自動重新認證成功！",
-                                            account_label
-                                        )),
+                                        &OutboundMessage::MonitorEvent(MonitorEventNotice {
+                                            kind: MonitorEventKind::ReauthSucceeded,
+                                            account: account_label.clone(),
+                                            error: String::new(),
+                                            diagnosis: None,
+                                        }),
                                     )
                                     .await;
                             }
@@ -920,12 +944,15 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                                 let _ = bot
                                     .push_to_account_or_admin(
                                         &cached_target,
-                                        &OutboundMessage::Text(format!(
-                                            "❌ [{}] 自動重新認證失敗：{reauth_err}\n\n\
-                                         請手動更新 accounts.toml 中對應帳號的 manual_cookie，\n\
-                                         或輸入 /reauth 再次嘗試。",
-                                            account_label
-                                        )),
+                                        &OutboundMessage::MonitorEvent(MonitorEventNotice {
+                                            kind: MonitorEventKind::AutoReauthFailed,
+                                            account: account_label.clone(),
+                                            error: format!("{reauth_err:#}"),
+                                            diagnosis: Some(crate::monitor_alerts::diagnose(
+                                                &format!("{reauth_err:#}"),
+                                                is_auth_error_report(&reauth_err),
+                                            )),
+                                        }),
                                     )
                                     .await;
                             }

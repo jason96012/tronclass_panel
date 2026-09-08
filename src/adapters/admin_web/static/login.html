@@ -4,95 +4,458 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
+<meta name="theme-color" content="#f8fafc">
 <title>登入｜Tronclass Dashboard</title>
-<style>
-  :root{color-scheme:light dark;--bg:#eef3fb;--card:rgba(255,255,255,.88);--text:#172033;--muted:#64748b;--line:#dbe3ef;--primary:#2563eb}
-  @media(prefers-color-scheme:dark){:root{--bg:#071122;--card:rgba(19,27,42,.9);--text:#f1f5f9;--muted:#94a3b8;--line:#334155;--primary:#3b82f6}}
-  *{box-sizing:border-box}
-  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif}
-  body{min-height:100dvh;display:flex;align-items:center;justify-content:center;padding:20px 16px}
-  .card{width:min(420px,100%);background:var(--card);border:1px solid var(--line);border-radius:28px;padding:28px 22px 22px;box-shadow:0 24px 70px rgba(15,23,42,.16)}
-  .logo{width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;display:grid;place-items:center;font-weight:900;font-size:22px;margin:0 auto 14px}
-  h1{margin:0 0 6px;text-align:center;font-size:24px}
-  .sub{margin:0 0 18px;text-align:center;color:var(--muted);font-size:13px;line-height:1.5}
-  label{display:block;margin:10px 0 6px;font-size:12px;font-weight:800;color:var(--muted)}
-  input{width:100%;min-height:48px;border-radius:14px;border:1px solid var(--line);background:transparent;color:var(--text);padding:0 12px;font-size:16px}
-  button{width:100%;min-height:48px;border:0;border-radius:14px;font-size:15px;font-weight:850;cursor:pointer}
-  #loginBtn{margin-top:14px;background:var(--primary);color:#fff}
-  #passkeyBtn{margin-top:8px;background:transparent;color:var(--text);border:1px solid var(--line)}
-  #msg{min-height:18px;margin-top:12px;text-align:center;font-size:13px;font-weight:800;color:var(--muted)}
-  #msg.bad{color:#b91c1c} #msg.ok{color:#15803d}
-  /* MSG_CONTRAST_V1：暗色模式下改用亮紅／亮綠，避免深色字踩在深色底上難辨識 */
-  @media(prefers-color-scheme:dark){ #msg.bad{color:#f87171} #msg.ok{color:#4ade80} }
+<!-- LOGIN_PAGE_STANDALONE_V1
+     登入頁由 dashboard.html 拆出來獨立成頁：伺服器端（pages::admin_page_handler）在「沒有任何有效
+     session」時回這一頁，其餘情況直接回 Dashboard，所以這裡不再有任何「先畫登入卡再用 JS 判斷」的
+     開機腳本。#loginCard 的 markup、animatedLoginStaticStyleV1、LOGIN_CARD_CENTER_V1、
+     dashboard-login-card.js（主題切換／粒子背景／浮動標籤）與 passkeyFriendlyErrorsV1 都是從
+     dashboard.html 原封不動搬過來的，視覺與行為不變。
+     共用資產（theme.css、app-settings.js、session-security.js…）由 inject_theme() 注入。 -->
+<link rel="stylesheet" href="/admin/static/dashboard.css?v=20260822b">
+<link rel="stylesheet" href="/admin/static/dashboard-late-fixes.css?v=20260826a">
+<style id="animatedLoginStaticStyleV1">
+  body.animated-login-active{overflow-x:hidden}
+  body.animated-login-active #loginCard,
+  body.animated-login-active #loginPanel,
+  body.animated-login-active .login-card{
+    position:relative!important;
+    z-index:5!important;
+    max-width:460px!important;
+    margin:0 auto!important;
+    padding:0!important;
+    border:0!important;
+    border-radius:30px!important;
+    background:rgba(255,255,255,.82)!important;
+    box-shadow:0 30px 90px rgba(15,23,42,.20)!important;
+    backdrop-filter:blur(22px)!important;
+    overflow:hidden!important;
+  }
+  html.dark-mode body.animated-login-active #loginCard,
+  html.dark-mode body.animated-login-active #loginPanel,
+  html.dark-mode body.animated-login-active .login-card{
+    background:rgba(15,23,42,.82)!important;
+    box-shadow:0 30px 90px rgba(0,0,0,.42)!important;
+  }
+  #animatedLoginParticles{position:fixed;inset:0;z-index:0;pointer-events:none;display:none}
+  body.animated-login-active #animatedLoginParticles{display:block}
+  body.animated-login-active::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(circle at 18% 18%,rgba(37,99,235,.22),transparent 32%),radial-gradient(circle at 78% 28%,rgba(59,130,246,.16),transparent 30%),linear-gradient(135deg,#f8fafc 0%,#eef2ff 46%,#eff6ff 100%)}
+  html.dark-mode body.animated-login-active::before{background:radial-gradient(circle at 18% 18%,rgba(96,165,250,.22),transparent 34%),radial-gradient(circle at 78% 28%,rgba(37,99,235,.20),transparent 30%),linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%)}
+  .animated-login-theme-toggle{position:fixed;right:22px;top:22px;z-index:15;width:44px;height:44px;border-radius:999px;border:1px solid rgba(148,163,184,.35);background:rgba(255,255,255,.78);color:#172033;display:none;align-items:center;justify-content:center;cursor:pointer;font-size:20px;box-shadow:0 14px 36px rgba(15,23,42,.14);backdrop-filter:blur(14px)}
+  body.animated-login-active .animated-login-theme-toggle{display:flex}
+  html.dark-mode .animated-login-theme-toggle{background:rgba(15,23,42,.78);color:#e5eefb;border-color:rgba(148,163,184,.22)}
+  .animated-login-card-inner{padding:30px 28px 26px;position:relative;z-index:2;color:#172033}
+  html.dark-mode .animated-login-card-inner{color:#e5eefb}
+  .animated-login-logo{width:58px;height:58px;border-radius:20px;background:#dfe8ff;color:#2563eb;display:grid;place-items:center;font-size:28px;font-weight:950;margin:0 auto 14px;box-shadow:inset 0 0 0 1px rgba(37,99,235,.08)}
+  html.dark-mode .animated-login-logo{background:rgba(96,165,250,.16);color:#93c5fd}
+  .animated-login-header{text-align:center;margin-bottom:22px}.animated-login-header h1{margin:0;font-size:31px;letter-spacing:-.045em;font-weight:950}.animated-login-header p{margin:7px 0 0;color:#64748b;font-size:14px;line-height:1.5}html.dark-mode .animated-login-header p{color:#94a3b8}
+  .animated-login-form{display:grid;gap:14px}.animated-login-field{position:relative}.animated-login-field input{width:100%;height:56px;border:1px solid #dbe3ef;border-radius:18px;background:rgba(255,255,255,.92);color:#172033;font-size:16px;padding:20px 48px 6px 16px;outline:none;transition:.18s ease;box-shadow:0 1px 0 rgba(15,23,42,.02)}
+  html.dark-mode .animated-login-field input{background:rgba(15,23,42,.82);border-color:rgba(148,163,184,.28);color:#e5eefb}
+  .animated-login-field input:focus{border-color:#2563eb;box-shadow:0 0 0 4px rgba(37,99,235,.14)}
+  .animated-login-field label{position:absolute;left:16px;top:17px;color:#64748b;font-size:15px;pointer-events:none;transition:.16s ease;font-weight:750}.animated-login-field.active label,.animated-login-field input:focus+label{top:7px;font-size:11px;color:#2563eb;font-weight:900}html.dark-mode .animated-login-field label{color:#94a3b8}html.dark-mode .animated-login-field.active label,html.dark-mode .animated-login-field input:focus+label{color:#93c5fd}
+  .animated-toggle-password{position:absolute;right:10px;top:10px;width:38px;height:38px;border:0!important;background:transparent!important;color:#64748b!important;border-radius:12px!important;display:grid!important;place-items:center!important;min-height:38px!important;padding:0!important;cursor:pointer}.animated-toggle-password:hover{background:#eef3fb!important}html.dark-mode .animated-toggle-password:hover{background:rgba(148,163,184,.12)!important}
+  .animated-login-options{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:2px}.animated-login-options label{display:flex;align-items:center;gap:8px;color:#64748b;font-size:13px;font-weight:800}.animated-login-options input{width:16px;height:16px;accent-color:#2563eb}.animated-secure-note{font-size:12px;color:#64748b;font-weight:750;text-align:right}html.dark-mode .animated-secure-note,.animated-login-options label{color:#94a3b8}
+  .animated-login-submit{height:52px;border:0!important;border-radius:18px!important;background:linear-gradient(135deg,#2563eb,#60a5fa)!important;color:#fff!important;font-weight:950!important;font-size:16px!important;box-shadow:0 18px 34px rgba(37,99,235,.28)!important}.animated-login-submit:disabled{opacity:.7}.animated-login-submit.success-pulse{animation:animatedLoginSuccess .75s ease}
+  @keyframes animatedLoginSuccess{0%{transform:scale(1)}45%{transform:scale(1.035)}100%{transform:scale(1)}}
+  .animated-login-row{display:grid;grid-template-columns:1fr;gap:8px}.animated-passkey-btn{height:46px;border-radius:16px!important;border:1px solid #dbe3ef!important;background:#fff!important;color:#172033!important;font-weight:950!important}.animated-passkey-btn:hover{background:#eef3fb!important}html.dark-mode .animated-passkey-btn{background:rgba(15,23,42,.72)!important;color:#e5eefb!important;border-color:rgba(148,163,184,.28)!important}
+  .animated-login-separator{display:flex;align-items:center;gap:12px;margin:18px 0 14px;color:#94a3b8;font-size:12px;font-weight:850}.animated-login-separator::before,.animated-login-separator::after{content:'';height:1px;background:#e2e8f0;flex:1}html.dark-mode .animated-login-separator::before,html.dark-mode .animated-login-separator::after{background:rgba(148,163,184,.20)}
+  .animated-login-help{display:grid;gap:8px}.animated-login-chip{border:1px solid #dbe3ef;border-radius:16px;padding:10px 12px;background:#f8fafc;color:#475569;font-size:12px;line-height:1.45;font-weight:750}html.dark-mode .animated-login-chip{background:rgba(15,23,42,.64);border-color:rgba(148,163,184,.22);color:#cbd5e1}
+  .animated-login-message{min-height:20px;font-size:13px;line-height:1.45;font-weight:850;color:#64748b;margin-top:2px}.animated-login-message.bad{color:#b91c1c}.animated-login-message.ok{color:#15803d}html.dark-mode .animated-login-message.bad{color:#fca5a5}html.dark-mode .animated-login-message.ok{color:#86efac}
+  @media(max-width:760px){body.animated-login-active #loginCard,body.animated-login-active #loginPanel,body.animated-login-active .login-card{margin:0 auto!important;max-width:none!important;border-radius:26px!important}.animated-login-card-inner{padding:24px 18px 22px}.animated-login-header h1{font-size:28px}.animated-login-theme-toggle{right:14px;top:14px;width:40px;height:40px}.animated-login-options{align-items:flex-start;display:grid}.animated-secure-note{text-align:left}}
+</style>
+<style id="LOGIN_CARD_CENTER_V1">
+  html.tron-auth-logged-out body,
+  html.login-screen-active body,
+  body.animated-login-active{
+    min-height:100vh!important;
+    min-height:100dvh!important;
+  }
+  html.tron-auth-logged-out body main,
+  html.login-screen-active body main,
+  body.animated-login-active main{
+    min-height:100vh!important;
+    min-height:100dvh!important;
+    display:flex!important;
+    align-items:center!important;
+    justify-content:center!important;
+    width:100%!important;
+    max-width:none!important;
+    margin:0!important;
+    padding:28px 16px!important;
+    box-sizing:border-box!important;
+  }
+  html.tron-auth-logged-out #loginCard,
+  html.tron-auth-logged-out .login-card,
+  html.login-screen-active #loginCard,
+  html.login-screen-active .login-card,
+  body.animated-login-active #loginCard,
+  body.animated-login-active #loginPanel,
+  body.animated-login-active .login-card{
+    margin:0 auto!important;
+    position:relative!important;
+    align-self:center!important;
+  }
+  @media(max-width:760px){
+    html.tron-auth-logged-out body main,
+    html.login-screen-active body main,
+    body.animated-login-active main{
+      padding:20px 12px!important;
+      align-items:center!important;
+      justify-content:center!important;
+    }
+  }
+</style>
+<style id="loginPageStandaloneStyleV1">
+  /* 登入頁固定為「已登出」版面：main 置中、卡片可見、其餘 Dashboard 元素不存在。 */
+  html.tron-auth-logged-out,html.tron-auth-logged-out body{visibility:visible!important}
+  /* 送出中的按鈕：LOGIN_SUBMIT_LOCK_V1 */
+  .animated-login-submit:disabled,.animated-passkey-btn:disabled{opacity:.7;cursor:progress}
+  .animated-login-message.small{font-size:13px}
 </style>
 </head>
-<body>
-  <form class="card" id="loginForm">
-    <div class="logo">D</div>
-    <h1>歡迎回來</h1>
-    <p class="sub">登入 Tronclass Dashboard</p>
-    <label for="loginUsername">帳號 ID / 學號</label>
-    <input id="loginUsername" name="username" autocomplete="username" required>
-    <label for="loginPassword">密碼</label>
-    <input id="loginPassword" name="password" type="password" autocomplete="current-password" required>
-    <button id="loginBtn" type="submit">登入</button>
-    <button id="passkeyBtn" type="button">使用通行密鑰登入</button>
-    <div id="msg">請先登入。</div>
-  </form>
-<script>
+<body class="animated-login-active">
+<main>
+<section id="loginCard" class="login-card" data-animated-login-installed="1"><div class="animated-login-card-inner"><div class="animated-login-logo">D</div><div class="animated-login-header"><h1>歡迎回來</h1><p>登入 Tronclass Dashboard，使用與 Tronclass 帳密分離的網站憑證。</p></div><form class="animated-login-form" id="animatedLoginForm"><div class="animated-login-field"><input id="loginUsername" autocomplete="username" required><label for="loginUsername">帳號 ID / 學號</label></div><div class="animated-login-field"><input id="loginPassword" autocomplete="current-password" type="password" required><label for="loginPassword">密碼</label><button id="toggleLoginPassword" class="animated-toggle-password" type="button" aria-label="顯示密碼">👁</button></div><div class="animated-login-options"><label><input id="rememberPassword" type="checkbox" checked> 記住帳號</label><span class="animated-secure-note">Cloudflare HTTPS</span></div><button id="loginBtn" class="animated-login-submit" type="submit">登入</button><div class="animated-login-row"><button id="passkeyLoginBtn" class="animated-passkey-btn" type="button">使用通行密鑰登入</button></div><div id="loginMsg" class="animated-login-message">請先登入。</div></form><div class="animated-login-separator"><span>安全登入</span></div><div class="animated-login-help"><div class="animated-login-chip">首次登入請用 Tronclass 密碼，接著必須設定新的 Dashboard 密碼。</div><div class="animated-login-chip">Passkey：直接按「使用通行密鑰登入」即可（免輸帳號）。</div></div></div></section>
+</main>
+<div id="toast" class="toast"></div>
+<script src="/admin/static/js/dashboard-login-card.js?v=loginpage1"></script>
+<script id="passkeyFriendlyErrorsV1">
 (function(){
-  function $(id){ return document.getElementById(id); }
-  function set(tx, kind){ var el=$('msg'); el.textContent=tx||''; el.className=kind||''; }
-  function nextUrl(){
-    try{
-      var n=new URLSearchParams(location.search).get('next')||'';
-      if(n.indexOf('/admin')===0) return n;
-    }catch(_){}
-    return '/admin#overview';
+  'use strict';
+  if(window.PASSKEY_FRIENDLY_ERRORS_V1) return;
+  window.PASSKEY_FRIENDLY_ERRORS_V1 = true;
+
+  function rawMessage(err){
+    if(!err) return '';
+    var parts=[];
+    try{ if(err.name) parts.push(String(err.name)); }catch(_){ }
+    try{ if(err.message) parts.push(String(err.message)); }catch(_){ }
+    try{ if(typeof err === 'string') parts.push(err); }catch(_){ }
+    try{ parts.push(String(err)); }catch(_){ }
+    return parts.join(' ').trim();
   }
-  function b64e(buf){ var u=new Uint8Array(buf),s=''; for(var i=0;i<u.length;i++) s+=String.fromCharCode(u[i]); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
-  function b64d(str){ str=String(str||'').replace(/-/g,'+').replace(/_/g,'/'); while(str.length%4) str+='='; var bin=atob(str),o=new Uint8Array(bin.length); for(var i=0;i<bin.length;i++) o[i]=bin.charCodeAt(i); return o.buffer; }
-  async function doLogin(ev){
-    if(ev) ev.preventDefault();
-    var u=($('loginUsername').value||'').trim();
-    var p=($('loginPassword').value||'').trim();
-    if(!u||!p){ set('請輸入帳號與密碼。','bad'); return; }
-    set('登入中…','');
-    try{
-      var res=await fetch('/admin/api/login',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'content-type':'application/json'},body:JSON.stringify({username:u,password:p})});
-      var body=await res.json().catch(function(){return {};});
-      if(!res.ok) throw new Error(body.error||'帳號或密碼不正確');
-      if(body.must_change_password){ set('首次登入，請設定 Dashboard 密碼…','ok'); location.replace('/admin/password?first=1'); return; }
-      set('登入成功，正在進入…','ok');
-      location.replace(nextUrl());
-    }catch(e){ set((e&&e.message)||'登入失敗','bad'); }
+
+  window.tronPasskeyFriendlyError = function(err, fallback){
+    var raw = rawMessage(err);
+    var s = raw.toLowerCase();
+    var base = fallback || '通行密鑰操作失敗';
+
+    if(!raw) return base + '。請重新操作一次。';
+
+    if(s.indexOf('the operation either timed out or was not allowed') >= 0 ||
+       s.indexOf('notallowederror') >= 0 ||
+       s.indexOf('not allowed') >= 0 ||
+       s.indexOf('timed out') >= 0 ||
+       s.indexOf('timeout') >= 0 ||
+       s.indexOf('sctn-privacy-considerations-client') >= 0){
+      return '操作逾時或你取消了驗證。請重新按一次「使用通行密鑰」，並在手機或電腦跳出驗證時完成 Face ID、指紋或 PIN。';
+    }
+    if(s.indexOf('aborterror') >= 0 || s.indexOf('abort') >= 0 || s.indexOf('cancel') >= 0){
+      return '你取消了通行密鑰驗證。若要登入，請重新按一次並完成驗證。';
+    }
+    if(s.indexOf('invalidstateerror') >= 0 || s.indexOf('already registered') >= 0 || s.indexOf('excluded') >= 0){
+      return '這台裝置可能已經設定過通行密鑰。你可以直接用「使用通行密鑰登入」，或換一個裝置重新設定。';
+    }
+    if(s.indexOf('notsupportederror') >= 0 || s.indexOf('not supported') >= 0 || s.indexOf('不支援') >= 0){
+      return '這個瀏覽器或裝置不支援通行密鑰。請改用帳號密碼登入，或改用支援 Passkey 的瀏覽器。';
+    }
+    if(s.indexOf('securityerror') >= 0 || s.indexOf('secure context') >= 0 || s.indexOf('https') >= 0 || s.indexOf('rp id') >= 0 || s.indexOf('origin') >= 0){
+      return '通行密鑰需要安全的 HTTPS 網址，而且網域必須正確。請用 https://dashboard.jasoncloudserver.me 重新開啟後再試。';
+    }
+    if(s.indexOf('networkerror') >= 0 || s.indexOf('failed to fetch') >= 0 || s.indexOf('network') >= 0){
+      return '連線失敗。請確認網站以 HTTPS 開啟後再試一次。';
+    }
+    if(s.indexOf('no passkey') >= 0 || s.indexOf('has no passkey') >= 0 || s.indexOf('no credentials') >= 0 || s.indexOf('no credential') >= 0){
+      return '這個帳號尚未設定通行密鑰。請先用帳號密碼登入，再按「設定通行密鑰」。';
+    }
+    if(s.indexOf('unknown passkey credential') >= 0 || s.indexOf('unknown credential') >= 0){
+      return '這個通行密鑰不屬於目前帳號。請確認輸入的是正確帳號，或重新設定通行密鑰。';
+    }
+    if(s.indexOf('expired') >= 0 || s.indexOf('challenge') >= 0){
+      return '驗證已過期。請重新按一次通行密鑰按鈕再操作。';
+    }
+    if(s.indexOf('account not found') >= 0 || s.indexOf('not found or disabled') >= 0){
+      return '找不到這個帳號，或帳號尚未啟用。請確認輸入的是帳號 ID 或學號。';
+    }
+    if(s.indexOf('multiple accounts') >= 0){
+      return '有多個帳號符合這個輸入。請改輸入完整帳號 ID 再使用通行密鑰登入。';
+    }
+    if(s.indexOf('passkey verify failed') >= 0 || s.indexOf('authentication') >= 0 && s.indexOf('failed') >= 0){
+      return '通行密鑰驗證失敗。請確認你使用的是這個帳號設定過的通行密鑰。';
+    }
+    if(s.indexOf('registration verify failed') >= 0 || s.indexOf('registration') >= 0 && s.indexOf('failed') >= 0){
+      return '通行密鑰設定失敗。請重新按「設定通行密鑰」，並完成系統跳出的驗證。';
+    }
+
+    // 如果是 WebAuthn/Passkey 相關但沒有命中上面規則，不直接把英文長錯誤丟給一般使用者。
+    if(s.indexOf('webauthn') >= 0 || s.indexOf('publickeycredential') >= 0 || s.indexOf('credential') >= 0 || s.indexOf('passkey') >= 0){
+      return base + '。請重新整理頁面後再試一次；如果仍失敗，請改用帳號密碼登入。';
+    }
+    return raw || base;
+  };
+
+  function translateText(text){
+    if(!text) return text;
+    var lower = String(text).toLowerCase();
+    if(lower.indexOf('the operation either timed out or was not allowed') >= 0 ||
+       lower.indexOf('sctn-privacy-considerations-client') >= 0 ||
+       lower.indexOf('notallowederror') >= 0){
+      return window.tronPasskeyFriendlyError(text, '通行密鑰操作失敗');
+    }
+    if((lower.indexOf('webauthn') >= 0 || lower.indexOf('publickeycredential') >= 0) && lower.length > 20){
+      return window.tronPasskeyFriendlyError(text, '通行密鑰操作失敗');
+    }
+    return text;
   }
-  async function passkeyLogin(){
-    // PASSKEY_USERNAMELESS_V1：帳號可留空——直接以可發現通行密鑰識別身分；
-    // 有填帳號時 server 仍會將儀式綁定到該帳號。
-    var u=($('loginUsername').value||'').trim();
-    if(!window.PublicKeyCredential){ set('此瀏覽器不支援通行密鑰。','bad'); return; }
-    set('啟動通行密鑰…','');
+
+  function scan(root){
     try{
-      var start=await fetch('/admin/api/passkey/login/start',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({username:u})});
-      var sj=await start.json().catch(function(){return {};});
-      if(!start.ok) throw new Error(sj.error||'無法啟動通行密鑰');
-      var opts=JSON.parse(JSON.stringify(sj.publicKey||{}));
-      opts.challenge=b64d(opts.challenge);
-      if(opts.allowCredentials) opts.allowCredentials=opts.allowCredentials.map(function(c){return Object.assign({},c,{id:b64d(c.id)});});
-      var assertion=await navigator.credentials.get({publicKey:opts});
-      if(!assertion) throw new Error('未取得通行密鑰');
-      var fin=await fetch('/admin/api/passkey/login/finish',{method:'POST',credentials:'same-origin',headers:{'content-type':'application/json'},body:JSON.stringify({ceremony_id:sj.ceremony_id,response:{id:assertion.id,authenticatorData:b64e(assertion.response.authenticatorData),signature:b64e(assertion.response.signature),clientDataJSON:b64e(assertion.response.clientDataJSON),userHandle:assertion.response.userHandle?b64e(assertion.response.userHandle):null}})});
-      var dj=await fin.json().catch(function(){return {};});
-      if(!fin.ok){ throw new Error(dj.error==='unauthorized'?'通行密鑰驗證失敗：此密鑰未被登記或帳號已停用。':(dj.error||'通行密鑰登入失敗')); }
-      if(dj.must_change_password){ set('首次登入，請設定 Dashboard 密碼…','ok'); location.replace('/admin/password?first=1'); return; }
-      set('登入成功，正在進入…','ok');
-      location.replace(nextUrl());
-    }catch(e){ set((e&&e.message)||'通行密鑰登入失敗','bad'); }
+      var scope = root && root.querySelectorAll ? root : document;
+      var selectors = '.toast,#loginMsg,#message,.bad,.api-missing,[role="alert"],.alert,.notice';
+      var nodes = [];
+      if(root && root.nodeType === 1 && root.matches && root.matches(selectors)) nodes.push(root);
+      Array.prototype.push.apply(nodes, Array.prototype.slice.call(scope.querySelectorAll(selectors)));
+      nodes.forEach(function(el){
+        var old = el.textContent || '';
+        var next = translateText(old);
+        if(next && next !== old){ el.textContent = next; }
+      });
+    }catch(_){ }
   }
-  $('loginForm').addEventListener('submit', doLogin);
-  $('passkeyBtn').onclick=passkeyLogin;
+
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', function(){ scan(document); });
+  else scan(document);
+  try{
+    new MutationObserver(function(muts){
+      muts.forEach(function(m){
+        Array.prototype.forEach.call(m.addedNodes || [], function(n){ if(n.nodeType === 1) scan(n); });
+        if(m.target) scan(m.target);
+      });
+    }).observe(document.documentElement, {childList:true, subtree:true, characterData:true});
+  }catch(_){ }
 })();
 </script>
+<script id="loginPageAuthV1">
+(function(){
+  'use strict';
+  // LOGIN_PAGE_AUTH_V1：登入頁唯一的登入流程（密碼／通行密鑰共用 finishLogin，只導向一次）。
+  var LS_SAVED_USER = 'tronclass_admin_saved_username_v1';
+  var LS_LAST_METHOD = 'tronclass_login_last_method_v1'; // LOGIN_REMEMBER_METHOD_V1：password | passkey
+  var busy = false;
+
+  function q(id){ return document.getElementById(id); }
+  function setMsg(text, ok){
+    var el = q('loginMsg'); if(!el) return;
+    el.textContent = text || '';
+    el.className = 'animated-login-message ' + (ok === false ? 'bad' : ok === true ? 'ok' : '');
+  }
+  function toast(text, ok){
+    var el = q('toast'); if(!el) return;
+    el.textContent = text; el.className = 'toast visible ' + (ok === false ? 'bad' : 'ok');
+    clearTimeout(el._timer); el._timer = setTimeout(function(){ el.classList.remove('visible'); }, 3200);
+  }
+  // LOGIN_SUBMIT_LOCK_V1：送出期間鎖住兩顆按鈕與輸入框，避免重複送出（重複送出會吃掉速率限制額度）。
+  function setBusy(v, which){
+    busy = !!v;
+    var lb = q('loginBtn'), pb = q('passkeyLoginBtn');
+    ['loginUsername','loginPassword'].forEach(function(id){ var el = q(id); if(el) el.disabled = busy; });
+    if(lb){ lb.disabled = busy; lb.textContent = (busy && which === 'password') ? '登入中...' : '登入'; }
+    if(pb){ pb.disabled = busy; pb.textContent = (busy && which === 'passkey') ? '驗證中...' : '使用通行密鑰登入'; }
+  }
+
+  // ── 導向目標：只在成功後決定一次 ────────────────────────────────────────
+  function sameOriginAdminPath(raw){
+    try{
+      var u = new URL(raw, location.origin);
+      if(u.origin !== location.origin) return '';
+      if(!(u.pathname === '/admin' || u.pathname.indexOf('/admin/') === 0)) return '';
+      if(u.pathname === '/admin/logout' || u.pathname.indexOf('/admin/api/') === 0) return '';
+      return u.pathname + u.search + u.hash;
+    }catch(_){ return ''; }
+  }
+  function nextTarget(){
+    var n = '';
+    try{ n = new URLSearchParams(location.search).get('next') || ''; }catch(_){}
+    return n ? sameOriginAdminPath(n) : '';
+  }
+  // LOGIN_SINGLE_REDIRECT_V1：密碼／通行密鑰／首次登入三條路都只走這裡，只 replace 一次。
+  function finishLogin(body, method){
+    try{ localStorage.setItem(LS_LAST_METHOD, method); }catch(_){}
+    if(typeof window.tronDashboardSessionMarker === 'function') window.tronDashboardSessionMarker();
+    if(body && body.must_change_password){
+      setMsg('首次登入成功，請先設定新的 Dashboard 密碼…', true);
+      location.replace('/admin/password?first=1');
+      return;
+    }
+    var dest = nextTarget() || '/admin#overview';
+    setMsg('登入成功，正在進入…', true);
+    var lb = q('loginBtn'); if(lb) lb.classList.add('success-pulse');
+    location.replace(forceNavigate(dest));
+  }
+  // LOGIN_HASH_ONLY_NAV_FIX_V1：登入頁就在 /admin，目的地若只差 #hash（例如 /admin#overview），
+  // location.replace 只會改 hash、不會向伺服器重新要頁面，人就卡在「登入成功，正在進入…」。
+  // 遇到同 path+search 的目的地時加一個一次性的 ?v=login<ts>（dashboard 啟動時會自行用 replaceState 清掉），
+  // 強迫瀏覽器真的重新載入，讓伺服器依新 cookie 送出 Dashboard。
+  function forceNavigate(dest){
+    try{
+      var u = new URL(dest, location.origin);
+      if(u.pathname === location.pathname && u.search === location.search){
+        u.searchParams.set('v', 'login' + Date.now());
+      }
+      return u.pathname + u.search + u.hash;
+    }catch(_){
+      return dest + (dest.indexOf('?') === -1 ? '?' : '&') + 'v=login' + Date.now();
+    }
+  }
+
+  // ── 錯誤訊息一律中文 ─────────────────────────────────────────────────────
+  function friendlyLoginError(err){
+    var code = String((err && (err.code || err.message)) || '').toLowerCase();
+    var status = err && err.status;
+    if(status === 423 || code === 'account_locked'){
+      var mins = err && err.retryAfter ? Math.max(1, Math.ceil(err.retryAfter / 60)) : 10;
+      return '此帳號因連續密碼錯誤已暫時鎖定密碼登入（約 ' + mins + ' 分鐘）。若是你本人，可改用通行密鑰登入，或到 Discord 通知按「取消這次鎖定」。';
+    }
+    if(status === 429 || code.indexOf('too many') >= 0) return '嘗試次數過多，請稍後一分鐘再試。';
+    if(status === 403 && code.indexOf('access_denied') >= 0) return '你的來源 IP 已被封鎖，無法登入。';
+    if(status === 401 || code === 'unauthorized') return '帳號或密碼錯誤，或此帳號未啟用。';
+    if(status === 400 && code.indexOf('too long') >= 0) return '帳號或密碼長度超過上限。';
+    if(status === 400) return '請輸入帳號與密碼。';
+    if(status === 413) return '送出的內容過大。';
+    if(status >= 500) return '伺服器暫時無法處理登入，請稍後再試。';
+    if(code.indexOf('failed to fetch') >= 0 || code.indexOf('networkerror') >= 0 || code.indexOf('load failed') >= 0) return '連線失敗，請確認網路後再試。';
+    return '登入失敗，請稍後再試。';
+  }
+  async function parseResponse(res){
+    var body = await res.json().catch(function(){ return {}; });
+    if(!res.ok){
+      var e = new Error(body.error || ('HTTP ' + res.status));
+      e.status = res.status; e.code = body.error || ''; e.retryAfter = body.retry_after_secs || 0;
+      throw e;
+    }
+    return body;
+  }
+
+  // ── 密碼登入 ────────────────────────────────────────────────────────────
+  async function doLogin(ev){
+    if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+    if(busy) return false;
+    var u = q('loginUsername'), p = q('loginPassword');
+    var username = String((u && u.value) || '').trim();
+    // LOGIN_PASSWORD_NO_TRIM_V1：密碼是不透明字串，前端不得 trim（後端也刻意不 trim）。
+    var password = String((p && p.value) || '');
+    if(!username || !password){ setMsg('請輸入帳號與密碼。', false); return false; }
+    setBusy(true, 'password');
+    setMsg('登入中...', true);
+    try{
+      var res = await fetch('/admin/api/login', {
+        method: 'POST', credentials: 'same-origin', cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username: username, password: password })
+      });
+      var body = await parseResponse(res);
+      var r = q('rememberPassword');
+      try{
+        if(!r || r.checked) localStorage.setItem(LS_SAVED_USER, username);
+        else localStorage.removeItem(LS_SAVED_USER);
+      }catch(_){}
+      finishLogin(body, 'password');
+    }catch(e){
+      setBusy(false);
+      var msg = friendlyLoginError(e);
+      setMsg(msg, false);
+      toast(msg, false);
+      if(p){ p.value = ''; try{ p.focus(); }catch(_){} }
+    }
+    return false;
+  }
+
+  // ── 通行密鑰登入 ─────────────────────────────────────────────────────────
+  function b64urlEncode(buf){ var bytes = new Uint8Array(buf), s = ''; for(var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]); return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''); }
+  function b64urlDecode(str){ str = String(str || '').replace(/-/g,'+').replace(/_/g,'/'); while(str.length % 4) str += '='; var bin = atob(str), out = new Uint8Array(bin.length); for(var i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out.buffer; }
+  async function postJson(url, body){
+    var res = await fetch(url, { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: { 'content-type': 'application/json' }, body: body == null ? undefined : JSON.stringify(body) });
+    return parseResponse(res);
+  }
+  function hasSecureContext(){ return window.isSecureContext || location.hostname === 'localhost' || location.hostname === '127.0.0.1'; }
+  async function passkeyLogin(){
+    if(busy) return;
+    if(!hasSecureContext()){ setMsg('通行密鑰需要 HTTPS，請用 https:// 網址開啟。', false); return; }
+    if(!window.PublicKeyCredential || !navigator.credentials){ setMsg('此瀏覽器不支援通行密鑰，請改用帳號密碼登入。', false); return; }
+    // PASSKEY_USERNAMELESS_V1：帳號可留空——直接以可發現通行密鑰識別身分。
+    var username = String((q('loginUsername') && q('loginUsername').value) || '').trim();
+    setBusy(true, 'passkey');
+    setMsg('請在裝置上完成通行密鑰驗證…', true);
+    try{
+      var start = await postJson('/admin/api/passkey/login/start', { username: username });
+      var opts = start.publicKey || {};
+      opts.challenge = b64urlDecode(opts.challenge);
+      if(opts.allowCredentials) opts.allowCredentials = opts.allowCredentials.map(function(c){ return Object.assign({}, c, { id: b64urlDecode(c.id) }); });
+      var assertion = await navigator.credentials.get({ publicKey: opts });
+      if(!assertion) throw new Error('未取得通行密鑰');
+      var body = { ceremony_id: start.ceremony_id, response: { id: assertion.id, authenticatorData: b64urlEncode(assertion.response.authenticatorData), signature: b64urlEncode(assertion.response.signature), clientDataJSON: b64urlEncode(assertion.response.clientDataJSON), userHandle: assertion.response.userHandle ? b64urlEncode(assertion.response.userHandle) : null } };
+      var done = await postJson('/admin/api/passkey/login/finish', body);
+      finishLogin(done, 'passkey');
+    }catch(e){
+      setBusy(false);
+      var msg = (e && e.status === 403 && String(e.code || '').indexOf('access_denied') >= 0)
+        ? '你的來源 IP 已被封鎖，無法登入。'
+        : (e && e.status === 429) ? '嘗試次數過多，請稍後一分鐘再試。'
+        : (typeof window.tronPasskeyFriendlyError === 'function' ? window.tronPasskeyFriendlyError(e, '通行密鑰登入失敗') : '通行密鑰登入失敗');
+      setMsg(msg, false);
+      toast(msg, false);
+    }
+  }
+
+  // ── 綁定 ───────────────────────────────────────────────────────────────
+  function fillSaved(){
+    var saved = '';
+    try{ saved = localStorage.getItem(LS_SAVED_USER) || ''; }catch(_){}
+    var u = q('loginUsername');
+    if(u && saved && !u.value) u.value = saved;
+    var r = q('rememberPassword'); if(r && saved) r.checked = true;
+  }
+  function applyLastMethod(){
+    // LOGIN_REMEMBER_METHOD_V1：上次用通行密鑰 → 這次把焦點與提示放在通行密鑰按鈕；
+    // 上次用密碼（或第一次）→ 焦點放在第一個空欄位。
+    var last = '';
+    try{ last = localStorage.getItem(LS_LAST_METHOD) || ''; }catch(_){}
+    var pb = q('passkeyLoginBtn');
+    if(last === 'passkey' && pb && window.PublicKeyCredential){
+      pb.classList.add('animated-login-preferred');
+      setMsg('上次使用通行密鑰登入，可直接按「使用通行密鑰登入」。');
+      try{ pb.focus(); }catch(_){}
+      return;
+    }
+    var u = q('loginUsername'), p = q('loginPassword');
+    var target = (u && !u.value) ? u : p;
+    try{ if(target) target.focus(); }catch(_){}
+  }
+  function bind(){
+    fillSaved();
+    var f = q('animatedLoginForm'); if(f) f.onsubmit = doLogin;
+    var lb = q('loginBtn'); if(lb) lb.onclick = doLogin;
+    var pb = q('passkeyLoginBtn'); if(pb) pb.onclick = passkeyLogin;
+    var t = q('toggleLoginPassword');
+    if(t) t.onclick = function(){ var p = q('loginPassword'); if(!p) return; var show = p.type === 'password'; p.type = show ? 'text' : 'password'; t.textContent = show ? '🙈' : '👁'; t.setAttribute('aria-label', show ? '隱藏密碼' : '顯示密碼'); };
+    var p = q('loginPassword');
+    if(p) p.addEventListener('keydown', function(e){ if(e.key === 'Enter') doLogin(e); });
+    // 由子頁被導回時的提示。
+    var reason = '';
+    try{ var v = new URLSearchParams(location.search).get('v') || ''; if(v.indexOf('sessionexpired') === 0) reason = '登入狀態已過期，請重新登入。'; }catch(_){}
+    if(reason) setMsg(reason, false);
+    applyLastMethod();
+    // 由 bfcache 返回（例如按上一頁）時解除鎖定狀態。
+    window.addEventListener('pageshow', function(ev){ if(ev && ev.persisted) setBusy(false); });
+  }
+  // 讓 dashboard-login-card.js 的 doLogin 代理（window.tronAuth.login）也走同一條流程。
+  window.tronAuth = { login: doLogin, passkey: passkeyLogin };
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind); else bind();
+})();
+</script>
+<style id="loginPagePreferredStyleV1">
+  .animated-passkey-btn.animated-login-preferred{border-color:#2563eb!important;box-shadow:0 0 0 3px rgba(37,99,235,.16)!important}
+</style>
 </body>
 </html>

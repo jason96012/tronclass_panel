@@ -139,9 +139,16 @@ const MAX_RATE_LIMIT_KEYS: usize = 4096;
 const TEST_NOTIFICATION_MAX_PER_WINDOW: u32 = 3;
 const MAX_SECURITY_WATCH_KEYS: usize = 4096;
 const SECURITY_FAIL_ALERT_THRESHOLD: u32 = 5;
-/// A source IP is automatically blocked on its sixth failed password login
-/// within the existing 60-second security window ("more than five" failures).
-const SECURITY_AUTO_BLOCK_THRESHOLD: u32 = SECURITY_FAIL_ALERT_THRESHOLD + 1;
+/// LOGIN_TIERED_LOCKOUT_V1：安全計數（帳號／IP 連續失敗）的觀察窗口。
+/// 與 60 秒的速率限制窗口分開：速率限制只擋洪水，這裡要抓「慢速但持續」的猜密碼，
+/// 所以拉長到 15 分鐘；登入成功會立即清零（見 `clear_auth_failures`）。
+const SECURITY_FAIL_WINDOW: Duration = Duration::from_secs(15 * 60);
+/// LOGIN_TIERED_LOCKOUT_V1：來源 IP 在觀察窗口內失敗「超過十次」（第 11 次）自動加入黑名單。
+/// 第一層（5 次）只鎖該帳號的密碼登入並通知持有人；第二層才封 IP。
+const SECURITY_AUTO_BLOCK_THRESHOLD: u32 = 11;
+/// LOGIN_TIERED_LOCKOUT_V1：第一層鎖定的時間（只鎖密碼登入；通行密鑰不受影響）。
+/// 帳號持有人可從 Discord 通知按「取消這次鎖定」立即解除。
+const ACCOUNT_LOGIN_LOCK_TTL: Duration = Duration::from_secs(10 * 60);
 const SECURITY_ALERT_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 const SESSION_COOKIE_MARKER: &str = "cookie";
 const SECURE_SESSION_COOKIE: &str = "__Host-tronclass_admin_session";
@@ -321,6 +328,7 @@ async fn reject_blacklisted_ip_middleware(
         || path == "/admin/pwa/icon.svg"
         || path == "/healthz"
         || path == "/admin/api/logout"
+        || path == "/admin/logout"
     {
         return next.run(request).await;
     }
@@ -390,7 +398,8 @@ async fn security_should_alert(key: &str) -> bool {
 async fn record_auth_failure(username: &str, ip: &str) -> (u32, u32) {
     let mut watch = SECURITY_WATCH.lock().await;
     let now = Instant::now();
-    let window_start = now - RATE_LIMIT_WINDOW;
+    // LOGIN_TIERED_LOCKOUT_V1：改用 15 分鐘觀察窗口（原本沿用 60 秒速率限制窗口）。
+    let window_start = now - SECURITY_FAIL_WINDOW;
     let mut counts = [0u32, 0u32];
     for (idx, key) in [
         format!("user:{}", username.trim().to_lowercase()),
@@ -431,6 +440,92 @@ async fn clear_auth_failures(username: &str, ip: &str) {
         .fails
         .remove(&format!("user:{}", username.trim().to_lowercase()));
     watch.fails.remove(&format!("ip:{}", ip.trim()));
+}
+
+// ── LOGIN_TIERED_LOCKOUT_V1：第一層「帳號密碼登入鎖定」 ─────────────────────
+//
+// 觸發：同一帳號在 SECURITY_FAIL_WINDOW 內密碼失敗達 SECURITY_FAIL_ALERT_THRESHOLD 次。
+// 效果：該帳號的「密碼登入」在 ACCOUNT_LOGIN_LOCK_TTL 內一律回 423（通行密鑰不受影響，
+//       因為它不是被猜的那組憑證）。鎖定期間的每次嘗試仍計入失敗，所以攻擊者持續打
+//       仍會走到第二層（IP 自動黑名單）。
+// 解除：到期自動解除；或帳號持有人在 Discord 通知按「取消這次鎖定」
+//       （`cancel_login_lock`，由 discord adapter 在驗證 Discord 綁定後呼叫）。
+// 鍵：輸入的名稱 + 解析到的帳號 id / username（小寫），三者同時上鎖、同時解鎖，
+//     不論攻擊者用 id 還是學號打，持有人取消時都能一次清掉。
+struct LoginLock {
+    until: Instant,
+}
+
+static LOGIN_LOCKS: once_cell::sync::Lazy<Mutex<HashMap<String, LoginLock>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn login_lock_key(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+/// 對一組鍵上鎖；回傳 `true` 表示這次「新建立」了鎖（之前沒有生效中的鎖）。
+async fn lock_account_login(keys: &[&str]) -> bool {
+    let mut locks = LOGIN_LOCKS.lock().await;
+    let now = Instant::now();
+    locks.retain(|_, lock| lock.until > now);
+    if locks.len() >= MAX_SECURITY_WATCH_KEYS {
+        // 極端情況（大量帳號同時被打）：整表清空重來，只是少鎖幾個帳號，不會 panic 或無限成長。
+        locks.clear();
+    }
+    let mut created = false;
+    for key in keys {
+        let key = login_lock_key(key);
+        if key.is_empty() {
+            continue;
+        }
+        // 鎖定是「從第一次觸發起固定 10 分鐘」：已在鎖定中的鍵不延長，
+        // 否則攻擊者只要持續打就能無限期把持有人擋在密碼登入之外。
+        if locks.contains_key(&key) {
+            continue;
+        }
+        created = true;
+        locks.insert(
+            key,
+            LoginLock {
+                until: now + ACCOUNT_LOGIN_LOCK_TTL,
+            },
+        );
+    }
+    created
+}
+
+/// 任一鍵仍在鎖定中 → 回傳剩餘秒數（取最大值）。
+async fn login_lock_remaining(keys: &[String]) -> Option<u64> {
+    let mut locks = LOGIN_LOCKS.lock().await;
+    let now = Instant::now();
+    locks.retain(|_, lock| lock.until > now);
+    keys.iter()
+        .filter_map(|key| locks.get(&login_lock_key(key)))
+        .map(|lock| lock.until.saturating_duration_since(now).as_secs().max(1))
+        .max()
+}
+
+/// 帳號持有人（或管理員）取消第一層鎖定：移除鎖並清掉該帳號的失敗計數，
+/// 讓持有人下一次輸入正確密碼就能進來，不會因為殘留計數又立刻被鎖。
+/// 回傳 `true` 表示真的有鎖被解除。
+pub async fn cancel_login_lock(keys: &[&str]) -> bool {
+    let mut removed = false;
+    {
+        let mut locks = LOGIN_LOCKS.lock().await;
+        for key in keys {
+            if locks.remove(&login_lock_key(key)).is_some() {
+                removed = true;
+            }
+        }
+    }
+    let mut watch = SECURITY_WATCH.lock().await;
+    for key in keys {
+        watch.fails.remove(&format!("user:{}", login_lock_key(key)));
+        watch
+            .last_alert
+            .remove(&format!("fail-user:{}", login_lock_key(key)));
+    }
+    removed
 }
 
 async fn admin_discord_recipients(state: &AdminWebState) -> Vec<String> {
@@ -496,12 +591,17 @@ async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAler
 
 async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str) {
     let (user_fails, ip_fails) = record_auth_failure(username, ip).await;
-    // 解析被嘗試登入的帳號持有人綁定（可能為空：隨機 username 或未綁定）。
-    let (target_discord, target_line) = resolve_login_target_contacts(state, username).await;
+    // 解析被嘗試登入的帳號（可能為 None：隨機 username）；持有人綁定由此取得。
+    let target_account = resolve_login_target_account(state, username).await;
+    let (target_discord, target_line) = contacts_of(target_account.as_ref());
+    let owner_account_id = target_account
+        .as_ref()
+        .map(|account| account.id.clone())
+        .unwrap_or_else(|| username.trim().to_string());
 
-    // The blacklist is IP-based, so only the source-IP counter can trigger an
-    // automatic block. The counter is scoped to RATE_LIMIT_WINDOW (60 seconds)
-    // by record_auth_failure; a sixth failure is therefore "超過五次".
+    // LOGIN_TIERED_LOCKOUT_V1 第二層：來源 IP 在觀察窗口內失敗超過十次 → 自動黑名單。
+    // 黑名單是以 IP 為單位，所以只有來源 IP 計數能觸發；record_auth_failure 已把計數
+    // 限制在 SECURITY_FAIL_WINDOW 內。
     if ip_fails >= SECURITY_AUTO_BLOCK_THRESHOLD {
         let normalized_ip = normalize_admin_ip(ip);
         if let Some(ref blocked_ip) = normalized_ip {
@@ -510,15 +610,12 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                 .block_ip_with_failure_count(
                     blocked_ip,
                     "system:auto-login-failure",
-                    "Automatic block: more than five failed Dashboard logins within 60 seconds",
+                    "Automatic block: more than ten failed Dashboard logins within 15 minutes",
                     ip_fails,
                 )
                 .await
             {
                 Ok(true) => {
-                    let owner_account_id = state.accounts_db.get(username).await.ok().flatten()
-                        .map(|account| account.id)
-                        .unwrap_or_else(|| username.trim().to_string());
                     if let Err(error) = state.accounts_db.set_auto_block_owner(blocked_ip, &owner_account_id).await {
                         warn!(ip = %blocked_ip, error = %error, "automatic blacklist owner record failed");
                     }
@@ -529,7 +626,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                         "ip_blacklist_auto_block",
                         None,
                         Some(blocked_ip),
-                        "Automatic block after more than five failed Dashboard logins within 60 seconds",
+                        "Automatic block after more than ten failed Dashboard logins within 15 minutes",
                     );
                     let _ = state
                         .accounts_db
@@ -540,7 +637,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                             account_id: username.trim().to_string(),
                             path: blocked_ip.clone(),
                             result: "success".to_string(),
-                            details: format!("Auto-blocked after {ip_fails} failed Dashboard logins within 60 seconds"),
+                            details: format!("Auto-blocked after {ip_fails} failed Dashboard logins within 15 minutes"),
                             ip: blocked_ip.clone(),
                         })
                         .await;
@@ -552,9 +649,10 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                         user_failures: user_fails,
                         ip_failures: ip_fails,
                         timestamp: security_now_label(),
-                        account_id: owner_account_id,
+                        account_id: owner_account_id.clone(),
                         ip_is_blacklisted: true,
                         allow_owner_unblock: true,
+                        login_locked: false,
                     };
                     notify_admins_security_alert(state, event.clone()).await;
                     // The account holder receives the same Discord component,
@@ -575,35 +673,92 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
     }
 
     if user_fails >= SECURITY_FAIL_ALERT_THRESHOLD {
-        let key = format!("fail-user:{}", username.trim().to_lowercase());
-        if security_should_alert(&key).await {
-            notify_admins_security_alert(
-                state,
-                SecurityAlertEvent {
-                    username: username.trim().to_string(),
-                    ip: ip.trim().to_string(),
-                    user_failures: user_fails,
-                    ip_failures: ip_fails,
-                    timestamp: security_now_label(),
-                    ip_is_blacklisted: false,
-                    account_id: username.trim().to_string(),
-                    allow_owner_unblock: false,
-                },
-            )
-            .await;
-
-            let user_text = format!(
-                "⚠️ 安全提醒\n有人連續嘗試登入你的 Dashboard 帳號（帳號：{}），60 秒內已失敗 {} 次。\n若非你本人操作，請立即變更 Dashboard 密碼。",
-                username.trim(),
-                user_fails
+        // LOGIN_TIERED_LOCKOUT_V1 第一層：鎖定該帳號的密碼登入，先通知持有人。
+        // 鍵同時涵蓋「輸入的名稱」與「解析到的帳號 id / 學號」，持有人取消時一次清掉。
+        let mut keys: Vec<String> = vec![username.trim().to_string()];
+        if let Some(account) = target_account.as_ref() {
+            keys.push(account.id.clone());
+            keys.push(account.username.clone());
+        }
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let created = lock_account_login(&key_refs).await;
+        if created {
+            warn!(username = %username, ip = %ip, user_fails, "Dashboard 帳號密碼登入已暫時鎖定（第一層）");
+            crate::logs::record_audit(
+                "web",
+                "system:login-lock",
+                "login_lock",
+                Some(&owner_account_id),
+                Some(ip),
+                format!("帳號 {} 連續密碼錯誤 {} 次，暫時鎖定密碼登入 {} 分鐘", username.trim(), user_fails, ACCOUNT_LOGIN_LOCK_TTL.as_secs() / 60),
             );
-            notify_account_holder(
-                state,
-                target_discord.as_deref(),
-                target_line.as_deref(),
-                &user_text,
-            )
-            .await;
+            let _ = state
+                .accounts_db
+                .record_activity_event(crate::db::ActivityEventInput {
+                    kind: "security".to_string(),
+                    actor: "system:login-lock".to_string(),
+                    action: "login_lock".to_string(),
+                    account_id: owner_account_id.clone(),
+                    path: String::new(),
+                    result: "locked".to_string(),
+                    details: format!("{} consecutive failed password logins; password login locked for {} minutes", user_fails, ACCOUNT_LOGIN_LOCK_TTL.as_secs() / 60),
+                    ip: ip.trim().to_string(),
+                })
+                .await;
+            let event = SecurityAlertEvent {
+                username: username.trim().to_string(),
+                ip: normalize_admin_ip(ip).unwrap_or_else(|| ip.trim().to_string()),
+                user_failures: user_fails,
+                ip_failures: ip_fails,
+                timestamp: security_now_label(),
+                ip_is_blacklisted: false,
+                account_id: owner_account_id.clone(),
+                allow_owner_unblock: false,
+                login_locked: true,
+            };
+            // 持有人先收到（Discord 有「取消這次鎖定」／「封鎖此 IP」按鈕；LINE 收純文字）。
+            if let Some(messenger) = state.messenger.as_ref() {
+                if let Some(discord_id) = target_discord.as_deref() {
+                    if let Err(e) = messenger
+                        .push(discord_id, &OutboundMessage::SecurityAlert(event.clone()))
+                        .await
+                    {
+                        warn!(to = %discord_id, error = %e, "login lock 使用者 Discord 推送失敗");
+                    }
+                }
+                if let Some(line_id) = target_line.as_deref() {
+                    let text = format!(
+                        "安全提醒\n有人連續嘗試登入你的 Dashboard 帳號（帳號：{}），已失敗 {} 次。\n系統已暫時鎖定此帳號的密碼登入 {} 分鐘（通行密鑰不受影響）。\n若是你本人操作，請稍候再試或改用通行密鑰；若不是你，請立即變更 Dashboard 密碼。",
+                        username.trim(),
+                        user_fails,
+                        ACCOUNT_LOGIN_LOCK_TTL.as_secs() / 60
+                    );
+                    if let Err(e) = messenger.push(line_id, &OutboundMessage::Text(text)).await {
+                        warn!(to = %line_id, error = %e, "login lock 使用者 LINE 推送失敗");
+                    }
+                }
+            }
+            notify_admins_security_alert(state, event).await;
+        } else {
+            // 鎖定期間仍持續失敗：對管理員維持既有的冷卻告警，不再重複打擾持有人。
+            let key = format!("fail-user:{}", username.trim().to_lowercase());
+            if security_should_alert(&key).await {
+                notify_admins_security_alert(
+                    state,
+                    SecurityAlertEvent {
+                        username: username.trim().to_string(),
+                        ip: ip.trim().to_string(),
+                        user_failures: user_fails,
+                        ip_failures: ip_fails,
+                        timestamp: security_now_label(),
+                        ip_is_blacklisted: false,
+                        account_id: owner_account_id.clone(),
+                        allow_owner_unblock: false,
+                        login_locked: true,
+                    },
+                )
+                .await;
+            }
         }
     } else if ip_fails >= SECURITY_FAIL_ALERT_THRESHOLD {
         let key = format!("fail-ip:{}", ip.trim());
@@ -617,8 +772,9 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                     ip_failures: ip_fails,
                     timestamp: security_now_label(),
                     ip_is_blacklisted: false,
-                    account_id: username.trim().to_string(),
+                    account_id: owner_account_id.clone(),
                     allow_owner_unblock: false,
+                    login_locked: false,
                 },
             )
             .await;
@@ -638,40 +794,45 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
     }
 }
 
+/// LOGIN_TIERED_LOCKOUT_V1：解析 `username` 對應的帳號（先以帳號 id 查詢，再以 Tronclass username 查詢）。
+async fn resolve_login_target_account(
+    state: &AdminWebState,
+    username: &str,
+) -> Option<RawAccountConfig> {
+    let username = username.trim();
+    if username.is_empty() {
+        return None;
+    }
+    if let Ok(Some(acct)) = state.accounts_db.get(username).await {
+        return Some(acct);
+    }
+    if let Ok(accounts) = state.accounts_db.find_by_username(username, None).await {
+        return accounts.into_iter().next();
+    }
+    None
+}
+
+fn contacts_of(account: Option<&RawAccountConfig>) -> (Option<String>, Option<String>) {
+    match account {
+        Some(acct) => {
+            let discord = acct.discord_user_id.trim().to_string();
+            let line = acct.line_user_id.trim().to_string();
+            (
+                if discord.is_empty() { None } else { Some(discord) },
+                if line.is_empty() { None } else { Some(line) },
+            )
+        }
+        None => (None, None),
+    }
+}
+
 /// 解析 `username` 對應帳號的綁定聯絡方式（先以帳號 id 查詢，再以 Tronclass username 查詢）。
 /// 回傳 `(discord_user_id, line_user_id)`，未綁定時為 `None`。
 async fn resolve_login_target_contacts(
     state: &AdminWebState,
     username: &str,
 ) -> (Option<String>, Option<String>) {
-    let username = username.trim();
-    if username.is_empty() {
-        return (None, None);
-    }
-    let mut account = None;
-    if let Ok(Some(acct)) = state.accounts_db.get(username).await {
-        account = Some(acct);
-    }
-    if account.is_none() {
-        if let Ok(accounts) = state.accounts_db.find_by_username(username, None).await {
-            account = accounts.into_iter().next();
-        }
-    }
-    match account {
-        Some(acct) => {
-            let discord = acct.discord_user_id.trim().to_string();
-            let line = acct.line_user_id.trim().to_string();
-            (
-                if discord.is_empty() {
-                    None
-                } else {
-                    Some(discord)
-                },
-                if line.is_empty() { None } else { Some(line) },
-            )
-        }
-        None => (None, None),
-    }
+    contacts_of(resolve_login_target_account(state, username).await.as_ref())
 }
 
 /// 推送安全警示給被嘗試登入的帳號持有人（Discord / LINE）。
@@ -708,7 +869,8 @@ async fn alert_abnormal_traffic(state: &AdminWebState, source: &str, username: &
         username.trim().to_string()
     };
     let text = format!(
-        "⚠️ Dashboard 安全警示\n類型：異常流量\n來源：{source}\n帳號：{who}\nIP：{}\n60 秒內嘗試次數超過上限，已暫時封鎖。\n時間：{}\n請到 /admin/activity 查看登入審計。",
+        // DISCORD_NOTIFY_UNIFY_V1：此通知只送 Discord，改用統一的「[安全] 標題」格式。
+        "[安全] Dashboard 安全警示：異常流量\n\n來源：{source}\n帳號：{who}\nIP：{}\n時間：{}\n\n60 秒內嘗試次數超過上限，已暫時封鎖。請到 /admin/activity 查看登入審計。",
         ip.trim(),
         security_now_label()
     );
@@ -1571,6 +1733,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(static_assets::admin_dashboard_modules_handler),
         )
         .route("/admin", get(pages::admin_page_handler))
+        // LOGOUT_SERVER_SIDE_V1：導覽式登出（POST 表單 / fetch → 302 /admin）。
+        .route(
+            "/admin/logout",
+            post(auth::admin_logout_redirect_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         .route("/admin/activity", get(pages::admin_activity_page_handler))
         .route("/admin/blacklist", get(blacklist::admin_blacklist_page_handler))
         .route("/admin/homework", get(pages::admin_homework_page_handler))
@@ -2861,6 +3028,10 @@ struct AdminQuery {
     include_history: Option<bool>,
     #[serde(default)]
     history_limit: Option<usize>,
+    /// ADMIN_PAGE_TRI_STATE_V1：`/admin?next=/admin/xxx`——已登入者直接被送去 next
+    /// （登入頁則在登入成功後由前端 finishLogin 讀同一個參數）。只接受同源 /admin 路徑。
+    #[serde(default)]
+    next: Option<String>,
 }
 
 fn normalize_admin_ip(value: &str) -> Option<String> {
@@ -3479,6 +3650,231 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // ── ADMIN_PAGE_TRI_STATE_V1 ──────────────────────────────────────────────
+    async fn body_string(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    #[tokio::test]
+    async fn admin_without_session_returns_login_page() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(Request::builder().uri("/admin").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        assert!(html.contains("id=\"loginCard\""), "no session must render the login page");
+        assert!(html.contains("animatedLoginForm"));
+        assert!(!html.contains("data-auth=\"ok\""));
+        assert!(!html.contains("id=\"view-overview\""), "dashboard markup must not leak to anonymous users");
+    }
+
+    #[tokio::test]
+    async fn admin_with_access_cookie_returns_dashboard_with_injected_state() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("cookie-user".to_string(), true, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .header(header::COOKIE, format!("{SECURE_SESSION_COOKIE}={}", tokens.access))
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        // No rotation happened, so no new cookies are set.
+        assert!(response.headers().get(header::SET_COOKIE).is_none());
+        let html = body_string(response).await;
+        assert!(html.contains("data-auth=\"ok\""));
+        assert!(html.contains("data-account=\"cookie-user\""));
+        assert!(html.contains("data-admin=\"1\""));
+        // The <html> tag itself must already carry the logged-in gate classes
+        // (CSS elsewhere in the page still mentions tron-auth-pending, so check the tag).
+        assert!(html.contains("<html lang=\"zh-Hant\" class=\"tron-auth-ok dash-auth-ok\" data-auth=\"ok\""));
+        assert!(!html.contains("id=\"loginCard\""), "dashboard must not embed the login card any more");
+    }
+
+    #[tokio::test]
+    async fn admin_with_only_refresh_cookie_rotates_and_returns_dashboard() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("refresh-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin")
+                    .header(header::COOKIE, format!("{SECURE_REFRESH_COOKIE}={}", tokens.refresh))
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let set_cookies: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect();
+        // `oneshot` has no trusted peer, so forwarded-proto is stripped and the
+        // local (non `__Host-`) cookie names are used; accept either variant.
+        assert!(
+            set_cookies.iter().any(|c| {
+                (c.starts_with(SECURE_SESSION_COOKIE) || c.starts_with(LOCAL_SESSION_COOKIE))
+                    && !c.contains("Max-Age=0")
+            }),
+            "rotation must mint a fresh access cookie: {set_cookies:?}"
+        );
+        assert!(
+            set_cookies.iter().any(|c| {
+                (c.starts_with(SECURE_REFRESH_COOKIE) || c.starts_with(LOCAL_REFRESH_COOKIE))
+                    && !c.contains("Max-Age=0")
+            }),
+            "rotation must mint a fresh refresh cookie: {set_cookies:?}"
+        );
+        // Old refresh token is single-use.
+        assert!(state.rotate_session(&tokens.refresh, None).await.is_none());
+        let html = body_string(response).await;
+        assert!(html.contains("data-account=\"refresh-user\""));
+    }
+
+    #[tokio::test]
+    async fn admin_logged_in_with_next_redirects_to_next() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("next-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin?next=%2Fadmin%2Fhomework%23top")
+                    .header(header::COOKIE, format!("{SECURE_SESSION_COOKIE}={}", tokens.access))
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()),
+            Some("/admin/homework#top")
+        );
+    }
+
+    #[test]
+    fn safe_next_path_rejects_open_redirects() {
+        assert_eq!(pages::safe_next_path_for_test("/admin/files"), Some("/admin/files".to_string()));
+        assert_eq!(pages::safe_next_path_for_test("//evil.example/admin"), None);
+        assert_eq!(pages::safe_next_path_for_test("https://evil.example/admin"), None);
+        assert_eq!(pages::safe_next_path_for_test("/admin/api/status"), None);
+        assert_eq!(pages::safe_next_path_for_test("/admin/logout"), None);
+        assert_eq!(pages::safe_next_path_for_test("/admin"), None);
+        assert_eq!(pages::safe_next_path_for_test("/other"), None);
+    }
+
+    // ── LOGOUT_SERVER_SIDE_V1 ────────────────────────────────────────────────
+    #[tokio::test]
+    async fn post_admin_logout_revokes_session_clears_cookies_and_redirects() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("logout-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/logout")
+                    .header(
+                        header::COOKIE,
+                        format!(
+                            "{SECURE_SESSION_COOKIE}={}; {SECURE_REFRESH_COOKIE}={}",
+                            tokens.access, tokens.refresh
+                        ),
+                    )
+                    .header("x-forwarded-proto", "https")
+                    .header("sec-fetch-site", "same-origin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response.headers().get(header::LOCATION).and_then(|v| v.to_str().ok()),
+            Some("/admin")
+        );
+        let set_cookies: Vec<String> = response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_string))
+            .collect();
+        assert!(set_cookies.iter().any(|c| c.starts_with(SECURE_SESSION_COOKIE) && c.contains("Max-Age=0")));
+        assert!(set_cookies.iter().any(|c| c.starts_with(SECURE_REFRESH_COOKIE) && c.contains("Max-Age=0")));
+        assert!(state.authorize_any(&tokens.access).await.is_none(), "access token must be revoked");
+        assert!(state.rotate_session(&tokens.refresh, None).await.is_none(), "refresh token must be revoked");
+    }
+
+    #[tokio::test]
+    async fn post_admin_logout_rejects_cross_site() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/logout")
+                    .header("sec-fetch-site", "cross-site")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ── LOGIN_TIERED_LOCKOUT_V1 ──────────────────────────────────────────────
+    #[tokio::test]
+    async fn login_lock_is_created_once_and_cancelled_by_owner() {
+        let keys = ["LockTest-Acct", "s1234567"];
+        assert!(lock_account_login(&keys).await, "first lock must be created");
+        assert!(!lock_account_login(&keys).await, "re-lock must not extend");
+        let remaining = login_lock_remaining(&["locktest-acct".to_string()]).await;
+        assert!(remaining.is_some_and(|secs| secs > 0 && secs <= ACCOUNT_LOGIN_LOCK_TTL.as_secs()));
+        assert!(cancel_login_lock(&["S1234567"]).await, "owner cancel must remove the lock");
+        assert!(login_lock_remaining(&["locktest-acct".to_string(), "s1234567".to_string()]).await.is_none());
+        assert!(!cancel_login_lock(&["S1234567"]).await, "second cancel finds nothing");
     }
 
     #[tokio::test]

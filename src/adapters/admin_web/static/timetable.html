@@ -188,8 +188,9 @@
       var changed = false;
       var token = u.searchParams.get('token') || '';
       if (u.searchParams.get('logout') === '1') {
+        /* LOGOUT_SERVER_SIDE_V1：?logout=1 已無意義，只清遺留旗標。 */
         localStorage.removeItem(LS_SESSION);
-        localStorage.setItem(LS_LOGOUT, '1');
+        localStorage.removeItem(LS_LOGOUT);
       } else if (token) {
         localStorage.setItem(LS_SESSION, token);
         localStorage.removeItem(LS_LOGOUT);
@@ -246,10 +247,10 @@
   var LO = 'tronclass_dashboard_manual_logout';
   try {
     var p = new URLSearchParams(location.search);
-    if (p.get('logout') === '1' || localStorage.getItem(LO) === '1') {
-      location.replace('/admin?logout=1');
-      return;
-    }
+    /* LOGOUT_SERVER_SIDE_V1：登出已改為伺服器端（POST /admin/logout 清 cookie）；
+       不再以 ?logout=1 / tronclass_dashboard_manual_logout 判斷，只清掉遺留旗標。 */
+    try { localStorage.removeItem(LO); } catch (_) {}
+    if (p.has('logout')) { p.delete('logout'); history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p.toString() : '') + location.hash); }
     document.documentElement.classList.add('tron-auth-pending');
     fetch('/admin/api/status?include_history=false'+(window.__tronBootToken?('&token='+encodeURIComponent(window.__tronBootToken)):''), {credentials:'same-origin', cache:'no-store'}).then(function(r){
       if (r.ok) {
@@ -973,13 +974,13 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
   function setMsg(text, ok){ var el=q('msg'); if(!el)return; el.textContent=text||''; el.className='msg '+(ok?'ok':(text?'bad':'')); }
   function showLogin(reason){ setClass('out'); setBrand('請先登入'); setMsg(reason||'請先登入。', false); if(!isLoginPage() && isAdminPath()) location.replace(loginUrl()); }
   function showAuthed(data){ setClass('ok'); setBrand((data&&data.current_account_id)||(data&&data.account_id)||'已登入'); setMsg('', true); syncLinks(); }
-  function logout(){ localStorage.removeItem(LS_SESSION); localStorage.setItem(LS_LOGOUT,'1'); showLogin('已登出，請重新登入。'); setTimeout(function(){location.replace('/admin?logout=1&v=logout'+Date.now())},30); }
+  function logout(){ /* LOGOUT_SERVER_SIDE_V1 */ if (typeof window.tronSecureLogout === 'function') return window.tronSecureLogout(); fetch('/admin/logout',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'manual'}).catch(function(){}).then(function(){location.replace('/admin')}); }
 
   async function parseResponse(res){ var body=await res.json().catch(function(){return{}}); if(!res.ok){var e=new Error(body.error||('HTTP '+res.status));e.status=res.status;e.body=body;throw e;} return body; }
   async function statusApi(){ var res=await fetch('/admin/api/status',{cache:'no-store',credentials:'same-origin'}); return parseResponse(res); }
 
   async function verify(){
-    if(params().get('logout')==='1'||localStorage.getItem(LS_LOGOUT)==='1'){showLogin(params().get('logout')==='1'?'已登出，請重新登入。':'請先登入。');return;}
+    try{localStorage.removeItem(LS_LOGOUT)}catch(_){} /* LOGOUT_SERVER_SIDE_V1：不再看 ?logout=1 / 手動登出旗標 */
     /* cookie session */
     try{var data=await statusApi();showAuthed(data);}catch(e){if(e.status===401){localStorage.removeItem(LS_SESSION);showLogin('登入狀態失效，請重新登入。');}else{setClass('ok');}}
   }

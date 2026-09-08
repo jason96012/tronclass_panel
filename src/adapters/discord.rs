@@ -11,11 +11,11 @@ use async_trait::async_trait;
 use miette::{IntoDiagnostic, Result, WrapErr};
 use once_cell::sync::{Lazy, OnceCell};
 use serenity::all::{
-    ButtonStyle, ChannelId, Command, CommandDataOptionValue, CommandInteraction, CommandOptionType,
-    ComponentInteraction, Context, CreateActionRow, CreateButton, CreateCommand,
-    CreateCommandOption, CreateInteractionResponse, CreateInteractionResponseMessage,
-    CreateMessage, EventHandler, GatewayIntents, GuildId, Http, Interaction, InteractionId,
-    Message, Ready, UserId,
+    ButtonStyle, ChannelId, Colour, Command, CommandDataOptionValue, CommandInteraction,
+    CommandOptionType, ComponentInteraction, Context, CreateActionRow, CreateButton,
+    CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter,
+    CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EventHandler,
+    GatewayIntents, GuildId, Http, Interaction, InteractionId, Message, Ready, UserId,
 };
 use serenity::Client;
 use tokio::sync::Mutex;
@@ -42,6 +42,10 @@ const COMPONENT_ACCOUNT_APPROVE_PREFIX: &str = "trc:account-approve:";
 const COMPONENT_BLOCK_IP_PREFIX: &str = "trc:block-ip:";
 const COMPONENT_UNBLOCK_IP_PREFIX: &str = "trc:unblock-ip:";
 const COMPONENT_UNBLOCK_OWN_IP_PREFIX: &str = "trc:unblock-own-ip:";
+/// LOGIN_TIERED_LOCKOUT_V1：帳號持有人取消第一層登入鎖定 / 直接封鎖來源 IP。
+/// payload：`{account_id}|{ip}`；account_id 只做顯示與鍵值，授權以資料庫的 Discord 綁定為準。
+const COMPONENT_CANCEL_LOCK_PREFIX: &str = "trc:cancel-lock:";
+const COMPONENT_OWNER_BLOCK_IP_PREFIX: &str = "trc:owner-block-ip:";
 const DISCORD_SEND_INTERVAL_MS: u64 = 350;
 const DISCORD_DASHBOARD_DEDUPE_TTL_SECS: u64 = 10 * 60;
 const MAX_DISCORD_DM_CHANNEL_CACHE: usize = 2048;
@@ -79,6 +83,11 @@ fn discord_notification_key(message: &OutboundMessage) -> &'static str {
         }
         OutboundMessage::Status(_) => "status",
         OutboundMessage::SecurityAlert(_) => "security_alert",
+        // DISCORD_NOTIFY_UNIFY_V1：新結構化事件的偏好鍵（沿用既有分類，不新增開關）。
+        OutboundMessage::MonitorEvent(_) => "other",
+        OutboundMessage::AdminAlert(_) => "other",
+        OutboundMessage::ClassReminder(_) => "other",
+        OutboundMessage::TimetableChanged(_) => "other",
         OutboundMessage::MonitorPaused
         | OutboundMessage::MonitorResumed
         | OutboundMessage::ForcePollTriggered
@@ -200,11 +209,15 @@ impl AdapterMessenger for DiscordBotClient {
 
     async fn reply(&self, reply_token: &str, message: &OutboundMessage) -> Result<()> {
         if let Some((id, token)) = parse_interaction_reply(reply_token) {
-            let response = CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(render_discord_message(message))
-                    .components(action_rows_for_message(message)),
-            );
+            // DISCORD_NOTIFY_UNIFY_V1：所有出口統一走 render_discord_payload。
+            let payload = render_discord_payload(message);
+            let mut builder = CreateInteractionResponseMessage::new()
+                .content(payload.content)
+                .components(action_rows_for_message(message));
+            if let Some(embed) = payload.embed {
+                builder = builder.embed(embed);
+            }
+            let response = CreateInteractionResponse::Message(builder);
             self.http
                 .create_interaction_response(InteractionId::new(id), token, &response, Vec::new())
                 .await
@@ -762,6 +775,69 @@ impl DiscordRuntime {
             return Ok(());
         }
 
+        // LOGIN_TIERED_LOCKOUT_V1：第一層鎖定的兩顆持有人按鈕。
+        if let Some((account_id, ip)) = parse_prefixed_account_ip(&component.data.custom_id, COMPONENT_CANCEL_LOCK_PREFIX) {
+            let is_admin = user_id == self.bot.admin_user_id;
+            let owned = is_admin || self.discord_user_owns_account(&user_id, &account_id).await;
+            let message = if !owned {
+                OutboundMessage::NotAuthorized
+            } else {
+                // 鍵涵蓋帳號 id 與學號（與 admin_web 上鎖時一致）。
+                let mut keys = vec![account_id.clone()];
+                if let Ok(Some(acct)) = self.accounts_db.get(&account_id).await {
+                    keys.push(acct.username.clone());
+                }
+                let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+                let removed = crate::adapters::admin_web::cancel_login_lock(&key_refs).await;
+                crate::logs::record_audit(
+                    "discord",
+                    &user_id,
+                    "login_lock_cancel",
+                    Some(&account_id),
+                    Some(&ip),
+                    "帳號持有人由 Discord 取消登入鎖定",
+                );
+                if removed {
+                    OutboundMessage::Text(format!("[安全] 已取消帳號 `{account_id}` 的登入鎖定，現在可以直接重新登入。"))
+                } else {
+                    OutboundMessage::Text(format!("[安全] 帳號 `{account_id}` 目前沒有生效中的鎖定（可能已到期），可直接登入。"))
+                }
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        if let Some((account_id, ip)) = parse_prefixed_account_ip(&component.data.custom_id, COMPONENT_OWNER_BLOCK_IP_PREFIX) {
+            let is_admin = user_id == self.bot.admin_user_id;
+            let owned = is_admin || self.discord_user_owns_account(&user_id, &account_id).await;
+            let message = if !owned {
+                OutboundMessage::NotAuthorized
+            } else {
+                let blocked_by = format!("owner:{account_id}");
+                match self
+                    .accounts_db
+                    .block_ip(&ip, &blocked_by, "Account holder blocked the source IP from a login-lock alert")
+                    .await
+                {
+                    Ok(true) => {
+                        crate::logs::record_audit(
+                            "discord",
+                            &user_id,
+                            "ip_blacklist_owner_block",
+                            Some(&account_id),
+                            Some(&ip),
+                            "帳號持有人由 Discord 封鎖來源 IP",
+                        );
+                        OutboundMessage::Text(format!("[安全] 已封鎖 IP `{ip}`。之後來自此 IP 的登入一律被拒絕；管理員可在黑名單頁解除。"))
+                    }
+                    Ok(false) => OutboundMessage::Text(format!("[安全] IP `{ip}` 已經在黑名單中。")),
+                    Err(error) => OutboundMessage::Text(format!("[安全] 封鎖 IP 失敗：{error}")),
+                }
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
         if let Some((account_id, ip)) = parse_unblock_own_ip_custom_id(&component.data.custom_id) {
             let is_admin = user_id == self.bot.admin_user_id;
             let result = if is_admin {
@@ -775,9 +851,9 @@ impl DiscordRuntime {
                     .await
             };
             let message = match result {
-                Ok(true) => OutboundMessage::Text(format!("✅ 已移除自動黑名單：`{ip}`。")),
-                Ok(false) => OutboundMessage::Text("ℹ️ 找不到可由你解除的自動黑名單。".to_string()),
-                Err(error) => OutboundMessage::Text(format!("❌ 移除黑名單失敗：{error}")),
+                Ok(true) => OutboundMessage::Text(format!("[安全] 已移除自動黑名單：`{ip}`。")),
+                Ok(false) => OutboundMessage::Text("[安全] 找不到可由你解除的自動黑名單。".to_string()),
+                Err(error) => OutboundMessage::Text(format!("[安全] 移除黑名單失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -789,9 +865,9 @@ impl DiscordRuntime {
                 return Ok(());
             }
             let message = match self.accounts_db.block_ip(&ip, &user_id, "Discord security alert").await {
-                Ok(true) => OutboundMessage::Text(format!("✅ 已封鎖 IP `{ip}`。黑名單頁面可查看與解除封鎖。")),
-                Ok(false) => OutboundMessage::Text(format!("ℹ️ IP `{ip}` 已經在黑名單中。")),
-                Err(error) => OutboundMessage::Text(format!("❌ 封鎖 IP 失敗：{error}")),
+                Ok(true) => OutboundMessage::Text(format!("[安全] 已封鎖 IP `{ip}`。黑名單頁面可查看與解除封鎖。")),
+                Ok(false) => OutboundMessage::Text(format!("[安全] IP `{ip}` 已經在黑名單中。")),
+                Err(error) => OutboundMessage::Text(format!("[安全] 封鎖 IP 失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -807,9 +883,9 @@ impl DiscordRuntime {
                     .await
             };
             let message = match result {
-                Ok(true) => OutboundMessage::Text(format!("✅ 已將 IP `{ip}` 從黑名單移除。")),
-                Ok(false) => OutboundMessage::Text("ℹ️ 找不到可由你解除的自動黑名單。".to_string()),
-                Err(error) => OutboundMessage::Text(format!("❌ 移除黑名單失敗：{error}")),
+                Ok(true) => OutboundMessage::Text(format!("[安全] 已將 IP `{ip}` 從黑名單移除。")),
+                Ok(false) => OutboundMessage::Text("[安全] 找不到可由你解除的自動黑名單。".to_string()),
+                Err(error) => OutboundMessage::Text(format!("[安全] 移除黑名單失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -1074,6 +1150,24 @@ impl DiscordRuntime {
         OutboundMessage::Text(format!(
             "已送出 Tronclass username `{username}` 的新增申請，請等待管理員核准。"
         ))
+    }
+
+    /// LOGIN_TIERED_LOCKOUT_V1：這個 Discord 使用者是否綁定在該帳號上
+    /// （比對帳號 id 或 Tronclass 學號；資料庫綁定是唯一權威，不信任按鈕 payload）。
+    async fn discord_user_owns_account(&self, discord_user_id: &str, account_id: &str) -> bool {
+        let discord_user_id = discord_user_id.trim();
+        if discord_user_id.is_empty() {
+            return false;
+        }
+        if let Ok(Some(acct)) = self.accounts_db.get(account_id).await {
+            return acct.discord_user_id.trim() == discord_user_id;
+        }
+        if let Ok(accounts) = self.accounts_db.find_by_username(account_id, None).await {
+            return accounts
+                .iter()
+                .any(|acct| acct.discord_user_id.trim() == discord_user_id);
+        }
+        false
     }
 
     async fn approve_pending_account(
@@ -1399,13 +1493,16 @@ async fn send_outbound_to_channel(
     message: &OutboundMessage,
 ) -> Result<()> {
     throttle_discord_http().await;
+    // DISCORD_NOTIFY_UNIFY_V1：統一 payload（純文字或 embed 卡片）。
+    let payload = render_discord_payload(message);
+    let mut builder = CreateMessage::new()
+        .content(payload.content)
+        .components(action_rows_for_message(message));
+    if let Some(embed) = payload.embed {
+        builder = builder.embed(embed);
+    }
     channel_id
-        .send_message(
-            http,
-            CreateMessage::new()
-                .content(render_discord_message(message))
-                .components(action_rows_for_message(message)),
-        )
+        .send_message(http, builder)
         .await
         .into_diagnostic()
         .wrap_err("發送 Discord 訊息失敗")?;
@@ -1479,6 +1576,17 @@ fn dashboard_dedupe_key(message: &OutboundMessage) -> Option<String> {
             "reminder:{:016x}",
             dashboard_dedupe_id(&event.rollcall_id)
         )),
+        // DISCORD_NOTIFY_UNIFY_V1：同帳號同種監控事件在 TTL 內只往 dashboard 頻道送一次，
+        // 多帳號同時重登失敗時頻道不會被洗版（DM 不受影響）。
+        OutboundMessage::MonitorEvent(event) => Some(format!(
+            "monitor:{:?}:{:016x}",
+            event.kind,
+            dashboard_dedupe_id(&event.account)
+        )),
+        OutboundMessage::TimetableChanged(event) => Some(format!(
+            "timetable:{:016x}",
+            dashboard_dedupe_id(&event.account)
+        )),
         _ => None,
     }
 }
@@ -1489,16 +1597,16 @@ async fn reply_interaction(
     message: OutboundMessage,
     ephemeral: bool,
 ) -> Result<()> {
+    let payload = render_discord_payload(&message);
+    let mut builder = CreateInteractionResponseMessage::new()
+        .content(payload.content)
+        .ephemeral(ephemeral)
+        .components(action_rows_for_message(&message));
+    if let Some(embed) = payload.embed {
+        builder = builder.embed(embed);
+    }
     command
-        .create_response(
-            &ctx.http,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(render_discord_message(&message))
-                    .ephemeral(ephemeral)
-                    .components(action_rows_for_message(&message)),
-            ),
-        )
+        .create_response(&ctx.http, CreateInteractionResponse::Message(builder))
         .await
         .into_diagnostic()
         .wrap_err("回覆 Discord slash command 失敗")
@@ -1510,16 +1618,16 @@ async fn reply_component(
     message: OutboundMessage,
     ephemeral: bool,
 ) -> Result<()> {
+    let payload = render_discord_payload(&message);
+    let mut builder = CreateInteractionResponseMessage::new()
+        .content(payload.content)
+        .ephemeral(ephemeral)
+        .components(action_rows_for_message(&message));
+    if let Some(embed) = payload.embed {
+        builder = builder.embed(embed);
+    }
     component
-        .create_response(
-            &ctx.http,
-            CreateInteractionResponse::Message(
-                CreateInteractionResponseMessage::new()
-                    .content(render_discord_message(&message))
-                    .ephemeral(ephemeral)
-                    .components(action_rows_for_message(&message)),
-            ),
-        )
+        .create_response(&ctx.http, CreateInteractionResponse::Message(builder))
         .await
         .into_diagnostic()
         .wrap_err("回覆 Discord component 失敗")
@@ -1599,6 +1707,22 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
         ],
         OutboundMessage::SecurityAlert(event) => {
             if parse_discord_ip(&event.ip).is_some() {
+                // LOGIN_TIERED_LOCKOUT_V1：第一層鎖定 → 持有人可「取消這次鎖定」快速登入，
+                // 或「封鎖此 IP」直接把來源加入黑名單（兩者都由 handler 驗證 Discord 綁定）。
+                if event.login_locked && !event.ip_is_blacklisted {
+                    return vec![CreateActionRow::Buttons(vec![
+                        CreateButton::new(format!("{COMPONENT_CANCEL_LOCK_PREFIX}{}|{}", event.account_id, event.ip))
+                            .label("取消這次鎖定")
+                            .style(ButtonStyle::Success),
+                        CreateButton::new(format!("{COMPONENT_OWNER_BLOCK_IP_PREFIX}{}|{}", event.account_id, event.ip))
+                            .label("封鎖此 IP")
+                            .style(ButtonStyle::Danger),
+                        CreateButton::new_link(
+                            "https://dashboard.jasoncloudserver.me/admin/blacklist",
+                        )
+                        .label("查看黑名單"),
+                    ])];
+                }
                 let action = if event.ip_is_blacklisted && event.allow_owner_unblock {
                     CreateButton::new(format!("{COMPONENT_UNBLOCK_OWN_IP_PREFIX}{}|{}", event.account_id, event.ip))
                         .label("移除黑名單")
@@ -1725,17 +1849,346 @@ fn render_pending_account_request(request: &PendingAccountRequest) -> String {
     )
 }
 
+// ─── DISCORD_NOTIFY_UNIFY_V1：統一通知模板 ─────────────────────────────────
+//
+// 所有 Discord 出口（DM、管理員頻道、slash 回覆、按鈕回覆）都經過
+// `render_discord_payload`。兩種呈現方式：
+//
+// * **純文字**：急件（點名偵測／需要輸入代碼／點名結果／安全警示）與指令回覆。
+//   手機鎖屏預覽能看到完整內容，不受 embed 只顯示標題的限制。
+// * **Embed 卡片**：其餘背景通知（作業、公告、上課提醒、課表更新、監控事件、
+//   管理員警示、推播失效、系統啟動）。依類別上色、欄位對齊，頻道內一眼可分類。
+//
+// 兩種格式共用 `NoticeCard`：標題／類別／帳號／欄位／結尾提示，文字版由同一
+// 張卡片攤平而成，確保 DM 與頻道、Discord 與 log 說的是同一件事。
+// 不使用表情符號（與專案通知規範一致），改以 embed 顏色與類別文字區分。
+
+/// 通知類別：決定 embed 顏色與 footer 文字。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NoticeCategory {
+    Rollcall,
+    Homework,
+    Bulletin,
+    Schedule,
+    Monitor,
+    Security,
+    System,
+    Success,
+    Warning,
+    Critical,
+}
+
+impl NoticeCategory {
+    fn colour(self) -> Colour {
+        match self {
+            NoticeCategory::Rollcall => Colour::new(0x5865F2),  // blurple
+            NoticeCategory::Homework => Colour::new(0xF5A623),  // amber
+            NoticeCategory::Bulletin => Colour::new(0x3BA55D),  // green
+            NoticeCategory::Schedule => Colour::new(0x00B0F4),  // sky
+            NoticeCategory::Monitor => Colour::new(0x99AAB5),   // grey
+            NoticeCategory::Security => Colour::new(0xED4245),  // red
+            NoticeCategory::System => Colour::new(0x747F8D),    // slate
+            NoticeCategory::Success => Colour::new(0x57F287),   // bright green
+            NoticeCategory::Warning => Colour::new(0xFEE75C),   // yellow
+            NoticeCategory::Critical => Colour::new(0xED4245),  // red
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            NoticeCategory::Rollcall => "點名",
+            NoticeCategory::Homework => "作業",
+            NoticeCategory::Bulletin => "公告",
+            NoticeCategory::Schedule => "課表",
+            NoticeCategory::Monitor => "監控",
+            NoticeCategory::Security => "安全",
+            NoticeCategory::System => "系統",
+            NoticeCategory::Success => "監控・已恢復",
+            NoticeCategory::Warning => "監控・警告",
+            NoticeCategory::Critical => "監控・嚴重",
+        }
+    }
+}
+
+/// 統一卡片：所有背景通知都先組成這個結構，再依出口決定 embed 或純文字。
+struct NoticeCard {
+    category: NoticeCategory,
+    title: String,
+    /// 帳號 id（放在 footer，每張卡片一致位置）。
+    account: String,
+    /// 主要說明（embed description）。
+    description: String,
+    /// (欄位名, 值, inline)。
+    fields: Vec<(String, String, bool)>,
+    /// 結尾提示／建議動作。
+    hint: String,
+}
+
+impl NoticeCard {
+    fn new(category: NoticeCategory, title: impl Into<String>, account: impl Into<String>) -> Self {
+        Self {
+            category,
+            title: title.into(),
+            account: account.into(),
+            description: String::new(),
+            fields: Vec::new(),
+            hint: String::new(),
+        }
+    }
+
+    fn description(mut self, text: impl Into<String>) -> Self {
+        self.description = text.into();
+        self
+    }
+
+    fn field(mut self, name: &str, value: impl Into<String>, inline: bool) -> Self {
+        let value = value.into();
+        if !value.trim().is_empty() {
+            self.fields.push((name.to_string(), value, inline));
+        }
+        self
+    }
+
+    fn hint(mut self, text: impl Into<String>) -> Self {
+        self.hint = text.into();
+        self
+    }
+
+    fn footer_text(&self) -> String {
+        if self.account.trim().is_empty() {
+            format!("Tronclass ・ {}", self.category.label())
+        } else {
+            format!("Tronclass ・ {} ・ 帳號 {}", self.category.label(), self.account.trim())
+        }
+    }
+
+    fn to_embed(&self) -> CreateEmbed {
+        let mut embed = CreateEmbed::new()
+            .title(truncate_embed(&self.title, 256))
+            .colour(self.category.colour())
+            .footer(CreateEmbedFooter::new(truncate_embed(&self.footer_text(), 2048)));
+        let mut description = self.description.trim().to_string();
+        if !self.hint.trim().is_empty() {
+            if !description.is_empty() {
+                description.push_str("\n\n");
+            }
+            description.push_str(self.hint.trim());
+        }
+        if !description.is_empty() {
+            embed = embed.description(truncate_embed(&description, 4096));
+        }
+        for (name, value, inline) in self.fields.iter().take(25) {
+            embed = embed.field(truncate_embed(name, 256), truncate_embed(value, 1024), *inline);
+        }
+        embed
+    }
+
+    /// 同一張卡片攤平成純文字（無 embed 的出口、或使用者關閉 embed 預覽時的 fallback）。
+    fn to_text(&self) -> String {
+        let mut lines = vec![format!("[{}] {}", self.category.label(), self.title)];
+        if !self.description.trim().is_empty() {
+            lines.push(String::new());
+            lines.push(self.description.trim().to_string());
+        }
+        if !self.fields.is_empty() {
+            lines.push(String::new());
+            for (name, value, _) in &self.fields {
+                lines.push(format!("{name}：{value}"));
+            }
+        }
+        if !self.account.trim().is_empty() {
+            lines.push(format!("帳號：{}", self.account.trim()));
+        }
+        if !self.hint.trim().is_empty() {
+            lines.push(String::new());
+            lines.push(self.hint.trim().to_string());
+        }
+        lines.join("\n")
+    }
+}
+
+/// 去掉字串開頭的表情符號／變體選擇子與其後空白（只處理開頭，內文不動）。
+fn strip_leading_emoji(text: &str) -> String {
+    let is_emoji_like = |c: char| {
+        matches!(
+            c as u32,
+            0x2600..=0x27BF          // Misc symbols / dingbats（⚠ ✅ ❌ ⏰ ✳ ℹ 以外）
+            | 0x2B00..=0x2BFF        // arrows / stars
+            | 0x1F000..=0x1FAFF      // emoji blocks
+            | 0xFE0F                 // variation selector-16
+            | 0x200D                 // ZWJ
+            | 0x2139                 // ℹ
+            | 0x203C | 0x2049        // ‼ ⁉
+        )
+    };
+    let trimmed = text.trim_start_matches(|c: char| is_emoji_like(c) || c == ' ' || c == '\u{3000}');
+    if trimmed.is_empty() {
+        text.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn truncate_embed(value: &str, max_chars: usize) -> String {
+    crate::text_utils::truncate_chars(value, max_chars).to_string()
+}
+
+/// 一次 Discord 送出的內容：`content` 一定有（純文字或 embed 的一行標題），
+/// `embed` 只在卡片式通知時存在。
+struct DiscordPayload {
+    content: String,
+    embed: Option<CreateEmbed>,
+}
+
+/// 把 OutboundMessage 轉成 Discord payload。卡片式通知回 embed＋一行 content
+/// （手機通知預覽顯示這一行），其餘回純文字。
+fn render_discord_payload(message: &OutboundMessage) -> DiscordPayload {
+    match notice_card_for(message) {
+        Some(card) => DiscordPayload {
+            // content 放「類別｜標題」一行，讓推播預覽與關閉 embed 的使用者也看得懂。
+            content: format!("{}｜{}", card.category.label(), card.title),
+            embed: Some(card.to_embed()),
+        },
+        None => DiscordPayload {
+            content: render_discord_message(message),
+            embed: None,
+        },
+    }
+}
+
+/// 哪些訊息走 embed 卡片。急件（點名相關、安全警示）與指令回覆刻意回 None → 純文字。
+fn notice_card_for(message: &OutboundMessage) -> Option<NoticeCard> {
+    match message {
+        OutboundMessage::SystemStarted(event) => Some(
+            NoticeCard::new(NoticeCategory::System, "Tronclass Rollcall 已啟動", &event.account)
+                .field("使用者", &event.user_name, true)
+                .field("輪詢間隔", format!("{} 秒", event.poll_interval_secs), true)
+                .field("Adapter", &event.adapter_name, true),
+        ),
+        OutboundMessage::HomeworkDeadline(event) => Some(
+            NoticeCard::new(
+                NoticeCategory::Homework,
+                format!("作業截止提醒｜{}", event.stage_badge),
+                &event.account,
+            )
+            .field("課程", &event.course_name, false)
+            .field("標題", &event.title, false)
+            .field("截止", &event.deadline, true)
+            .field("剩餘", &event.time_remaining, true)
+            .hint("請儘速至 Tronclass 確認並繳交。"),
+        ),
+        OutboundMessage::Bulletin(event) => Some(
+            NoticeCard::new(
+                NoticeCategory::Bulletin,
+                format!("新公告｜{}", event.course_name),
+                &event.account,
+            )
+            .description(if event.summary.trim().is_empty() {
+                format!("【{}】", event.title)
+            } else {
+                format!("【{}】\n{}", event.title, event.summary.trim())
+            }),
+        ),
+        OutboundMessage::ClassReminder(event) => Some(
+            NoticeCard::new(
+                NoticeCategory::Schedule,
+                format!("上課提醒｜{}", event.headline()),
+                &event.account,
+            )
+            .field("課程", &event.course_name, false)
+            .field("時間", &event.time_text, true)
+            .field("教室", &event.classroom, true)
+            .field("老師", &event.teacher, true)
+            .hint(format!("你設定的是上課前 {} 分鐘提醒。", event.configured_minutes)),
+        ),
+        OutboundMessage::TimetableChanged(event) => {
+            let mut card = NoticeCard::new(NoticeCategory::Schedule, "課表已自動更新", &event.account);
+            if event.added_total > 0 {
+                let mut list = event.added.iter().map(|s| format!("＋ {s}")).collect::<Vec<_>>();
+                if event.added_total > event.added.len() {
+                    list.push(format!("…等 {} 堂", event.added_total));
+                }
+                card = card.field(&format!("新增 {} 堂", event.added_total), list.join("\n"), false);
+            }
+            if event.removed_total > 0 {
+                let mut list = event.removed.iter().map(|s| format!("－ {s}")).collect::<Vec<_>>();
+                if event.removed_total > event.removed.len() {
+                    list.push(format!("…等 {} 堂", event.removed_total));
+                }
+                card = card.field(&format!("移除 {} 堂", event.removed_total), list.join("\n"), false);
+            }
+            Some(card.hint("可到 Dashboard 課表分頁查看完整內容。"))
+        }
+        OutboundMessage::PushSubscriptionExpired(event) => Some(
+            NoticeCard::new(NoticeCategory::System, "手機推播訂閱已失效", &event.account)
+                .field("已移除裝置", format!("{} 台", event.removed_devices), true)
+                .field("仍有效裝置", format!("{} 台", event.remaining_devices), true)
+                .field("原因", &event.reason, false)
+                .hint(if event.dashboard_url.trim().is_empty() {
+                    "請用手機開啟 Dashboard，到「手機推播狀態」重新啟用背景推播。".to_string()
+                } else {
+                    format!("請用手機開啟 {} 重新啟用背景推播。", event.dashboard_url.trim())
+                }),
+        ),
+        OutboundMessage::MonitorEvent(event) => {
+            let category = match event.kind {
+                crate::adapters::events::MonitorEventKind::ReauthSucceeded => NoticeCategory::Success,
+                crate::adapters::events::MonitorEventKind::AutoReauthStarted => NoticeCategory::Warning,
+                crate::adapters::events::MonitorEventKind::ReauthFailed
+                | crate::adapters::events::MonitorEventKind::AutoReauthFailed
+                | crate::adapters::events::MonitorEventKind::LoopCrashed => NoticeCategory::Critical,
+            };
+            let mut card = NoticeCard::new(category, event.title(), &event.account);
+            if let Some(d) = &event.diagnosis {
+                card = card.field("原因", &d.label, false).field("建議", &d.advice, false);
+            }
+            if !event.error.trim().is_empty() {
+                card = card.field("錯誤", truncate_embed(event.error.trim(), 300), false);
+            }
+            let hint = match event.kind {
+                crate::adapters::events::MonitorEventKind::LoopCrashed => "請重啟服務以恢復此帳號的監控。",
+                crate::adapters::events::MonitorEventKind::AutoReauthFailed => {
+                    "系統會以逐步拉長的間隔自動重試；也可輸入 /reauth 立即再試。"
+                }
+                crate::adapters::events::MonitorEventKind::AutoReauthStarted => "不需要操作，成功後會再通知。",
+                crate::adapters::events::MonitorEventKind::ReauthSucceeded => "監控已恢復正常。",
+                crate::adapters::events::MonitorEventKind::ReauthFailed => "請確認帳號密碼後再試一次 /reauth。",
+            };
+            Some(card.hint(hint))
+        }
+        OutboundMessage::AdminAlert(event) => {
+            let category = if event.is_recovery {
+                NoticeCategory::Success
+            } else if event.grade.contains("嚴重") {
+                NoticeCategory::Critical
+            } else {
+                NoticeCategory::Warning
+            };
+            Some(
+                NoticeCard::new(category, &event.title, &event.account)
+                    .description(&event.body),
+            )
+        }
+        _ => None,
+    }
+}
+
+/// 純文字 render（急件、指令回覆，以及所有沒有卡片的訊息）。
 fn render_discord_message(message: &OutboundMessage) -> String {
     match message {
-        OutboundMessage::Text(text) => text.clone(),
+        // DISCORD_NOTIFY_UNIFY_V1：Text 仍有多處呼叫端（同時送 LINE 與 Discord），
+        // Discord 端統一去掉開頭的表情符號，LINE 文案不動。
+        OutboundMessage::Text(text) => strip_leading_emoji(text),
         OutboundMessage::SecurityAlert(event) => {
             let action = if event.ip_is_blacklisted {
-                "此 IP 已因登入失敗超過五次自動加入黑名單；如需恢復，請按「移除黑名單」。"
+                "此 IP 已因登入失敗超過十次自動加入黑名單；如需恢復，請按「移除黑名單」。"
+            } else if event.login_locked {
+                "此帳號的密碼登入已暫時鎖定 10 分鐘（通行密鑰不受影響）。\n若是你本人：按「取消這次鎖定」即可立刻重新登入。\n若不是你：按「封鎖此 IP」直接把來源加入黑名單，並盡快變更 Dashboard 密碼。"
             } else {
                 "請確認後按下「加入黑名單」。"
             };
             format!(
-                "⚠️ Dashboard 安全警示\n\n連續密碼錯誤\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n\n{}\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+                "[安全] Dashboard 安全警示：連續密碼錯誤\n\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n\n{}\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
                 event.username,
                 event.ip,
                 event.user_failures,
@@ -1749,7 +2202,7 @@ fn render_discord_message(message: &OutboundMessage) -> String {
             event.account, event.user_name, event.poll_interval_secs, event.adapter_name
         ),
         OutboundMessage::RollcallDetected(event) => format!(
-            "偵測到新簽到\n帳號：{}\n課程：{}\n教師：{}\n類型：{}\n點名 ID：{}",
+            "[點名] 偵測到新簽到\n\n課程：{1}\n教師：{2}\n類型：{3}\n點名 ID：{4}\n帳號：{0}",
             event.account,
             event.course_name,
             event.teacher_name,
@@ -1763,29 +2216,29 @@ fn render_discord_message(message: &OutboundMessage) -> String {
                 format!("\n數字點名頁：{}", request.input_url)
             };
             format!(
-                "需要數字點名碼\n課程：{}\n帳號：{}\n教師：{}\n點名 ID：{}\n預設不會自動讀取代碼。請在 {} 秒內手動輸入 `/num code:1234`，或開啟數字點名頁 / 按下方「自動讀取代碼」。{}",
+                "[點名] 需要數字點名碼\n\n課程：{}\n教師：{}\n點名 ID：{}\n帳號：{}\n\n預設不會自動讀取代碼。請在 {} 秒內手動輸入 `/num code:1234`，或開啟數字點名頁 / 按下方「自動讀取代碼」。{}",
                 request.course_name,
-                request.account,
                 request.teacher_name,
                 request.rollcall_id,
+                request.account,
                 request.timeout_secs,
                 page,
             )
         },
         OutboundMessage::QrCodeRequested(request) => format!(
-            "需要 QR Code 簽到\n課程：{}\n帳號：{}\n教師：{}\n點名 ID：{}\n請在 {} 秒內開啟 scanner 或貼回 QR Code 資料：\n{}",
+            "[點名] 需要 QR Code 簽到\n\n課程：{}\n教師：{}\n點名 ID：{}\n帳號：{}\n\n請在 {} 秒內開啟 scanner 或貼回 QR Code 資料：\n{}",
             request.course_name,
-            request.account,
             request.teacher_name,
             request.rollcall_id,
+            request.account,
             request.timeout_secs,
             request.scan_url
         ),
         OutboundMessage::RollcallFinished(event) => {
             let title = if event.success {
-                "✅ 你已完成點名"
+                "[點名] 你已完成點名"
             } else {
-                "⚠️ 點名尚未完成"
+                "[點名] 點名尚未完成"
             };
             let hint = if event.success {
                 "你可以到 Web Admin 或 /status 查看紀錄。"
@@ -1798,13 +2251,14 @@ fn render_discord_message(message: &OutboundMessage) -> String {
                 format!("{} ms", event.elapsed_ms)
             };
             format!(
-                "{title}\n\n課程：{}\n帳號：{}\n類型：{}\n點名 ID：{}\n結果：{}\n耗時：{}\n\n{}",
+                "{title}\n\n課程：{}\n類型：{}\n點名 ID：{}\n結果：{}\n耗時：{}\n帳號：{}\n\n{}",
                 event.course_name,
-                event.account,
                 event.attendance_type,
                 event.rollcall_id,
-                event.result,
+                // DISCORD_NOTIFY_UNIFY_V1：RollcallResult 的 Display 帶 ✅❌ 前綴，Discord 端去掉。
+                strip_leading_emoji(&event.result),
                 elapsed,
+                event.account,
                 hint,
             )
         },
@@ -1837,7 +2291,14 @@ fn render_discord_message(message: &OutboundMessage) -> String {
         OutboundMessage::HomeworkDeadline(event) => event.render(),
         OutboundMessage::Bulletin(event) => event.render(),
         OutboundMessage::PushSubscriptionExpired(event) => event.render(),
-        OutboundMessage::RollcallInputReminder(event) => event.render(),
+        OutboundMessage::RollcallInputReminder(event) => format!("[點名] {}", event.render()),
+        // DISCORD_NOTIFY_UNIFY_V1：這些平常走 embed；純文字 fallback 用同一張卡片攤平。
+        OutboundMessage::MonitorEvent(_)
+        | OutboundMessage::AdminAlert(_)
+        | OutboundMessage::ClassReminder(_)
+        | OutboundMessage::TimetableChanged(_) => notice_card_for(message)
+            .map(|card| card.to_text())
+            .unwrap_or_default(),
         OutboundMessage::UnknownCommand { text } => {
             format!("不認識的指令：{}\n\n{}", text.chars().take(80).collect::<String>(), help_text())
         }
@@ -1956,6 +2417,14 @@ fn parse_unblock_ip_custom_id(value: &str) -> Option<String> {
     parse_discord_ip(ip)
 }
 
+/// LOGIN_TIERED_LOCKOUT_V1：解析 `{prefix}{account_id}|{ip}` 形式的 custom_id。
+fn parse_prefixed_account_ip(value: &str, prefix: &str) -> Option<(String, String)> {
+    let value = value.strip_prefix(prefix)?;
+    let (account_id, ip) = value.split_once('|')?;
+    if account_id.trim().is_empty() || account_id.len() > 64 { return None; }
+    Some((account_id.trim().to_string(), parse_discord_ip(ip)?))
+}
+
 fn parse_unblock_own_ip_custom_id(value: &str) -> Option<(String, String)> {
     let value = value.strip_prefix(COMPONENT_UNBLOCK_OWN_IP_PREFIX)?;
     let (account_id, ip) = value.split_once('|')?;
@@ -1995,6 +2464,100 @@ mod tests {
             pending_accounts: Arc::new(Mutex::new(HashMap::new())),
             monitor_spawner: None,
         }
+    }
+
+    // ── DISCORD_NOTIFY_UNIFY_V1 ──────────────────────────────────────────────
+    fn has_emoji(text: &str) -> bool {
+        text.chars().any(|c| {
+            matches!(c as u32, 0x2600..=0x27BF | 0x1F300..=0x1FAFF | 0xFE0F | 0x2139)
+        })
+    }
+
+    #[test]
+    fn unify_urgent_messages_are_plain_text() {
+        let detected = OutboundMessage::RollcallDetected(crate::adapters::events::RollcallEvent {
+            rollcall_id: 1,
+            account: "student001".to_string(),
+            course_name: "資料結構".to_string(),
+            teacher_name: "王老師".to_string(),
+            attendance_type: "數字".to_string(),
+        });
+        let payload = render_discord_payload(&detected);
+        assert!(payload.embed.is_none(), "點名偵測必須是純文字");
+        assert!(payload.content.starts_with("[點名] "));
+        assert!(!has_emoji(&payload.content));
+
+        let alert = OutboundMessage::SecurityAlert(crate::adapters::events::SecurityAlertEvent {
+            account_id: "acc".to_string(),
+            username: "student001".to_string(),
+            ip: "203.0.113.9".to_string(),
+            user_failures: 5,
+            ip_failures: 7,
+            timestamp: "2026-09-08 12:00".to_string(),
+            ip_is_blacklisted: false,
+            allow_owner_unblock: false,
+            login_locked: false,
+        });
+        let payload = render_discord_payload(&alert);
+        assert!(payload.embed.is_none(), "安全警示必須是純文字");
+        assert!(payload.content.starts_with("[安全] "));
+        assert!(!has_emoji(&payload.content));
+    }
+
+    #[test]
+    fn unify_background_notices_are_embeds_with_uniform_content_line() {
+        let msgs = vec![
+            OutboundMessage::ClassReminder(crate::adapters::events::ClassReminderEvent {
+                account: "student001".to_string(),
+                course_name: "資料結構".to_string(),
+                time_text: "08:10 - 09:00（第 1-2 節）".to_string(),
+                classroom: "E101".to_string(),
+                teacher: "王老師".to_string(),
+                minutes_until: 10,
+                configured_minutes: 10,
+            }),
+            OutboundMessage::TimetableChanged(crate::adapters::events::TimetableChangedEvent {
+                account: "student001".to_string(),
+                added: vec!["週一 第1節 資料結構".to_string()],
+                added_total: 1,
+                removed: vec![],
+                removed_total: 0,
+            }),
+            OutboundMessage::MonitorEvent(crate::adapters::events::MonitorEventNotice {
+                kind: crate::adapters::events::MonitorEventKind::AutoReauthFailed,
+                account: "student001".to_string(),
+                error: "HTTP 401".to_string(),
+                diagnosis: Some(crate::monitor_alerts::diagnose("HTTP 401", true)),
+            }),
+            OutboundMessage::AdminAlert(crate::adapters::events::AdminAlertNotice {
+                account: "student001".to_string(),
+                grade: "嚴重".to_string(),
+                is_recovery: false,
+                title: "監控警示（嚴重）：student001".to_string(),
+                body: "帳號：student001\n連續失敗：5 次".to_string(),
+            }),
+        ];
+        for msg in msgs {
+            let payload = render_discord_payload(&msg);
+            assert!(payload.embed.is_some(), "{msg:?} 應為 embed 卡片");
+            assert!(payload.content.contains('｜'), "content 需為「類別｜標題」：{}", payload.content);
+            assert!(!has_emoji(&payload.content));
+            let text = render_discord_message(&msg);
+            assert!(text.contains("student001"), "純文字 fallback 需含帳號：{text}");
+            assert!(!has_emoji(&text));
+        }
+    }
+
+    #[test]
+    fn unify_text_messages_drop_leading_emoji_only() {
+        assert_eq!(strip_leading_emoji("✅ 已封鎖 IP"), "已封鎖 IP");
+        assert_eq!(strip_leading_emoji("⚠️ 自動讀取失敗"), "自動讀取失敗");
+        assert_eq!(strip_leading_emoji("ℹ️ 找不到"), "找不到");
+        assert_eq!(strip_leading_emoji("內文中的 ✅ 保留"), "內文中的 ✅ 保留");
+        assert_eq!(strip_leading_emoji("✅"), "✅");
+        let payload = render_discord_payload(&OutboundMessage::Text("❌ 失敗：x".to_string()));
+        assert_eq!(payload.content, "失敗：x");
+        assert!(payload.embed.is_none());
     }
 
     #[test]

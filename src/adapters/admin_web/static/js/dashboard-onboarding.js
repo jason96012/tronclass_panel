@@ -23,7 +23,9 @@
   function dash(){ return window.TronclassDashboard || {}; }
   function currentStatus(){
     try{ if(dash().getStatus) { var s=dash().getStatus(); if(s) return s; } }catch(_){}
-    if(window.__tronAuthStatus && typeof window.__tronAuthStatus==='object' && 'is_admin' in window.__tronAuthStatus) return window.__tronAuthStatus;
+    /* AUTH_STATE_FROM_SERVER_V1：伺服器注入的摘要只有 is_admin / current_account_id（__partial），
+       新手導覽需要完整 status（accounts / passkey_count…），要等主腳本 loadStatus() 補齊。 */
+    if(window.__tronAuthStatus && typeof window.__tronAuthStatus==='object' && 'is_admin' in window.__tronAuthStatus && !window.__tronAuthStatus.__partial) return window.__tronAuthStatus;
     return null;
   }
   function loggedIn(){

@@ -1,6 +1,5 @@
 //! Mock rollcall page/API handlers for Admin Web.
 
-use super::pages::inject_theme;
 use super::*;
 
 #[derive(Debug, Deserialize)]
@@ -60,9 +59,10 @@ fn normalize_mock_selections(values: Vec<String>) -> Result<Vec<String>, Respons
     Ok(selected)
 }
 
-pub(super) async fn admin_mock_page_handler(headers: HeaderMap) -> Response {
-    // 模擬點名已整合到 /admin 的彈出視窗，/admin/mock 也回同一個管理頁。
-    super::html_page_response(&headers, inject_theme(super::pages::ADMIN_DASHBOARD_HTML))
+pub(super) async fn admin_mock_page_handler() -> Response {
+    // 模擬點名已整合到 /admin 的彈出視窗。ADMIN_PAGE_TRI_STATE_V1：Dashboard HTML 現在必須
+    // 帶伺服器注入的驗證狀態，這裡不再直接回靜態 HTML，改為導到 /admin 走三態判斷。
+    (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, "/admin")]).into_response()
 }
 
 pub(super) async fn admin_mock_start_handler(

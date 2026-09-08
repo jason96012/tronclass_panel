@@ -254,21 +254,30 @@ pub(super) async fn admin_dashboard_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
-        // `/admin` remains the public login shell, but `/admin/dashboard` must
-        // never return a 200 login SPA to an unauthenticated caller.
+    // ADMIN_PAGE_TRI_STATE_V1：與 `/admin` 相同的三態；未登入導回登入頁並帶 next。
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/dashboard");
     };
-    if session.must_change_password {
-        return must_change_password_redirect();
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
-    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
+    let html = inject_auth_state(&inject_theme(ADMIN_DASHBOARD_HTML), &page.session);
+    attach_fresh_cookies(html_page_response(&headers, html), &page, &headers)
 }
 
-pub(super) async fn admin_activity_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_ACTIVITY_HTML))
+pub(super) async fn admin_activity_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    // ADMIN_PAGE_TRI_STATE_V1：原本是公開殼＋前端檢查；改為伺服器端驗證（含 refresh 續期）。
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        return admin_login_redirect("/admin/activity");
+    };
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
+    }
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_ACTIVITY_HTML)), &page, &headers)
 }
 
 pub(super) async fn admin_homework_page_handler(
@@ -276,14 +285,13 @@ pub(super) async fn admin_homework_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/homework");
     };
-    if session.must_change_password {
-        return must_change_password_redirect();
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    html_page_response(&headers, inject_theme(ADMIN_HOMEWORK_HTML))
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_HOMEWORK_HTML)), &page, &headers)
 }
 
 // FILES_NATIVE_V1
@@ -295,15 +303,14 @@ pub(super) async fn admin_files_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/files");
     };
-    if session.must_change_password {
-        return must_change_password_redirect();
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
     let html = inject_theme(ADMIN_FILES_HTML);
-    html_page_response(&headers, inject_files_office_assets(&html))
+    attach_fresh_cookies(html_page_response(&headers, inject_files_office_assets(&html)), &page, &headers)
 }
 
 // SHARE_ADMIN_V1: 分享連結管理頁（僅管理員）。列出所有已發連結、可撤銷。
@@ -312,19 +319,18 @@ pub(super) async fn admin_shares_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/shares");
     };
-    if !session.is_admin {
+    if !page.session.is_admin {
         return (StatusCode::FORBIDDEN, "僅管理員可存取").into_response();
     }
-    if session.must_change_password {
-        return must_change_password_redirect();
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
     // THEME_AWARE_V1: 套用與 dashboard 相同的主題資產（theme.css + app-settings.js），
     // 讓分享管理頁背景與深淺色設定與主介面一致。
-    html_page_response(&headers, inject_theme(SHARES_HTML))
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(SHARES_HTML)), &page, &headers)
 }
 
 // PREVIEW_ENGINES_V1: 只在「雲端硬碟」頁注入 PDF.js（同源 'self'，合法於 CSP），
@@ -394,8 +400,19 @@ pub(super) fn inject_files_office_assets(html: &str) -> String {
 
 const ADMIN_CLEAN_TIMETABLE_HTML: &str = include_str!("static/timetable.html");
 
-pub(super) async fn admin_clean_timetable_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_CLEAN_TIMETABLE_HTML))
+pub(super) async fn admin_clean_timetable_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    // ADMIN_PAGE_TRI_STATE_V1：伺服器端驗證（含 refresh 續期），未登入導回登入頁。
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        return admin_login_redirect("/admin/timetable");
+    };
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
+    }
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_CLEAN_TIMETABLE_HTML)), &page, &headers)
 }
 
 pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
@@ -437,14 +454,13 @@ pub(super) async fn admin_notifications_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/notifications");
     };
-    if session.must_change_password {
-        return must_change_password_redirect();
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    html_page_response(&headers, inject_theme(ADMIN_NOTIFICATIONS_HTML))
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_NOTIFICATIONS_HTML)), &page, &headers)
 }
 
 /// /admin/settings — 外觀與本機偏好設定頁。
@@ -454,30 +470,133 @@ pub(super) async fn admin_settings_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/settings");
     };
-    if session.must_change_password {
-        return must_change_password_redirect();
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    html_page_response(&headers, inject_theme(ADMIN_SETTINGS_HTML))
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_SETTINGS_HTML)), &page, &headers)
 }
 
 pub(super) async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {
     html_page_response(&headers, inject_theme(ADMIN_PASSKEY_HTML))
 }
 
-pub(super) async fn session_must_change_password(
+// ── ADMIN_PAGE_TRI_STATE_V1 ──────────────────────────────────────────────────
+//
+// 伺服器端依 session 狀態決定 `/admin` 回哪一頁，前端不再「先畫登入卡再用 JS 判斷」：
+//   1. 無 session（access、refresh 都無效）      → 登入頁（static/login.html）。
+//   2. access 有效                                → Dashboard，並把驗證狀態注入 HTML。
+//   3. access 過期／遺失但 refresh cookie 仍有效  → 伺服器端輪換一次（與
+//      `/admin/api/session/refresh` 同一條 `rotate_session`），在回應上帶新 cookie，
+//      直接回 Dashboard；使用者完全不會看到登入頁閃一下。
+// 其他子頁（作業／檔案／設定…）共用 `resolve_page_session`，同樣享有第 3 態。
+//
+// 注入方式：`<html … data-auth="ok" data-account="<id>" data-admin="1|0" data-viewer="1|0">`
+// 加 class `tron-auth-ok dash-auth-ok`（沿用既有 CSS 閘門 class），首幀即為已登入版面。
+
+/// 已驗證的頁面 session；`fresh_cookies` 在第 3 態時帶新 token，回應必須附上 Set-Cookie。
+pub(super) struct PageSession {
+    pub(super) session: AdminSession,
+    pub(super) fresh_cookies: Option<SessionTokens>,
+}
+
+/// 解析頁面請求的 session（access → refresh 輪換）。回 `None` 表示未登入。
+pub(super) async fn resolve_page_session(
     state: &AdminWebState,
     headers: &HeaderMap,
     query_token: &str,
-) -> bool {
-    state
-        .authorize_any(&session_token(headers, query_token))
-        .await
-        .map(|session| session.must_change_password)
-        .unwrap_or(false)
+) -> Option<PageSession> {
+    let token = session_token(headers, query_token);
+    if let Some(session) = state.authorize_any(&token).await {
+        return Some(PageSession {
+            session,
+            fresh_cookies: None,
+        });
+    }
+    // access 無效：試 refresh cookie（只在有 cookie 時才碰 DB）。
+    let refresh = refresh_cookie_from_headers(headers)?;
+    // 頁面 handler 沒有 peer address（ConnectInfo）可用：這裡的 origin 只會拿到 UA，
+    // ip 為空字串；`rotate_session` 只用它「回填」DB 內仍為空的欄位（or_fill），
+    // 不會覆蓋原始登入來源，因此裝置頁看到的仍是同一台裝置。
+    let tokens = state
+        .rotate_session(&refresh, Some(SessionOrigin::from_request(headers, "")))
+        .await?;
+    let session = state.authorize_any(&tokens.access).await?;
+    Some(PageSession {
+        session,
+        fresh_cookies: Some(tokens),
+    })
+}
+
+/// 把第 3 態輪換出的新 cookie 附到頁面回應上（含 Filebrowser SSO 重簽）。
+pub(super) fn attach_fresh_cookies(
+    response: Response,
+    page: &PageSession,
+    headers: &HeaderMap,
+) -> Response {
+    let Some(tokens) = page.fresh_cookies.as_ref() else {
+        return response;
+    };
+    let response = append_session_cookie(response, &tokens.access, headers);
+    let response = append_refresh_cookie(response, &tokens.refresh, headers);
+    if page.session.must_change_password || page.session.account_id == "<token-admin>" {
+        return response;
+    }
+    fb_sso::append_fb_sso_cookie(
+        response,
+        &page.session.account_id,
+        page.session.is_admin,
+        &tokens.access,
+        headers,
+    )
+}
+
+fn html_attr_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// 在 `<html …>` 上注入驗證狀態，並把 `tron-auth-pending` 換成 `tron-auth-ok dash-auth-ok`。
+pub(super) fn inject_auth_state(html: &str, session: &AdminSession) -> String {
+    let Some(open_at) = html.find("<html") else {
+        return html.to_string();
+    };
+    let Some(rel_close) = html[open_at..].find('>') else {
+        return html.to_string();
+    };
+    let close_at = open_at + rel_close;
+    let tag = &html[open_at..=close_at];
+    let mut new_tag = tag.replace("tron-auth-pending", "tron-auth-ok dash-auth-ok");
+    if !new_tag.contains("tron-auth-ok") {
+        // 沒有 class 屬性時補一個。
+        new_tag = new_tag.replacen("<html", "<html class=\"tron-auth-ok dash-auth-ok\"", 1);
+    }
+    let attrs = format!(
+        " data-auth=\"ok\" data-account=\"{}\" data-admin=\"{}\" data-viewer=\"{}\"",
+        html_attr_escape(&session.account_id),
+        if session.is_admin { "1" } else { "0" },
+        if session.is_viewer { "1" } else { "0" },
+    );
+    let new_tag = format!("{}{}>", &new_tag[..new_tag.len() - 1], attrs);
+    format!("{}{}{}", &html[..open_at], new_tag, &html[close_at + 1..])
+}
+
+/// 登入頁（無 session 時的 `/admin`）。走 `inject_theme` 以取得 theme.css / app-settings /
+/// session-security 等共用資產；HTML 是靜態的，`html_page_response` 會給 ETag 與 CSP nonce。
+fn login_page_response(headers: &HeaderMap) -> Response {
+    html_page_response(headers, inject_theme(ADMIN_LOGIN_HTML))
 }
 
 pub(super) async fn admin_page_handler(
@@ -485,9 +604,46 @@ pub(super) async fn admin_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    if session_must_change_password(&state, &headers, &query.token).await {
-        return must_change_password_redirect();
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        // 第 1 態：沒有任何有效 session → 登入頁。
+        return login_page_response(&headers);
+    };
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    // ETag-aware: repeat navigations get an empty 304 instead of ~260 KB.
-    html_page_response(&headers, inject_theme(ADMIN_DASHBOARD_HTML))
+    // 已登入卻帶著 ?next=（例如子頁把人送來時 access 剛好已由 refresh 續期）：直接去目的地。
+    if let Some(next) = query.next.as_deref().and_then(safe_next_path) {
+        return attach_fresh_cookies(
+            (StatusCode::FOUND, [(header::LOCATION, next)]).into_response(),
+            &page,
+            &headers,
+        );
+    }
+    // 第 2 / 3 態：Dashboard，驗證狀態直接注入 HTML。
+    let html = inject_auth_state(&inject_theme(ADMIN_DASHBOARD_HTML), &page.session);
+    attach_fresh_cookies(html_page_response(&headers, html), &page, &headers)
+}
+
+#[cfg(test)]
+pub(super) fn safe_next_path_for_test(raw: &str) -> Option<String> {
+    safe_next_path(raw)
+}
+
+/// 只接受站內 `/admin…` 相對路徑（不含 scheme / host / `//`），避免 open redirect。
+fn safe_next_path(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if raw.len() > 512 || !raw.starts_with("/admin") || raw.starts_with("//") {
+        return None;
+    }
+    if raw.contains("://") || raw.contains('\\') || raw.chars().any(char::is_control) {
+        return None;
+    }
+    let path = raw.split(['?', '#']).next().unwrap_or("");
+    if path == "/admin/logout" || path.starts_with("/admin/api/") || path.starts_with("/admin/static/") {
+        return None;
+    }
+    if path == "/admin" || path == "/admin/" {
+        return None;
+    }
+    Some(raw.to_string())
 }

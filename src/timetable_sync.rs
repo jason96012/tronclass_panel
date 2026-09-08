@@ -29,7 +29,9 @@ use once_cell::sync::Lazy;
 use tracing::{debug, info, warn};
 
 use crate::account::AccountConfig;
-use crate::adapters::events::{AdapterAccountTarget, AdapterMessenger, OutboundMessage};
+use crate::adapters::events::{
+    AdapterAccountTarget, AdapterMessenger, OutboundMessage, TimetableChangedEvent,
+};
 use crate::config::AppConfig;
 use crate::db::{AccountsDb, TimetableEntryInput};
 use crate::timetable_source::{compress_periods, get_timetable_source, RawTimetableRow};
@@ -398,32 +400,21 @@ async fn notify_change(
         return;
     };
 
-    let mut lines = vec!["📅 課表已自動更新".to_string()];
-    if !diff.added.is_empty() {
-        lines.push(format!("新增 {} 堂：", diff.added.len()));
-        for item in diff.added.iter().take(5) {
-            lines.push(format!("  ＋ {}", humanize_key(item)));
-        }
-        if diff.added.len() > 5 {
-            lines.push(format!("  …等 {} 堂", diff.added.len()));
-        }
-    }
-    if !diff.removed.is_empty() {
-        lines.push(format!("移除 {} 堂：", diff.removed.len()));
-        for item in diff.removed.iter().take(5) {
-            lines.push(format!("  － {}", humanize_key(item)));
-        }
-        if diff.removed.len() > 5 {
-            lines.push(format!("  …等 {} 堂", diff.removed.len()));
-        }
-    }
+    // DISCORD_NOTIFY_UNIFY_V1：結構化事件，由各 adapter 自行 render。
+    let event = TimetableChangedEvent {
+        account: account.id.clone(),
+        added: diff.added.iter().take(5).map(|k| humanize_key(k)).collect(),
+        added_total: diff.added.len(),
+        removed: diff.removed.iter().take(5).map(|k| humanize_key(k)).collect(),
+        removed_total: diff.removed.len(),
+    };
 
     let target = AdapterAccountTarget::new(
         account.id.clone(),
         account.line_user_id.clone(),
         account.discord_user_id.clone(),
     );
-    let message = OutboundMessage::Text(lines.join("\n"));
+    let message = OutboundMessage::TimetableChanged(event);
     if let Err(e) = messenger.push_to_account_or_admin(&target, &message).await {
         debug!(account = %account.id, error = %e, "課表更新通知送出失敗");
     }

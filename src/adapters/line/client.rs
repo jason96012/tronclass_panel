@@ -235,12 +235,20 @@ fn render_message(message: &OutboundMessage) -> String {
     match message {
         OutboundMessage::Text(text) => text.clone(),
         OutboundMessage::SecurityAlert(event) => format!(
-            "⚠️ Dashboard 安全警示\n\n連續密碼錯誤\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n請由 Dashboard 黑名單頁面封鎖此 IP：\nhttps://dashboard.jasoncloudserver.me/admin/blacklist",
+            "⚠️ Dashboard 安全警示\n\n連續密碼錯誤\n帳號：{}\n來源 IP：{}\n帳號失敗次數：{}\nIP 失敗次數：{}\n時間：{}\n{}請由 Dashboard 黑名單頁面封鎖此 IP：\nhttps://dashboard.jasoncloudserver.me/admin/blacklist",
             event.username,
             event.ip,
             event.user_failures,
             event.ip_failures,
             event.timestamp,
+            // LOGIN_TIERED_LOCKOUT_V1：LINE 沒有互動按鈕，只補一行狀態說明。
+            if event.ip_is_blacklisted {
+                "此 IP 已自動加入黑名單。\n"
+            } else if event.login_locked {
+                "此帳號的密碼登入已暫時鎖定 10 分鐘（通行密鑰不受影響）。\n"
+            } else {
+                ""
+            },
         ),
         OutboundMessage::SystemStarted(event) => format!(
             "🚀 Tronclass Rollcall 已啟動\n\
@@ -365,6 +373,11 @@ fn render_message(message: &OutboundMessage) -> String {
         OutboundMessage::Bulletin(event) => event.render(),
         OutboundMessage::PushSubscriptionExpired(event) => event.render(),
         OutboundMessage::RollcallInputReminder(event) => event.render(),
+        // DISCORD_NOTIFY_UNIFY_V1：LINE 維持純文字，用事件自帶的 render()。
+        OutboundMessage::MonitorEvent(event) => event.render(),
+        OutboundMessage::AdminAlert(event) => event.render(),
+        OutboundMessage::ClassReminder(event) => event.render(),
+        OutboundMessage::TimetableChanged(event) => event.render(),
         OutboundMessage::UnknownCommand { text } => format!(
             "❓ 不認識的指令：{}\n\n輸入 /help 或 幫助 查看可用指令。",
             // REDIRECT_UTF8_SLICE_V1：這裡截的是使用者輸入的文字，長中文訊息

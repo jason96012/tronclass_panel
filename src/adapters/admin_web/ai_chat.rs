@@ -2588,14 +2588,18 @@ pub(super) async fn page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize_any(&token).await else {
+    // ADMIN_PAGE_TRI_STATE_V1：access 過期但 refresh 有效時由伺服器端輪換，不再閃登入頁。
+    let Some(page) = super::pages::resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/ai");
     };
-    if session.must_change_password {
-        return must_change_password_redirect();
+    if page.session.must_change_password {
+        return super::pages::attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    html_page_response(&headers, super::pages::inject_theme(PAGE_HTML))
+    super::pages::attach_fresh_cookies(
+        html_page_response(&headers, super::pages::inject_theme(PAGE_HTML)),
+        &page,
+        &headers,
+    )
 }
 
 /// 目前狀態：密鑰（遮蔽後）、設定、對話串清單。

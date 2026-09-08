@@ -61,6 +61,45 @@ pub fn verify_dashboard_password(password: &str, stored: &str) -> bool {
     verify_legacy_pbkdf2(password, stored)
 }
 
+// ── LOGIN_VERIFY_OFFLOAD_V1 ──────────────────────────────────────────────────
+//
+// Argon2id / PBKDF2 驗證是刻意設計成慢（數十毫秒、佔記憶體）的 CPU 工作。
+// 直接在 tokio worker 上跑會把同一條執行緒上的其他請求（SSE、狀態輪詢、點名）
+// 一起卡住。以下包裝把驗證丟到 `spawn_blocking` 執行緒池；驗證失敗與
+// 執行緒池錯誤一律視為「不通過」，不會 panic。
+
+/// `verify_dashboard_password` 的非同步版本（在 blocking 執行緒池執行）。
+pub async fn verify_dashboard_password_async(password: String, stored: String) -> bool {
+    tokio::task::spawn_blocking(move || verify_dashboard_password(&password, &stored))
+        .await
+        .unwrap_or(false)
+}
+
+/// `hash_dashboard_password` 的非同步版本（在 blocking 執行緒池執行）。
+pub async fn hash_dashboard_password_async(
+    password: String,
+    provider_password: String,
+) -> Result<String> {
+    match tokio::task::spawn_blocking(move || hash_dashboard_password(&password, &provider_password))
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => Err(miette::miette!("密碼雜湊工作執行失敗：{e}")),
+    }
+}
+
+/// LOGIN_TIMING_EQUALIZE_V1：帳號不存在／未啟用／沒有 Dashboard 密碼時，仍對一個固定的
+/// Argon2id 假雜湊做一次完整驗證，讓「查無此帳號」與「密碼錯誤」的回應時間相近，
+/// 降低以時間差枚舉帳號的可能。這個雜湊對應的明文不會被任何人使用，驗證結果被丟棄。
+///
+/// 參數 (m=19456, t=2, p=1) 與 `Argon2::default()` 相同，因此耗時與真實驗證一致。
+const DUMMY_ARGON2_HASH: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$89PxjHgS8OCx6QEezATY2w$PqDCKzNfHB5bMJ3aK7KXN6ArtG8DDcOhfYfg3HPt9hM";
+
+pub async fn burn_dummy_verification(password: String) {
+    let _ = verify_dashboard_password_async(password, DUMMY_ARGON2_HASH.to_string()).await;
+}
+
 /// Whether a stored verifier is an older PBKDF2 hash (eligible for in-place
 /// upgrade to Argon2id on next successful login).
 pub fn is_legacy_pbkdf2_hash(stored: &str) -> bool {

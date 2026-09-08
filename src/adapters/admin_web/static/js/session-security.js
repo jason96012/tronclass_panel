@@ -86,21 +86,31 @@
     if (message) console.log(message);
   }
 
-  async function secureLogout() {
-    try {
-      await fetch('/admin/api/logout', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
-        cache: 'no-store'
-      });
-    } catch (_) {
-      // Always clear browser-side state even if the network vanished.
-    }
+  var logoutInFlight = false;
+  function secureLogout() {
+    // LOGOUT_SERVER_SIDE_V1：POST /admin/logout → 伺服器撤銷 session（access + refresh）、
+    // 清掉 access / refresh / SSO cookie 並 302 /admin。這裡用 fetch（redirect:'manual'）而非
+    // 表單導覽：Dashboard 各頁帶 Referrer-Policy: no-referrer，表單導覽的 Origin 會變成 null，
+    // 舊版 Safari 沒有 Sec-Fetch-Site 時會被同源檢查擋下；fetch 一律帶正確 Origin。
+    // 回應的 Set-Cookie 在 fetch 上同樣生效，之後只導向一次到 /admin（已無 cookie → 登入頁）。
+    // 不再依賴 ?logout=1、tronclass_dashboard_manual_logout 或 tronclass_session_hint。
+    if (logoutInFlight) return Promise.resolve();
+    logoutInFlight = true;
     clearSessionMarker();
-    try { localStorage.setItem('tronclass_dashboard_manual_logout', '1'); } catch (_) {}
-    location.replace('/admin?logout=1&v=securelogout' + Date.now());
+    try { localStorage.removeItem('tronclass_dashboard_manual_logout'); } catch (_) {}
+    try { localStorage.removeItem('tronclass_session_hint'); } catch (_) {}
+    return nativeFetch('/admin/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'manual',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: ''
+    }).catch(function () {
+      // 網路失敗也要離開頁面；伺服器端 session 會在到期時自然失效。
+    }).then(function () {
+      location.replace('/admin');
+    });
   }
 
   function isLogoutControl(target) {
@@ -285,9 +295,9 @@
     }
   }
 
+  var expiredRedirecting = false;
   function showExpiredLogin() {
     clearSessionMarker();
-    try { sessionStorage.removeItem('tron_fast_ok'); } catch (_) {}
     if (typeof window.__tronAuthSetState === 'function') {
       window.__tronAuthSetState('out');
     } else {
@@ -295,16 +305,20 @@
       document.documentElement.classList.add('tron-auth-logged-out');
       if (document.body) document.body.classList.remove('logged-in', 'auth-ok', 'dash-auth-ok');
     }
-    var message = document.getElementById('loginMsg') || document.getElementById('msg');
-    if (message) message.textContent = '伺服器已重新啟動，請重新登入。';
-    // Pages without an embedded login card must return to the login page.
-    if (!document.getElementById('loginCard') && !document.getElementById('animatedLoginForm')) {
-      var next = location.pathname + location.search + location.hash;
-      var target = new URL('/admin', location.origin);
-      if (next !== '/admin' && next !== '/admin/') target.searchParams.set('next', next);
-      target.searchParams.set('v', 'sessionexpired' + Date.now());
-      location.replace(target.pathname + target.search);
+    // 登入頁本身（獨立頁）不需要導向。
+    if (document.getElementById('animatedLoginForm')) {
+      var message = document.getElementById('loginMsg');
+      if (message) message.textContent = '登入狀態已過期，請重新登入。';
+      return;
     }
+    // LOGIN_PAGE_STANDALONE_V1：Dashboard 與所有子頁都沒有內嵌登入卡，一律導回登入頁（帶 next）。
+    if (expiredRedirecting) return;
+    expiredRedirecting = true;
+    var next = location.pathname + location.search + location.hash;
+    var target = new URL('/admin', location.origin);
+    if (next !== '/admin' && next !== '/admin/') target.searchParams.set('next', next);
+    target.searchParams.set('v', 'sessionexpired' + Date.now());
+    location.replace(target.pathname + target.search);
   }
 
   function validateSessionAfterResume() {

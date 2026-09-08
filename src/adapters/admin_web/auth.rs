@@ -161,29 +161,84 @@ pub(super) async fn admin_login_handler(
         }
     }
 
-    // Normal logins use the separate Dashboard verifier. If no Dashboard
-    // password exists yet, allow the stored Tronclass password once and create
-    // a restricted bootstrap session that can only set a new Dashboard password.
+    // LOGIN_TIERED_LOCKOUT_V1 第一層：帳號密碼登入若在鎖定中，直接回 423，不做驗證。
+    // 鍵含輸入名稱與所有候選帳號的 id / 學號（與上鎖時一致）。這次嘗試仍計入失敗，
+    // 攻擊者持續打會走到第二層（IP 黑名單）；持有人可由 Discord「取消這次鎖定」。
+    {
+        let mut lock_keys: Vec<String> = vec![username.to_string()];
+        for account in &candidates {
+            lock_keys.push(account.id.clone());
+            lock_keys.push(account.username.clone());
+        }
+        if let Some(remaining) = login_lock_remaining(&lock_keys).await {
+            warn!(username = %username, client = %client, remaining, "admin web login rejected: account temporarily locked");
+            {
+                let state = state.clone();
+                let user = username.to_string();
+                let ip = ip.clone();
+                tokio::spawn(async move {
+                    record_persistent_login_event(
+                        &state,
+                        &user,
+                        None,
+                        "login_locked",
+                        "failed",
+                        "Dashboard login rejected: account temporarily locked",
+                        &ip,
+                    )
+                    .await;
+                    alert_password_failures(&state, &user, &ip).await;
+                });
+            }
+            return (
+                StatusCode::LOCKED,
+                Json(json!({
+                    "error": "account_locked",
+                    "retry_after_secs": remaining,
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // LOGIN_CANDIDATE_FILTER_V1：先「篩選」再「驗證」——不再對每個候選帳號都跑一次
+    // 慢雜湊。規則：
+    //   * 停用帳號直接排除；
+    //   * 有 Dashboard 密碼者走正式驗證；沒有者才允許一次性的 Tronclass 密碼 bootstrap；
+    //   * 有 Dashboard 密碼的候選優先（同學號多帳號時，已完成設定的那個先驗）；
+    //   * 只驗到第一個成功為止。
+    // 慢雜湊一律以 spawn_blocking 執行（LOGIN_VERIFY_OFFLOAD_V1），不佔 tokio worker。
+    let mut ordered: Vec<crate::account::RawAccountConfig> = candidates
+        .into_iter()
+        .filter(|account| account.enabled)
+        .collect();
+    ordered.sort_by_key(|account| account.dashboard_password_hash.is_empty());
+
     let mut matched = None;
-    for account in candidates {
-        if !account.enabled {
+    let mut ran_slow_verify = false;
+    for account in ordered {
+        if !account.dashboard_password_hash.is_empty() {
+            ran_slow_verify = true;
+            if crate::dashboard_auth::verify_dashboard_password_async(
+                password.to_string(),
+                account.dashboard_password_hash.clone(),
+            )
+            .await
+            {
+                matched = Some((account, false));
+                break;
+            }
             continue;
         }
-        if !account.dashboard_password_hash.is_empty()
-            && crate::dashboard_auth::verify_dashboard_password(
-                password,
-                &account.dashboard_password_hash,
-            )
-        {
-            matched = Some((account, false));
-            break;
-        }
-        if account.dashboard_password_hash.is_empty()
-            && crate::dashboard_auth::verify_first_login_password(password, &account.password)
-        {
+        if crate::dashboard_auth::verify_first_login_password(password, &account.password) {
             matched = Some((account, true));
             break;
         }
+    }
+    // LOGIN_TIMING_EQUALIZE_V1：沒有任何候選跑過慢雜湊（帳號不存在／停用／只有 bootstrap
+    // 比對）時，補做一次固定假雜湊驗證，讓回應時間與「帳號存在但密碼錯」相近。
+    if matched.is_none() && !ran_slow_verify {
+        crate::dashboard_auth::burn_dummy_verification(password.to_string()).await;
     }
 
     let Some((account, must_change_password)) = matched else {
@@ -229,17 +284,29 @@ pub(super) async fn admin_login_handler(
     // 平滑遷移：成功登入且既有雜湊仍是舊 PBKDF2 時，用這次的明文密碼
     // 重算成 Argon2id 並回寫，下次登入即走新的抗暴力破解雜湊。bootstrap
     // （首登改用上游密碼、強制改密碼）不在此升級，改密碼流程會寫 Argon2id。
+    //
+    // LOGIN_UPGRADE_BACKGROUND_V1：升級改為背景任務（不 await）——重算 Argon2id 又是一次
+    // 慢雜湊，沒必要讓使用者多等；失敗只記 log，下次登入再試。明文只活在這個 task 內。
     if !must_change_password && crate::dashboard_auth::is_legacy_pbkdf2_hash(&account.dashboard_password_hash) {
-        let account_for_upgrade = account.clone();
-        if let Ok(new_hash) =
-            crate::dashboard_auth::hash_dashboard_password(password, &account_for_upgrade.password)
-        {
-            let _ = state
-                .accounts_db
-                .set_dashboard_password_hash(&account_for_upgrade.id, &new_hash)
-                .await;
-            info!(account = %account_for_upgrade.id, "Dashboard 密碼雜湊已由 PBKDF2 升級為 Argon2id");
-        }
+        let state = state.clone();
+        let upgrade_id = account.id.clone();
+        let provider_password = account.password.clone();
+        let plain = password.to_string();
+        tokio::spawn(async move {
+            match crate::dashboard_auth::hash_dashboard_password_async(plain, provider_password).await {
+                Ok(new_hash) => {
+                    match state
+                        .accounts_db
+                        .set_dashboard_password_hash(&upgrade_id, &new_hash)
+                        .await
+                    {
+                        Ok(_) => info!(account = %upgrade_id, "Dashboard 密碼雜湊已由 PBKDF2 升級為 Argon2id"),
+                        Err(error) => warn!(account = %upgrade_id, error = %error, "Argon2id 雜湊回寫失敗，下次登入再試"),
+                    }
+                }
+                Err(error) => warn!(account = %upgrade_id, error = %error, "Argon2id 升級雜湊計算失敗"),
+            }
+        });
     }
 
     let account_id = account.id.clone();
@@ -320,6 +387,7 @@ pub(super) async fn admin_login_handler(
 
 pub(super) async fn admin_logout_handler(
     State(state): State<AdminWebState>,
+    headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
     if let Some(session) = state.authorize(&query.token).await {
@@ -336,9 +404,62 @@ pub(super) async fn admin_logout_handler(
         }
     }
 
+    // LOGOUT_SERVER_SIDE_V1：API 登出也撤銷 refresh 列，與導覽式登出行為一致。
+    if let Some(refresh) = refresh_cookie_from_headers(&headers) {
+        let _ = state
+            .accounts_db
+            .delete_dashboard_session_by_refresh(&refresh)
+            .await;
+    }
     fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
         (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
     ))
+}
+
+/// LOGOUT_SERVER_SIDE_V1：瀏覽器導覽式登出。
+///
+/// `POST /admin/logout`（同源表單或 fetch 後跟隨導向）：伺服器撤銷 session、清掉
+/// access / refresh / Filebrowser SSO 三組 cookie，然後 302 回 `/admin`。因為 cookie
+/// 在 302 回應裡就被清掉，`/admin` 的三態判斷（見 `pages::admin_page_handler`）
+/// 自然落到「無 session → 登入頁」，前端不再需要 `?logout=1`、
+/// `tronclass_dashboard_manual_logout`、`tronclass_session_hint` 或 referrer 推測。
+///
+/// 用 POST 而非 GET：避免預抓取 / 連結掃描器一碰就把使用者登出（CSRF-logout）。
+/// 同源檢查由 `admin_same_origin_middleware` 只覆蓋 `/admin/api/`，這裡自行檢查一次。
+pub(super) async fn admin_logout_redirect_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    if !same_origin_request(&headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "cross-origin request rejected" })),
+        )
+            .into_response();
+    }
+    if let Some(session) = state.authorize_any(&query.token).await {
+        if session.account_id != "<token-admin>" {
+            state.revoke_session(&query.token).await;
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "logout",
+                Some(&session.account_id),
+                None,
+                "Web 管理頁登出",
+            );
+        }
+    }
+    // 同時讓 refresh token 失效：否則清掉 cookie 後，DB 裡的 refresh 列仍可被重放。
+    if let Some(refresh) = refresh_cookie_from_headers(&headers) {
+        let _ = state
+            .accounts_db
+            .delete_dashboard_session_by_refresh(&refresh)
+            .await;
+    }
+    let response = (StatusCode::FOUND, [(header::LOCATION, "/admin")]).into_response();
+    fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(response))
 }
 
 pub(super) async fn admin_session_refresh_handler(
@@ -490,10 +611,12 @@ pub(super) async fn admin_password_change_handler(
     if !first_setup
         && (!session.must_change_password
             && (account.dashboard_password_hash.is_empty()
-                || !crate::dashboard_auth::verify_dashboard_password(
-                    request.current_password.as_str(),
-                    &account.dashboard_password_hash,
-                )))
+                // LOGIN_VERIFY_OFFLOAD_V1：改密碼時驗目前密碼同樣走 blocking 執行緒池。
+                || !crate::dashboard_auth::verify_dashboard_password_async(
+                    request.current_password.clone(),
+                    account.dashboard_password_hash.clone(),
+                )
+                .await))
     {
         crate::logs::record_audit(
             "web",
@@ -506,10 +629,12 @@ pub(super) async fn admin_password_change_handler(
         return unauthorized_response();
     }
 
-    let hash = match crate::dashboard_auth::hash_dashboard_password(
-        &request.new_password,
-        &account.password,
-    ) {
+    let hash = match crate::dashboard_auth::hash_dashboard_password_async(
+        request.new_password.clone(),
+        account.password.clone(),
+    )
+    .await
+    {
         Ok(hash) => hash,
         Err(error) => {
             return (

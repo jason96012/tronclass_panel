@@ -70,12 +70,9 @@
   }
 
   function logout() {
-    fetch('/admin/api/logout', { method: 'POST', credentials: 'same-origin', cache: 'no-store' })
-      .catch(function () {})
-      .then(function () {
-        try { localStorage.setItem('tronclass_dashboard_manual_logout', '1'); } catch (_) {}
-        location.replace('/admin?logout=1&v=securelogout' + Date.now());
-      });
+    // LOGOUT_SERVER_SIDE_V1：統一走 POST /admin/logout（伺服器清 cookie 後 302 回登入頁）。
+    if (typeof window.tronSecureLogout === 'function') return window.tronSecureLogout();
+    fetch('/admin/logout',{method:'POST',credentials:'same-origin',cache:'no-store',redirect:'manual'}).catch(function(){}).then(function(){location.replace('/admin')});
   }
   function closeMore() { var el = q('mobileMoreFinalV2'); if (el) el.classList.remove('visible'); }
   function openMore() { var el = q('mobileMoreFinalV2'); if (el) el.classList.add('visible'); }

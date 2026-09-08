@@ -12,6 +12,9 @@
   function q(id){return document.getElementById(id)}
   function loginRoot(){return q('loginCard')||q('loginPanel')||document.querySelector('.login-card')}
   function isLoggedIn(){if(document.documentElement.classList.contains('tron-auth-pending')||document.documentElement.classList.contains('tron-auth-ok')||window.__tronAuthState==='ok'||window.__tronAuthState==='pending')return true;return document.body.classList.contains('logged-in') || document.documentElement.classList.contains('dash-auth-ok') || (loginRoot() && getComputedStyle(loginRoot()).display==='none')}
+  /* LOGIN_PAGE_STANDALONE_V1：本檔只在獨立登入頁（login.html）載入。登入卡 markup 已由伺服器輸出，
+     不需要動態建立；ensureShell 過去是未定義的（每次 tick 都丟 ReferenceError），改為 no-op。 */
+  function ensureShell(){}
 /* TOKEN_STORAGE_PURGE_V1: cookie-only（SECURITY-F03）——不再寫 token 進 storage，改清除遺留 key */
   function purgeLegacyTokens(){TOKEN_KEYS.forEach(function(k){try{localStorage.removeItem(k)}catch(_){}try{sessionStorage.removeItem(k)}catch(_){}});try{var u=new URL(location.href);if(u.searchParams.has('token')){u.searchParams.delete('token');history.replaceState(null,'',u.pathname+u.search+u.hash)}}catch(_){}}
   function setMsg(m,ok){var el=q('loginMsg')||q('animatedLoginMsg');if(el){el.textContent=m||'';el.className='animated-login-message '+(ok===false?'bad':ok===true?'ok':'')}}

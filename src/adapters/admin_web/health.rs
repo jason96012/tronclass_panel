@@ -10,8 +10,23 @@ pub(super) async fn healthz_handler() -> Response {
         .into_response()
 }
 
-pub(super) async fn admin_health_page_handler(headers: HeaderMap) -> Response {
-    super::html_page_response(&headers, super::pages::inject_theme(super::pages::ADMIN_HEALTH_HTML))
+pub(super) async fn admin_health_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    // ADMIN_PAGE_TRI_STATE_V1：伺服器端驗證（含 refresh 續期），未登入導回登入頁。
+    let Some(page) = super::pages::resolve_page_session(&state, &headers, &query.token).await else {
+        return super::admin_login_redirect("/admin/health");
+    };
+    if page.session.must_change_password {
+        return super::pages::attach_fresh_cookies(super::must_change_password_redirect(), &page, &headers);
+    }
+    super::pages::attach_fresh_cookies(
+        super::html_page_response(&headers, super::pages::inject_theme(super::pages::ADMIN_HEALTH_HTML)),
+        &page,
+        &headers,
+    )
 }
 
 pub(super) async fn admin_health_api_handler(
