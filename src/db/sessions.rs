@@ -119,9 +119,28 @@ impl AccountsDb {
     }
 
     /// LOGIN_DEVICES_V1：更新 session 最近活動時間（呼叫端已做 60 秒節流）。
-    pub async fn touch_dashboard_session(&self, token: &str, last_seen_at: i64) -> Result<()> {
-        sqlx::query("UPDATE dashboard_sessions SET last_seen_at = ? WHERE token = ?")
+    ///
+    /// 同時「只在欄位仍為空時」回填 `ip` / `user_agent`：功能上線前就存在的
+    /// session、或走過不含來源資訊路徑的 session，會在下一次活動時補齊，
+    /// 裝置頁不會永遠顯示「未知裝置 / IP：-」。已有值的列不會被覆寫
+    /// （保留「登入當下」的來源語意）。
+    pub async fn touch_dashboard_session(
+        &self,
+        token: &str,
+        last_seen_at: i64,
+        ip: &str,
+        user_agent: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "UPDATE dashboard_sessions
+             SET last_seen_at = ?,
+                 ip = CASE WHEN ip = '' THEN ? ELSE ip END,
+                 user_agent = CASE WHEN user_agent = '' THEN ? ELSE user_agent END
+             WHERE token = ?",
+        )
             .bind(last_seen_at)
+            .bind(ip.trim())
+            .bind(user_agent.trim())
             .bind(token.trim())
             .execute(&self.pool)
             .await

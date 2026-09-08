@@ -916,6 +916,7 @@ mod tests {
             rollcall_history: Vec::new(),
             consecutive_failures: 0,
             started_at: 0,
+            last_failure: None,
         }))
     }
 
@@ -992,6 +993,7 @@ mod tests {
             rollcall_history: Vec::new(),
             consecutive_failures: 0,
             started_at: 1_699_900_000,
+            last_failure: None,
         };
         let msg = OutboundMessage::Status(StatusMessage::Single(status.clone()));
         assert_eq!(msg, OutboundMessage::Status(StatusMessage::Single(status)));

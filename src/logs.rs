@@ -272,7 +272,7 @@ pub async fn init_sqlite(path: impl AsRef<Path>) -> Result<()> {
 
     let recent = query_recent_from_pool(&pool, None, MAX_LOG_ENTRIES).await?;
     {
-        let mut logs = LOGS.lock().expect("logs mutex poisoned");
+        let mut logs = LOGS.lock().unwrap_or_else(|p| p.into_inner());
         logs.clear();
         for entry in recent.iter().rev().cloned() {
             logs.push_back(entry);
@@ -355,7 +355,7 @@ pub fn snapshot(kind: Option<&str>, limit: usize) -> Vec<WebLogEntry> {
     let kind = kind
         .map(str::trim)
         .filter(|value| !value.is_empty() && *value != "all");
-    let logs = LOGS.lock().expect("logs mutex poisoned");
+    let logs = LOGS.lock().unwrap_or_else(|p| p.into_inner());
     logs.iter()
         .rev()
         .filter(|entry| kind.map(|k| entry.kind == k).unwrap_or(true))
@@ -395,7 +395,7 @@ pub fn dropped_sqlite_log_count() -> u64 {
 }
 
 fn push_memory(entry: WebLogEntry) {
-    let mut logs = LOGS.lock().expect("logs mutex poisoned");
+    let mut logs = LOGS.lock().unwrap_or_else(|p| p.into_inner());
     if logs.len() >= MAX_LOG_ENTRIES {
         logs.pop_front();
     }

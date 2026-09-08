@@ -25,6 +25,30 @@ struct AccountRow {
     discord_user_id: String,
     session_cookie: String,
     is_admin: bool,
+    /// VIEWER_NO_SCHOOL_API_V1
+    is_viewer: bool,
+}
+
+/// SECRET_ROTATE_CLI_V1：`rotate_all_secrets` 的統計結果。
+#[derive(Debug, Default, Clone)]
+pub struct SecretRotationReport {
+    pub total: usize,
+    /// password 已是目前 key 的 v2 信封（且 cookie 也不需動）。
+    pub already_current: usize,
+    /// password 原為明文、本次加密。
+    pub encrypted_plaintext: usize,
+    /// password 原為舊 key／v1、本次重加密。
+    pub rewrapped: usize,
+    /// 實際寫回的帳號數。
+    pub updated: usize,
+    /// dry-run 時「會被更新」的帳號數。
+    pub would_update: usize,
+    /// password 解不開的帳號 id。
+    pub undecryptable_password: Vec<String>,
+    /// session_cookie 解不開的帳號 id（影響較小：重登即可重建）。
+    pub undecryptable_cookie: Vec<String>,
+    /// 寫回失敗的 `id: error`。
+    pub write_failed: Vec<String>,
 }
 
 impl From<AccountRow> for RawAccountConfig {
@@ -45,6 +69,7 @@ impl From<AccountRow> for RawAccountConfig {
                 .as_str()
                 .to_string(),
             is_admin: row.is_admin,
+            is_viewer: row.is_viewer,
         }
     }
 }
@@ -55,7 +80,7 @@ impl AccountsDb {
     /// 取得所有帳號（依 id 排序）。
     pub async fn list(&self) -> Result<Vec<RawAccountConfig>> {
         let rows = sqlx::query_as::<_, AccountRow>(
-            "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash
+            "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash, is_viewer
              FROM accounts ORDER BY id",
         )
         .fetch_all(&self.pool)
@@ -75,7 +100,7 @@ impl AccountsDb {
     /// 以 id 取得單一帳號。
     pub async fn get(&self, id: &str) -> Result<Option<RawAccountConfig>> {
         let row = sqlx::query_as::<_, AccountRow>(
-            "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash
+            "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash, is_viewer
              FROM accounts WHERE id = ?",
         )
         .bind(id)
@@ -98,7 +123,7 @@ impl AccountsDb {
     ) -> Result<Vec<RawAccountConfig>> {
         let rows = if let Some(provider) = provider.filter(|v| !v.trim().is_empty()) {
             sqlx::query_as::<_, AccountRow>(
-                "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash
+                "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash, is_viewer
                  FROM accounts WHERE username = ? AND provider = ? ORDER BY id LIMIT ?",
             )
             .bind(username)
@@ -110,7 +135,7 @@ impl AccountsDb {
             .wrap_err_with(|| format!("以 username `{username}` 查詢帳號失敗"))?
         } else {
             sqlx::query_as::<_, AccountRow>(
-                "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash
+                "SELECT id, provider, username, password, enabled, line_user_id, discord_user_id, session_cookie, is_admin, dashboard_password_hash, is_viewer
                  FROM accounts WHERE username = ? ORDER BY id LIMIT ?",
             )
             .bind(username)
@@ -167,6 +192,84 @@ impl AccountsDb {
                 false
             }
         }
+    }
+
+    /// SECRET_ROTATE_CLI_V1：把所有帳號的 password / session_cookie 收斂成
+    /// 目前 master key 的 v2 信封（明文→加密、舊 key→重加密、解不開→回報）。
+    ///
+    /// 直接操作原始儲存值，不經過 `RawAccountConfig` 的解密路徑，所以
+    /// 解不開的值不會被誤寫成空字串。`dry_run` 為 true 時只統計不寫入。
+    pub async fn rotate_all_secrets(&self, dry_run: bool) -> Result<SecretRotationReport> {
+        use crate::secret_encryption::{rotate_stored, RotateOutcome};
+
+        let rows = sqlx::query_as::<_, (String, String, String)>(
+            "SELECT id, password, session_cookie FROM accounts ORDER BY id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("讀取帳號原始密文失敗")?;
+
+        let mut report = SecretRotationReport::default();
+        for (id, password, session_cookie) in rows {
+            report.total += 1;
+            let pw = rotate_stored(&password);
+            let ck = rotate_stored(&session_cookie);
+
+            let mut failed = false;
+            let mut changed = false;
+            let mut new_password = password.clone();
+            let mut new_cookie = session_cookie.clone();
+            for (outcome, slot, is_password) in [(pw, &mut new_password, true), (ck, &mut new_cookie, false)] {
+                match outcome {
+                    RotateOutcome::Unchanged => {}
+                    RotateOutcome::Encrypted(v) => {
+                        *slot = v;
+                        changed = true;
+                        if is_password {
+                            report.encrypted_plaintext += 1;
+                        }
+                    }
+                    RotateOutcome::Rewrapped(v) => {
+                        *slot = v;
+                        changed = true;
+                        if is_password {
+                            report.rewrapped += 1;
+                        }
+                    }
+                    RotateOutcome::Undecryptable => {
+                        failed = true;
+                        if is_password {
+                            report.undecryptable_password.push(id.clone());
+                        } else {
+                            report.undecryptable_cookie.push(id.clone());
+                        }
+                    }
+                }
+            }
+
+            if !changed {
+                if !failed {
+                    report.already_current += 1;
+                }
+                continue;
+            }
+            if dry_run {
+                report.would_update += 1;
+                continue;
+            }
+            match sqlx::query("UPDATE accounts SET password = ?, session_cookie = ? WHERE id = ?")
+                .bind(&new_password)
+                .bind(&new_cookie)
+                .bind(&id)
+                .execute(&self.pool)
+                .await
+            {
+                Ok(_) => report.updated += 1,
+                Err(error) => report.write_failed.push(format!("{id}: {error}")),
+            }
+        }
+        Ok(report)
     }
 
     // ── 寫入 ──────────────────────────────────────────────────────────────────
@@ -424,6 +527,7 @@ mod tests {
             discord_user_id: "100".to_string(),
             session_cookie: String::new(),
             is_admin: false,
+            is_viewer: false,
             dashboard_password_hash: String::new(),
         };
 
@@ -467,6 +571,7 @@ mod tests {
             discord_user_id: String::new(),
             session_cookie: String::new(),
             is_admin: false,
+            is_viewer: false,
             dashboard_password_hash: String::new(),
         })
         .await
@@ -501,6 +606,7 @@ mod tests {
                 discord_user_id: String::new(),
                 session_cookie: String::new(),
                 is_admin: false,
+                is_viewer: false,
                 dashboard_password_hash: String::new(),
             })
             .await

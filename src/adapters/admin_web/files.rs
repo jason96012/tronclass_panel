@@ -550,7 +550,12 @@ static OFFICE_PREVIEW_SECRET: once_cell::sync::Lazy<String> = once_cell::sync::L
         }
     }
     let mut b = [0u8; 32];
-    getrandom::getrandom(&mut b).expect("getrandom");
+    // UNWRAP_SWEEP_V1：getrandom 失敗（極罕見，例如 /dev/urandom 不可讀）時
+    // 退回 rand::random，不讓整個 Lazy 初始化 panic。
+    if let Err(e) = getrandom::getrandom(&mut b) {
+        tracing::warn!(error = %e, "getrandom 失敗，office preview 金鑰改用 rand 產生");
+        b = rand::random::<[u8; 32]>();
+    }
     let secret = hex::encode(b);
     // ATOMIC_WRITE_V1：HMAC 金鑰，權限 0600 且原子落盤（半截金鑰 = 所有分享連結失效）。
     if let Err(e) = crate::atomic_write::write_atomic_with_mode(path, &secret, 0o600) {

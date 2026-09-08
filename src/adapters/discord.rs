@@ -938,6 +938,7 @@ impl DiscordRuntime {
             discord_user_id: discord_user_id.to_string(),
             session_cookie: String::new(),
             is_admin: false,
+            is_viewer: false,
             dashboard_password_hash: String::new(),
         };
 
@@ -1864,12 +1865,13 @@ fn render_status_message(message: &StatusMessage) -> String {
                 };
                 let last_success = status.last_success_course.as_deref().unwrap_or("無");
                 lines.push(format!(
-                    "\n帳號：{}\n使用者：{}\n狀態：{}\n最後成功：{}\n連續失敗：{} 次",
+                    "\n帳號：{}\n使用者：{}\n狀態：{}\n最後成功：{}\n連續失敗：{} 次{}",
                     account.account_id,
                     status.user_name,
                     running,
                     last_success,
-                    status.consecutive_failures
+                    status.consecutive_failures,
+                    render_failure_hint(status)
                 ));
             }
             lines.join("\n")
@@ -1885,9 +1887,19 @@ fn render_monitor_status(status: &MonitorStatus) -> String {
     };
     let last_success = status.last_success_course.as_deref().unwrap_or("無");
     format!(
-        "狀態：{running}\n帳號：{}\n最後成功：{last_success}\n連續失敗：{} 次",
-        status.user_name, status.consecutive_failures
+        "狀態：{running}\n帳號：{}\n最後成功：{last_success}\n連續失敗：{} 次{}",
+        status.user_name,
+        status.consecutive_failures,
+        render_failure_hint(status)
     )
+}
+
+/// FAILURE_DIAGNOSIS_V1：連續失敗時附上原因分類與自助建議（成功後為空字串）。
+fn render_failure_hint(status: &MonitorStatus) -> String {
+    match (&status.last_failure, status.consecutive_failures) {
+        (Some(d), n) if n > 0 => format!("\n原因：{}\n建議：{}", d.label, d.advice),
+        _ => String::new(),
+    }
 }
 
 fn help_text() -> &'static str {
@@ -2139,6 +2151,7 @@ mod tests {
             discord_user_id: "old".to_string(),
             session_cookie: String::new(),
             is_admin: false,
+            is_viewer: false,
             dashboard_password_hash: String::new(),
         })
         .await

@@ -905,11 +905,30 @@ impl SessionOrigin {
             .filter(|v| !v.is_empty())
             .map(|v| crate::text_utils::truncate_chars(v, 256).to_string())
             .unwrap_or_default();
+        // `ClientIp` 在缺少 ConnectInfo 時會給 "unknown"；那不是位址，不要寫進 DB
+        // （寫了會佔住 ip 欄位，之後就無法回填）。
+        let ip = ip.trim();
+        let ip = if ip.is_empty() || ip.eq_ignore_ascii_case("unknown") {
+            String::new()
+        } else {
+            ip.to_string()
+        };
         Self {
-            ip: ip.trim().to_string(),
+            ip,
             user_agent,
             first_login_at: 0,
         }
+    }
+
+    /// 以 `self` 為主，欄位為空時用 `fallback` 補上（refresh 輪換／回填用）。
+    fn or_fill(mut self, fallback: &SessionOrigin) -> Self {
+        if self.ip.is_empty() {
+            self.ip = fallback.ip.clone();
+        }
+        if self.user_agent.is_empty() {
+            self.user_agent = fallback.user_agent.clone();
+        }
+        self
     }
 }
 
@@ -1202,7 +1221,14 @@ impl AdminWebState {
     /// Validates the refresh token (still present in DB and not expired),
     /// then issues a new access token and a **new** refresh token, revoking the
     /// old one so a reused refresh token cannot be replayed after rotation.
-    async fn rotate_session(&self, refresh_token: &str) -> Option<SessionTokens> {
+    ///
+    /// `current`：這次 refresh 請求的來源。舊列的 ip / user_agent 為空時
+    /// （功能上線前建立的 session）用它補齊；有值時一律保留原始登入來源。
+    async fn rotate_session(
+        &self,
+        refresh_token: &str,
+        current: Option<SessionOrigin>,
+    ) -> Option<SessionTokens> {
         let refresh_token = refresh_token.trim();
         // REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): reject malformed values here as
         // well as at the cookie reader. `admin_session_refresh_handler` also
@@ -1244,10 +1270,16 @@ impl AdminWebState {
                 is_admin: row.is_admin,
                 is_viewer: row.is_viewer,
                 must_change_password: row.must_change_password,
-                origin: SessionOrigin {
-                    ip: row.ip.clone(),
-                    user_agent: row.user_agent.clone(),
-                    first_login_at: row.created_at,
+                origin: {
+                    let stored = SessionOrigin {
+                        ip: row.ip.clone(),
+                        user_agent: row.user_agent.clone(),
+                        first_login_at: row.created_at,
+                    };
+                    match current.as_ref() {
+                        Some(now) => stored.or_fill(now),
+                        None => stored,
+                    }
                 },
             })
             .await;
@@ -1277,7 +1309,10 @@ impl AdminWebState {
 
     /// LOGIN_DEVICES_V1：回寫 session 最近活動時間。以 token 為 key 做 60 秒節流，
     /// 節流表最多 MAX_SESSIONS 筆，超過就整個清空重來（極端情況下只是多寫一次）。
-    async fn touch_session_last_seen(&self, token: &str) {
+    ///
+    /// `origin`：目前請求的來源；只用來回填 DB 裡仍為空的 ip / user_agent
+    /// （見 `AccountsDb::touch_dashboard_session`）。
+    async fn touch_session_last_seen(&self, token: &str, origin: SessionOrigin) {
         static LAST_TOUCH: once_cell::sync::Lazy<tokio::sync::Mutex<HashMap<String, Instant>>> =
             once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
         const TOUCH_INTERVAL: Duration = Duration::from_secs(60);
@@ -1310,7 +1345,9 @@ impl AdminWebState {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs() as i64;
-            let _ = db.touch_dashboard_session(&tok, now_unix).await;
+            let _ = db
+                .touch_dashboard_session(&tok, now_unix, &origin.ip, &origin.user_agent)
+                .await;
         });
     }
 
@@ -2242,10 +2279,15 @@ fn append_expired_session_cookies(mut response: Response) -> Response {
         (LOCAL_REFRESH_COOKIE, ""),
     ] {
         let cookie = format!("{name}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax{secure}");
-        let value = cookie
-            .parse::<HeaderValue>()
-            .expect("generated expired cookie must be a valid HTTP header");
-        response.headers_mut().append(header::SET_COOKIE, value);
+        // UNWRAP_SWEEP_V1：字串是固定格式必定合法；仍以 match 收斂，不在 handler 內 panic。
+        match cookie.parse::<HeaderValue>() {
+            Ok(value) => {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+            Err(error) => {
+                warn!(cookie = %name, %error, "清除 cookie 的 Set-Cookie 標頭建構失敗，已略過");
+            }
+        }
     }
     response
         .headers_mut()
@@ -2414,6 +2456,16 @@ async fn require_dashboard_password_change_middleware(
     let path_owned = path.to_string();
     let method = request.method().clone();
     let is_mutating = method != Method::GET && method != Method::HEAD && method != Method::OPTIONS;
+    // LOGIN_DEVICES_V1：目前請求來源（owned），供 touch 時回填舊 session 的 ip / UA。
+    let origin = {
+        let peer = request
+            .extensions()
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip());
+        let trusted = crate::trusted_ip::trusted_from_global_config();
+        let ip = crate::trusted_ip::resolve_client_ip(peer, request.headers(), &trusted);
+        SessionOrigin::from_request(request.headers(), &ip)
+    };
     if let Some(token) = token {
         if let Some(session) = state.authorize_any(&token).await {
             if session.must_change_password {
@@ -2442,8 +2494,8 @@ async fn require_dashboard_password_change_middleware(
                     .into_response();
             }
             // LOGIN_DEVICES_V1：更新 session 最近活動時間（60 秒節流，避免每個
-            // 請求都寫 SQLite）。
-            state.touch_session_last_seen(&token).await;
+            // 請求都寫 SQLite），並回填舊 session 缺少的來源資訊。
+            state.touch_session_last_seen(&token, origin).await;
         }
     }
 
@@ -2891,6 +2943,10 @@ struct AdminActionRequest {
     discord_user_id: Option<String>,
     #[serde(default)]
     is_admin: Option<bool>,
+    /// ADD_ACCOUNT_ROLE_V1：新增帳號時的角色 "admin" / "user" / "viewer"；
+    /// 有給時優先於 is_admin。
+    #[serde(default)]
+    role: Option<String>,
     #[serde(default)]
     mock_kind: Option<String>,
     #[serde(default)]
@@ -3063,6 +3119,7 @@ mod tests {
             discord_user_id: String::new(),
             session_cookie: String::new(),
             is_admin: false,
+            is_viewer: false,
         })
         .await
         .unwrap();
@@ -3977,7 +4034,7 @@ mod tests {
             "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
         ] {
             assert!(
-                state.rotate_session(value).await.is_none(),
+                state.rotate_session(value, None).await.is_none(),
                 "rotate_session must reject {value:?}"
             );
         }
@@ -4003,7 +4060,7 @@ mod tests {
         );
 
         let rotated = state
-            .rotate_session(&tokens.refresh)
+            .rotate_session(&tokens.refresh, None)
             .await
             .expect("a freshly minted refresh token must still rotate");
         assert!(is_valid_session_token_format(&rotated.access));

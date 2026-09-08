@@ -35,8 +35,8 @@ pub fn try_get_config() -> Option<&'static AppConfig> {
 /// 所以必須另外呼叫這個函式，否則 [`get_config`] 會 panic。
 /// 重複呼叫是安全的：第一次以後直接忽略。
 pub fn set_global_config(config: AppConfig) -> &'static AppConfig {
-    let _ = CONFIG.set(config);
-    CONFIG.get().expect("CONFIG was just set")
+    // UNWRAP_SWEEP_V1：get_or_init 一次完成「未設就設、已設就取」，沒有 expect。
+    CONFIG.get_or_init(|| config)
 }
 
 /// 從指定路徑初始化全域設定
@@ -45,7 +45,9 @@ pub fn init_config(path: impl AsRef<Path>) -> Result<&'static AppConfig> {
     CONFIG
         .set(cfg)
         .map_err(|_| miette::miette!("Config already initialized"))?;
-    Ok(CONFIG.get().unwrap())
+    CONFIG
+        .get()
+        .ok_or_else(|| miette::miette!("Config 初始化後立即讀取失敗（不應發生）"))
 }
 
 // ─── 根設定 ───────────────────────────────────────────────────────────────────

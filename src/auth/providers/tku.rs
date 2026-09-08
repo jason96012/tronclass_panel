@@ -574,6 +574,20 @@ fn auth_failed<T>(reason: impl Into<String>) -> Result<T> {
 mod tests {
     use super::*;
 
+    /// UNWRAP_SWEEP_V1：所有 Lazy regex 在測試中強制初始化；pattern 打錯會在這裡爆，
+    /// 而不是在正式環境第一次登入時 panic。
+    #[test]
+    fn static_regexes_compile() {
+        let _ = &*NAM_ENTRY_RE;
+        let _ = &*FORM_RE;
+        let _ = &*INPUT_TAG_RE;
+        let _ = &*ATTR_RE;
+        let _ = &*REDIRECT_LOCATION_ASSIGN_RE;
+        let _ = &*REDIRECT_LOCATION_CALL_RE;
+        let _ = &*REDIRECT_META_REFRESH_RE;
+        let _ = &*ALERT_MSG_RE;
+    }
+
     #[test]
     fn test_extract_nam_entry_url_prefers_first_entry() {
         let html = r#"

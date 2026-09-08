@@ -258,3 +258,14 @@ pub(super) fn rewrite_asset_versions(input: &str) -> Cow<'_, str> {
     let replacement = format!("$1?sv={}", *BUILD_ID);
     ASSET_URL_RE.replace_all(input, replacement)
 }
+
+#[cfg(test)]
+mod tests {
+    /// UNWRAP_SWEEP_V1：強制初始化 ASSET_URL_RE。
+    #[test]
+    fn asset_url_regex_compiles() {
+        let _ = &*super::ASSET_URL_RE;
+        let out = super::rewrite_asset_versions("<a href=\"/admin/static/x.js?v=1\">");
+        assert!(out.contains("/admin/static/x.js?sv="));
+    }
+}

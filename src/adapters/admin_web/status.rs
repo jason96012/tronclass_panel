@@ -44,6 +44,11 @@ pub(super) struct InactiveAccountStatus {
     provider: String,
     /// 最近一次熱啟動失敗原因；None 代表從未嘗試過（例如 CLI 新增後尚未重啟）。
     last_error: Option<String>,
+    /// FAILURE_DIAGNOSIS_V1：對 last_error 的分類與建議。
+    diagnosis: Option<crate::monitor_alerts::FailureDiagnosis>,
+    /// VIEWER_NO_SCHOOL_API_V1：檢視者帳號（依設計不監控）。重啟後它們沒有監控
+    /// 循環、不會出現在 accounts 列，管理員仍需在這裡看到並能取消檢視者／刪除。
+    is_viewer: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +72,8 @@ pub(super) struct AdminAccountStatus {
     rollcall_history: Vec<RollcallHistoryEntry>,
     consecutive_failures: u32,
     started_at: i64,
+    /// FAILURE_DIAGNOSIS_V1：最近一次失敗的分類與自助建議（成功後為 None）。
+    last_failure: Option<crate::monitor_alerts::FailureDiagnosis>,
 }
 
 // Cache admin flags for /admin/api/status to avoid querying accounts.db on every dashboard refresh.
@@ -432,6 +439,7 @@ pub(super) async fn admin_dashboard_events_handler(
 pub(super) async fn admin_status_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
     Query(query): Query<AdminQuery>,
 ) -> Response {
     // Temporary production profiling for first-paint diagnosis. Keep the
@@ -462,7 +470,9 @@ pub(super) async fn admin_status_handler(
     let auth_elapsed = request_started.elapsed();
     // LOGIN_DEVICES_V1：/admin/api/status 是 bootstrap 白名單路徑，middleware 不會經過
     // touch；Dashboard 只輪詢這支 API 的使用者也要能更新「最近活動」（60 秒節流）。
-    state.touch_session_last_seen(&token).await;
+    state
+        .touch_session_last_seen(&token, SessionOrigin::from_request(&headers, &ip))
+        .await;
 
     let include_history = query.include_history.unwrap_or(true);
     let history_limit = if include_history {
@@ -566,6 +576,14 @@ pub(super) async fn admin_status_handler(
                 let last_detected_rollcall_id = status.last_detected_rollcall_id;
                 let consecutive_failures = status.consecutive_failures;
                 let started_at = status.started_at;
+                // FAILURE_DIAGNOSIS_V1：檢視者看別人的帳號時不下發原始錯誤訊息
+                // （可能含學號／網址片段），只保留分類與建議。
+                let last_failure = status.last_failure.clone().map(|mut d| {
+                    if mask_sensitive && account.account_id != session_account_id {
+                        d.message = String::new();
+                    }
+                    d
+                });
                 drop(status);
 
                 // PERFORMANCE_STATUS_TARGET_V1:
@@ -605,6 +623,7 @@ pub(super) async fn admin_status_handler(
                     rollcall_history,
                     consecutive_failures,
                     started_at,
+                    last_failure,
                 }
             }
         })
@@ -743,11 +762,21 @@ async fn collect_inactive_accounts(state: &AdminWebState) -> Vec<InactiveAccount
     let mut inactive = rows
         .into_iter()
         .filter(|row| row.enabled && !spawner.is_active(&row.id))
-        .map(|row| InactiveAccountStatus {
-            last_error: spawner.last_error(&row.id),
-            account_id: row.id,
-            username: row.username,
-            provider: row.provider,
+        .map(|row| {
+            // VIEWER_NO_SCHOOL_API_V1：檢視者依設計不監控，不帶錯誤／診斷，只標記身分。
+            let last_error = if row.is_viewer { None } else { spawner.last_error(&row.id) };
+            let diagnosis = last_error.as_deref().map(|text| {
+                let is_auth = text.contains("登入失敗") || text.contains("認證");
+                crate::monitor_alerts::diagnose(text, is_auth)
+            });
+            InactiveAccountStatus {
+                last_error,
+                diagnosis,
+                is_viewer: row.is_viewer,
+                account_id: row.id,
+                username: row.username,
+                provider: row.provider,
+            }
         })
         .collect::<Vec<_>>();
     inactive.sort_by(|a, b| a.account_id.cmp(&b.account_id));

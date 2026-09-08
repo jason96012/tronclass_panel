@@ -82,6 +82,8 @@ enum AccountCmd {
         discord_user_id: String,
         enabled: bool,
         is_admin: bool,
+        /// VIEWER_NO_SCHOOL_API_V1：唯讀檢視者（不監控、不登入學校系統）。
+        is_viewer: bool,
     },
     Bind {
         id: String,
@@ -108,6 +110,11 @@ enum AccountCmd {
     },
     /// 將既有帳號的密碼與 session cookie 重新寫入（以啟用 at-rest 加密）。
     Reencrypt,
+    /// SECRET_ROTATE_CLI_V1：把所有密文收斂到目前 master key（含明文→加密、舊 key→新 key），
+    /// 並回報解不開的帳號。`--dry-run` 只檢查不寫入。
+    RotateSecret {
+        dry_run: bool,
+    },
 }
 
 impl AccountCmd {
@@ -133,6 +140,7 @@ impl AccountCmd {
                 let mut discord_user_id = String::new();
                 let mut enabled = true;
                 let mut is_admin = false;
+                let mut is_viewer = false;
                 *i += 1;
                 while *i < args.len() {
                     match args[*i].as_str() {
@@ -159,6 +167,7 @@ impl AccountCmd {
                         }
                         "--disabled" => enabled = false,
                         "--admin" => is_admin = true,
+                        "--viewer" => is_viewer = true,
                         other => {
                             eprintln!("未知引數：{other}");
                             std::process::exit(1);
@@ -190,6 +199,10 @@ impl AccountCmd {
                     eprintln!("錯誤：account add 需要 -P/--password 或 --password-stdin");
                     std::process::exit(1);
                 }
+                if is_admin && is_viewer {
+                    eprintln!("錯誤：--admin 與 --viewer 互斥");
+                    std::process::exit(1);
+                }
                 Self::Add {
                     id,
                     provider,
@@ -199,6 +212,7 @@ impl AccountCmd {
                     discord_user_id,
                     enabled,
                     is_admin,
+                    is_viewer,
                 }
             }
             "bind" => {
@@ -276,6 +290,22 @@ impl AccountCmd {
                 Self::Remove { id }
             }
             "reencrypt" => Self::Reencrypt,
+            "rotate-secret" => {
+                let mut dry_run = false;
+                while *i + 1 < args.len() {
+                    match args[*i + 1].as_str() {
+                        "--dry-run" => {
+                            dry_run = true;
+                            *i += 1;
+                        }
+                        other => {
+                            eprintln!("rotate-secret 不認識的參數：{other}（可用 --dry-run）");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                Self::RotateSecret { dry_run }
+            }
             "enable" => {
                 *i += 1;
                 let id = cli_require_positional(args, *i, "enable", "<id>");
@@ -288,7 +318,7 @@ impl AccountCmd {
             }
             "" => {
                 eprintln!(
-                    "錯誤：account 需要子命令\n用法：account <list|show|add|bind|admin|unadmin|dashboard-password|remove|enable|disable|reencrypt>"
+                    "錯誤：account 需要子命令\n用法：account <list|show|add|bind|admin|unadmin|dashboard-password|remove|enable|disable|reencrypt|rotate-secret>"
                 );
                 std::process::exit(1);
             }
@@ -426,7 +456,15 @@ impl CliArgs {
 
         let subcommand = match subcommand_tag {
             Some("init") => Subcommand::Init { force: init_force },
-            Some("account") => Subcommand::Account(account_cmd.unwrap()),
+            // UNWRAP_SWEEP_V1：parse 迴圈保證 tag=account 時一定已設值；仍不 unwrap，
+            // 缺值時給明確錯誤而不是 panic 訊息。
+            Some("account") => match account_cmd {
+                Some(cmd) => Subcommand::Account(cmd),
+                None => {
+                    eprintln!("錯誤：account 需要子命令");
+                    std::process::exit(1);
+                }
+            },
             _ => Subcommand::Run { validate_only },
         };
 
@@ -474,6 +512,7 @@ fn print_help() {
     println!("    --line-user-id <uid>       Line User ID（選填）");
     println!("    --discord-user-id <id>     Discord User ID（選填）");
     println!("    --admin                    新增時授予 Web 管理頁管理員權限");
+    println!("    --viewer                   新增為唯讀檢視者（只能登入儀表板查看；不監控、不登入學校系統）");
     println!("    --disabled                 新增時停用帳號");
     println!("  account bind <id>           更新帳號的 adapter 使用者綁定");
     println!("    --line-user-id <uid>       更新 Line User ID");
@@ -486,6 +525,9 @@ fn print_help() {
     println!("  account enable <id>        啟用帳號");
     println!("  account disable <id>       停用帳號");
     println!("  account reencrypt          將所有既有帳號的密碼/憑證重新寫入（啟用 at-rest 加密）");
+    println!("  account rotate-secret [--dry-run]");
+    println!("                             master key 輪替：把所有密文收斂到目前 TRONCLASS_MASTER_KEY，");
+    println!("                             舊 key 放在 TRONCLASS_MASTER_KEY_OLD；完成且無錯誤後即可移除舊 key");
     println!();
     println!("選項：");
     println!("  -c, --config <PATH>    指定設定檔路徑（預設：config/config.toml）");
@@ -553,7 +595,8 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
                         a.provider,
                         a.username,
                         if a.enabled { "✓" } else { "✗" },
-                        if a.is_admin { "✓" } else { "" },
+                        // VIEWER_NO_SCHOOL_API_V1：Admin 欄以 V 標示檢視者
+                        if a.is_admin { "✓" } else if a.is_viewer { "V" } else { "" },
                         if a.dashboard_password_hash.is_empty() {
                             "首次登入"
                         } else {
@@ -587,6 +630,11 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
                 );
                 println!("Enabled:      {}", if a.enabled { "是" } else { "否" });
                 println!("Admin:        {}", if a.is_admin { "是" } else { "否" });
+                // VIEWER_NO_SCHOOL_API_V1
+                println!(
+                    "Viewer:       {}",
+                    if a.is_viewer { "是（唯讀，不連線學校系統）" } else { "否" }
+                );
                 println!(
                     "Line User ID: {}",
                     if a.line_user_id.is_empty() {
@@ -614,6 +662,7 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
             discord_user_id,
             enabled,
             is_admin,
+            is_viewer,
         } => {
             let account = RawAccountConfig {
                 id: id.clone(),
@@ -625,10 +674,17 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
                 discord_user_id,
                 session_cookie: String::new(),
                 is_admin,
+                is_viewer,
                 dashboard_password_hash: String::new(),
             };
             db.insert(&account).await?;
-            println!("✅ 已新增帳號：{id}");
+            // VIEWER_NO_SCHOOL_API_V1：is_viewer 是獨立欄位，insert 不含它，需另外設定。
+            if is_viewer {
+                db.set_viewer(&id, true).await?;
+                println!("✅ 已新增檢視者帳號：{id}（唯讀，不監控、不登入學校系統）");
+            } else {
+                println!("✅ 已新增帳號：{id}");
+            }
             println!(
                 "ℹ️ Dashboard 密碼尚未設定；首次可用 Tronclass 密碼登入網站，且系統會強制立即設定新的 Dashboard 密碼。"
             );
@@ -720,6 +776,60 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
                     }
                 }
                 println!("✅ 完成：{upgraded}/{} 個帳號已重新寫入（啟用 at-rest 加密）", accounts.len());
+            }
+        }
+        // SECRET_ROTATE_CLI_V1
+        AccountCmd::RotateSecret { dry_run } => {
+            if !crate::secret_encryption::is_encryption_enabled() {
+                eprintln!("❌ 未設定有效的 TRONCLASS_MASTER_KEY（需 64 個 hex 字元），無法輪替。");
+                eprintln!("   產生新 key：openssl rand -hex 32");
+                std::process::exit(1);
+            }
+            let key_id = crate::secret_encryption::current_key_id().unwrap_or_default();
+            let old_keys = crate::secret_encryption::old_key_count();
+            println!(
+                "{}master key 輪替：目前 key id = {key_id}，舊 key 數 = {old_keys}",
+                if dry_run { "[dry-run] " } else { "" }
+            );
+            let report = db.rotate_all_secrets(dry_run).await?;
+            println!("  帳號總數：{}", report.total);
+            println!("  已是目前 key：{}", report.already_current);
+            println!("  明文 → 加密：{}", report.encrypted_plaintext);
+            println!("  舊 key → 目前 key：{}", report.rewrapped);
+            if dry_run {
+                println!("  將更新（未寫入）：{}", report.would_update);
+            } else {
+                println!("  已寫入：{}", report.updated);
+            }
+            let mut has_problem = false;
+            if !report.undecryptable_password.is_empty() {
+                has_problem = true;
+                eprintln!(
+                    "⚠️ 以下帳號的密碼以目前與舊 key 都解不開（自動重登會失敗）：{}",
+                    report.undecryptable_password.join(", ")
+                );
+                eprintln!("   請確認 TRONCLASS_MASTER_KEY_OLD 是否包含寫入當時的 key，或以 `account add`／儀表板重新儲存密碼。");
+            }
+            if !report.undecryptable_cookie.is_empty() {
+                eprintln!(
+                    "ℹ️ 以下帳號的 session cookie 解不開（影響小：下次重登會重建）：{}",
+                    report.undecryptable_cookie.join(", ")
+                );
+            }
+            if !report.write_failed.is_empty() {
+                has_problem = true;
+                for line in &report.write_failed {
+                    eprintln!("❌ 寫回失敗：{line}");
+                }
+            }
+            if has_problem {
+                eprintln!("⚠️ 輪替未完全成功，請先解決上述問題再移除 TRONCLASS_MASTER_KEY_OLD。");
+                std::process::exit(2);
+            }
+            if dry_run {
+                println!("✅ dry-run 完成，未寫入任何變更。");
+            } else {
+                println!("✅ 輪替完成。所有密文皆以目前 key 加密，現在可以安全移除 TRONCLASS_MASTER_KEY_OLD。");
             }
         }
     }
@@ -1406,26 +1516,43 @@ async fn wait_for_shutdown_signal() {
     {
         use tokio::signal::unix::{signal, SignalKind};
 
-        let mut sigterm =
-            signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
-        let mut sigint =
-            signal(SignalKind::interrupt()).expect("Failed to register SIGINT handler");
-
-        tokio::select! {
-            _ = sigterm.recv() => {
-                info!("收到 SIGTERM 信號");
+        // UNWRAP_SWEEP_V1：信號註冊失敗（極罕見：容器 seccomp 限制等）時不 panic，
+        // 退回只等 ctrl_c；ctrl_c 也失敗就永久等待（服務照常跑，只是不能優雅關閉）。
+        let sigterm = signal(SignalKind::terminate());
+        let sigint = signal(SignalKind::interrupt());
+        match (sigterm, sigint) {
+            (Ok(mut sigterm), Ok(mut sigint)) => {
+                tokio::select! {
+                    _ = sigterm.recv() => {
+                        info!("收到 SIGTERM 信號");
+                    }
+                    _ = sigint.recv() => {
+                        info!("收到 SIGINT (Ctrl+C) 信號");
+                    }
+                }
             }
-            _ = sigint.recv() => {
-                info!("收到 SIGINT (Ctrl+C) 信號");
+            (sigterm, sigint) => {
+                if let Err(e) = &sigterm {
+                    warn!(error = %e, "無法註冊 SIGTERM handler");
+                }
+                if let Err(e) = &sigint {
+                    warn!(error = %e, "無法註冊 SIGINT handler");
+                }
+                if tokio::signal::ctrl_c().await.is_err() {
+                    warn!("無法註冊 Ctrl+C handler，服務將無法以信號優雅關閉");
+                    std::future::pending::<()>().await;
+                }
+                info!("收到 Ctrl+C 信號");
             }
         }
     }
 
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to register Ctrl+C handler");
+        if tokio::signal::ctrl_c().await.is_err() {
+            warn!("無法註冊 Ctrl+C handler，服務將無法以信號優雅關閉");
+            std::future::pending::<()>().await;
+        }
         info!("收到 Ctrl+C 信號");
     }
 }

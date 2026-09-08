@@ -344,6 +344,7 @@ pub(super) async fn admin_logout_handler(
 pub(super) async fn admin_session_refresh_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
     Query(query): Query<AdminQuery>,
 ) -> Response {
     // Prefer the HttpOnly refresh cookie; fall back to a token query param
@@ -359,7 +360,12 @@ pub(super) async fn admin_session_refresh_handler(
         return unauthorized_response();
     };
 
-    let Some(tokens) = state.rotate_session(&refresh_token).await else {
+    // LOGIN_DEVICES_V1：帶入這次請求的來源，讓功能上線前建立的 session
+    // （ip / UA 為空）在輪換時補齊。
+    let Some(tokens) = state
+        .rotate_session(&refresh_token, Some(SessionOrigin::from_request(&headers, &ip)))
+        .await
+    else {
         // Invalid/expired refresh token: clear the cookies so the frontend
         // stops trying.
         return fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(

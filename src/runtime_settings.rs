@@ -111,12 +111,12 @@ static SEMESTER_OVERRIDE: Lazy<std::sync::RwLock<Option<(i32, u32)>>> =
 /// `None` 代表未覆蓋——呼叫端應退回 config.toml `[semester] current`，
 /// 再退回依日期自動推算（見 `config::semester_override`）。
 pub fn semester_override() -> Option<(i32, u32)> {
-    *SEMESTER_OVERRIDE.read().expect("semester override lock poisoned")
+    *SEMESTER_OVERRIDE.read().unwrap_or_else(|p| p.into_inner())
 }
 
 fn refresh_semester_override_cache(raw: Option<&str>) {
     let parsed = raw.and_then(crate::config::parse_semester_current);
-    *SEMESTER_OVERRIDE.write().expect("semester override lock poisoned") = parsed;
+    *SEMESTER_OVERRIDE.write().unwrap_or_else(|p| p.into_inner()) = parsed;
 }
 
 pub async fn snapshot() -> RuntimeSettings {

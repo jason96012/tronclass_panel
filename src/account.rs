@@ -86,6 +86,11 @@ pub struct RawAccountConfig {
     /// 是否為 Web 管理頁管理員。
     #[serde(default)]
     pub is_admin: bool,
+
+    /// VIEWER_NO_SCHOOL_API_V1：唯讀檢視者。只用來登入儀表板，不做點名監控、
+    /// 不登入學校系統；`resolve()` 會直接略過。
+    #[serde(default)]
+    pub is_viewer: bool,
 }
 
 impl std::fmt::Debug for RawAccountConfig {
@@ -127,12 +132,18 @@ impl AccountsFile {
         }
 
         let mut resolved = Vec::with_capacity(self.accounts.len());
+        let mut viewer_count = 0usize;
 
         for account in &self.accounts {
             if account.id.is_empty() {
                 return Err(miette::miette!("account.id must not be empty"));
             }
             if !account.enabled {
+                continue;
+            }
+            // VIEWER_NO_SCHOOL_API_V1：檢視者不需要 provider／密碼驗證，也不建監控。
+            if account.is_viewer {
+                viewer_count += 1;
                 continue;
             }
             if account.username.is_empty() {
@@ -188,6 +199,11 @@ impl AccountsFile {
         }
 
         if resolved.is_empty() {
+            if viewer_count > 0 {
+                return Err(miette::miette!(
+                    "accounts database only contains {viewer_count} viewer account(s); at least one enabled non-viewer account is required for monitoring"
+                ));
+            }
             return Err(miette::miette!(
                 "no enabled accounts found in accounts database"
             ));

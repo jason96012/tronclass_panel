@@ -17,7 +17,7 @@ pub(super) fn load_runtime_theme() {
     for p in &paths {
         if let Ok(css) = std::fs::read_to_string(p) {
             if !css.trim().is_empty() {
-                *RUNTIME_THEME.write().unwrap() = Some(css);
+                *RUNTIME_THEME.write().unwrap_or_else(|p| p.into_inner()) = Some(css);
                 tracing::info!(path = %p, "runtime theme.css loaded");
                 return;
             }
@@ -26,7 +26,7 @@ pub(super) fn load_runtime_theme() {
 }
 
 pub(super) fn theme_css() -> String {
-    if let Some(ref css) = *RUNTIME_THEME.read().unwrap() {
+    if let Some(ref css) = *RUNTIME_THEME.read().unwrap_or_else(|p| p.into_inner()) {
         return css.clone();
     }
     include_str!("static/theme.css").to_string()

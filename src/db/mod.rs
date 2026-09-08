@@ -84,6 +84,10 @@ pub(crate) const MAX_TIMETABLE_TEMPLATE_CREATOR_BYTES: usize = 256;
 
 #[allow(unused_imports)]
 pub use accounts::UsernameUpdateResult;
+// SECRET_ROTATE_CLI_V1：main.rs 只透過 `db.rotate_all_secrets()` 的回傳值使用，
+// 不直接 import 這個型別；re-export 是為了讓 pub fn 的回傳型別可見（E0446）。
+#[allow(unused_imports)]
+pub use accounts::SecretRotationReport;
 #[allow(unused_imports)]
 pub use activity::{ActivityEventInput, ActivityEventRow};
 #[allow(unused_imports)]

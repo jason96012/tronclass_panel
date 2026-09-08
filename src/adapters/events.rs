@@ -455,4 +455,7 @@ pub struct MonitorStatus {
     pub rollcall_history: Vec<RollcallHistoryEntry>,
     pub consecutive_failures: u32,
     pub started_at: i64,
+    /// FAILURE_DIAGNOSIS_V1：最近一次輪詢／重登失敗的分類與自助建議；成功後清空。
+    #[serde(default)]
+    pub last_failure: Option<crate::monitor_alerts::FailureDiagnosis>,
 }

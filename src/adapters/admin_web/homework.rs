@@ -214,7 +214,8 @@ pub(super) async fn admin_homework_list_handler(
     }
     if raw_account.is_none() && session.is_admin {
         if let Ok(accounts) = state.accounts_db.list().await {
-            raw_account = accounts.into_iter().find(|a| a.enabled);
+            // VIEWER_NO_SCHOOL_API_V1：只挑能登入學校系統的帳號。
+            raw_account = accounts.into_iter().find(|a| a.enabled && !a.is_viewer);
         }
     }
 
@@ -230,6 +231,14 @@ pub(super) async fn admin_homework_list_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "該帳號目前已被停用" })),
+        )
+            .into_response();
+    }
+    // VIEWER_NO_SCHOOL_API_V1：檢視者沒有學校憑證，回空清單而不是嘗試登入。
+    if raw_account.is_viewer {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "檢視者帳號不會連線學校系統；請選擇一般帳號" })),
         )
             .into_response();
     }

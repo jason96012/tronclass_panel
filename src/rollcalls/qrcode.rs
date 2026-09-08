@@ -385,7 +385,10 @@ fn decode_value(raw: &str) -> QrValue {
         return QrValue::String(String::new());
     }
 
-    let first_char = raw.chars().next().unwrap();
+    // UNWRAP_SWEEP_V1：上面已檢查非空，但仍以 let-else 收斂，避免日後改動順序時 panic。
+    let Some(first_char) = raw.chars().next() else {
+        return QrValue::String(String::new());
+    };
 
     match first_char {
         // bool 前綴

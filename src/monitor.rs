@@ -275,6 +275,7 @@ impl MonitorContext {
             rollcall_history: vec![],
             consecutive_failures: 0,
             started_at,
+            last_failure: None,
         }));
 
         let adapter_target = Arc::new(Mutex::new(AdapterAccountTarget::new(
@@ -427,6 +428,10 @@ impl MonitorSpawner {
         };
         if !raw.enabled {
             return Err(format!("帳號 `{account_id}` 已停用（enabled = false）"));
+        }
+        // VIEWER_NO_SCHOOL_API_V1：檢視者不登入學校系統，也不建監控循環。
+        if raw.is_viewer {
+            return Err(format!("帳號 `{account_id}` 為檢視者（唯讀），不會啟動監控"));
         }
 
         // 沿用啟動時同一套驗證（provider 存在、kind 有登入流程、欄位不為空）。
@@ -594,6 +599,10 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
     let reauth_dedupe_window = Duration::from_secs(5);
     let max_failures = config.monitor.max_failures_before_reauth;
     let retry_interval = Duration::from_secs(config.monitor.retry_interval_secs);
+    // POLL_BACKOFF_V1：失敗後的等待不再固定 retry_interval，而是依連續失敗次數
+    // 指數拉長並加抖動；成功一次就歸零（consecutive_failures = 0）。
+    // 學校 API 大當機時所有帳號不會同步狂打，也不會同時醒來。
+    let backoff_for = |failures: u32| -> Duration { poll_backoff(retry_interval, failures) };
 
     // PERFORMANCE_MONITOR_TARGET_CACHE_V1:
     // Cache adapter_target at the start of each iteration to avoid 5+ lock
@@ -770,6 +779,11 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
             Ok(summary) => {
                 // 成功輪詢
                 consecutive_failures = 0;
+                // FAILURE_DIAGNOSIS_V1：成功即清除最近失敗診斷。
+                {
+                    let mut s = ctx.status.lock().await;
+                    s.last_failure = None;
+                }
                 // MONITOR_ALERT_GRADING_V1：先前若送過管理員警示，這裡送「已恢復」。
                 crate::monitor_alerts::report_recovery(
                     &ctx.accounts_db,
@@ -802,15 +816,16 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                     consecutive_failures
                 );
 
-                // 更新狀態
-                {
-                    let mut s = ctx.status.lock().await;
-                    s.consecutive_failures = consecutive_failures;
-                }
-
                 // MONITOR_ALERT_GRADING_V1：錯誤分級。輕微只寫 log；警告／嚴重通知管理員。
                 let auth_error = is_auth_error_report(&e);
                 let error_text = format!("{e:#}");
+
+                // 更新狀態（FAILURE_DIAGNOSIS_V1：同時寫入分類與自助建議，儀表板帳號列會顯示）
+                {
+                    let mut s = ctx.status.lock().await;
+                    s.consecutive_failures = consecutive_failures;
+                    s.last_failure = Some(crate::monitor_alerts::diagnose(&error_text, auth_error));
+                }
                 let grade = crate::monitor_alerts::classify(
                     auth_error,
                     consecutive_failures,
@@ -863,6 +878,7 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                             {
                                 let mut s = ctx.status.lock().await;
                                 s.consecutive_failures = 0;
+                                s.last_failure = None;
                             }
                             if let Some(bot) = &ctx.messenger {
                                 // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
@@ -879,6 +895,15 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                         }
                         Err(reauth_err) => {
                             error!(error = %reauth_err, "重新認證失敗！");
+                            // FAILURE_DIAGNOSIS_V1：重登失敗的原因比原本輪詢錯誤更關鍵，覆蓋之。
+                            {
+                                let reauth_text = format!("{reauth_err:#}");
+                                let mut s = ctx.status.lock().await;
+                                s.last_failure = Some(crate::monitor_alerts::diagnose(
+                                    &reauth_text,
+                                    is_auth_error_report(&reauth_err),
+                                ));
+                            }
                             // MONITOR_ALERT_GRADING_V1：自動重新認證失敗 → 嚴重。
                             crate::monitor_alerts::report_failure(
                                 &ctx.accounts_db,
@@ -905,22 +930,27 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                                     .await;
                             }
 
-                            // 重新認證失敗後等待更長的時間再重試
+                            // 重新認證失敗後等待更長的時間再重試（POLL_BACKOFF_V1：指數退避）
+                            let wait = backoff_for(consecutive_failures);
                             warn!(
-                                retry_secs = config.monitor.retry_interval_secs,
+                                retry_secs = wait.as_secs(),
+                                consecutive_failures = consecutive_failures,
                                 "重新認證失敗，等待 {} 秒後重試",
-                                config.monitor.retry_interval_secs
+                                wait.as_secs()
                             );
-                            tokio::time::sleep(retry_interval).await;
+                            tokio::time::sleep(wait).await;
                         }
                     }
                 } else {
-                    // 普通失敗，等待 retry_interval 後繼續
+                    // 普通失敗（POLL_BACKOFF_V1：依連續失敗次數指數退避 + 抖動）
+                    let wait = backoff_for(consecutive_failures);
                     warn!(
-                        retry_secs = config.monitor.retry_interval_secs,
-                        "等待 {} 秒後重試...", config.monitor.retry_interval_secs
+                        retry_secs = wait.as_secs(),
+                        consecutive_failures = consecutive_failures,
+                        "等待 {} 秒後重試...",
+                        wait.as_secs()
                     );
-                    tokio::time::sleep(retry_interval).await;
+                    tokio::time::sleep(wait).await;
                 }
             }
         }
@@ -1312,6 +1342,23 @@ async fn wait_for_trigger(
     wait_for_duration(poll_interval, force_poll_notify, reauth_notify).await
 }
 
+/// POLL_BACKOFF_V1：失敗後的重試等待時間。
+///
+/// `base × 2^(failures-1)`，上限 `base × 16`（預設 30 秒 → 最長 8 分鐘），
+/// 再加 0 到 25 % 的隨機抖動，避免多個帳號在同一秒同時重試。
+/// `failures` 為 0 或 1 時等於 base（含抖動）。
+pub(crate) fn poll_backoff(base: Duration, failures: u32) -> Duration {
+    const MAX_MULTIPLIER: u32 = 16;
+    let exponent = failures.saturating_sub(1).min(4); // 2^4 = 16
+    let multiplier = (1u32 << exponent).min(MAX_MULTIPLIER);
+    let base_secs = base.as_secs().max(1);
+    let wait_secs = base_secs.saturating_mul(u64::from(multiplier));
+    // 抖動：0..=25 %
+    let jitter_pct = u64::from(rand::random::<u8>() % 26);
+    let jitter = wait_secs.saturating_mul(jitter_pct) / 100;
+    Duration::from_secs(wait_secs.saturating_add(jitter))
+}
+
 async fn wait_for_duration(
     duration: Duration,
     force_poll_notify: Option<&tokio::sync::Notify>,
@@ -1409,7 +1456,15 @@ fn parsed_schedule_periods(schedule: &PollingScheduleConfig) -> Vec<(NaiveTime, 
     let mut periods = schedule
         .periods
         .iter()
-        .map(|period| parse_schedule_period(period).expect("validated schedule period"))
+        // UNWRAP_SWEEP_V1：config.validate() 已擋掉壞格式，但 runtime 熱重載或
+        // 測試建構的 config 不一定走過 validate；壞項目直接略過並 warn，不 panic。
+        .filter_map(|period| match parse_schedule_period(period) {
+            Ok(parsed) => Some(parsed),
+            Err(error) => {
+                warn!(period = %period, error = %error, "輪詢時段格式無效，已略過");
+                None
+            }
+        })
         .collect::<Vec<_>>();
     periods.sort_by_key(|(start, _)| *start);
     periods
@@ -1430,10 +1485,12 @@ fn add_days(weekday: Weekday, days: usize) -> Weekday {
         Weekday::Sun,
     ];
 
+    // UNWRAP_SWEEP_V1：WEEK 涵蓋全部 7 個 Weekday，position 不可能為 None；
+    // 仍以 unwrap_or(0) 收斂，讓此函式在任何情況下都不會 panic。
     let idx = WEEK
         .iter()
         .position(|day| *day == weekday)
-        .expect("known weekday");
+        .unwrap_or(0);
     WEEK[(idx + days) % WEEK.len()]
 }
 
@@ -1601,6 +1658,29 @@ pub fn current_unix_secs() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    /// POLL_BACKOFF_V1
+    #[test]
+    fn poll_backoff_grows_and_caps() {
+        use std::time::Duration;
+        let base = Duration::from_secs(30);
+        let within = |failures: u32, expect_base: u64| {
+            let got = super::poll_backoff(base, failures).as_secs();
+            assert!(
+                got >= expect_base && got <= expect_base + expect_base / 4,
+                "failures={failures} got={got} expected {expect_base}..={}",
+                expect_base + expect_base / 4
+            );
+        };
+        within(0, 30);
+        within(1, 30);
+        within(2, 60);
+        within(3, 120);
+        within(4, 240);
+        within(5, 480);
+        within(6, 480); // capped at 16x
+        within(100, 480);
+    }
+
     use super::*;
     use crate::api::is_auth_error;
     use crate::config::ScheduleWeekday;
@@ -1869,6 +1949,7 @@ mod tests {
             rollcall_history: vec![],
             consecutive_failures: 2,
             started_at: 1_699_900_000,
+            last_failure: None,
         };
 
         assert!(status.is_running);
@@ -1892,6 +1973,7 @@ mod tests {
             rollcall_history: vec![],
             consecutive_failures: 0,
             started_at: 0,
+            last_failure: None,
         };
 
         assert_eq!(status.last_poll_timestamp, None);
@@ -1929,6 +2011,7 @@ mod tests {
             rollcall_history: vec![],
             consecutive_failures: 0,
             started_at: 0,
+            last_failure: None,
         }));
 
         let mut handles = Vec::new();

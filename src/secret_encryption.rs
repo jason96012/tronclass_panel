@@ -290,6 +290,54 @@ pub fn needs_rewrap(stored: &str) -> bool {
     }
 }
 
+/// SECRET_ROTATE_CLI_V1：目前 master key 的 key id（無 key 時 None）。
+pub fn current_key_id() -> Option<String> {
+    master_key().map(|key| key_id(&key))
+}
+
+/// SECRET_ROTATE_CLI_V1：`TRONCLASS_MASTER_KEY_OLD` 內可用的舊 key 數量。
+pub fn old_key_count() -> usize {
+    old_master_keys().len()
+}
+
+/// SECRET_ROTATE_CLI_V1：單一儲存值的輪替結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RotateOutcome {
+    /// 空字串或已是目前 key 的 v2 信封，不需動作。
+    Unchanged,
+    /// 原為明文，已用目前 key 加密。
+    Encrypted(String),
+    /// 原為舊 key／v1 信封，已重加密為目前 key 的 v2。
+    Rewrapped(String),
+    /// 是信封但目前與舊 key 都解不開——需要 operator 補 `TRONCLASS_MASTER_KEY_OLD`
+    /// 或重新儲存密碼。
+    Undecryptable,
+}
+
+/// SECRET_ROTATE_CLI_V1：把任意儲存值（明文／舊信封／目前信封）收斂成
+/// 目前 key 的 v2 信封。呼叫前請確認 [`is_encryption_enabled`]。
+pub fn rotate_stored(stored: &str) -> RotateOutcome {
+    let Some(current) = master_key() else {
+        return RotateOutcome::Unchanged;
+    };
+    if stored.is_empty() {
+        return RotateOutcome::Unchanged;
+    }
+    if !is_envelope(stored) {
+        return match encrypt_with_key(stored, current) {
+            Some(value) => RotateOutcome::Encrypted(value),
+            None => RotateOutcome::Undecryptable,
+        };
+    }
+    if !needs_rewrap(stored) {
+        return RotateOutcome::Unchanged;
+    }
+    match decrypt_layered(stored, current).and_then(|plain| encrypt_with_key(&plain, current)) {
+        Some(value) => RotateOutcome::Rewrapped(value),
+        None => RotateOutcome::Undecryptable,
+    }
+}
+
 /// MASTER_KEY_ROTATION_V1：把舊信封解密後以目前 key 重加密成 v2。
 ///
 /// 失敗（未啟用加密、非信封、解不開）回 `None`，呼叫端應保留原值。

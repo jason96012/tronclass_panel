@@ -116,6 +116,7 @@ function render(){
     meta.appendChild(document.createElement('br'));
     meta.appendChild(document.createTextNode('登入時間：'+fmt(s.created_at)+'　7 天未使用將於 '+fmt(s.refresh_expires_at)+' 失效'));
     if(s.user_agent){meta.appendChild(document.createElement('br'));const ua=el('span',null,s.user_agent);ua.style.opacity='.7';ua.style.fontSize='12px';meta.appendChild(ua)}
+    else if(!s.ip){meta.appendChild(document.createElement('br'));const note=el('span',null,'此登入建立於裝置管理功能啟用之前，下次在該裝置操作時會自動補上裝置與 IP 資訊。');note.style.opacity='.7';note.style.fontSize='12px';meta.appendChild(note)}
     body.appendChild(meta);
     row.appendChild(body);
     const act=el('div','act');

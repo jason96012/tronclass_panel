@@ -17,6 +17,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::adapters::events::{AdapterMessenger, OutboundMessage};
@@ -68,11 +69,56 @@ pub fn classify(
     ErrorGrade::Transient
 }
 
-/// 把錯誤字串粗略歸類成人看得懂的原因，附在通知裡。
-pub fn describe_cause(error_text: &str, is_auth_error: bool) -> &'static str {
+/// FAILURE_DIAGNOSIS_V1：輪詢／登入失敗的分類結果，同時給管理員通知與
+/// 儀表板（帳號列、未監控帳號區塊）顯示「原因 + 下一步」。
+///
+/// 所有文字不含表情符號；`message` 已截斷且不含憑證（呼叫端傳入的錯誤鏈
+/// 本來就不含密碼，這裡再多做一次長度限制）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureDiagnosis {
+    /// 機器可讀代碼：auth / password_blocked / captcha / network / server /
+    /// rate_limited / parse / unknown。
+    pub code: String,
+    /// 人看的分類名稱。
+    pub label: String,
+    /// 給帳號持有人的自助排除建議。
+    pub advice: String,
+    /// 截斷後的原始錯誤訊息。
+    pub message: String,
+    /// 發生時間（Unix 秒）。
+    pub at: i64,
+}
+
+/// FAILURE_DIAGNOSIS_V1：關鍵字分類表（依優先順序）。
+///
+/// 回傳 (code, label, advice)。`describe_cause` 與 [`diagnose`] 共用，
+/// 確保通知與儀表板講的是同一套詞。
+fn classify_cause(error_text: &str, is_auth_error: bool) -> (&'static str, &'static str, &'static str) {
     let lower = error_text.to_ascii_lowercase();
+    // 儲存密碼解密失敗／被阻止送出：比 auth 更前面，因為這種情況重登也沒用。
+    if lower.contains("已阻止送出登入請求")
+        || lower.contains("無法解密")
+        || lower.contains("沒有可用的登入密碼")
+    {
+        return (
+            "password_blocked",
+            "儲存密碼無法使用",
+            "此帳號的密碼在資料庫中無法解密或為空，自動重登不會成功。請管理員確認 TRONCLASS_MASTER_KEY 設定，或在儀表板重新儲存此帳號的 Tronclass 密碼。",
+        );
+    }
     if is_auth_error {
-        return "登入憑證失效（session 過期或密碼變更）";
+        return (
+            "auth",
+            "登入憑證失效（session 過期或密碼變更）",
+            "系統會自動重新登入。若持續失敗，多半是 Tronclass 密碼已更改：請到儀表板更新此帳號密碼後按「重登」。",
+        );
+    }
+    if lower.contains("captcha") || lower.contains("驗證碼") {
+        return (
+            "captcha",
+            "登入驗證碼辨識失敗",
+            "學校登入頁的驗證碼辨識暫時失敗，系統會自動重試；若連續失敗超過 30 分鐘，請按一次「重登」。",
+        );
     }
     if lower.contains("timed out")
         || lower.contains("timeout")
@@ -82,7 +128,11 @@ pub fn describe_cause(error_text: &str, is_auth_error: bool) -> &'static str {
         || lower.contains("connection reset")
         || lower.contains("network")
     {
-        return "網路連線問題";
+        return (
+            "network",
+            "網路連線問題",
+            "本機到學校系統的連線暫時不通（學校主機維護、網路波動）。系統會以逐步拉長的間隔自動重試，不需要操作。",
+        );
     }
     if lower.contains("狀態 5")
         || lower.contains("status 5")
@@ -90,15 +140,52 @@ pub fn describe_cause(error_text: &str, is_auth_error: bool) -> &'static str {
         || lower.contains("503")
         || lower.contains("504")
     {
-        return "Tronclass 伺服器回應錯誤";
+        return (
+            "server",
+            "Tronclass 伺服器回應錯誤",
+            "學校 Tronclass 伺服器回傳錯誤（5xx），通常是對方維護或過載。系統會自動重試；若超過一天未恢復請回報管理員。",
+        );
     }
     if lower.contains("429") || lower.contains("too many") {
-        return "請求過於頻繁（被限流）";
+        return (
+            "rate_limited",
+            "請求過於頻繁（被限流）",
+            "學校系統暫時限制了請求頻率。系統已自動拉長重試間隔；請不要連續按「立即檢查」，等待 10 到 15 分鐘後會自行恢復。",
+        );
     }
     if lower.contains("json") || lower.contains("解析") {
-        return "回應格式異常";
+        return (
+            "parse",
+            "回應格式異常",
+            "學校系統回傳的內容與預期不符，可能正在改版或維護。系統會自動重試；若持續超過一天請回報管理員。",
+        );
     }
-    "未分類錯誤"
+    (
+        "unknown",
+        "未分類錯誤",
+        "請把下方錯誤訊息回報給管理員，並可先按一次「重登」看是否恢復。",
+    )
+}
+
+/// 把錯誤字串粗略歸類成人看得懂的原因，附在通知裡。
+pub fn describe_cause(error_text: &str, is_auth_error: bool) -> &'static str {
+    classify_cause(error_text, is_auth_error).1
+}
+
+/// FAILURE_DIAGNOSIS_V1：產生一筆完整診斷（分類 + 建議 + 截斷訊息 + 時間）。
+pub fn diagnose(error_text: &str, is_auth_error: bool) -> FailureDiagnosis {
+    let (code, label, advice) = classify_cause(error_text, is_auth_error);
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    FailureDiagnosis {
+        code: code.to_string(),
+        label: label.to_string(),
+        advice: advice.to_string(),
+        message: crate::text_utils::truncate_chars(error_text.trim(), ERROR_SNIPPET_CHARS).to_string(),
+        at,
+    }
 }
 
 fn advice_for(grade: ErrorGrade, cause: &str) -> &'static str {
@@ -309,6 +396,28 @@ pub async fn report_recovery(
 
 #[cfg(test)]
 mod tests {
+    /// FAILURE_DIAGNOSIS_V1
+    #[test]
+    fn diagnose_classifies_and_advises() {
+        let d = super::diagnose("request timed out after 30s", false);
+        assert_eq!(d.code, "network");
+        assert!(!d.advice.is_empty());
+        assert_eq!(d.message, "request timed out after 30s");
+
+        let d = super::diagnose("HTTP 429 Too Many Requests", false);
+        assert_eq!(d.code, "rate_limited");
+
+        let d = super::diagnose("已阻止送出登入請求：密碼無法解密", true);
+        assert_eq!(d.code, "password_blocked", "密碼解不開要優先於 auth");
+
+        let d = super::diagnose("session expired", true);
+        assert_eq!(d.code, "auth");
+        assert_eq!(super::describe_cause("session expired", true), d.label);
+
+        let d = super::diagnose("something odd", false);
+        assert_eq!(d.code, "unknown");
+    }
+
     use super::*;
 
     #[test]

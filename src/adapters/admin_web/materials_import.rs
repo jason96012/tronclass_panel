@@ -278,7 +278,8 @@ async fn resolve_account(state: &AdminWebState, account_id: &str) -> Option<crat
         }
     }
     let raw_account = raw_account?;
-    if !raw_account.enabled {
+    // VIEWER_NO_SCHOOL_API_V1：檢視者不呼叫學校 API。
+    if !raw_account.enabled || raw_account.is_viewer {
         return None;
     }
     let config = crate::config::try_get_config()?;

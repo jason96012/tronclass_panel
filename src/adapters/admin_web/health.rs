@@ -205,7 +205,8 @@ pub(super) async fn admin_health_check_handler(
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|row| row.enabled && !spawner.is_active(&row.id))
+            // VIEWER_NO_SCHOOL_API_V1：檢視者本來就不監控，不列為異常。
+            .filter(|row| row.enabled && !row.is_viewer && !spawner.is_active(&row.id))
             .map(|row| json!({ "account_id": row.id, "last_error": spawner.last_error(&row.id) }))
             .collect(),
         None => Vec::new(),
@@ -603,4 +604,16 @@ fn first_line_after_header(text: &str) -> Option<String> {
     let mut lines = text.lines();
     let _ = lines.next();
     lines.next().map(str::to_string)
+}
+
+#[cfg(test)]
+mod regex_tests {
+    /// UNWRAP_SWEEP_V1：強制初始化 cloudflared 日誌用的 Lazy regex。
+    #[test]
+    fn static_regexes_compile() {
+        let _ = &*super::CLOUDFLARED_ERROR_RE;
+        let _ = &*super::CLOUDFLARED_FATAL_RE;
+        let _ = &*super::CLOUDFLARED_RECOVERY_RE;
+        let _ = &*super::CLOUDFLARED_RESTART_TS_RE;
+    }
 }

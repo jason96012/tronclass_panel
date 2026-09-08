@@ -149,7 +149,8 @@ pub(super) fn start(state: AdminWebState) {
                 Err(_) => continue,
             };
             for raw in accounts {
-                if !raw.enabled || last_sent.get(&raw.id) == Some(&today) {
+                // VIEWER_NO_SCHOOL_API_V1：檢視者沒有作業快照／課程公告，略過。
+                if !raw.enabled || raw.is_viewer || last_sent.get(&raw.id) == Some(&today) {
                     continue;
                 }
                 // DIGEST_PER_ACCOUNT_V1：帳號個別關閉則略過（DB 讀取失敗時視為開啟，避免整體停擺）。
@@ -226,7 +227,10 @@ async fn build_and_send(state: &AdminWebState, account_id: &str, username: &str)
                 .collect();
             due.sort_by_key(|item| item.end_time);
             for item in due.iter().take(5) {
-                let end = item.end_time.expect("filtered above");
+                // UNWRAP_SWEEP_V1：上方 filter 已保證 Some；仍用 let-else 防止日後改動。
+                let Some(end) = item.end_time else {
+                    continue;
+                };
                 let when = {
                     let local_end = end.with_timezone(&Local);
                     let hours = (end - Utc::now()).num_hours();

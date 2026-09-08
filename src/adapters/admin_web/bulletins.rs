@@ -84,7 +84,8 @@ async fn resolve_account(
     }
     if raw.is_none() && session.is_admin {
         if let Ok(list) = state.accounts_db.list().await {
-            raw = list.into_iter().find(|a| a.enabled);
+            // VIEWER_NO_SCHOOL_API_V1：管理員 fallback 只挑能登入學校系統的帳號。
+            raw = list.into_iter().find(|a| a.enabled && !a.is_viewer);
         }
     }
     let raw = raw.ok_or_else(|| {
@@ -98,6 +99,14 @@ async fn resolve_account(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "該帳號目前已被停用" })),
+        )
+            .into_response());
+    }
+    // VIEWER_NO_SCHOOL_API_V1：檢視者帳號沒有可用的學校憑證，不代為呼叫學校 API。
+    if raw.is_viewer {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "檢視者帳號不會連線學校系統；請選擇一般帳號" })),
         )
             .into_response());
     }
@@ -416,7 +425,7 @@ pub(super) async fn list_handler(
     let raw = fetch_all_bulletins(client, base_url, courses).await;
 
     let (deleted_set, read_by_me) = {
-        let store = BULLETIN_READ_STORE.lock().unwrap();
+        let store = BULLETIN_READ_STORE.lock().unwrap_or_else(|p| p.into_inner());
         let me = session.account_id.clone();
         let reads = store
             .reads
@@ -741,7 +750,7 @@ pub(super) fn start_bulletin_notifier(
                 }
             }
         }
-        *BULLETIN_NOTIFIED.lock().unwrap() = keys;
+        *BULLETIN_NOTIFIED.lock().unwrap_or_else(|p| p.into_inner()) = keys;
         BULLETIN_NOTIFIED_WARM.store(existed, std::sync::atomic::Ordering::SeqCst);
 
         tokio::spawn(async move {
@@ -819,7 +828,7 @@ static BULLETIN_SUMMARY_CACHE: once_cell::sync::Lazy<std::sync::Mutex<
 });
 
 async fn summary_for_bulletin(key: &str, source: &str) -> String {
-    if let Some(cached) = BULLETIN_SUMMARY_CACHE.lock().unwrap().get(key).cloned() {
+    if let Some(cached) = BULLETIN_SUMMARY_CACHE.lock().unwrap_or_else(|p| p.into_inner()).get(key).cloned() {
         return cached;
     }
     let summary = super::ai_chat::summarize_bulletin_text(source.to_string())
@@ -828,7 +837,7 @@ async fn summary_for_bulletin(key: &str, source: &str) -> String {
     if !summary.is_empty() {
         BULLETIN_SUMMARY_CACHE
             .lock()
-            .unwrap()
+            .unwrap_or_else(|p| p.into_inner())
             .insert(key.to_string(), summary.clone());
     }
     summary
@@ -885,6 +894,7 @@ async fn notify_admin_bulletin(state: &AdminWebState, bulletin: AdminBulletin) {
     let Ok(accounts) = state.accounts_db.list().await else {
         return;
     };
+    // 管理員公告是站內訊息，檢視者也要收到（不涉及學校 API）。
     let enabled: Vec<_> = accounts
         .into_iter()
         .filter(|a| a.enabled)
@@ -937,7 +947,8 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
         Ok(l) => l,
         Err(_) => return,
     };
-    let enabled: Vec<_> = accounts.into_iter().filter(|a| a.enabled).collect();
+    // VIEWER_NO_SCHOOL_API_V1：公告輪詢要登入學校系統，檢視者帳號略過。
+    let enabled: Vec<_> = accounts.into_iter().filter(|a| a.enabled && !a.is_viewer).collect();
     if enabled.is_empty() {
         return;
     }
@@ -1016,7 +1027,7 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
         }
     }
 
-    let mut guard = BULLETIN_NOTIFIED.lock().unwrap();
+    let mut guard = BULLETIN_NOTIFIED.lock().unwrap_or_else(|p| p.into_inner());
     let warm = BULLETIN_NOTIFIED_WARM.load(std::sync::atomic::Ordering::SeqCst);
     let mut keys = guard.clone();
     if !warm {

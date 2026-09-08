@@ -491,11 +491,14 @@ static REDACT_RULES: Lazy<Vec<(regex::Regex, &'static str)>> = Lazy::new(|| {
         ("(?i)(JSESSIONID|session)=[^;\\s\\x22']*", "$1=<redacted>"),
     ]
     .into_iter()
-    .map(|(pattern, replacement)| {
-        (
-            regex::Regex::new(pattern).unwrap_or_else(|e| panic!("invalid redact regex: {e}")),
-            replacement,
-        )
+    // UNWRAP_SWEEP_V1：pattern 是固定字面值，理論上一定能編譯；但 Lazy 內 panic
+    // 會毒化整個 static，之後每次 sanitize_error 都再 panic。改為略過並 warn。
+    .filter_map(|(pattern, replacement)| match regex::Regex::new(pattern) {
+        Ok(re) => Some((re, replacement)),
+        Err(e) => {
+            warn!(pattern, error = %e, "遮罩 regex 編譯失敗，已略過該規則");
+            None
+        }
     })
     .collect()
 });

@@ -885,6 +885,7 @@ mod tests {
                 rollcall_history: vec![],
                 consecutive_failures: 0,
                 started_at: 1_699_000_000,
+                last_failure: None,
             },
         )));
 
@@ -913,6 +914,7 @@ mod tests {
             rollcall_history: vec![],
             consecutive_failures: 0,
             started_at: 1_699_000_000,
+            last_failure: None,
         });
 
         assert!(text.contains("2023"));

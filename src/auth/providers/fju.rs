@@ -102,7 +102,10 @@ impl AuthFlow for FjuAuthFlow {
         let cas_login_url = format!("{}{}", base_url, LOGIN_PATH);
         let service_url = format!("{}{}", base_url, SERVICE_PATH);
         let login_url = build_cas_login_url(&cas_login_url, &service_url).into_diagnostic()?;
-        let login_url_parsed = Url::parse(&cas_login_url).expect("valid URL");
+        // UNWRAP_SWEEP_V1：base_url 來自 config／環境變數覆蓋，不能假設一定合法。
+        let login_url_parsed = Url::parse(&cas_login_url)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("FJU CAS 登入網址無效：{cas_login_url}"))?;
 
         let mut last_err = String::new();
 
@@ -195,7 +198,9 @@ impl AuthFlow for FjuAuthFlow {
                 info!(final_url = %final_url, "FJU: 登入成功，已離開登入頁");
             }
 
-            let base_url_parsed = Url::parse(base_url).expect("valid base URL");
+            let base_url_parsed = Url::parse(base_url)
+                .into_diagnostic()
+                .wrap_err_with(|| format!("FJU base_url 無效：{base_url}"))?;
             let session_cookie = require_cookie(cookie_jar, &base_url_parsed, "session")
                 .into_diagnostic()
                 .wrap_err("FJU: 登入後未找到 session cookie")?;

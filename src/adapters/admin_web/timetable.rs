@@ -716,6 +716,15 @@ async fn resolve_account_for_sync(
         }
     };
 
+    // VIEWER_NO_SCHOOL_API_V1：檢視者沒有學校憑證，不做課表同步。
+    if raw_account.is_viewer {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "檢視者帳號不會連線學校系統，無法同步課表" })),
+        )
+            .into_response());
+    }
+
     let Some(config) = crate::config::try_get_config() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,

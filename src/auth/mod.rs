@@ -373,6 +373,17 @@ pub(crate) fn require_cookie(
 mod tests {
     use super::*;
 
+    /// UNWRAP_SWEEP_V1：強制初始化所有 Lazy regex（pattern 錯誤在測試期就發現）。
+    #[test]
+    fn static_regexes_compile() {
+        let _ = &*INPUT_TAG_RE;
+        let _ = &*IMG_TAG_RE;
+        let _ = &*ATTR_VALUE_RE;
+        let _ = &*ATTR_NAME_RE;
+        let _ = &*ATTR_SRC_RE;
+        assert!(!CAS_ERROR_PATTERNS.is_empty());
+    }
+
     #[test]
     fn test_extract_hidden_fields() {
         let html = r#"

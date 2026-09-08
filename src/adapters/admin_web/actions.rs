@@ -276,7 +276,28 @@ pub(super) async fn handle_admin_account_action(
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            let is_admin = action.is_admin.unwrap_or(false);
+            // ADD_ACCOUNT_ROLE_V1：role 欄位優先；沒給時退回舊的 is_admin 布林。
+            let role = action
+                .role
+                .as_deref()
+                .map(str::trim)
+                .map(str::to_ascii_lowercase)
+                .filter(|r| !r.is_empty())
+                .unwrap_or_else(|| {
+                    if action.is_admin.unwrap_or(false) { "admin".to_string() } else { "user".to_string() }
+                });
+            let (is_admin, is_viewer) = match role.as_str() {
+                "admin" => (true, false),
+                "viewer" => (false, true),
+                "user" => (false, false),
+                other => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("未知的角色：{other}（可用 admin / user / viewer）") })),
+                    )
+                        .into_response();
+                }
+            };
 
             let account_id = if id.is_empty() { username.clone() } else { id };
             if account_id.is_empty()
@@ -311,6 +332,7 @@ pub(super) async fn handle_admin_account_action(
                 discord_user_id,
                 session_cookie: String::new(),
                 is_admin,
+                is_viewer: false,
                 dashboard_password_hash: String::new(),
             };
 
@@ -318,6 +340,40 @@ pub(super) async fn handle_admin_account_action(
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": format!("新增帳號失敗：{e}") })),
+                )
+                    .into_response();
+            }
+            // ADD_ACCOUNT_ROLE_V1 / VIEWER_ROLE_V1：檢視者旗標是獨立欄位，insert 後補設。
+            if is_viewer {
+                if let Err(e) = state.accounts_db.set_viewer(&account_id, true).await {
+                    warn!(account = %account_id, error = %e, "新增帳號後設定檢視者旗標失敗");
+                }
+            }
+
+            // VIEWER_BOOT_EXCLUDE_V1：檢視者只看儀表板，不需要監控循環，也不登入學校系統。
+            if is_viewer {
+                super::status::invalidate_admin_status_cache().await;
+                let message = format!(
+                    "已新增檢視者帳號 {account_id}（唯讀）。此帳號不會登入學校系統、不做點名監控；網站登入需由管理員另行設定 Dashboard 密碼。"
+                );
+                crate::logs::record_audit(
+                    "web",
+                    &session.account_id,
+                    "add_account_viewer",
+                    Some(account_id.as_str()),
+                    Some("viewer"),
+                    message.clone(),
+                );
+                return (
+                    StatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "affected": 1,
+                        "account_id": account_id,
+                        "monitor_started": false,
+                        "viewer": true,
+                        "message": message,
+                    })),
                 )
                     .into_response();
             }
@@ -516,6 +572,13 @@ pub(super) async fn handle_admin_account_action(
                 Ok(true) => {
                     super::status::invalidate_admin_status_cache().await;
                     state.revoke_sessions_for_account(&account_id).await;
+                    // VIEWER_NO_SCHOOL_API_V1：改為檢視者後立即暫停其監控循環
+                    // （重啟後 resolve() 會直接排除，不再登入學校系統）。
+                    if is_viewer {
+                        if let Some(runtime) = state.account_by_id(&account_id) {
+                            set_running(&runtime, false).await;
+                        }
+                    }
                     crate::logs::record_audit(
                         "web",
                         &session.account_id,

@@ -129,7 +129,10 @@ impl AccountsDb {
         if !entry.is_object() {
             entry = serde_json::json!({});
         }
-        let object = entry.as_object_mut().expect("health entry is a json object");
+        // UNWRAP_SWEEP_V1：上一行已確保是 object；仍以 let-else 收斂。
+        let Some(object) = entry.as_object_mut() else {
+            return Ok(());
+        };
         let read_u64 = |field: &str| {
             object
                 .get(field)
