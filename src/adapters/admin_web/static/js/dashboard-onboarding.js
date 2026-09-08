@@ -2,7 +2,7 @@
  *
  * - 只在登入完成、狀態載入後顯示；每個瀏覽器＋帳號只自動顯示一次
  *   （localStorage key：tronclass_onboarding_v1_done:<account_id>）。
- * - 之後可從頂欄「?」或手機「更多 → 新手導覽」重新開啟，或加 #guide 到網址。
+ * - 之後可從頂欄「?」重新開啟，或加 #guide 到網址。
  * - 內容依角色（管理員／一般）與實際狀態（監控中、Discord 綁定、課表、推播）
  *   顯示「已完成／尚未」，每一步都有「前往」按鈕直接跳到對應分頁或頁面。
  * - 純前端、CSP 相容（外掛 JS + 外部 CSS；innerHTML 會經過 DOMPurify 政策）。
@@ -62,6 +62,12 @@
       hasLine: mine ? !!(mine.line_user_id && String(mine.line_user_id).trim()) : null,
       hasTimetable: null,
       hasPush: null,
+      /* ONBOARDING_PUSH_STATE_V1：後端 status.push_subscription_count（伺服器端登記的裝置數） */
+      pushServerCount: (typeof status.push_subscription_count==='number') ? status.push_subscription_count : null,
+      pushOtherDevice: false,
+      /* ONBOARDING_PASSKEY_STATE_V1：後端 status.passkey_count（null＝無法判斷） */
+      passkeyCount: (typeof status.passkey_count==='number') ? status.passkey_count : null,
+      hasPasskey: (typeof status.passkey_count==='number') ? status.passkey_count>0 : null,
       pushSupported: !!(('serviceWorker' in navigator) && ('PushManager' in window))
     };
     try{
@@ -78,6 +84,13 @@
         else f.hasPush = false;
       }
     }catch(_){}
+    /* ONBOARDING_PUSH_STATE_V1：本機沒訂閱，但伺服器有登記別台裝置 → 視為已啟用（其他裝置）。
+       本機有訂閱但伺服器數量為 0（例如訂閱已被清理）→ 視為未啟用，提示重新啟用。 */
+    if(f.pushServerCount!==null){
+      if(f.pushServerCount>0 && f.hasPush!==true){ f.hasPush = true; f.pushOtherDevice = true; }
+      else if(f.pushServerCount===0 && f.hasPush===true){ f.hasPush = false; }
+      else if(f.hasPush===null){ f.hasPush = f.pushServerCount>0; f.pushOtherDevice = f.pushServerCount>0; }
+    }
     return f;
   }
 
@@ -145,7 +158,7 @@
     var notifyItems = '';
     notifyItems += item(f.hasDiscord, 'Discord 綁定', f.hasDiscord===false ? '到「通知設定 → 通知管道綁定」貼上你的 Discord User ID 即可（頁面有取得方式）；也可以在 Discord 用 /bind-account。綁定後點名、QR、結果都會 DM 給你。' : 'Discord 是最主要的即時通知管道。', '已綁定', '未綁定', '無法判斷', { label:'去綁定 Discord', href:'/admin/notifications#binding' });
     notifyItems += item(f.hasLine, 'LINE 綁定', f.hasLine===true ? 'LINE 也會收到點名通知。' : '選用。若有啟用 LINE Bot，把 Bot 加好友後取得 User ID，貼到「通知管道綁定」。', '已綁定', '未綁定（選用）', '無法判斷', { label:'去綁定 LINE', href:'/admin/notifications#binding' });
-    notifyItems += item(f.hasPush, '手機／瀏覽器推播', f.pushSupported ? '到「推播狀態」頁按「啟用背景推播」，iPhone 需先把網站加到主畫面再開。啟用後晨間摘要、作業提醒都會推到這台裝置。' : '這個瀏覽器不支援 Web Push；請改用 Discord 通知。', '已啟用', '尚未啟用', f.pushSupported?'無法判斷':'不支援', f.pushSupported ? { label:'去啟用推播', href:'/admin/push-status' } : null);
+    notifyItems += item(f.hasPush, '手機／瀏覽器推播', f.pushSupported ? '到「推播狀態」頁按「啟用背景推播」，iPhone 需先把網站加到主畫面再開。啟用後晨間摘要、作業提醒都會推到這台裝置。' : '這個瀏覽器不支援 Web Push；請改用 Discord 通知。', f.pushOtherDevice ? ('已啟用（其他裝置 '+f.pushServerCount+' 台）') : '已啟用', '尚未啟用', f.pushSupported?'無法判斷':'不支援', f.pushSupported ? { label:'去啟用推播', href:'/admin/push-status' } : null);
     list.push({
       title: '把通知接起來',
       kicker: '第 4 步・通知',
@@ -173,9 +186,11 @@
       body:
         '<ul class="ob-list">'+
         item(true, 'Dashboard 密碼已設定', '之後要改密碼：更多 → 設定。', '完成')+
-        item(null, '通行密鑰（Passkey）', '建議設定：之後用 Face ID／指紋一鍵登入，不必輸入密碼。', '', '', '建議設定', { label:'去設定通行密鑰', href:'/admin/passkey' })+
+        item(f.hasPasskey, '通行密鑰（Passkey）',
+          f.hasPasskey ? '這個帳號已可用 Face ID／指紋一鍵登入。要在其他裝置也用，可到「通行密鑰」頁再新增。' : '建議設定：之後用 Face ID／指紋一鍵登入，不必輸入密碼。',
+          '已設定'+(f.passkeyCount?(' '+f.passkeyCount+' 組'):''), '尚未設定', '無法判斷', { label:'去設定通行密鑰', href:'/admin/passkey' })+
         '</ul>'+
-        '<p>「設定」頁可以調整主題、強調色與字體大小。這份導覽之後隨時可以從頂欄「?」或「更多 → 新手導覽」再打開。</p>',
+        '<p>「設定」頁可以調整主題、強調色與字體大小。這份導覽之後隨時可以從頂欄「?」再打開，或在網址後加 #guide。</p>',
       action: { label: '前往設定頁', href: '/admin/settings' }
     });
     return list;
@@ -186,7 +201,12 @@
     var all = steps(facts);
     if(step<0) step=0; if(step>=all.length) step=all.length-1;
     var s = all[step];
-    var dots = all.map(function(_,i){ return '<button type="button" class="ob-dot'+(i===step?' active':'')+'" data-ob-goto="'+i+'" aria-label="第 '+(i+1)+' 步"></button>'; }).join('');
+    /* ONBOARDING_STEP_NUMBERS_V1：圓圈內顯示步驟數字（已完成的步驟打勾），並附「第 N / M 步」文字 */
+    var dots = all.map(function(_,i){
+      var cls = 'ob-dot'+(i===step?' active':(i<step?' done':''));
+      var label = i<step ? '✓' : String(i+1);
+      return '<button type="button" class="'+cls+'" data-ob-goto="'+i+'" aria-label="第 '+(i+1)+' 步" aria-current="'+(i===step?'step':'false')+'">'+label+'</button>';
+    }).join('') + '<span class="ob-dot-label">第 '+(step+1)+' / '+all.length+' 步</span>';
     var last = step===all.length-1;
     layer.innerHTML =
       '<div class="ob-card" role="dialog" aria-modal="true" aria-labelledby="obTitle">'+
@@ -264,15 +284,8 @@
       var refresh=q('refreshAll');
       if(refresh && refresh.parentNode===actions) actions.insertBefore(b, refresh); else actions.appendChild(b);
     }
-    var grid=document.querySelector('#mobileMoreFinalV2 .more-grid');
-    if(grid && !q('moreOnboardingFinalV2')){
-      var m=document.createElement('button');
-      m.id='moreOnboardingFinalV2'; m.className='secondary'; m.type='button'; m.textContent='新手導覽';
-      m.style.fontSize='15px'; m.style.fontWeight='900';
-      m.onclick=function(){ var sheet=q('mobileMoreFinalV2'); if(sheet) sheet.classList.remove('visible'); openGuide(); };
-      var logout=grid.querySelector('#moreLogoutFinalV2,.danger');
-      grid.insertBefore(m, logout||null);
-    }
+    /* ONBOARDING_NO_MORE_ENTRY_V1：手機「更多」面板不再放「新手導覽」按鈕；
+       仍可從頂欄「?」或網址加 #guide 重新開啟。 */
   }
 
   /* 自動顯示：登入完成＋狀態就緒＋這個帳號還沒看過（或網址帶 #guide）。 */

@@ -107,3 +107,26 @@
     .class-reminder-actions{display:grid;grid-template-columns:1fr;gap:8px}
     .class-reminder-actions button,.class-reminder-select,.class-reminder-input{width:100%}
   }
+
+/* METRICS_HISTORY_V1：24h 趨勢卡（電腦 2 欄、手機 1 欄）與 SVG 折線 */
+.maint-trend-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.maint-trend-card{padding:14px;border:1px solid var(--line2,var(--line,#d8dee8));border-radius:16px;background:var(--card,var(--surface,#fff));min-width:0}
+.maint-trend-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.maint-trend-title{font-weight:800;font-size:14px}
+.maint-trend-cur{font-weight:900;font-size:18px;font-variant-numeric:tabular-nums}
+.maint-trend-empty{padding:26px 0;text-align:center;color:var(--muted,#64748b);font-size:13px}
+.mt-svg{display:block;width:100%;height:150px;margin-top:8px}
+.mt-svg+.mt-svg{margin-top:-150px;pointer-events:none}
+.mt-grid{stroke:var(--line2,#e2e8f0);stroke-width:1}
+.mt-lbl{fill:var(--muted,#64748b);font-size:11px;font-family:inherit}
+.mt-warn{stroke:#ef4444;stroke-width:1;stroke-dasharray:4 4;opacity:.7}
+.mt-line{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
+.mt-area{opacity:.14}
+.mt-line.c-lat,.mt-area.c-lat{stroke:#3b82f6;fill:#3b82f6}.mt-area.c-lat{stroke:none}
+.mt-line.c-max{stroke:#93c5fd;stroke-dasharray:3 3;stroke-width:1.5}
+.mt-line.c-run,.mt-area.c-run{stroke:#22c55e;fill:#22c55e}.mt-area.c-run{stroke:none}
+.mt-line.c-mem,.mt-area.c-mem{stroke:#f59e0b;fill:#f59e0b}.mt-area.c-mem{stroke:none}
+.mt-line.c-err,.mt-area.c-err{stroke:#ef4444;fill:#ef4444}.mt-area.c-err{stroke:none}
+.mt-line{fill:none!important}
+#maintTrendRange{min-height:40px;border-radius:12px;padding:0 12px;border:1px solid var(--line,#d8dee8);background:var(--card,#fff);color:var(--text,#172033);font:inherit}
+@media(max-width:760px){.maint-trend-grid{grid-template-columns:1fr}.mt-svg{height:120px}.mt-svg+.mt-svg{margin-top:-120px}}

@@ -108,6 +108,20 @@ pub(super) async fn admin_health_api_handler(
         .into_response()
 }
 
+/// METRICS_HISTORY_V1：24 小時內每分鐘一筆的系統／輪詢延遲快照（維護頁折線圖）。
+pub(super) async fn admin_health_history_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    (StatusCode::OK, Json(crate::metrics_history::snapshot())).into_response()
+}
+
 pub(super) async fn admin_health_check_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,

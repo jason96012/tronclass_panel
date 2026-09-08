@@ -244,6 +244,20 @@ pub fn notify_rollcall(
     course_name: &str,
     attendance_type: &str,
 ) {
+    notify_rollcall_with_url(account_id, rollcall_id, course_name, attendance_type, None);
+}
+
+/// PUSH_DEEP_LINK_V1：數字／QR 點名在註冊好輸入頁之後才發推播，把該帳號專屬的
+/// 輸入頁／掃碼頁完整網址塞進 payload，使用者點通知直接進到輸入畫面，
+/// 不用再從儀表板找。`target_url` 為 None 或空字串時退回儀表板點名分頁。
+/// 去重 key 與 `notify_rollcall` 共用，所以同一筆點名只會送一次。
+pub fn notify_rollcall_with_url(
+    account_id: &str,
+    rollcall_id: u64,
+    course_name: &str,
+    attendance_type: &str,
+    target_url: Option<&str>,
+) {
     let Some(service) = SERVICE.get().cloned() else {
         return;
     };
@@ -258,12 +272,155 @@ pub fn notify_rollcall(
     let account_id = account_id.to_string();
     let course_name = course_name.to_string();
     let attendance_type = attendance_type.to_string();
+    let target_url = target_url
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .map(str::to_string);
     tokio::spawn(async move {
         if let Err(error) = service
-            .send_rollcall(&account_id, rollcall_id, &course_name, &attendance_type)
+            .send_rollcall(
+                &account_id,
+                rollcall_id,
+                &course_name,
+                &attendance_type,
+                target_url.as_deref(),
+            )
             .await
         {
             warn!(account = %account_id, rollcall_id, error = %error, "Web Push 點名通知失敗");
+        }
+    });
+}
+
+/// ROLLCALL_INPUT_REMINDER_V1：等了 N 秒還沒有輸入，再推一次（同一筆點名只催一次）。
+/// tag 沿用原本的點名通知 tag，裝置上會把原通知換成催促內容（renotify 會再響一次），
+/// 不會堆成兩則。
+pub fn notify_rollcall_reminder(
+    account_id: &str,
+    rollcall_id: u64,
+    course_name: &str,
+    attendance_type: &str,
+    target_url: Option<&str>,
+    remaining_secs: u64,
+) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    let key = format!("remind:{account_id}:{rollcall_id}");
+    {
+        let mut recent = RECENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !dedupe_should_send(&mut recent, &key) {
+            return;
+        }
+    }
+    let account_id = account_id.to_string();
+    let course_name = course_name.to_string();
+    let attendance_type = attendance_type.to_string();
+    let target_url = target_url
+        .map(str::trim)
+        .filter(|url| url.starts_with("https://") || url.starts_with('/'))
+        .map(str::to_string);
+    tokio::spawn(async move {
+        let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                warn!(account = %account_id, error = %error, "Web Push 點名催促讀取訂閱失敗");
+                return;
+            }
+        };
+        if subscriptions.is_empty() {
+            return;
+        }
+        let url = target_url
+            .clone()
+            .unwrap_or_else(|| "/admin/dashboard#rollcall".to_string());
+        let payload = match serde_json::to_vec(&json!({
+            "title": format!("還沒送出：{course_name}"),
+            "body": format!(
+                "{attendance_type}｜帳號 {account_id}，還剩 {remaining_secs} 秒就會逾時，點一下立即輸入"
+            ),
+            "url": url,
+            "tag": format!("tronclass-rollcall-{account_id}-{rollcall_id}"),
+            "rollcall_id": rollcall_id,
+            "deep_link": target_url.is_some(),
+        })) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(error = %error, "序列化 Web Push 催促 payload 失敗");
+                return;
+            }
+        };
+        service.send_to_many(subscriptions, &payload).await;
+    });
+}
+
+/// MONITOR_ALERT_GRADING_V1：把監控警示／恢復訊息推到所有管理員帳號的裝置。
+/// tag 以帳號為後綴，同一帳號的警示→恢復會覆蓋同一則通知，不會洗版。
+/// 呼叫端已做節流，這裡不再去重。
+pub fn notify_admin_alert(admin_account_ids: Vec<String>, title: String, body: String, tag: String) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let payload = match serde_json::to_vec(&json!({
+            "title": title,
+            "body": body,
+            "url": "/admin/dashboard#maintenance",
+            "tag": tag,
+        })) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(error = %error, "序列化監控警示 payload 失敗");
+                return;
+            }
+        };
+        for account_id in admin_account_ids {
+            let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    warn!(account = %account_id, error = %error, "監控警示讀取推播訂閱失敗");
+                    continue;
+                }
+            };
+            if subscriptions.is_empty() {
+                continue;
+            }
+            service.send_to_many(subscriptions, &payload).await;
+        }
+    });
+}
+
+/// LOGIN_LOCATION_ALERT_V1：安全類推播（登入異常地點）。與 `notify_admin_alert`
+/// 的差別只有落地頁：點開直接進「登入裝置管理」，方便立刻踢掉可疑 session。
+pub fn notify_security_alert(account_ids: Vec<String>, title: String, body: String, tag: String) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let payload = match serde_json::to_vec(&json!({
+            "title": title,
+            "body": body,
+            "url": "/admin/devices",
+            "tag": tag,
+        })) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(error = %error, "序列化安全警示 payload 失敗");
+                return;
+            }
+        };
+        for account_id in account_ids {
+            let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    warn!(account = %account_id, error = %error, "安全警示讀取推播訂閱失敗");
+                    continue;
+                }
+            };
+            if subscriptions.is_empty() {
+                continue;
+            }
+            service.send_to_many(subscriptions, &payload).await;
         }
     });
 }
@@ -394,17 +551,29 @@ impl WebPushService {
         rollcall_id: u64,
         course_name: &str,
         attendance_type: &str,
+        target_url: Option<&str>,
     ) -> Result<()> {
         let subscriptions = self.db.list_web_push_subscriptions(account_id).await?;
         if subscriptions.is_empty() {
             return Ok(());
         }
+        // PUSH_DEEP_LINK_V1：只接受 https:// 絕對網址或站內相對路徑，其餘退回儀表板。
+        let deep_link = target_url
+            .filter(|url| url.starts_with("https://") || url.starts_with('/'))
+            .unwrap_or("/admin/dashboard#rollcall");
+        let has_deep_link = deep_link != "/admin/dashboard#rollcall";
+        let body = if has_deep_link {
+            format!("{attendance_type}｜帳號 {account_id}，點一下直接開啟輸入頁")
+        } else {
+            format!("{attendance_type}｜帳號 {account_id}，點一下立即查看")
+        };
         let payload = serde_json::to_vec(&json!({
             "title": format!("偵測到點名：{course_name}"),
-            "body": format!("{attendance_type}｜帳號 {account_id}，點一下立即查看"),
-            "url": "/admin/dashboard#rollcall",
+            "body": body,
+            "url": deep_link,
             "tag": format!("tronclass-rollcall-{account_id}-{rollcall_id}"),
             "rollcall_id": rollcall_id,
+            "deep_link": has_deep_link,
         }))
         .map_err(|error| miette::miette!("序列化 Web Push payload 失敗：{error}"))?;
 

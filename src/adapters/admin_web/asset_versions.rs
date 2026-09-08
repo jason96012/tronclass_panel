@@ -84,6 +84,11 @@ const ASSETS: &[(&str, &str)] = &[
         "/admin/static/web-push.js",
         include_str!("static/js/web-push.js"),
     ),
+    // DASHBOARD_LIVE_EVENTS_V1
+    (
+        "/admin/static/live-events.js",
+        include_str!("static/js/live-events.js"),
+    ),
     (
         "/admin/static/accounts.js",
         include_str!("static/js/accounts.js"),
@@ -235,6 +240,13 @@ static ASSET_URL_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(/admin/static/[A-Za-z0-9._\-/]+)(\?v=[A-Za-z0-9._\-]+)?")
         .expect("ASSET_VERSION_AUTO_V1 regex must compile")
 });
+
+/// DASHBOARD_LIVE_EVENTS_V1：對外提供 build id（SSE `version` 事件／自動重載偵測）。
+/// 由於 build id 是所有內嵌資產內容的雜湊，任何前端檔案變更重新部署後都會不同；
+/// 同一個 binary 重啟則維持相同（不會誤觸發重載）。
+pub(super) fn build_id() -> &'static str {
+    BUILD_ID.as_str()
+}
 
 /// 把輸入中所有 `/admin/static/...` 參照統一改寫為 `?sv=<build id>`。
 /// 沒有任何參照時回傳借用（零配置）；`?sv=` 前綴與舊 `?v=` 區別，

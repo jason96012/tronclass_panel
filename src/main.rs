@@ -41,7 +41,9 @@ mod holidays;
 mod homework_cache;
 mod homework_reminders;
 mod logs;
+mod metrics_history;
 mod monitor;
+mod monitor_alerts;
 mod rollcalls;
 mod runtime_settings;
 mod secret_encryption;
@@ -1292,6 +1294,29 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    // METRICS_HISTORY_V1：每分鐘取一筆系統／輪詢延遲快照，維護頁畫 24h 折線。
+    {
+        let registry = webhook_accounts.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(metrics_history::SAMPLE_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                let accounts = registry.snapshot();
+                let mut running = 0u32;
+                let mut failures = 0u32;
+                for account in accounts.iter() {
+                    if *account.is_running.lock().await {
+                        running += 1;
+                    }
+                    failures = failures
+                        .saturating_add(account.monitor_status.lock().await.consecutive_failures);
+                }
+                metrics_history::push_sample(running, accounts.len() as u32, failures);
+            }
+        });
+    }
 
     // ── 6. 設定優雅關閉 ───────────────────────────────────────────────────────
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());

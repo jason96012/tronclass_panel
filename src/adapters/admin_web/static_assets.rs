@@ -147,6 +147,10 @@ pub(super) async fn admin_core_api_js_handler() -> Response {
 pub(super) async fn admin_web_push_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::WEB_PUSH_JS)
 }
+// DASHBOARD_LIVE_EVENTS_V1
+pub(super) async fn admin_live_events_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::LIVE_EVENTS_JS)
+}
 
 pub(super) async fn admin_dompurify_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::DOMPURIFY_JS)

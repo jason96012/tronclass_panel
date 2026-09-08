@@ -35,6 +35,7 @@ const SHELL_ASSET_URLS: &[&str] = &[
     "/admin/static/notifications-page.js",
     "/admin/static/core-api.js",
     "/admin/static/web-push.js",
+    "/admin/static/live-events.js",
     "/admin/static/js/dompurify.min.js",
     "/admin/static/js/trusted-types-init.js",
     "/admin/static/js/jszip.min.js",
@@ -80,7 +81,7 @@ const SHELL_ASSET_URLS: &[&str] = &[
 /// Cache-name version stamp. Bump it when the shell asset *set* changes
 /// (stale-while-revalidate already refreshes asset *contents* in the
 /// background, so a bump is only needed to evict entries for removed URLs).
-const SHELL_CACHE_NAME: &str = "tron-shell-v20260903a";
+const SHELL_CACHE_NAME: &str = "tron-shell-v20260908b";
 
 pub(super) async fn manifest_handler() -> Response {
     let manifest = json!({
@@ -161,9 +162,12 @@ self.addEventListener('push', event => {
       payload = { body: event.data ? event.data.text() : '偵測到新的點名' };
     }
     const title = String(payload.title || 'Tronclass 點名通知');
-    const target = typeof payload.url === 'string' && payload.url.indexOf('/') === 0
-      ? payload.url : '/admin/dashboard#rollcall';
-    await self.registration.showNotification(title, {
+    // PUSH_DEEP_LINK_V1：payload.url 可以是站內相對路徑，或後端產生的 https 輸入頁／
+    // 掃碼頁絕對網址（scanner public_base_url 可能與儀表板不同網域）。
+    const rawUrl = typeof payload.url === 'string' ? payload.url : '';
+    const target = (rawUrl.indexOf('/') === 0 || rawUrl.indexOf('https://') === 0)
+      ? rawUrl : '/admin/dashboard#rollcall';
+    const options = {
       body: String(payload.body || '偵測到新的點名，請立即查看。'),
       icon: '/admin/pwa/icon.svg',
       badge: '/admin/pwa/icon.svg',
@@ -173,20 +177,37 @@ self.addEventListener('push', event => {
       // Let iOS apply the PWA's system notification sound setting. Explicit
       // silent/vibrate options have had inconsistent WebKit behavior, while
       // the platform default follows 設定 → 通知 → Tronclass → 聲音.
-      data: { url: target }
-    });
+      data: { url: target, dashboard: '/admin/dashboard#rollcall' }
+    };
+    // 支援 actions 的平台（Android Chrome）多給一顆「開啟儀表板」；iOS 會忽略。
+    if (payload.deep_link === true) {
+      options.actions = [
+        { action: 'open', title: '前往輸入' },
+        { action: 'dashboard', title: '開啟儀表板' }
+      ];
+    }
+    await self.registration.showNotification(title, options);
   })());
 });
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  const target = event.notification && event.notification.data && event.notification.data.url
-    ? event.notification.data.url : '/admin/dashboard#rollcall';
+  const data = (event.notification && event.notification.data) || {};
+  // PUSH_DEEP_LINK_V1：按「開啟儀表板」動作時改開儀表板；預設點擊走 data.url。
+  const target = (event.action === 'dashboard' && data.dashboard)
+    ? data.dashboard
+    : (data.url || '/admin/dashboard#rollcall');
   event.waitUntil((async () => {
     const absolute = new URL(target, self.location.origin).href;
+    const sameOrigin = absolute.indexOf(self.location.origin + '/') === 0;
     const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of windows) {
       try {
-        if ('navigate' in client) await client.navigate(absolute);
+        // WindowClient.navigate 只允許同源；跨網域的輸入頁直接開新視窗。
+        if (sameOrigin && 'navigate' in client) {
+          await client.navigate(absolute);
+          return client.focus();
+        }
+        if (!sameOrigin) break;
         return client.focus();
       } catch (_) {}
     }

@@ -145,6 +145,8 @@ pub enum OutboundMessage {
     Bulletin(BulletinEvent),
     /// PUSH_STALE_CLEANUP_V1：手機 Web Push 訂閱失效、已被系統移除，提醒使用者重新啟用。
     PushSubscriptionExpired(PushSubscriptionExpiredEvent),
+    /// ROLLCALL_INPUT_REMINDER_V1：數字／QR 點名等了 N 秒仍沒有任何輸入，再催一次。
+    RollcallInputReminder(RollcallInputReminderEvent),
     Help,
     Welcome,
     UnsupportedMedia,
@@ -237,6 +239,57 @@ impl PushSubscriptionExpiredEvent {
              原因：{}\n\n\
              {}\n{}",
             self.account, self.removed_devices, self.reason, scope, how
+        )
+    }
+}
+
+/// ROLLCALL_INPUT_REMINDER_V1：點名輸入催促事件。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RollcallInputReminderEvent {
+    pub rollcall_id: u64,
+    pub account: String,
+    pub course_name: String,
+    /// 「數字簽到」或「QR Code 簽到」。
+    pub attendance_type: String,
+    /// 該帳號專屬的輸入頁／掃碼頁；未設定 public_base_url 時為空。
+    pub input_url: String,
+    /// 已等待秒數。
+    pub waited_secs: u64,
+    /// 距離逾時還剩幾秒。
+    pub remaining_secs: u64,
+}
+
+impl RollcallInputReminderEvent {
+    pub fn is_number(&self) -> bool {
+        self.attendance_type.contains("數字")
+    }
+
+    /// 各 adapter 共用的催促文字（不含表情符號）。
+    pub fn render(&self) -> String {
+        let what = if self.is_number() {
+            "還沒收到數字點名碼"
+        } else {
+            "還沒收到 QR Code"
+        };
+        let page = if self.input_url.trim().is_empty() {
+            String::new()
+        } else if self.is_number() {
+            format!("\n數字點名頁：{}", self.input_url.trim())
+        } else {
+            format!("\n掃碼頁：{}", self.input_url.trim())
+        };
+        format!(
+            "點名提醒：{what}\n\n\
+             課程：{}\n\
+             帳號：{}\n\
+             點名 ID：{}\n\
+             已等待 {} 秒，還剩 {} 秒就會逾時。{}",
+            self.course_name,
+            self.account,
+            self.rollcall_id,
+            self.waited_secs,
+            self.remaining_secs,
+            page
         )
     }
 }

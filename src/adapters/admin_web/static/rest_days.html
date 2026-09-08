@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07111f">
+<title>休息日與寒暑假｜Tronclass</title>
+<!-- REST_DAY_PAGE_V1：顯示 REST_DAY_NO_POLL_V1 / SEMESTER_BREAK_V1 的實際生效內容 -->
+<style>
+:root{
+  color-scheme:light;
+  --rd-bg:#f5f7fb;--rd-card:#ffffff;--rd-soft:#f1f5f9;--rd-soft-strong:#e8eef7;
+  --rd-text:#172033;--rd-muted:#64748b;--rd-line:#d8e0eb;--rd-line-soft:#e8edf4;
+  --rd-shadow:0 10px 30px rgba(15,23,42,.07);
+  --rd-hero-a:#eff6ff;--rd-hero-b:#e8f0ff;--rd-hero-text:#172033;
+  --c-weekend:#94a3b8;--c-holiday:#ef4444;--c-break:#3b82f6;--c-extra:#f59e0b;--c-closed:#a855f7;--c-work:#22c55e;
+}
+@media(prefers-color-scheme:dark){
+  :root{
+    color-scheme:dark;
+    --rd-bg:#0f141d;--rd-card:#161d29;--rd-soft:#111827;--rd-soft-strong:#1e293b;
+    --rd-text:#eef2ff;--rd-muted:#9aa4b5;--rd-line:#303948;--rd-line-soft:#252e3c;
+    --rd-shadow:0 14px 36px rgba(0,0,0,.24);
+    --rd-hero-a:#111d2d;--rd-hero-b:#13294b;--rd-hero-text:#f1f5f9;
+  }
+}
+html[data-theme="light"]{color-scheme:light;--rd-bg:#f5f7fb;--rd-card:#fff;--rd-soft:#f1f5f9;--rd-soft-strong:#e8eef7;--rd-text:#172033;--rd-muted:#64748b;--rd-line:#d8e0eb;--rd-line-soft:#e8edf4;--rd-shadow:0 10px 30px rgba(15,23,42,.07);--rd-hero-a:#eff6ff;--rd-hero-b:#e8f0ff;--rd-hero-text:#172033}
+html[data-theme="dark"]{color-scheme:dark;--rd-bg:#0f141d;--rd-card:#161d29;--rd-soft:#111827;--rd-soft-strong:#1e293b;--rd-text:#eef2ff;--rd-muted:#9aa4b5;--rd-line:#303948;--rd-line-soft:#252e3c;--rd-shadow:0 14px 36px rgba(0,0,0,.24);--rd-hero-a:#111d2d;--rd-hero-b:#13294b;--rd-hero-text:#f1f5f9}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%;background:var(--rd-bg)!important;color:var(--rd-text)!important}
+body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif}
+.shell{width:min(1400px,calc(100% - 64px));margin:auto;padding:32px 0 52px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:24px}
+.brand{display:flex;align-items:center;gap:12px}.brand b{color:var(--rd-text)}
+.logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#38bdf8,#4f46e5);display:grid;place-items:center;color:#fff;font-weight:900;box-shadow:0 10px 26px rgba(37,99,235,.28)}
+.top a,.button{display:inline-flex;align-items:center;justify-content:center;min-height:42px;color:var(--rd-text)!important;text-decoration:none;border:1px solid var(--rd-line)!important;background:var(--rd-card)!important;padding:0 16px;border-radius:999px;font-weight:760;box-shadow:0 1px 2px rgba(15,23,42,.03);cursor:pointer;font:inherit;font-weight:760}
+.top a:hover,.button:hover{border-color:#60a5fa!important;color:#2563eb!important}
+.button:disabled{opacity:.45;cursor:default}
+.hero{padding:28px;border:1px solid var(--rd-line-soft);border-radius:24px;background:radial-gradient(circle at 92% 0,rgba(37,99,235,.15),transparent 44%),linear-gradient(135deg,var(--rd-hero-a),var(--rd-hero-b));box-shadow:var(--rd-shadow);margin-bottom:18px;color:var(--rd-hero-text);display:grid;grid-template-columns:1.4fr 1fr;gap:20px;align-items:center}
+.eyebrow{font-size:12px;letter-spacing:.13em;color:#0284c7;font-weight:850}.hero h1{font-size:clamp(26px,4vw,38px);margin:8px 0;color:var(--rd-hero-text)}.hero p{margin:0;color:var(--rd-muted);line-height:1.75}
+.today{border:1px solid var(--rd-line-soft);background:var(--rd-card);border-radius:20px;padding:18px 20px;box-shadow:var(--rd-shadow)}
+.today .k{color:var(--rd-muted);font-size:13px;font-weight:700}.today .v{font-size:26px;font-weight:900;margin:4px 0 2px}
+.today .sub{color:var(--rd-muted);font-size:13px;line-height:1.6}
+.state{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;font-size:13px;font-weight:850;background:var(--rd-soft-strong);color:var(--rd-muted)}
+.state .dot{width:9px;height:9px;border-radius:50%;background:#64748b}
+.state.rest{color:#b91c1c;background:rgba(239,68,68,.12)}.state.rest .dot{background:#ef4444;box-shadow:0 0 0 5px rgba(239,68,68,.12)}
+.state.work{color:#15803d;background:rgba(34,197,94,.13)}.state.work .dot{background:#22c55e;box-shadow:0 0 0 5px rgba(34,197,94,.12)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.wide{grid-column:1/-1}
+.card{border:1px solid var(--rd-line-soft);border-radius:20px;background:var(--rd-card);padding:20px;box-shadow:var(--rd-shadow);color:var(--rd-text);min-width:0}
+.card h2{font-size:17px;margin:0 0 6px;color:var(--rd-text)}.card .lead{color:var(--rd-muted);font-size:13px;line-height:1.65;margin:0 0 14px}
+.toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.meta,.hint{color:var(--rd-muted)!important;font-size:13px;line-height:1.6}
+.list{display:grid;gap:10px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:12px 14px;border:1px solid var(--rd-line-soft);border-radius:14px;background:var(--rd-soft)}
+.row b{display:block;color:var(--rd-text)}.row .meta{margin-top:2px}
+.row .right{text-align:right;flex-shrink:0}
+.tag{display:inline-block;padding:3px 9px;border-radius:999px;font-size:11px;font-weight:850;letter-spacing:.02em;color:#fff}
+.tag.break{background:var(--c-break)}.tag.holiday{background:var(--c-holiday)}.tag.extra{background:var(--c-extra)}.tag.closed{background:var(--c-closed)}.tag.work{background:var(--c-work)}.tag.weekend{background:var(--c-weekend)}.tag.soft{background:var(--rd-soft-strong);color:var(--rd-muted)}
+.holiday-cols{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.holiday-cols h3{font-size:14px;margin:0 0 8px;color:var(--rd-muted)}
+.hlist{display:grid;gap:6px}.hitem{display:flex;justify-content:space-between;gap:10px;padding:8px 10px;border-radius:10px;background:var(--rd-soft);font-size:13px}
+.hitem .d{font-variant-numeric:tabular-nums;font-weight:800}.hitem.past{opacity:.5}
+.steps{display:grid;gap:8px;counter-reset:s}
+.step{display:flex;gap:12px;align-items:flex-start;padding:10px 12px;border-radius:12px;background:var(--rd-soft);border:1px solid var(--rd-line-soft)}
+.step .n{width:24px;height:24px;border-radius:50%;background:linear-gradient(135deg,#0284c7,#4f46e5);color:#fff;font-size:12px;font-weight:900;display:grid;place-items:center;flex-shrink:0}
+.step b{display:block;font-size:14px}.step .meta{margin-top:2px}
+pre.code{margin:10px 0 0;padding:12px 14px;border-radius:12px;background:var(--rd-soft-strong);border:1px solid var(--rd-line-soft);font-size:12.5px;line-height:1.55;overflow:auto;color:var(--rd-text)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;margin-top:10px}.kv .k{color:var(--rd-muted);font-weight:700}
+.chips{display:flex;flex-wrap:wrap;gap:6px}.chip{padding:4px 9px;border-radius:999px;background:var(--rd-soft-strong);font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+/* 月曆 */
+.cal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+.pager{display:flex;align-items:center;gap:8px}.pager .label{font-weight:900;min-width:150px;text-align:center}
+.legend{display:flex;flex-wrap:wrap;gap:6px 12px;font-size:12px;color:var(--rd-muted)}
+.legend span{display:inline-flex;align-items:center;gap:5px}.legend i{width:11px;height:11px;border-radius:3px;display:inline-block}
+.months{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.month{border:1px solid var(--rd-line-soft);border-radius:16px;background:var(--rd-soft);padding:12px;min-width:0}
+.month h3{margin:0 0 8px;font-size:15px;display:flex;justify-content:space-between;align-items:center}
+.month h3 small{color:var(--rd-muted);font-weight:700;font-size:12px}
+.dow,.days{display:grid;grid-template-columns:repeat(7,1fr);gap:4px}
+.dow span{text-align:center;font-size:11px;color:var(--rd-muted);font-weight:800;padding:2px 0}
+.day{aspect-ratio:1/1;border-radius:9px;display:grid;place-items:center;font-size:12.5px;font-weight:800;font-variant-numeric:tabular-nums;background:var(--rd-card);border:1px solid transparent;position:relative;min-width:0}
+.day.spacer{background:transparent;border:0;box-shadow:none;padding:0;pointer-events:none}
+.day.weekend{background:rgba(148,163,184,.18);background:color-mix(in srgb,var(--c-weekend) 18%,var(--rd-card));color:var(--rd-muted)}
+.day.holiday{background:rgba(239,68,68,.18);background:color-mix(in srgb,var(--c-holiday) 22%,var(--rd-card));color:#b91c1c}
+.day.break{background:rgba(59,130,246,.18);background:color-mix(in srgb,var(--c-break) 20%,var(--rd-card));color:#1d4ed8}
+.day.extra{background:rgba(245,158,11,.22);background:color-mix(in srgb,var(--c-extra) 26%,var(--rd-card));color:#b45309}
+.day.closed{background:rgba(168,85,247,.18);background:color-mix(in srgb,var(--c-closed) 22%,var(--rd-card));color:#7e22ce}
+.day.work{box-shadow:inset 0 0 0 2px var(--c-work)}
+.day.today{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,.18)}
+.day.today::after{content:"";position:absolute;bottom:3px;width:4px;height:4px;border-radius:50%;background:#2563eb}
+html[data-theme="dark"] .day.holiday{color:#fca5a5}html[data-theme="dark"] .day.break{color:#93c5fd}html[data-theme="dark"] .day.extra{color:#fcd34d}html[data-theme="dark"] .day.closed{color:#d8b4fe}
+@media(prefers-color-scheme:dark){html:not([data-theme="light"]) .day.holiday{color:#fca5a5}html:not([data-theme="light"]) .day.break{color:#93c5fd}html:not([data-theme="light"]) .day.extra{color:#fcd34d}html:not([data-theme="light"]) .day.closed{color:#d8b4fe}}
+/* REST_DAY_EDIT_V1：點日期編輯 */
+.can-edit .day:not(.spacer){cursor:pointer}
+.can-edit .day:not(.spacer):hover{filter:brightness(1.08);border-color:#60a5fa}
+.day.selected{outline:2px solid #2563eb;outline-offset:1px}
+.edit-hint{margin-top:10px}
+/* REST_DAY_RANGE_V1：範圍選取 */
+.range-bar{display:none;align-items:center;gap:10px;flex-wrap:wrap;margin-top:10px;padding:10px 12px;border-radius:14px;border:1px dashed var(--rd-line);background:var(--rd-soft);font-size:13px}
+.range-bar.show{display:flex}
+.range-bar .button{min-height:36px;padding:0 12px;font-size:13px}
+.range-bar .button.on{background:#2563eb!important;color:#fff!important;border-color:#2563eb!important}
+.range-bar .rng{font-weight:800}
+.day.in-range{outline:2px solid rgba(37,99,235,.45);outline-offset:-1px;background:rgba(37,99,235,.12)}
+.day.range-start,.day.range-end{outline:2px solid #2563eb;outline-offset:1px}
+.sheet-backdrop{position:fixed;inset:0;background:rgba(2,6,23,.55);display:none;align-items:center;justify-content:center;z-index:60;padding:16px}
+.sheet-backdrop.open{display:flex}
+.sheet{width:min(420px,100%);background:var(--rd-card);color:var(--rd-text);border:1px solid var(--rd-line);border-radius:20px;box-shadow:0 24px 60px rgba(0,0,0,.35);padding:18px}
+.sheet h3{margin:0 0 4px;font-size:17px}.sheet .meta{margin-bottom:12px}
+.sheet .now{display:flex;align-items:center;gap:8px;margin-bottom:14px;font-size:13px}
+.sheet .opts{display:grid;gap:8px}
+.opt{display:flex;align-items:center;gap:12px;width:100%;text-align:left;padding:12px 14px;border-radius:14px;border:1px solid var(--rd-line);background:var(--rd-soft);color:var(--rd-text);font:inherit;cursor:pointer}
+.opt:hover{border-color:#60a5fa}.opt:disabled{opacity:.45;cursor:default}
+.opt i{width:12px;height:12px;border-radius:4px;flex-shrink:0}
+.opt b{display:block;font-size:14px}.opt small{color:var(--rd-muted);font-size:12px}
+.sheet .foot{display:flex;justify-content:flex-end;margin-top:12px}
+.sheet .msg{min-height:20px;margin-top:8px;font-size:13px}
+@media(max-width:820px){
+  .sheet-backdrop{align-items:flex-end;padding:0}
+  .sheet{width:100%;border-radius:20px 20px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom))}
+  .opt{min-height:56px}
+}
+.empty-box{padding:22px;text-align:center;color:var(--rd-muted);border:1px dashed var(--rd-line);border-radius:14px;background:var(--rd-soft)}
+.message{min-height:22px;margin-top:10px;font-size:14px}.bad{color:#dc2626}.good{color:#16a34a}
+.calendar-card{margin-bottom:18px}
+/* 平板 */
+@media(max-width:1100px){.months{grid-template-columns:repeat(2,1fr)}}
+/* 手機 */
+@media(max-width:820px){
+  .shell{width:min(100%,calc(100% - 24px));padding:14px 0 calc(96px + env(safe-area-inset-bottom))}
+  .top{margin-bottom:14px}.top a{min-height:40px;padding:0 13px;font-size:13px}
+  .hero{grid-template-columns:1fr;padding:20px 17px;border-radius:19px;margin-bottom:12px;gap:14px}.hero h1{font-size:26px}.hero p{font-size:14px;line-height:1.65}
+  .today{padding:14px 16px}.today .v{font-size:22px}
+  .grid{grid-template-columns:1fr;gap:12px}.wide{grid-column:auto}
+  .card{padding:16px;border-radius:17px;box-shadow:0 5px 18px rgba(15,23,42,.06)}
+  .holiday-cols{grid-template-columns:1fr}
+  .row{flex-direction:column;align-items:flex-start;gap:6px}.row .right{text-align:left}
+  .months{grid-template-columns:1fr}
+  .cal-head{flex-direction:column;align-items:stretch}.pager{justify-content:space-between}.pager .label{flex:1}
+  .day{font-size:13px;border-radius:10px}
+  .kv{grid-template-columns:1fr}.kv .k{margin-top:4px}
+  /* REST_DAY_CAL_FIRST_V1：手機版只顯示月曆，其餘資訊卡與 hero 說明文字隱藏 */
+  .info-grid{display:none!important}
+  .hero>div:first-child p{display:none}
+  .hero{padding:16px 15px}
+  .calendar-card{margin-bottom:0}
+}
+@media(max-width:390px){.brand{gap:9px}.logo{width:40px;height:40px}.brand b{font-size:16px}.brand .meta{font-size:11px}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top"><div class="brand"><div class="logo">D</div><div><b>Tronclass</b><div class="meta">Rest Days &amp; Semester Breaks</div></div></div><a id="backDashboard" href="/admin#overview" aria-label="返回 Dashboard 總覽">返回 Dashboard</a></header>
+
+  <section class="hero">
+    <div>
+      <div class="eyebrow">REST DAY / SEMESTER BREAK</div>
+      <h1>休息日與寒暑假</h1>
+      <p>週六、週日、臺灣國定假日與寒暑假整天不做自動輪詢，開學日自動恢復偵測；手動「立即檢查」與重新登入不受影響。本頁資料和監控主迴圈、晨間摘要共用同一套判定。</p>
+    </div>
+    <div class="today">
+      <div class="k">今天 <span id="todayDate">-</span></div>
+      <div class="v"><span id="todayState" class="state"><i class="dot"></i><span>讀取中…</span></span></div>
+      <div id="todaySub" class="sub">正在讀取伺服器行事曆…</div>
+    </div>
+  </section>
+
+  <!-- REST_DAY_CAL_FIRST_V1：月曆置頂；手機版只顯示月曆 -->
+    <section class="card calendar-card" id="calendarCard">
+      <div class="cal-head">
+        <div class="pager"><button id="prevMonth" class="button" type="button" aria-label="上一個月">‹ 上月</button><div id="pagerLabel" class="label">-</div><button id="nextMonth" class="button" type="button" aria-label="下一個月">下月 ›</button></div>
+        <div class="legend">
+          <span><i style="background:var(--c-weekend)"></i>週末</span>
+          <span><i style="background:var(--c-holiday)"></i>國定假日</span>
+          <span><i style="background:var(--c-break)"></i>寒暑假</span>
+          <span><i style="background:var(--c-extra)"></i>自訂假日</span>
+          <span><i style="background:var(--c-closed)"></i>停課期間</span>
+          <span><i style="background:transparent;box-shadow:inset 0 0 0 2px var(--c-work)"></i>強制上課</span>
+        </div>
+      </div>
+      <div id="months" class="months"></div>
+      <!-- REST_DAY_RANGE_V1：範圍模式列（管理員才顯示） -->
+      <div id="rangeBar" class="range-bar">
+        <button id="rangeToggle" class="button" type="button" aria-pressed="false">選取範圍</button>
+        <span id="rangeText" class="rng">關閉：點一天就編輯那一天</span>
+        <button id="rangeReset" class="button" type="button" hidden>清除選取</button>
+      </div>
+      <div id="editHint" class="hint edit-hint"></div>
+      <div id="message" class="message"></div>
+      <div id="serverTime" class="meta" style="margin-top:8px"></div>
+    </section>
+
+  <div class="grid info-grid" id="infoGrid">
+    <section class="card">
+      <h2>判定規則</h2>
+      <p class="lead">每個帳號的監控迴圈在每一輪等待前都會用「今天的日期」跑一次下面的順序，命中就整天不自動輪詢；休息日期間最多每 30 分鐘重新檢查一次，因此 <code>config/holidays.json</code> 改完不用重啟。</p>
+      <div class="steps" id="ruleSteps"></div>
+    </section>
+
+    <section class="card">
+      <div class="toolbar"><h2>寒暑假／停課區間</h2><span class="tag break">開學日自動恢復</span></div>
+      <p class="lead">內建區間依淡江大學 115 學年度行事曆（1150410 第 208 次行政會議通過）。「恢復偵測」= 區間結束後第一個上課日（已跳過週末與國定假日）。</p>
+      <div id="breakList" class="list"></div>
+    </section>
+
+    <section class="card">
+      <div class="toolbar"><h2>內建國定假日</h2><span id="holidayCount" class="tag soft">-</span></div>
+      <p class="lead">依行政院人事行政總處《政府行政機關辦公日曆表》，含補假日與連假中的週間日。已過去的日期會淡化顯示。</p>
+      <div id="holidayCols" class="holiday-cols"></div>
+    </section>
+
+    <section class="card">
+      <div class="toolbar"><h2>自訂覆寫 config/holidays.json</h2><span id="overrideState" class="tag soft">-</span></div>
+      <p class="lead">可直接在上方月曆點日期新增／移除（管理員）。手動編輯時：校慶、颱風假放 <b>extra</b>；補課日放 <b>workdays</b>（優先權最高，寒暑假期間也能強制輪詢）；額外停課區間放 <b>breaks</b>；其他學校帳號可用 <b>disable_builtin_breaks</b> 關掉內建寒暑假。</p>
+      <div class="kv">
+        <div class="k">extra（額外放假）</div><div id="ovExtra" class="chips"></div>
+        <div class="k">workdays（強制上課）</div><div id="ovWorkdays" class="chips"></div>
+        <div class="k">disable_builtin_breaks</div><div id="ovDisable">-</div>
+        <div class="k">重讀間隔</div><div id="ovReload">-</div>
+      </div>
+      <pre class="code" id="ovSample"></pre>
+    </section>
+
+  </div>
+</div>
+
+<!-- REST_DAY_EDIT_V1：點日期後的操作面板（電腦置中、手機底部） -->
+<div id="daySheet" class="sheet-backdrop" role="dialog" aria-modal="true" aria-labelledby="sheetTitle">
+  <div class="sheet">
+    <h3 id="sheetTitle">-</h3>
+    <div id="sheetMeta" class="meta">-</div>
+    <div class="now"><span class="k">目前：</span><span id="sheetNow" class="tag soft">-</span></div>
+    <div class="opts">
+      <button id="optRest" class="opt" type="button"><i style="background:var(--c-extra)"></i><span><b>設為不用上課</b><small>當天不自動輪詢（校慶、颱風假、停課）</small></span></button>
+      <button id="optWork" class="opt" type="button"><i style="background:var(--c-work)"></i><span><b>設為強制上課</b><small>就算是週末／假日／寒暑假也照常輪詢（補課）</small></span></button>
+      <button id="optClear" class="opt" type="button"><i style="background:var(--c-weekend)"></i><span><b>清除自訂</b><small>回到內建判定（週末、國定假日、寒暑假）</small></span></button>
+    </div>
+    <div id="sheetMsg" class="msg"></div>
+    <div class="foot"><button id="sheetClose" class="button" type="button">關閉</button></div>
+  </div>
+</div>
+<script>
+(function(){'use strict';
+const q=id=>document.getElementById(id);
+const DOW=['一','二','三','四','五','六','日'];
+let data=null, dayMap=new Map(), monthKeys=[], monthOffset=0;
+
+async function parse(res){let body={};try{body=await res.json()}catch(_){}if(res.status===401||res.status===403){location.replace('/admin');throw new Error('登入已失效')}if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body}
+function api(path,opts){return fetch(path,Object.assign({credentials:'same-origin',cache:'no-store'},opts||{})).then(parse)}
+let selected=null;
+/* REST_DAY_RANGE_V1 */
+let rangeMode=false, rangeStart=null, rangeEnd=null, selectedEnd=null;
+function el(tag,cls,text){const e=document.createElement(tag);if(cls)e.className=cls;if(text!=null)e.textContent=String(text);return e}
+function pd(s){const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(s||'');return m?new Date(Number(m[1]),Number(m[2])-1,Number(m[3])):null}
+function fmtDate(s){const d=pd(s);if(!d)return s||'-';return (d.getMonth()+1)+'/'+d.getDate()+'（'+DOW[(d.getDay()+6)%7]+'）'}
+function fmtLong(s){const d=pd(s);if(!d)return s||'-';return d.getFullYear()+'/'+(d.getMonth()+1)+'/'+d.getDate()+'（週'+DOW[(d.getDay()+6)%7]+'）'}
+function daysBetween(a,b){const x=pd(a),y=pd(b);if(!x||!y)return null;return Math.round((y-x)/86400000)}
+function reasonClass(r){return r==='週末'?'weekend':r==='國定假日'?'holiday':(r==='暑假'||r==='寒假')?'break':r==='自訂假日'?'extra':r==='停課期間'?'closed':''}
+
+function renderToday(){
+  const st=q('todayState'),sub=q('todaySub');
+  q('todayDate').textContent=fmtLong(data.today);
+  st.className='state '+(data.today_reason?'rest':'work');
+  st.querySelector('span').textContent=data.today_reason?('今天是'+data.today_reason+'，不自動輪詢'):'上課日，自動偵測運作中';
+  if(data.today_reason){
+    const n=data.next_working_day, gap=n?daysBetween(data.today,n):null;
+    sub.textContent=n?('下一個上課日：'+fmtLong(n)+(gap!=null?('，還有 '+gap+' 天'):'')+'，當天 00:00 起自動恢復。需要時可在 Dashboard 按「立即檢查」。'):'120 天內找不到上課日，請檢查 config/holidays.json。';
+  }else{
+    sub.textContent='今天依課表偵測排程與 provider 時段正常輪詢；到了週末、國定假日或寒暑假會自動暫停。';
+  }
+}
+
+function renderRules(){
+  const rules=[
+    ['workdays（強制上課）','列在 config/holidays.json workdays 內 → 一律視為上課日，直接結束判定。'],
+    ['自訂假日','列在 extra 內 → 休息日（校慶、颱風假）。'],
+    ['週末','週六、週日 → 休息日。'],
+    ['國定假日','內建 2026–2027 年行政院公告放假日（含補假）→ 休息日。'],
+    ['寒暑假／停課期間','內建淡江寒暑假區間，或 breaks 內的自訂區間 → 休息日；區間結束後的第一個上課日恢復。'],
+    ['以上皆非','上課日 → 交給課表偵測排程（07:00–19:00）與 provider 時段決定輪詢頻率。']
+  ];
+  const root=q('ruleSteps');root.replaceChildren();
+  rules.forEach((r,i)=>{const s=el('div','step');s.appendChild(el('div','n',i+1));const t=el('div');t.appendChild(el('b',null,r[0]));t.appendChild(el('div','meta',r[1]));s.appendChild(t);root.appendChild(s)});
+}
+
+function renderBreaks(){
+  const root=q('breakList');root.replaceChildren();
+  const list=data.breaks||[];
+  if(!list.length){root.appendChild(el('div','empty-box','目前沒有任何寒暑假／停課區間（可能已用 disable_builtin_breaks 關閉）。'));return}
+  list.forEach(b=>{
+    const row=el('div','row');
+    const left=el('div');
+    const title=el('b');title.textContent=b.name+' ';const tg=el('span','tag '+(b.builtin?'break':'closed'),b.builtin?'內建':'自訂');title.appendChild(tg);left.appendChild(title);
+    const total=daysBetween(b.from,b.to);
+    left.appendChild(el('div','meta',fmtLong(b.from)+' ～ '+fmtLong(b.to)+(total!=null?('，共 '+(total+1)+' 天'):'')));
+    const right=el('div','right');
+    right.appendChild(el('div','meta','恢復偵測'));
+    right.appendChild(el('b',null,b.resume?fmtLong(b.resume):'-'));
+    const today=data.today;
+    if(today>=b.from&&today<=b.to){right.appendChild(el('span','tag break','進行中'))}
+    else if(today<b.from){const g=daysBetween(today,b.from);right.appendChild(el('span','tag soft',g!=null?(g+' 天後開始'):'尚未開始'))}
+    else right.appendChild(el('span','tag soft','已結束'));
+    row.append(left,right);root.appendChild(row);
+  });
+}
+
+function renderHolidays(){
+  const root=q('holidayCols');root.replaceChildren();
+  const list=data.holidays||[];q('holidayCount').textContent=list.length+' 天';
+  const byYear=new Map();list.forEach(h=>{const y=(h.date||'').slice(0,4);if(!byYear.has(y))byYear.set(y,[]);byYear.get(y).push(h)});
+  Array.from(byYear.keys()).sort().forEach(y=>{
+    const col=el('div');col.appendChild(el('h3',null,y+' 年（民國 '+(Number(y)-1911)+' 年）'));
+    const hl=el('div','hlist');
+    byYear.get(y).forEach(h=>{const it=el('div','hitem'+(h.date<data.today?' past':''));it.appendChild(el('span','d',fmtDate(h.date)));it.appendChild(el('span',null,h.name));hl.appendChild(it)});
+    col.appendChild(hl);root.appendChild(col);
+  });
+}
+
+function renderOverrides(){
+  const o=data.overrides||{};
+  const st=q('overrideState');st.textContent=o.loaded?'已載入':'未建立（使用內建）';st.className='tag '+(o.loaded?'work':'soft');
+  const fill=(id,arr,cls)=>{const box=q(id);box.replaceChildren();if(!arr||!arr.length){box.appendChild(el('span','meta','（無）'));return}arr.forEach(d=>box.appendChild(el('span','chip'+(cls?' '+cls:''),fmtLong(d))))};
+  fill('ovExtra',o.extra);fill('ovWorkdays',o.workdays);
+  q('ovDisable').textContent=o.disable_builtin_breaks?'true（已關閉內建寒暑假）':'false（使用內建寒暑假）';
+  q('ovReload').textContent='每 '+Math.round((data.reload_interval_secs||300)/60)+' 分鐘自動重讀，改完不用重啟';
+  q('ovSample').textContent='// '+(o.file||'config/holidays.json')+'（範例）\n'+JSON.stringify({extra:['2026-11-20'],workdays:['2026-04-06'],breaks:[{from:'2027-06-28',to:'2027-09-12',name:'暑假'}],disable_builtin_breaks:false},null,2);
+}
+
+function buildDayMap(){
+  dayMap=new Map();const keys=new Set();
+  (data.days||[]).forEach(r=>{dayMap.set(r[0],{reason:r[1],label:r[2]});keys.add(r[0].slice(0,7))});
+  monthKeys=Array.from(keys).sort();
+  const cur=data.today.slice(0,7);const idx=monthKeys.indexOf(cur);monthOffset=idx>=0?idx:0;
+}
+function visibleCount(){return window.matchMedia('(max-width:820px)').matches?1:window.matchMedia('(max-width:1100px)').matches?2:3}
+function renderMonth(key){
+  const y=Number(key.slice(0,4)),m=Number(key.slice(5,7));
+  const box=el('div','month');
+  const h=el('h3');h.appendChild(el('span',null,y+' 年 '+m+' 月'));
+  const first=new Date(y,m-1,1),days=new Date(y,m,0).getDate();
+  let rest=0;for(let d=1;d<=days;d++){const k=key+'-'+String(d).padStart(2,'0');const info=dayMap.get(k);if(info&&info.reason)rest++}
+  h.appendChild(el('small',null,'上課 '+(days-rest)+' 天／休 '+rest+' 天'));box.appendChild(h);
+  const dow=el('div','dow');DOW.forEach(x=>dow.appendChild(el('span',null,x)));box.appendChild(dow);
+  const grid=el('div','days');
+  const lead=(first.getDay()+6)%7;for(let i=0;i<lead;i++)grid.appendChild(el('div','day spacer'));
+  for(let d=1;d<=days;d++){
+    const k=key+'-'+String(d).padStart(2,'0');const info=dayMap.get(k)||{};
+    const wd=(new Date(y,m-1,d).getDay()+6)%7;
+    let cls='day';
+    if(info.reason)cls+=' '+reasonClass(info.reason);
+    else if((data.overrides&&data.overrides.workdays||[]).indexOf(k)>=0)cls+=' work';
+    if(k===data.today)cls+=' today';
+    if(k===selected)cls+=' selected';
+    if(rangeMode&&rangeStart){const lo=rangeEnd?(rangeStart<rangeEnd?rangeStart:rangeEnd):rangeStart,hi=rangeEnd?(rangeStart<rangeEnd?rangeEnd:rangeStart):rangeStart;if(k>=lo&&k<=hi)cls+=' in-range';if(k===lo)cls+=' range-start';if(k===hi)cls+=' range-end'}
+    const c=el('div',cls,d);
+    c.title=k+'（週'+DOW[wd]+'）'+(info.reason?('：'+info.reason+(info.label?('・'+info.label):'')):'：上課日');
+    if(data.can_edit){c.dataset.date=k;c.setAttribute('role','button');c.tabIndex=0}
+    grid.appendChild(c);
+  }
+  box.appendChild(grid);return box;
+}
+/* REST_DAY_EDIT_V1 */
+function isExtra(k){return ((data.overrides&&data.overrides.extra)||[]).indexOf(k)>=0}
+function isWorkday(k){return ((data.overrides&&data.overrides.workdays)||[]).indexOf(k)>=0}
+/* REST_DAY_RANGE_V1：範圍模式下第一次點＝起點、第二次點＝終點（自動排序），然後開面板一次套用 */
+function rangeBounds(){if(!rangeStart)return null;const a=rangeStart,b=rangeEnd||rangeStart;return a<=b?[a,b]:[b,a]}
+function renderRangeBar(){
+  const bar=q('rangeBar');bar.classList.toggle('show',!!(data&&data.can_edit));
+  q('rangeToggle').classList.toggle('on',rangeMode);q('rangeToggle').setAttribute('aria-pressed',rangeMode?'true':'false');
+  const b=rangeBounds();
+  q('rangeReset').hidden=!(rangeMode&&b);
+  if(!rangeMode)q('rangeText').textContent='關閉：點一天就編輯那一天';
+  else if(!b)q('rangeText').textContent='開啟：先點起始日，再點結束日';
+  else if(!rangeEnd)q('rangeText').textContent='起始 '+fmtDate(b[0])+'，再點結束日';
+  else q('rangeText').textContent=fmtDate(b[0])+' → '+fmtDate(b[1])+'（共 '+(daysBetween(b[0],b[1])+1)+' 天）';
+}
+function pickDay(k){
+  if(!data||!data.can_edit)return;
+  if(!rangeMode){openSheet(k);return}
+  if(!rangeStart||rangeEnd){rangeStart=k;rangeEnd=null;renderCalendar();return}
+  rangeEnd=k;renderCalendar();
+  const b=rangeBounds();
+  if(daysBetween(b[0],b[1])+1>366){q('message').className='message bad';q('message').textContent='一次最多只能套用 366 天，請縮小範圍。';rangeStart=k;rangeEnd=null;renderCalendar();return}
+  openSheet(b[0],b[1]);
+}
+function openSheet(k,kEnd){
+  if(!data||!data.can_edit)return;
+  const isRange=!!(kEnd&&kEnd!==k);
+  selected=k;selectedEnd=isRange?kEnd:null;renderCalendar();
+  const info=dayMap.get(k)||{};const d=pd(k);
+  if(isRange){
+    const n=daysBetween(k,kEnd)+1;
+    q('sheetTitle').textContent=fmtLong(k)+' → '+fmtLong(kEnd);
+    let ex=0,wk=0,rest=0;for(let i=0;i<n;i++){const dd=new Date(pd(k).getTime()+i*86400000);const kk=dd.getFullYear()+'-'+String(dd.getMonth()+1).padStart(2,'0')+'-'+String(dd.getDate()).padStart(2,'0');if(isExtra(kk))ex++;if(isWorkday(kk))wk++;const inf=dayMap.get(kk);if(inf&&inf.reason)rest++}
+    q('sheetMeta').textContent='共 '+n+' 天：目前 '+rest+' 天休息、'+(n-rest)+' 天上課；已有自訂 '+(ex+wk)+' 天（不用上課 '+ex+'、強制上課 '+wk+'）。套用會覆蓋範圍內所有自訂。';
+    const now=q('sheetNow');now.textContent='範圍套用';now.className='tag soft';
+    q('optRest').disabled=false;q('optWork').disabled=false;q('optClear').disabled=(ex+wk)===0;
+    q('sheetMsg').className='msg';q('sheetMsg').textContent=(k<data.today)?'範圍包含過去日期，過去部分只影響紀錄與月曆顯示。':'';
+    q('daySheet').classList.add('open');
+    return;
+  }
+  q('sheetTitle').textContent=fmtLong(k);
+  q('sheetMeta').textContent=info.reason?('目前判定：'+info.reason+(info.label?('・'+info.label):'')+'，當天不自動輪詢'):'目前判定：上課日，正常自動輪詢';
+  const now=q('sheetNow');
+  if(isExtra(k)){now.textContent='自訂：不用上課';now.className='tag extra'}
+  else if(isWorkday(k)){now.textContent='自訂：強制上課';now.className='tag work'}
+  else{now.textContent='無自訂（內建判定）';now.className='tag soft'}
+  q('optRest').disabled=isExtra(k);
+  q('optWork').disabled=isWorkday(k);
+  q('optClear').disabled=!isExtra(k)&&!isWorkday(k);
+  q('sheetMsg').className='msg';q('sheetMsg').textContent=(d&&k<data.today)?'這是過去的日期，修改只影響紀錄與月曆顯示。':'';
+  q('daySheet').classList.add('open');
+}
+function closeSheet(){q('daySheet').classList.remove('open');selected=null;selectedEnd=null;if(data)renderCalendar()}
+async function applyOverride(mode){
+  if(!selected)return;
+  const btns=[q('optRest'),q('optWork'),q('optClear')];btns.forEach(b=>b.disabled=true);
+  q('sheetMsg').className='msg';q('sheetMsg').textContent='儲存中…';
+  const k=selected, kEnd=selectedEnd, keepOffset=monthOffset;
+  try{
+    const body={date:k,mode:mode};if(kEnd)body.end_date=kEnd;/* REST_DAY_RANGE_V1 */
+    const r=await api('/admin/api/rest-days',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});
+    data=await api('/admin/api/rest-days');
+    buildDayMap();monthOffset=keepOffset;
+    if(kEnd){rangeStart=null;rangeEnd=null}
+    renderToday();renderBreaks();renderOverrides();renderCalendar();
+    q('sheetMsg').className='msg good';q('sheetMsg').textContent=(r&&r.message)||'已儲存';
+    q('message').className='message good';q('message').textContent=(kEnd?(fmtLong(k)+' → '+fmtLong(kEnd)):fmtLong(k))+'：'+((r&&r.message)||'已儲存');
+    setTimeout(()=>{if(selected===k)closeSheet()},700);
+  }catch(e){
+    q('sheetMsg').className='msg bad';q('sheetMsg').textContent=e.message||'儲存失敗';
+    btns.forEach(b=>b.disabled=false);
+  }
+}
+function renderCalendar(){
+  const root=q('months');root.replaceChildren();
+  root.classList.toggle('can-edit',!!(data&&data.can_edit));
+  q('editHint').textContent=data&&data.can_edit?'點任一天可設為「不用上課」或「強制上課」，儲存後立即寫入 config/holidays.json 並套用到所有帳號。':'需要管理員權限才能在此新增或移除休息日。';
+  if(!monthKeys.length){root.appendChild(el('div','empty-box','沒有月曆資料'));return}
+  const n=visibleCount();
+  if(monthOffset>monthKeys.length-n)monthOffset=Math.max(0,monthKeys.length-n);
+  const slice=monthKeys.slice(monthOffset,monthOffset+n);
+  slice.forEach(k=>root.appendChild(renderMonth(k)));
+  const a=slice[0],b=slice[slice.length-1];
+  q('pagerLabel').textContent=a===b?(a.slice(0,4)+' 年 '+Number(a.slice(5))+' 月'):(a.slice(0,4)+'/'+Number(a.slice(5))+' – '+b.slice(0,4)+'/'+Number(b.slice(5)));
+  q('prevMonth').disabled=monthOffset<=0;q('nextMonth').disabled=monthOffset+n>=monthKeys.length;
+  renderRangeBar();
+}
+
+async function boot(){
+  q('message').className='message';q('message').textContent='讀取中…';
+  try{
+    data=await api('/admin/api/rest-days');
+    renderToday();renderRules();renderBreaks();renderHolidays();renderOverrides();buildDayMap();renderCalendar();
+    q('serverTime').textContent='伺服器時間：'+(data.server_time||'-')+'｜每次載入即時重新計算';
+    q('message').textContent='';
+  }catch(e){q('message').className='message bad';q('message').textContent=e.message||'讀取失敗'}
+}
+/* REST_DAY_EDIT_V1：事件委派（CSP 不允許 inline handler） */
+q('months').addEventListener('click',ev=>{const t=ev.target.closest('.day[data-date]');if(t)pickDay(t.dataset.date)});
+q('months').addEventListener('keydown',ev=>{if(ev.key!=='Enter'&&ev.key!==' ')return;const t=ev.target.closest('.day[data-date]');if(t){ev.preventDefault();pickDay(t.dataset.date)}});
+/* REST_DAY_RANGE_V1 */
+q('rangeToggle').addEventListener('click',()=>{rangeMode=!rangeMode;rangeStart=null;rangeEnd=null;if(data)renderCalendar()});
+q('rangeReset').addEventListener('click',()=>{rangeStart=null;rangeEnd=null;if(data)renderCalendar()});
+q('optRest').addEventListener('click',()=>applyOverride('rest'));
+q('optWork').addEventListener('click',()=>applyOverride('work'));
+q('optClear').addEventListener('click',()=>applyOverride('clear'));
+q('sheetClose').addEventListener('click',closeSheet);
+q('daySheet').addEventListener('click',ev=>{if(ev.target===q('daySheet'))closeSheet()});
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape'&&q('daySheet').classList.contains('open'))closeSheet()});
+q('prevMonth').addEventListener('click',()=>{monthOffset=Math.max(0,monthOffset-visibleCount());renderCalendar()});
+q('nextMonth').addEventListener('click',()=>{monthOffset=monthOffset+visibleCount();renderCalendar()});
+let lastCount=visibleCount();window.addEventListener('resize',()=>{const c=visibleCount();if(c!==lastCount){lastCount=c;if(data)renderCalendar()}});
+boot();
+})();
+</script>
+<style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){#backDashboard{display:none!important}}</style>
+<script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
+</body></html>

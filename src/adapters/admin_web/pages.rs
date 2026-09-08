@@ -71,6 +71,8 @@ pub(super) const PDF_WORKER_MIN_JS: &str = include_str!("static/js/pdf.worker.mi
 pub(super) const SESSION_SECURITY_JS: &str = include_str!("static/js/session-security.js");
 pub(super) const CORE_API_JS: &str = include_str!("static/js/core-api.js");
 pub(super) const WEB_PUSH_JS: &str = include_str!("static/js/web-push.js");
+// DASHBOARD_LIVE_EVENTS_V1
+pub(super) const LIVE_EVENTS_JS: &str = include_str!("static/js/live-events.js");
 pub(super) const ACCOUNTS_MODULE_JS: &str = include_str!("static/js/accounts.js");
 pub(super) const MOCK_ROLLCALL_MODULE_JS: &str = include_str!("static/js/mock-rollcall.js");
 pub(super) const TIMETABLE_UI_MODULE_JS: &str = include_str!("static/js/timetable.js");
@@ -184,6 +186,7 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260829nopwbtn"></script>"#,
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
         r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#,
+        r#"<script defer src="/admin/static/live-events.js?v=20260908live"></script>"#,
         r#"<style id="appSettingsDynamicCss">
 html[data-app-settings][data-theme="dark"]{color-scheme:dark!important}
 html[data-app-settings][data-theme="light"]{color-scheme:light!important}

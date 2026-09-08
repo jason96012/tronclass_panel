@@ -244,8 +244,21 @@ pub(super) async fn admin_login_handler(
 
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
+    // VIEWER_ROLE_V1：登入時查一次 viewer 旗標寫進 session（管理員永遠不是 viewer）。
+    let is_viewer = !is_admin
+        && state
+            .accounts_db
+            .is_viewer(&account_id)
+            .await
+            .unwrap_or(false);
     let tokens = state
-        .create_session(account_id.clone(), is_admin, must_change_password)
+        .create_session_with(NewSession {
+            account_id: account_id.clone(),
+            is_admin,
+            is_viewer,
+            must_change_password,
+            origin: SessionOrigin::from_request(&headers, &ip),
+        })
         .await;
     let login_action = if must_change_password {
         "login_bootstrap"
@@ -279,7 +292,11 @@ pub(super) async fn admin_login_handler(
         let action = login_action.to_string();
         let msg = login_message.to_string();
         let ip = ip.clone();
+        let user_agent = SessionOrigin::from_request(&headers, &ip).user_agent;
         tokio::spawn(async move {
+            // LOGIN_LOCATION_ALERT_V1：先比對「這個 IP 對這個帳號是否第一次出現」，
+            // 再寫入登入事件與 IP 記憶（順序不能反，否則永遠都是「已知」）。
+            check_unusual_login_location(&state, &acct, &ip, &user_agent, "密碼").await;
             record_persistent_login_event(
                 &state,
                 &actor,
@@ -417,6 +434,7 @@ pub(super) async fn admin_password_change_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
     headers: HeaderMap,
+    ClientIp(ip): ClientIp,
     body: axum::body::Bytes,
 ) -> Response {
     let request = password_change_from_body(&body);
@@ -513,8 +531,16 @@ pub(super) async fn admin_password_change_handler(
 
     // Revoke all prior sessions, including this one, then issue a fresh cookie.
     state.revoke_account_sessions(&account.id).await;
+    // VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：改密碼後的新 session 沿用 viewer 旗標與
+    // 這次請求的來源（改密碼不是角色變更；裝置頁也要能看到這台裝置）。
     let tokens = state
-        .create_session(account.id.clone(), account.is_admin, false)
+        .create_session_with(NewSession {
+            account_id: account.id.clone(),
+            is_admin: account.is_admin,
+            is_viewer: session.is_viewer,
+            must_change_password: false,
+            origin: SessionOrigin::from_request(&headers, &ip),
+        })
         .await;
     crate::logs::record_audit(
         "web",

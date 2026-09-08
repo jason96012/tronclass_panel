@@ -76,9 +76,14 @@
 .ob-pill.good{color:var(--ok,#15803d);background:rgba(21,128,61,.10)}
 .ob-pill.todo{color:var(--warn,#b45309);background:rgba(180,83,9,.12)}
 .ob-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 18px 16px;border-top:1px solid var(--line2,#e2e8f0)}
-.ob-dots{display:flex;gap:6px}
-.ob-dot{width:9px;height:9px;min-height:0;padding:0;border:0;border-radius:999px;background:var(--line,#cbd5e1);cursor:pointer}
-.ob-dot.active{background:var(--primary,#2563eb);width:22px}
+/* ONBOARDING_STEP_NUMBERS_V1：步驟圓圈改為帶數字；用 !important 蓋過 theme.css 手機版
+   button 44px 最小尺寸與深色模式 button 配色，避免變成一排無字的大圓。 */
+.ob-dots{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ob-dots .ob-dot{width:28px!important;height:28px!important;min-width:28px!important;min-height:28px!important;padding:0!important;border:1px solid var(--line,#cbd5e1)!important;border-radius:999px!important;background:var(--soft,#f1f5f9)!important;color:var(--muted,#64748b)!important;font-size:12px!important;font-weight:850!important;line-height:1!important;display:inline-flex!important;align-items:center;justify-content:center;cursor:pointer;box-shadow:none!important;transform:none!important;font-variant-numeric:tabular-nums}
+.ob-dots .ob-dot.done{background:rgba(37,99,235,.14)!important;color:var(--primary,#2563eb)!important;border-color:rgba(37,99,235,.35)!important}
+.ob-dots .ob-dot.active{background:var(--primary,#2563eb)!important;color:var(--primaryText,#fff)!important;border-color:var(--primary,#2563eb)!important;box-shadow:0 0 0 3px rgba(37,99,235,.18)!important}
+.ob-dot-label{margin-left:4px;color:var(--muted,#64748b);font-size:12px;font-weight:800;white-space:nowrap}
+@media(max-width:560px){.ob-dots .ob-dot{width:34px!important;height:34px!important;min-width:34px!important;min-height:34px!important;font-size:13px!important}.ob-dot-label{width:100%;margin-left:2px}}
 .ob-actions{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
 .ob-btn{min-height:42px;padding:0 16px;border-radius:999px;border:1px solid transparent;font-size:14px;font-weight:850;cursor:pointer}
 .ob-btn.primary{background:var(--primary,#2563eb);color:var(--primaryText,#fff)}

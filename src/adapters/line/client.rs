@@ -364,6 +364,7 @@ fn render_message(message: &OutboundMessage) -> String {
         OutboundMessage::HomeworkDeadline(event) => event.render(),
         OutboundMessage::Bulletin(event) => event.render(),
         OutboundMessage::PushSubscriptionExpired(event) => event.render(),
+        OutboundMessage::RollcallInputReminder(event) => event.render(),
         OutboundMessage::UnknownCommand { text } => format!(
             "❓ 不認識的指令：{}\n\n輸入 /help 或 幫助 查看可用指令。",
             // REDIRECT_UTF8_SLICE_V1：這裡截的是使用者輸入的文字，長中文訊息

@@ -13,6 +13,8 @@ pub(super) struct AdminPublicStatusResponse {
 pub(super) struct AdminStatusResponse {
     current_account_id: String,
     is_admin: bool,
+    /// VIEWER_ROLE_V1：檢視者（唯讀）。前端據此停用所有操作按鈕並顯示徽章。
+    is_viewer: bool,
     /// A bootstrap session has authenticated once with the upstream password
     /// and may only change its Dashboard password.
     must_change_password: bool,
@@ -27,6 +29,12 @@ pub(super) struct AdminStatusResponse {
     /// REST_DAY_NO_POLL_V1：今天若是週末／國定假日，這裡是原因文字（例如「週六」「國定假日」），
     /// 表示所有帳號今天不做自動輪詢；上課日為 null。
     rest_day: Option<&'static str>,
+    /// ONBOARDING_PASSKEY_STATE_V1：目前登入帳號已註冊的通行密鑰數量（新手導覽用；
+    /// 查詢失敗或首次登入未改密碼時為 null，前端顯示「無法判斷」）。
+    passkey_count: Option<i64>,
+    /// ONBOARDING_PUSH_STATE_V1：目前登入帳號在伺服器端登記的 Web Push 訂閱裝置數
+    /// （新手導覽用；本機瀏覽器沒訂閱但別台手機有訂閱時，仍應顯示「已啟用（其他裝置）」）。
+    push_subscription_count: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,6 +53,8 @@ pub(super) struct AdminAccountStatus {
     line_user_id: String,
     discord_user_id: String,
     account_admin: bool,
+    /// VIEWER_ROLE_V1：此帳號是否為檢視者（唯讀）。
+    account_viewer: bool,
     is_running: bool,
     user_name: String,
     last_poll_timestamp: Option<i64>,
@@ -60,8 +70,11 @@ pub(super) struct AdminAccountStatus {
 }
 
 // Cache admin flags for /admin/api/status to avoid querying accounts.db on every dashboard refresh.
+// VIEWER_ROLE_V1：值為 (is_admin, is_viewer)。
 static ADMIN_STATUS_ADMIN_FLAG_CACHE: once_cell::sync::Lazy<
-    tokio::sync::Mutex<Option<(std::time::Instant, std::collections::HashMap<String, bool>)>>,
+    tokio::sync::Mutex<
+        Option<(std::time::Instant, std::collections::HashMap<String, (bool, bool)>)>,
+    >,
 > = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(None));
 
 const ADMIN_STATUS_SHORT_CACHE_TTL: Duration = Duration::from_secs(2);
@@ -86,7 +99,14 @@ pub(super) fn admin_status_short_cache_key(
     include_history: bool,
     history_limit: usize,
 ) -> String {
-    let role = if session.is_admin { "admin" } else { "user" };
+    let role = if session.is_admin {
+        "admin"
+    } else if session.is_viewer {
+        // VIEWER_ROLE_V1：viewer 看到的是遮罩後的全帳號視圖，必須與 admin／user 分開快取。
+        "viewer"
+    } else {
+        "user"
+    };
     format!(
         "{role}:{}:must_change={}:history={}:limit={}",
         session.account_id, session.must_change_password, include_history, history_limit
@@ -120,7 +140,7 @@ pub(super) async fn admin_status_short_cache_put(key: String, value: serde_json:
 
 pub(super) async fn admin_status_admin_flags_cached(
     state: &AdminWebState,
-) -> std::result::Result<std::collections::HashMap<String, bool>, Response> {
+) -> std::result::Result<std::collections::HashMap<String, (bool, bool)>, Response> {
     {
         let cache = ADMIN_STATUS_ADMIN_FLAG_CACHE.lock().await;
         if let Some((updated_at, flags)) = cache.as_ref() {
@@ -140,9 +160,19 @@ pub(super) async fn admin_status_admin_flags_cached(
                 .into_response());
         }
     };
+    // VIEWER_ROLE_V1：viewer 旗標不在 RawAccountConfig 內，另查一次（同樣吃 30 秒快取）。
+    let viewer_flags = state
+        .accounts_db
+        .list_viewer_flags()
+        .await
+        .unwrap_or_default();
     let flags = raw_accounts
         .into_iter()
-        .map(|account| (account.id, account.is_admin))
+        .map(|account| {
+            let is_viewer = !account.is_admin
+                && viewer_flags.get(&account.id).copied().unwrap_or(false);
+            (account.id, (account.is_admin, is_viewer))
+        })
         .collect::<std::collections::HashMap<_, _>>();
 
     *ADMIN_STATUS_ADMIN_FLAG_CACHE.lock().await = Some((std::time::Instant::now(), flags.clone()));
@@ -240,6 +270,165 @@ pub(super) async fn admin_rollcall_events_handler(
         .into_response()
 }
 
+/// DASHBOARD_LIVE_EVENTS_V1：Dashboard 即時事件流 `/admin/api/events`。
+///
+/// 與 `admin_rollcall_events_handler`（只管點名）互補：這條流負責「資料變了，
+/// 請重新拉狀態」與「前端版本變了，請重新載入頁面」兩件事，讓 Dashboard 不必
+/// 再靠 15 秒輪詢也能即時更新。
+///
+/// 事件：
+/// * `hello`  — 連線建立時送一次：`{"version": "<build id>", "server_time": ...}`
+/// * `status` — 可見帳號的狀態指紋改變時（運行／暫停、最近輪詢、最近點名、
+///   連續失敗、帳號數量、設定版本）：`{"reason": "...", "changed": [...]}`
+/// * `version`— 前端 build id 與連線時不同（實務上只會在 SSE 重連後發生，因為
+///   build id 是編譯期常數）：前端收到後自動 `location.reload()`。
+/// * `ping`   — 每 15 秒心跳（KeepAlive 之外再送一次含 server_time 的 ping，
+///   讓前端能顯示「最後同步時間」）。
+///
+/// 指紋計算只讀鎖、不 clone 歷史，1 秒一次；可見帳號範圍與 `/admin/api/status`
+/// 一致（admin／viewer 全部、一般使用者自己）。前端收到 `status` 後仍走既有
+/// `/admin/api/status`（含 2 秒短快取）取完整資料，因此這裡不下發任何帳號內容。
+pub(super) async fn admin_dashboard_events_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if session.must_change_password {
+        return unauthorized_response();
+    }
+
+    let accounts = state.accounts.clone();
+    let account_id = session.account_id.clone();
+    let see_all = session.is_admin || session.is_viewer;
+    let build_id = super::asset_versions::build_id().to_string();
+
+    #[derive(Default)]
+    struct Cursor {
+        fingerprints: HashMap<String, String>,
+        settings_fp: String,
+        ticks: u64,
+        first: bool,
+    }
+
+    let stream = futures::stream::unfold(
+        (
+            accounts,
+            account_id,
+            see_all,
+            build_id,
+            Cursor {
+                first: true,
+                ..Default::default()
+            },
+        ),
+        |(accounts, account_id, see_all, build_id, mut cursor)| async move {
+            if cursor.first {
+                cursor.first = false;
+                let hello = json!({
+                    "version": build_id.as_str(),
+                    "server_time": chrono::Local::now().timestamp(),
+                });
+                return Some((
+                    Ok::<_, std::convert::Infallible>(
+                        SseEvent::default()
+                            .event("hello")
+                            .data(hello.to_string()),
+                    ),
+                    (accounts, account_id, see_all, build_id, cursor),
+                ));
+            }
+            // 內層迴圈：每秒檢查一次，直到真的有事件要送（狀態變化或 15 秒心跳）
+            // 才 yield，避免每秒送出無意義的 SSE 註解行。
+            let event = loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                cursor.ticks = cursor.ticks.wrapping_add(1);
+
+                // 1. 帳號狀態指紋
+                let runtime_accounts = accounts.snapshot();
+                let mut current: HashMap<String, String> = HashMap::new();
+                for account in runtime_accounts.iter() {
+                    if !see_all && account.account_id != account_id {
+                        continue;
+                    }
+                    let running = *account.is_running.lock().await;
+                    let status = account.monitor_status.lock().await;
+                    let fp = format!(
+                        "{}|{}|{}|{}|{}|{}|{}",
+                        running,
+                        status.last_poll_timestamp.unwrap_or(0),
+                        status.last_detected_timestamp.unwrap_or(0),
+                        status.last_success_rollcall_id.unwrap_or(0),
+                        status.consecutive_failures,
+                        status.rollcall_history.len(),
+                        status.started_at,
+                    );
+                    drop(status);
+                    current.insert(account.account_id.clone(), fp);
+                }
+                let mut changed: Vec<String> = Vec::new();
+                let mut reason = "";
+                if current.len() != cursor.fingerprints.len() {
+                    reason = "accounts";
+                }
+                for (id, fp) in current.iter() {
+                    if cursor.fingerprints.get(id) != Some(fp) {
+                        changed.push(id.clone());
+                    }
+                }
+                for id in cursor.fingerprints.keys() {
+                    if !current.contains_key(id) {
+                        changed.push(id.clone());
+                    }
+                }
+                if reason.is_empty() && !changed.is_empty() {
+                    reason = "monitor";
+                }
+
+                // 2. 全站設定指紋（poll interval／休息時段／學期覆寫等）
+                let settings = crate::runtime_settings::snapshot().await;
+                let settings_fp = serde_json::to_string(&settings).unwrap_or_default();
+                if settings_fp != cursor.settings_fp {
+                    if reason.is_empty() {
+                        reason = "settings";
+                    }
+                    cursor.settings_fp = settings_fp;
+                }
+
+                // 第一輪只建立基準，不推事件（前端剛載入本來就有最新資料）。
+                let is_baseline = cursor.fingerprints.is_empty() && cursor.ticks == 1;
+                cursor.fingerprints = current;
+
+                if !reason.is_empty() && !is_baseline {
+                    changed.sort();
+                    changed.dedup();
+                    break SseEvent::default().event("status").data(
+                        json!({
+                            "reason": reason,
+                            "changed": changed,
+                            "server_time": chrono::Local::now().timestamp(),
+                        })
+                        .to_string(),
+                    );
+                }
+                if cursor.ticks % 15 == 0 {
+                    break SseEvent::default().event("ping").data(
+                        json!({ "server_time": chrono::Local::now().timestamp() }).to_string(),
+                    );
+                }
+            };
+            Some((
+                Ok::<_, std::convert::Infallible>(event),
+                (accounts, account_id, see_all, build_id, cursor),
+            ))
+        },
+    );
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keepalive"))
+        .into_response()
+}
+
 pub(super) async fn admin_status_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -271,6 +460,9 @@ pub(super) async fn admin_status_handler(
         return append_expired_session_cookies(unauthorized_response());
     };
     let auth_elapsed = request_started.elapsed();
+    // LOGIN_DEVICES_V1：/admin/api/status 是 bootstrap 白名單路徑，middleware 不會經過
+    // touch；Dashboard 只輪詢這支 API 的使用者也要能更新「最近活動」（60 秒節流）。
+    state.touch_session_last_seen(&token).await;
 
     let include_history = query.include_history.unwrap_or(true);
     let history_limit = if include_history {
@@ -306,6 +498,7 @@ pub(super) async fn admin_status_handler(
         let response_json = json!(AdminStatusResponse {
             current_account_id: session.account_id.clone(),
             is_admin: session.is_admin,
+            is_viewer: session.is_viewer,
             must_change_password: true,
             default_poll_interval_secs: state.default_poll_interval_secs,
             settings: crate::runtime_settings::snapshot().await,
@@ -314,13 +507,16 @@ pub(super) async fn admin_status_handler(
             // ACCOUNT_HOT_ADD_FEEDBACK_V1：首次登入尚未改密碼前不暴露任何帳號資料。
             inactive_accounts: vec![],
             rest_day: None,
+            passkey_count: None,
+            push_subscription_count: None,
         });
         admin_status_short_cache_put(cache_key, response_json.clone()).await;
         return (StatusCode::OK, Json(response_json)).into_response();
     }
 
     let admin_flags_started = Instant::now();
-    let admin_by_id = if session.is_admin {
+    // VIEWER_ROLE_V1：檢視者也看全部帳號的管理員徽章（唯讀資訊）。
+    let admin_by_id = if session.is_admin || session.is_viewer {
         match admin_status_admin_flags_cached(&state).await {
             Ok(flags) => flags,
             Err(resp) => return resp,
@@ -331,6 +527,10 @@ pub(super) async fn admin_status_handler(
     let admin_flags_elapsed = admin_flags_started.elapsed();
 
     let visible_accounts = resolve_visible_accounts(&state, &session);
+    // VIEWER_ROLE_V1：檢視者看得到所有帳號，但個資欄位遮罩
+    // （Tronclass 帳號、LINE／Discord ID 只留頭尾）。
+    let mask_sensitive = session.is_viewer && !session.is_admin;
+    let session_account_id = session.account_id.as_str();
     // PERFORMANCE_STATUS_PAYLOAD_V1:
     // Build the response directly while each account status is locked instead
     // of cloning the full MonitorStatus.  The dashboard only renders the first
@@ -338,10 +538,10 @@ pub(super) async fn admin_status_handler(
     let status_futures: Vec<_> = visible_accounts
         .iter()
         .map(|account| {
-            let account_admin = admin_by_id
+            let (account_admin, account_viewer) = admin_by_id
                 .get(&account.account_id)
                 .copied()
-                .unwrap_or(false);
+                .unwrap_or((false, false));
             async move {
                 let status = account.monitor_status.lock().await;
                 let rollcall_history = status
@@ -353,7 +553,13 @@ pub(super) async fn admin_status_handler(
                 let user_name = status.user_name.clone();
                 let last_success_course = status.last_success_course.clone();
                 let last_detected_course = status.last_detected_course.clone();
-                let last_detected_url = status.last_detected_url.clone();
+                // VIEWER_ROLE_V1：點名操作頁 URL 內含可代為送出代碼的 token，
+                // 檢視者只拿自己帳號的；別人的一律不下發。
+                let last_detected_url = if mask_sensitive && account.account_id != session_account_id {
+                    None
+                } else {
+                    status.last_detected_url.clone()
+                };
                 let last_poll_timestamp = status.last_poll_timestamp;
                 let last_success_rollcall_id = status.last_success_rollcall_id;
                 let last_detected_timestamp = status.last_detected_timestamp;
@@ -370,13 +576,23 @@ pub(super) async fn admin_status_handler(
                     (target.line_user_id.clone(), target.discord_user_id.clone())
                 };
                 let running = *account.is_running.lock().await;
+                let (username, line_user_id, discord_user_id) = if mask_sensitive {
+                    (
+                        mask_identifier(&account.username),
+                        mask_identifier(&line_user_id),
+                        mask_identifier(&discord_user_id),
+                    )
+                } else {
+                    (account.username.clone(), line_user_id, discord_user_id)
+                };
 
                 AdminAccountStatus {
                     account_id: account.account_id.clone(),
-                    username: account.username.clone(),
+                    username,
                     line_user_id,
                     discord_user_id,
                     account_admin,
+                    account_viewer,
                     is_running: running,
                     user_name,
                     last_poll_timestamp,
@@ -408,9 +624,31 @@ pub(super) async fn admin_status_handler(
     } else {
         Vec::new()
     };
+    // ONBOARDING_PASSKEY_STATE_V1：只查自己帳號的數量（COUNT 單列查詢，成本極低）；
+    // token-admin 沒有實體帳號，略過。
+    let passkey_count = if session.account_id == "<token-admin>" {
+        None
+    } else {
+        state
+            .accounts_db
+            .count_passkey_credentials(&session.account_id)
+            .await
+            .ok()
+    };
+    // ONBOARDING_PUSH_STATE_V1：同上，只查自己帳號的 COUNT。
+    let push_subscription_count = if session.account_id == "<token-admin>" {
+        None
+    } else {
+        state
+            .accounts_db
+            .count_web_push_subscriptions(&session.account_id)
+            .await
+            .ok()
+    };
     let response_json = json!(AdminStatusResponse {
         current_account_id: session.account_id.clone(),
         is_admin: session.is_admin,
+        is_viewer: session.is_viewer,
         must_change_password: false,
         default_poll_interval_secs: state.default_poll_interval_secs,
         settings,
@@ -419,6 +657,8 @@ pub(super) async fn admin_status_handler(
         inactive_accounts,
         // REST_DAY_NO_POLL_V1
         rest_day: crate::holidays::rest_day_reason(chrono::Local::now().date_naive()),
+        passkey_count,
+        push_subscription_count,
     });
 
     admin_status_short_cache_put(cache_key, response_json.clone()).await;
@@ -514,11 +754,26 @@ async fn collect_inactive_accounts(state: &AdminWebState) -> Vec<InactiveAccount
     inactive
 }
 
+/// VIEWER_ROLE_V1：把識別字串遮罩成「頭 2 + *** + 尾 2」（短於 5 字元則全遮）。
+pub(super) fn mask_identifier(value: &str) -> String {
+    let chars: Vec<char> = value.trim().chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    if chars.len() < 5 {
+        return "*".repeat(chars.len());
+    }
+    let head: String = chars[..2].iter().collect();
+    let tail: String = chars[chars.len() - 2..].iter().collect();
+    format!("{head}***{tail}")
+}
+
 pub(super) fn resolve_visible_accounts(
     state: &AdminWebState,
     session: &AdminSession,
 ) -> Vec<RequestAccountState> {
-    if session.is_admin {
+    // VIEWER_ROLE_V1：檢視者與管理員一樣看得到全部帳號（欄位遮罩由呼叫端處理）。
+    if session.is_admin || session.is_viewer {
         state.accounts.all()
     } else {
         state

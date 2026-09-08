@@ -101,7 +101,7 @@ pub(crate) use preferences::{
     HOMEWORK_LADDER_MIN_HOURS,
 };
 #[allow(unused_imports)]
-pub use sessions::DashboardSessionRow;
+pub use sessions::{DashboardSessionInsert, DashboardSessionRow};
 #[allow(unused_imports)]
 pub use timetable::{TimetableEntryInput, TimetableEntryRow, TimetableTemplateRow};
 

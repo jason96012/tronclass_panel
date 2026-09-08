@@ -69,6 +69,14 @@ fn discord_notification_key(message: &OutboundMessage) -> &'static str {
         OutboundMessage::Bulletin(_) => "bulletin",
         // PUSH_STALE_CLEANUP_V1：歸到「其他通知」，使用者可在通知頁一併關閉。
         OutboundMessage::PushSubscriptionExpired(_) => "other",
+        // ROLLCALL_INPUT_REMINDER_V1：跟著原本的數字／QR 通知開關走，關掉就不催。
+        OutboundMessage::RollcallInputReminder(event) => {
+            if event.is_number() {
+                "number_code"
+            } else {
+                "qr_code"
+            }
+        }
         OutboundMessage::Status(_) => "status",
         OutboundMessage::SecurityAlert(_) => "security_alert",
         OutboundMessage::MonitorPaused
@@ -1465,6 +1473,11 @@ fn dashboard_dedupe_key(message: &OutboundMessage) -> Option<String> {
             dashboard_dedupe_id(&event.rollcall_id),
             if event.success { "success" } else { "failed" }
         )),
+        // ROLLCALL_INPUT_REMINDER_V1：同一筆點名的催促只往 dashboard 頻道送一次。
+        OutboundMessage::RollcallInputReminder(event) => Some(format!(
+            "reminder:{:016x}",
+            dashboard_dedupe_id(&event.rollcall_id)
+        )),
         _ => None,
     }
 }
@@ -1547,6 +1560,32 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                     CreateButton::new_link(&request.input_url).label("開啟數字點名頁"),
                 );
             }
+            vec![CreateActionRow::Buttons(buttons)]
+        }
+        // ROLLCALL_INPUT_REMINDER_V1：催促訊息附上輸入頁按鈕（數字另給「自動讀取代碼」）。
+        OutboundMessage::RollcallInputReminder(event) => {
+            let mut buttons = Vec::new();
+            if !event.input_url.trim().is_empty() {
+                buttons.push(
+                    CreateButton::new_link(event.input_url.trim()).label(if event.is_number() {
+                        "開啟數字點名頁"
+                    } else {
+                        "Open scanner"
+                    }),
+                );
+            }
+            if event.is_number() {
+                buttons.push(
+                    CreateButton::new(format!("{COMPONENT_NUMBER_AUTO_PREFIX}{}", event.account))
+                        .label("自動讀取代碼")
+                        .style(ButtonStyle::Primary),
+                );
+            }
+            buttons.push(
+                CreateButton::new(COMPONENT_STATUS)
+                    .label("Status")
+                    .style(ButtonStyle::Secondary),
+            );
             vec![CreateActionRow::Buttons(buttons)]
         }
         OutboundMessage::QrCodeRequested(request) => vec![
@@ -1797,6 +1836,7 @@ fn render_discord_message(message: &OutboundMessage) -> String {
         OutboundMessage::HomeworkDeadline(event) => event.render(),
         OutboundMessage::Bulletin(event) => event.render(),
         OutboundMessage::PushSubscriptionExpired(event) => event.render(),
+        OutboundMessage::RollcallInputReminder(event) => event.render(),
         OutboundMessage::UnknownCommand { text } => {
             format!("不認識的指令：{}\n\n{}", text.chars().take(80).collect::<String>(), help_text())
         }

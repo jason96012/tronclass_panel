@@ -25,7 +25,7 @@
     var root=q('view-maintenance'); if(!root)return;
     if(root.dataset.maintFinalReady==='1')return;
     root.dataset.maintFinalReady='1';
-    root.innerHTML='<section id="maintFinalOverall" class="maint-final-overall"><div><div class="maint-final-title">健康狀態</div><div id="maintFinalSummary" class="maint-final-sub">尚未讀取</div></div><div class="maint-final-actions"><button id="maintRefresh" class="secondary" type="button">重新整理</button><button id="maintCheck" type="button">一鍵檢查</button><a id="maintLogs" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><a id="maintBlacklist" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a></div></section><section id="maintCards" class="maint-final-grid"></section><section class="grid two"><div class="panel"><div class="toolbar"><h2>一鍵檢查結果</h2></div><div id="maintChecks" class="maint-final-checks"><div class="small">按「一鍵檢查」可測 SQLite、教材目錄、磁碟、RAM、Cloudflare Tunnel、最近錯誤。</div></div></div><div class="panel"><div class="toolbar"><h2>維護操作</h2></div><div class="quick"><button id="maintReloadAll" class="secondary" type="button">重新整理全部</button><button id="maintCopyDiag" class="secondary" type="button">複製診斷摘要</button><button id="maintStopAll" class="danger" type="button">全部暫停</button></div></div></section><section class="panel" style="margin-top:14px"><div class="toolbar"><h2>原始資料</h2><button id="maintToggleRaw" class="secondary" type="button">顯示/隱藏</button></div><pre id="maintRaw" class="maint-final-raw" style="display:none">{}</pre></section>';
+    root.innerHTML='<section id="maintFinalOverall" class="maint-final-overall"><div><div class="maint-final-title">健康狀態</div><div id="maintFinalSummary" class="maint-final-sub">尚未讀取</div></div><div class="maint-final-actions"><button id="maintRefresh" class="secondary" type="button">重新整理</button><button id="maintCheck" type="button">一鍵檢查</button><a id="maintLogs" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><a id="maintBlacklist" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a></div></section><section id="maintCards" class="maint-final-grid"></section><!-- METRICS_HISTORY_V1 --><section class="panel" style="margin-bottom:14px"><div class="toolbar"><div><h2>24 小時趨勢</h2><div id="maintTrendSub" class="small">每分鐘一筆，重啟後重新累積</div></div><div class="toolbar-right"><select id="maintTrendRange"><option value="60">最近 1 小時</option><option value="360">最近 6 小時</option><option value="1440" selected>最近 24 小時</option></select></div></div><div id="maintTrend" class="maint-trend-grid"><div class="small">讀取中…</div></div></section><section class="grid two"><div class="panel"><div class="toolbar"><h2>一鍵檢查結果</h2></div><div id="maintChecks" class="maint-final-checks"><div class="small">按「一鍵檢查」可測 SQLite、教材目錄、磁碟、RAM、Cloudflare Tunnel、最近錯誤。</div></div></div><div class="panel"><div class="toolbar"><h2>維護操作</h2></div><div class="quick"><button id="maintReloadAll" class="secondary" type="button">重新整理全部</button><button id="maintCopyDiag" class="secondary" type="button">複製診斷摘要</button><button id="maintStopAll" class="danger" type="button">全部暫停</button></div></div></section><section class="panel" style="margin-top:14px"><div class="toolbar"><h2>原始資料</h2><button id="maintToggleRaw" class="secondary" type="button">顯示/隱藏</button></div><pre id="maintRaw" class="maint-final-raw" style="display:none">{}</pre></section>';
     // MAINTENANCE_BUTTONS_MODULE_PHASE4A3: maintenance.js owns API invocation.
     function maintenanceEvent(name){window.dispatchEvent(new CustomEvent('tronclass:maintenance:'+name));}
     q('maintRefresh').onclick=function(){maintenanceEvent('refresh')};
@@ -78,10 +78,56 @@
     q('maintChecks').innerHTML=checks.length?checks.map(function(x){var level=x.level||(x.ok?'ok':'bad');return '<div class="maint-final-check"><div class="maint-final-check-top"><span>'+esc(x.name||'-')+'</span><span class="pill '+(level==='ok'?'good':level==='warn'?'warn':'bad')+'">'+(level==='ok'?'正常':level==='warn'?'注意':'異常')+'</span></div><div class="small" style="margin-top:6px">'+esc(x.message||'')+'</div></div>'}).join(''):'<div class="small">沒有檢查結果</div>';
     q('maintRaw').textContent=JSON.stringify({health:lastHealth,check:lastCheck},null,2);
   }
+  /* METRICS_HISTORY_V1：純 SVG 折線（CSP 不允許外部圖表庫），電腦 2 欄、手機 1 欄 */
+  var lastHistory=null;
+  function trendSvg(points,opts){
+    var W=600,H=150,padL=38,padR=8,padT=10,padB=22;
+    var vals=points.map(function(p){return p.v}).filter(function(v){return v!=null});
+    if(!vals.length)return '<div class="maint-trend-empty">尚無資料</div>';
+    var max=opts.max!=null?opts.max:Math.max.apply(null,vals), min=opts.min!=null?opts.min:0;
+    if(max<=min)max=min+1;
+    var n=points.length, xs=function(i){return padL+(n<=1?0:(i/(n-1))*(W-padL-padR))}, ys=function(v){return padT+(1-(v-min)/(max-min))*(H-padT-padB)};
+    var d='',started=false;
+    points.forEach(function(p,i){if(p.v==null){started=false;return}d+=(started?'L':'M')+xs(i).toFixed(1)+' '+ys(p.v).toFixed(1)+' ';started=true});
+    var area='';
+    if(opts.fill){var segs=d.trim().split('M').filter(Boolean);area=segs.map(function(seg){var pts=seg.trim().split(/L|\s+/).filter(Boolean);var first=pts[0],last=pts[pts.length-2];return 'M'+first+' '+(H-padB)+' L'+seg.trim()+' L'+last+' '+(H-padB)+' Z'}).join(' ')}
+    var grid='';[0,.5,1].forEach(function(f){var y=padT+f*(H-padT-padB);var val=max-(max-min)*f;grid+='<line x1="'+padL+'" x2="'+(W-padR)+'" y1="'+y.toFixed(1)+'" y2="'+y.toFixed(1)+'" class="mt-grid"/><text x="'+(padL-4)+'" y="'+(y+4).toFixed(1)+'" class="mt-lbl" text-anchor="end">'+esc(opts.fmt?opts.fmt(val):Math.round(val))+'</text>'});
+    var t0=points[0].ts,t1=points[n-1].ts,fmtT=function(ts){var d=new Date(ts*1000);return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2)};
+    grid+='<text x="'+padL+'" y="'+(H-6)+'" class="mt-lbl">'+fmtT(t0)+'</text><text x="'+(W-padR)+'" y="'+(H-6)+'" class="mt-lbl" text-anchor="end">'+fmtT(t1)+'</text>';
+    var warn='';if(opts.warnAt!=null&&opts.warnAt>min&&opts.warnAt<max){var wy=ys(opts.warnAt);warn='<line x1="'+padL+'" x2="'+(W-padR)+'" y1="'+wy.toFixed(1)+'" y2="'+wy.toFixed(1)+'" class="mt-warn"/>'}
+    return '<svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none" class="mt-svg" role="img" aria-label="'+esc(opts.title)+'">'+grid+warn+(area?'<path d="'+area+'" class="mt-area '+(opts.cls||'')+'"/>':'')+'<path d="'+d.trim()+'" class="mt-line '+(opts.cls||'')+'"/></svg>';
+  }
+  function trendCard(title,cur,sub,svg){return '<div class="maint-trend-card"><div class="maint-trend-head"><span class="maint-trend-title">'+esc(title)+'</span><span class="maint-trend-cur">'+esc(cur)+'</span></div><div class="small">'+esc(sub||'')+'</div>'+svg+'</div>'}
+  function renderHistory(hist){
+    lastHistory=hist; var root=q('maintTrend'); if(!root)return;
+    var all=(hist&&hist.samples)||[]; var range=Number((q('maintTrendRange')||{}).value||1440); var pts=all.slice(-range);
+    if(!pts.length){root.innerHTML='<div class="small">尚無資料——服務啟動後每分鐘累積一筆。</div>';return}
+    var last=pts[pts.length-1];
+    var upSecs=Math.max(0,Math.floor(Date.now()/1000)-Number(hist.started_at||0));
+    var upLabel=(upSecs>=86400?Math.floor(upSecs/86400)+' 天 ':'')+Math.floor((upSecs%86400)/3600)+' 小時 '+Math.floor((upSecs%3600)/60)+' 分';
+    var totalPolls=pts.reduce(function(a,p){return a+(p.poll_count||0)},0), totalErr=pts.reduce(function(a,p){return a+(p.poll_errors||0)},0);
+    var okPct=totalPolls?((totalPolls-totalErr)/totalPolls*100):null;
+    var sub=q('maintTrendSub'); if(sub)sub.textContent='每分鐘一筆｜本次啟動已運行 '+upLabel+'｜區間內輪詢 '+totalPolls+' 次'+(okPct!=null?('，成功率 '+okPct.toFixed(1)+'%'):'');
+    var latencyPts=pts.map(function(p){return {ts:p.ts,v:p.poll_avg_ms}}), maxPts=pts.map(function(p){return {ts:p.ts,v:p.poll_max_ms}});
+    var latMax=Math.max.apply(null,pts.map(function(p){return p.poll_max_ms||0}).concat([500]));
+    root.innerHTML=[
+      trendCard('輪詢延遲（平均）',last.poll_avg_ms!=null?last.poll_avg_ms+' ms':'—','每分鐘平均；虛線＝最大值。持續超過 3000 ms 表示學校端變慢或網路不穩',
+        trendSvg(latencyPts,{title:'輪詢延遲',min:0,max:latMax,fmt:function(v){return Math.round(v)+'ms'},fill:true,cls:'c-lat',warnAt:3000})+trendSvg(maxPts,{title:'最大延遲',min:0,max:latMax,fmt:function(v){return Math.round(v)+'ms'},cls:'c-max'})),
+      trendCard('運行中帳號',last.running+' / '+last.total,'掉到 0 但總數不是 0 → 休息日或全部暫停；忽然下降 → 有帳號登入失敗',
+        trendSvg(pts.map(function(p){return {ts:p.ts,v:p.running}}),{title:'運行中帳號',min:0,max:Math.max(last.total,1),fill:true,cls:'c-run'})),
+      trendCard('RAM 使用率',last.mem_pct!=null?last.mem_pct.toFixed(0)+'%':'—','系統整體；本程序 RSS '+(last.rss_bytes?(last.rss_bytes/1048576).toFixed(0)+' MB':'—'),
+        trendSvg(pts.map(function(p){return {ts:p.ts,v:p.mem_pct}}),{title:'RAM',min:0,max:100,fmt:function(v){return Math.round(v)+'%'},fill:true,cls:'c-mem',warnAt:90})),
+      trendCard('輪詢失敗／連續失敗',(last.poll_errors||0)+' 次／分・累計 '+(last.failures||0),'折線＝每分鐘失敗次數；任何非 0 都值得看一下 log',
+        trendSvg(pts.map(function(p){return {ts:p.ts,v:p.poll_errors||0}}),{title:'輪詢失敗',min:0,max:Math.max.apply(null,pts.map(function(p){return p.poll_errors||0}).concat([3])),fill:true,cls:'c-err'}))
+    ].join('');
+  }
+  async function loadHistory(){try{renderHistory(await api('/admin/api/health/history'))}catch(e){var r=q('maintTrend');if(r)r.innerHTML='<div class="small">趨勢讀取失敗：'+esc(e.message||e)+'</div>'}}
+  document.addEventListener('change',function(ev){if(ev.target&&ev.target.id==='maintTrendRange'&&lastHistory)renderHistory(lastHistory)});
   async function loadHealth(check){
     renderShell();
     try{var h=await api(check?'/admin/api/health/check':'/admin/api/health'); if(h.checks)renderCheck(h); else renderHealth(h);}
     catch(e){q('maintFinalSummary').textContent='讀取失敗：'+(e.message||e); toast(e.message||'健康資訊讀取失敗',false)}
+    if(!check)loadHistory();
   }
   async function doAction(action){
     if(action==='stop'&&!confirm('確定要暫停全部帳號監控？'))return;

@@ -277,6 +277,7 @@ impl QrScannerRegistry {
             all_accounts,
             last_error: None,
             expires_in_secs: secs_until(entry.expires_at, now),
+            submitted_code: None,
         })
     }
 
@@ -432,6 +433,11 @@ impl QrScannerRegistry {
         );
         status.last_error = entry.last_error.clone();
         status.expires_in_secs = secs_until(entry.expires_at, now);
+        // NUMBER_PAGE_UX_V1
+        status.submitted_code = entry.submitted_input.as_ref().map(|input| match input {
+            NumberCodeInput::Code(code) => code.clone(),
+            NumberCodeInput::AutoLookup => "auto".to_string(),
+        });
         Ok(status)
     }
 
@@ -817,6 +823,7 @@ fn status_result_from_sets<'a>(
         all_accounts,
         last_error: None,
         expires_in_secs: 0,
+        submitted_code: None,
     }
 }
 
@@ -880,6 +887,10 @@ pub struct ScannerStatusResult {
     /// ROLLCALL_INPUT_COUNTDOWN_V1：距離這個 rollcall 等待輸入逾時還剩幾秒
     /// （以最晚加入的帳號為準）。頁面用它顯示倒數；0 代表已到期。
     pub expires_in_secs: u64,
+    /// NUMBER_PAGE_UX_V1：這個 rollcall 最後一次送出的輸入（"auto" 或 4 位數字碼）。
+    /// 頁面用它在多裝置／重新整理後顯示「已送出 1234，等待結果」而不是「尚未送出」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

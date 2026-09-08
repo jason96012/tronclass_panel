@@ -762,10 +762,21 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
         // ── 執行輪詢 ──────────────────────────────────────────────────────────
         info!("🔄 開始輪詢簽到列表...");
 
-        match do_poll_and_attend(&mut ctx, trigger).await {
+        // METRICS_HISTORY_V1：記錄本次輪詢耗時與成敗（維護頁延遲圖）。
+        let poll_started = Instant::now();
+        let poll_result = do_poll_and_attend(&mut ctx, trigger).await;
+        crate::metrics_history::record_poll_latency(poll_started.elapsed(), poll_result.is_ok());
+        match poll_result {
             Ok(summary) => {
                 // 成功輪詢
                 consecutive_failures = 0;
+                // MONITOR_ALERT_GRADING_V1：先前若送過管理員警示，這裡送「已恢復」。
+                crate::monitor_alerts::report_recovery(
+                    &ctx.accounts_db,
+                    ctx.messenger.as_deref(),
+                    &ctx.account.id,
+                )
+                .await;
 
                 if summary.total > 0 {
                     info!(summary = %summary, "本次輪詢完成");
@@ -797,11 +808,31 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                     s.consecutive_failures = consecutive_failures;
                 }
 
+                // MONITOR_ALERT_GRADING_V1：錯誤分級。輕微只寫 log；警告／嚴重通知管理員。
+                let auth_error = is_auth_error_report(&e);
+                let error_text = format!("{e:#}");
+                let grade = crate::monitor_alerts::classify(
+                    auth_error,
+                    consecutive_failures,
+                    max_failures,
+                    false,
+                );
+                crate::monitor_alerts::report_failure(
+                    &ctx.accounts_db,
+                    ctx.messenger.as_deref(),
+                    &ctx.account.id,
+                    grade,
+                    consecutive_failures,
+                    auth_error,
+                    &error_text,
+                )
+                .await;
+
                 // 判斷是否需要重新認證
                 // AUTH_ERROR_TYPED_V1：改用 report 版走完整條錯誤鏈，
                 // 避免 wrap_err 外層訊息（如「取得簽到列表失敗」）掩蓋
                 // 內層真正的 ApiError::Unauthorized。
-                if is_auth_error_report(&e) || consecutive_failures >= max_failures {
+                if auth_error || consecutive_failures >= max_failures {
                     if consecutive_failures >= max_failures {
                         warn!(
                             consecutive_failures = consecutive_failures,
@@ -848,6 +879,17 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                         }
                         Err(reauth_err) => {
                             error!(error = %reauth_err, "重新認證失敗！");
+                            // MONITOR_ALERT_GRADING_V1：自動重新認證失敗 → 嚴重。
+                            crate::monitor_alerts::report_failure(
+                                &ctx.accounts_db,
+                                ctx.messenger.as_deref(),
+                                &ctx.account.id,
+                                crate::monitor_alerts::ErrorGrade::Critical,
+                                consecutive_failures,
+                                true,
+                                &format!("{reauth_err:#}"),
+                            )
+                            .await;
                             if let Some(bot) = &ctx.messenger {
                                 // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                                 let _ = bot

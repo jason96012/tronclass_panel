@@ -33,6 +33,8 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     ensure_column(pool, "session_cookie", "TEXT NOT NULL DEFAULT ''").await?;
     ensure_column(pool, "is_admin", "INTEGER NOT NULL DEFAULT 0").await?;
     ensure_column(pool, "dashboard_password_hash", "TEXT NOT NULL DEFAULT ''").await?;
+    // VIEWER_ROLE_V1：檢視者（唯讀）角色。1 = 僅能讀取，所有寫入 API 一律 403。
+    ensure_column(pool, "is_viewer", "INTEGER NOT NULL DEFAULT 0").await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS material_events (
@@ -471,6 +473,15 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
         "INTEGER NOT NULL DEFAULT 0",
     )
     .await?;
+    // LOGIN_DEVICES_V1：登入來源與最近活動時間（登入裝置管理頁）。
+    ensure_table_column(pool, "dashboard_sessions", "ip", "TEXT NOT NULL DEFAULT ''").await?;
+    ensure_table_column(pool, "dashboard_sessions", "user_agent", "TEXT NOT NULL DEFAULT ''")
+        .await?;
+    ensure_table_column(pool, "dashboard_sessions", "last_seen_at", "INTEGER NOT NULL DEFAULT 0")
+        .await?;
+    // VIEWER_ROLE_V1：檢視者（唯讀）session 旗標。
+    ensure_table_column(pool, "dashboard_sessions", "is_viewer", "INTEGER NOT NULL DEFAULT 0")
+        .await?;
 
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_refresh ON dashboard_sessions(refresh_token)",
@@ -495,6 +506,24 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .into_diagnostic()
     .wrap_err("初始化 dashboard_sessions account_id index 失敗")?;
+
+    // LOGIN_LOCATION_ALERT_V1：每個帳號「成功登入過的 IP」清單。
+    // activity_events 只留 500 筆會輪替，這張表才是長期記憶；用來判斷
+    // 這次登入是否來自從未見過的位置。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS login_known_ips (
+            account_id TEXT NOT NULL,
+            ip TEXT NOT NULL,
+            first_seen_at INTEGER NOT NULL DEFAULT 0,
+            last_seen_at INTEGER NOT NULL DEFAULT 0,
+            login_count INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (account_id, ip)
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 login_known_ips 資料表失敗")?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS homework_reminder_sent (

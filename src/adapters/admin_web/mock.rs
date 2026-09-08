@@ -194,11 +194,12 @@ pub(super) async fn admin_mock_start_handler(
                     &link.input_url,
                 )
                 .await;
-                crate::web_push_notifications::notify_rollcall(
+                crate::web_push_notifications::notify_rollcall_with_url(
                     &account.account_id,
                     rollcall_id,
                     "Mock 數字點名",
                     "數字簽到",
+                    Some(link.input_url.as_str()),
                 );
                 number_receivers.push((
                     account.account_id.clone(),
@@ -346,11 +347,12 @@ pub(super) async fn admin_mock_start_handler(
                     &link.scan_url,
                 )
                 .await;
-                crate::web_push_notifications::notify_rollcall(
+                crate::web_push_notifications::notify_rollcall_with_url(
                     &account.account_id,
                     rollcall_id,
                     "Mock QR Code 點名",
                     "QR Code 簽到",
+                    Some(link.scan_url.as_str()),
                 );
                 qr_receivers.push((
                     account.account_id.clone(),
@@ -533,11 +535,12 @@ pub(super) async fn handle_mock_rollcall_action(
             };
 
             set_mock_detected_status(&status, rollcall_id, "Mock 數字點名", &link.input_url).await;
-            crate::web_push_notifications::notify_rollcall(
+            crate::web_push_notifications::notify_rollcall_with_url(
                 &account.account_id,
                 rollcall_id,
                 "Mock 數字點名",
                 "數字簽到",
+                Some(link.input_url.as_str()),
             );
             if let Some(messenger) = state.messenger.as_ref() {
                 let _ = messenger
@@ -652,11 +655,12 @@ pub(super) async fn handle_mock_rollcall_action(
 
             set_mock_detected_status(&status, rollcall_id, "Mock QR Code 點名", &link.scan_url)
                 .await;
-            crate::web_push_notifications::notify_rollcall(
+            crate::web_push_notifications::notify_rollcall_with_url(
                 &account.account_id,
                 rollcall_id,
                 "Mock QR Code 點名",
                 "QR Code 簽到",
+                Some(link.scan_url.as_str()),
             );
             if let Some(messenger) = state.messenger.as_ref() {
                 let _ = messenger

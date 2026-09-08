@@ -165,7 +165,8 @@
   function applyRollcallAccountFilter(st){
     var filter = q('historyAccountFilter');
     if(!filter) return;
-    if(st.is_admin){
+    /* VIEWER_ROLE_V1：檢視者與管理員一樣看得到全部帳號 */
+    if(st.is_admin || st.is_viewer){
       filter.disabled = false;
       if(!filter.querySelector('option[value=""]')){
         var all = document.createElement('option');
@@ -187,13 +188,48 @@
     filter.disabled = true;
   }
 
+  /* VIEWER_ROLE_V1：檢視者（唯讀）。後端 middleware 已擋掉所有寫入；這裡只做 UX：
+     顯示徽章、把會改變狀態的按鈕停用並加上提示，避免使用者按了才看到 403。 */
+  var viewerMutating = /^(檢查|重登|暫停|恢復|啟動監控|設為管理員|取消管理員|設為檢視者|取消檢視者|重製密碼|儲存|新增帳號|立即檢查|全部檢查|全部重登|測試|送出|清除|套用|匯入|同步)/;
+  function applyViewerUi(){
+    if(!roleState || !roleState.is_viewer) return;
+    if(!document.getElementById('viewerRoleBadge')){
+      var host = document.querySelector('.hero-copy') || document.querySelector('.hero') || document.querySelector('main');
+      if(host){
+        var badge = document.createElement('span');
+        badge.id = 'viewerRoleBadge';
+        badge.setAttribute('role','status');
+        badge.textContent = '檢視者（唯讀）：可以看所有帳號狀態，但不能執行任何操作';
+        badge.style.cssText = 'display:inline-flex;align-items:center;gap:6px;margin-top:8px;padding:6px 12px;border-radius:999px;font-size:12px;font-weight:800;background:rgba(245,158,11,.16);color:#b45309;border:1px solid rgba(245,158,11,.35)';
+        host.appendChild(badge);
+      }
+    }
+    var buttons = document.querySelectorAll('button[data-action],#view-accounts button,#view-overview button,#view-rollcall button,#view-timetable button,.actions-cell button,.quick-actions button');
+    Array.prototype.forEach.call(buttons, function(btn){
+      if(!btn || btn.dataset.viewerLocked === '1') return;
+      var t = textOf(btn);
+      var act = (btn.dataset && btn.dataset.action) || '';
+      if(act || viewerMutating.test(t)){
+        if(/^(重新整理|關閉|取消|返回|登出|重新讀取|重試|上月|下月|下載|匯出)/.test(t)) return;
+        btn.dataset.viewerLocked = '1';
+        btn.disabled = true;
+        btn.title = '檢視者（唯讀）不能執行此操作';
+        btn.style.opacity = '.45';
+        btn.style.cursor = 'not-allowed';
+      }
+    });
+  }
+
   function applyRole(st){
     if(!st || typeof st.is_admin === 'undefined') return;
-    roleState = {is_admin: !!st.is_admin, account_id: st.current_account_id || st.account_id || ''};
+    roleState = {is_admin: !!st.is_admin, is_viewer: !!st.is_viewer && !st.is_admin, account_id: st.current_account_id || st.account_id || ''};
     applyRollcallAccountFilter(st);
     document.documentElement.classList.toggle('dash-role-admin', roleState.is_admin);
     document.documentElement.classList.toggle('dash-role-user', !roleState.is_admin);
+    document.documentElement.classList.toggle('dash-role-viewer', roleState.is_viewer);
     document.documentElement.dataset.admin = roleState.is_admin ? '1' : '0';
+    document.documentElement.dataset.viewer = roleState.is_viewer ? '1' : '0';
+    applyViewerUi();
 
     if(roleState.is_admin){
       showAdminOnlyLinks();
@@ -229,6 +265,7 @@
 
   // 若原本程式把 unauthorized 顯示成 toast/card，非管理員狀態下自動清掉。
   var mo = new MutationObserver(function(muts){
+    if(roleState && roleState.is_viewer) applyViewerUi();
     if(roleState && roleState.is_admin === false){
       muts.forEach(function(m){
         Array.prototype.forEach.call(m.addedNodes || [], function(n){

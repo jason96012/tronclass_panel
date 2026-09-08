@@ -20,7 +20,7 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::account::AccountConfig;
 use crate::adapters::events::{
     AdapterAccountTarget, AdapterMessenger, MonitorStatus, NumberCodeRequest, OutboundMessage,
-    QrCodeRequest, RollcallEvent, RollcallResultEvent,
+    QrCodeRequest, RollcallEvent, RollcallInputReminderEvent, RollcallResultEvent,
 };
 use crate::adapters::requests::{
     NumberCodeInput, NumberCodeReceiver, NumberCodeSender, QrCodeReceiver, QrCodeSender,
@@ -207,12 +207,19 @@ pub async fn process_rollcall(
 
     // Web Push 綁定當前 account_label，伺服器不接受前端指定其他帳號，
     // 所以只會通知這次偵測所屬帳號的擁有者。
-    crate::web_push_notifications::notify_rollcall(
-        account_label,
-        rollcall.rollcall_id,
-        &rollcall.course_title,
-        &attendance_type.to_string(),
-    );
+    // PUSH_DEEP_LINK_V1：數字／QR 點名改在對應 handler 註冊好輸入頁後才推播
+    // （payload 會帶專屬輸入頁網址）；這裡只處理雷達／自助簽到。
+    if !matches!(
+        attendance_type,
+        AttendanceType::Number | AttendanceType::QrCode
+    ) {
+        crate::web_push_notifications::notify_rollcall(
+            account_label,
+            rollcall.rollcall_id,
+            &rollcall.course_title,
+            &attendance_type.to_string(),
+        );
+    }
 
     // ── 發送開始通知 ──────────────────────────────────────────────────────────
     // 數字 / QR Code 會在對應 handler 先註冊到網頁狀態，再發出專用通知。
@@ -369,6 +376,14 @@ async fn handle_number_rollcall(
         .map(|(_, input_url)| input_url.clone())
         .unwrap_or_default();
     update_detected_url(&status, &input_url).await;
+    // PUSH_DEEP_LINK_V1：推播直接帶輸入頁網址（未註冊成功則退回儀表板）。
+    crate::web_push_notifications::notify_rollcall_with_url(
+        account_label,
+        rollcall.rollcall_id,
+        &rollcall.course_title,
+        &AttendanceType::Number.to_string(),
+        Some(input_url.as_str()),
+    );
 
     if let Some(bot) = messenger {
         let target = adapter_target.lock().await.clone();
@@ -387,7 +402,11 @@ async fn handle_number_rollcall(
         }
     }
 
-    let deadline = tokio::time::Instant::now() + timeout;
+    let started_waiting = tokio::time::Instant::now();
+    let deadline = started_waiting + timeout;
+    // ROLLCALL_INPUT_REMINDER_V1：20 秒後若仍無任何輸入就催一次；逾時本身不到 20 秒則不催。
+    let reminder_at = started_waiting + Duration::from_secs(INPUT_REMINDER_SECS);
+    let mut reminder_sent = reminder_at >= deadline;
     let mut last_error: Option<String> = None;
     loop {
         let now = tokio::time::Instant::now();
@@ -403,10 +422,36 @@ async fn handle_number_rollcall(
             };
         }
 
-        let input = match wait_for_number_input(rx.clone(), deadline.saturating_duration_since(now))
+        // ROLLCALL_INPUT_REMINDER_V1：第一段只等到催促時間點，醒來後判斷是否要催。
+        let wait_until = if !reminder_sent && last_error.is_none() {
+            reminder_at.max(now)
+        } else {
+            deadline
+        };
+        let input = match wait_for_number_input(rx.clone(), wait_until.saturating_duration_since(now))
             .await
         {
             Ok(input) => input,
+            Err(_) if wait_until < deadline && tokio::time::Instant::now() >= reminder_at => {
+                reminder_sent = true;
+                if last_error.is_none() {
+                    let remaining = deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_secs();
+                    send_input_reminder(
+                        messenger,
+                        &adapter_target,
+                        account_label,
+                        rollcall,
+                        AttendanceType::Number,
+                        &input_url,
+                        INPUT_REMINDER_SECS,
+                        remaining,
+                    )
+                    .await;
+                }
+                continue;
+            }
             Err(reason) => {
                 if let Some((registry, _)) = number_registered.as_ref() {
                     registry
@@ -613,6 +658,55 @@ async fn wait_for_number_input(
     }
 }
 
+/// ROLLCALL_INPUT_REMINDER_V1：數字／QR 點名送出請求後，等這麼多秒仍沒有任何輸入就再催一次。
+const INPUT_REMINDER_SECS: u64 = 20;
+
+/// ROLLCALL_INPUT_REMINDER_V1：對綁定使用者（或管理員）與該帳號的手機推播各催一次。
+/// 每筆點名最多送一次；有任何輸入（即使簽到失敗）就不催。
+#[allow(clippy::too_many_arguments)]
+async fn send_input_reminder(
+    messenger: Option<&dyn AdapterMessenger>,
+    adapter_target: &Arc<Mutex<AdapterAccountTarget>>,
+    account_label: &str,
+    rollcall: &Rollcall,
+    attendance_type: AttendanceType,
+    input_url: &str,
+    waited_secs: u64,
+    remaining_secs: u64,
+) {
+    info!(
+        rollcall_id = rollcall.rollcall_id,
+        account = %account_label,
+        waited_secs,
+        remaining_secs,
+        "等待輸入超過 {INPUT_REMINDER_SECS} 秒仍無回應，發送催促通知"
+    );
+    let attendance_label = attendance_type.to_string();
+    crate::web_push_notifications::notify_rollcall_reminder(
+        account_label,
+        rollcall.rollcall_id,
+        &rollcall.course_title,
+        &attendance_label,
+        Some(input_url),
+        remaining_secs,
+    );
+    if let Some(bot) = messenger {
+        let msg = OutboundMessage::RollcallInputReminder(RollcallInputReminderEvent {
+            rollcall_id: rollcall.rollcall_id,
+            account: account_label.to_string(),
+            course_name: rollcall.course_title.clone(),
+            attendance_type: attendance_label,
+            input_url: input_url.to_string(),
+            waited_secs,
+            remaining_secs,
+        });
+        let target = adapter_target.lock().await.clone();
+        if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
+            warn!(error = %e, "發送點名催促通知失敗");
+        }
+    }
+}
+
 async fn update_detected_url(status: &Arc<Mutex<MonitorStatus>>, url: &str) {
     if url.trim().is_empty() {
         return;
@@ -763,6 +857,16 @@ async fn handle_qrcode_rollcall(
         .map(|(_, _, already_submitted)| *already_submitted)
         .unwrap_or(false);
     update_detected_url(&status, &scan_url).await;
+    // PUSH_DEEP_LINK_V1：推播直接帶掃碼頁網址；已由別人代掃完成時不再吵使用者。
+    if !scanner_already_submitted {
+        crate::web_push_notifications::notify_rollcall_with_url(
+            account_label,
+            rollcall.rollcall_id,
+            &rollcall.course_title,
+            &AttendanceType::QrCode.to_string(),
+            Some(scan_url.as_str()),
+        );
+    }
 
     // 發送 Line 通知，要求使用者提供 QR code
     if let Some(bot) = messenger {
@@ -773,7 +877,8 @@ async fn handle_qrcode_rollcall(
             account: account_label.to_string(),
             course_name: rollcall.course_title.clone(),
             teacher_name: rollcall.created_by_name.clone(),
-            scan_url,
+            // ROLLCALL_INPUT_REMINDER_V1：後面催促還要用，這裡改 clone。
+            scan_url: scan_url.clone(),
             alt_scan_url,
             timeout_secs: config.provider_config.qrcode.scan_timeout_secs,
         });
@@ -820,7 +925,11 @@ async fn handle_qrcode_rollcall(
         "等待 QR code 輸入..."
     );
 
-    let deadline = tokio::time::Instant::now() + timeout;
+    let started_waiting = tokio::time::Instant::now();
+    let deadline = started_waiting + timeout;
+    // ROLLCALL_INPUT_REMINDER_V1：20 秒後若仍沒有任何 QR 輸入就催一次。
+    let reminder_at = started_waiting + Duration::from_secs(INPUT_REMINDER_SECS);
+    let mut reminder_sent = reminder_at >= deadline || scanner_already_submitted;
     let mut last_error: Option<String> = None;
 
     loop {
@@ -845,14 +954,22 @@ async fn handle_qrcode_rollcall(
             };
         }
 
-        let remaining = deadline.saturating_duration_since(now);
-        let qr_input = {
+        // ROLLCALL_INPUT_REMINDER_V1：第一段只等到催促時間點。
+        let wait_until = if !reminder_sent && last_error.is_none() {
+            reminder_at.max(now)
+        } else {
+            deadline
+        };
+        let remaining = wait_until.saturating_duration_since(now);
+        // None 代表「催促時間點到了但還沒有輸入」（rx_guard 已在 block 結束時釋放）。
+        let qr_input: Option<String> = {
             let mut rx_guard = rx.lock().await;
             match tokio::time::timeout(remaining, rx_guard.recv()).await {
                 Ok(Some(input)) => {
                     info!(input_len = input.len(), "收到 QR code 輸入，嘗試簽到");
-                    input
+                    Some(input)
                 }
+                Err(_) if wait_until < deadline => None,
                 Ok(None) => {
                     if let Some((registry, _, _)) = scanner_registered.as_ref() {
                         registry
@@ -865,6 +982,26 @@ async fn handle_qrcode_rollcall(
                 }
                 Err(_) => continue,
             }
+        };
+        let Some(qr_input) = qr_input else {
+            reminder_sent = true;
+            if last_error.is_none() {
+                let remaining_secs = deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_secs();
+                send_input_reminder(
+                    messenger,
+                    &adapter_target,
+                    account_label,
+                    rollcall,
+                    AttendanceType::QrCode,
+                    &scan_url,
+                    INPUT_REMINDER_SECS,
+                    remaining_secs,
+                )
+                .await;
+            }
+            continue;
         };
 
         // 執行 QR Code 簽到。scanner 會持續掃描並送出更新後的 QR payload；失敗時繼續等下一筆。

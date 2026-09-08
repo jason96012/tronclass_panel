@@ -319,9 +319,16 @@ impl AccountsDb {
     }
 
     /// 設定 Web 管理頁管理員權限，回傳是否找到並更新。
+    ///
+    /// VIEWER_ROLE_V1：管理員與檢視者互斥——升為管理員時同時清掉 is_viewer，
+    /// 避免一個帳號同時帶著「全站可寫」與「唯讀」兩個旗標造成判斷歧義。
     pub async fn set_admin(&self, id: &str, is_admin: bool) -> Result<bool> {
-        let result = sqlx::query("UPDATE accounts SET is_admin = ? WHERE id = ?")
-            .bind(is_admin)
+        let sql = if is_admin {
+            "UPDATE accounts SET is_admin = 1, is_viewer = 0 WHERE id = ?"
+        } else {
+            "UPDATE accounts SET is_admin = 0 WHERE id = ?"
+        };
+        let result = sqlx::query(sql)
             .bind(id)
             .execute(&self.pool)
             .await
@@ -329,6 +336,49 @@ impl AccountsDb {
             .wrap_err_with(|| format!("更新帳號 `{id}` 管理員權限失敗"))?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    // ── VIEWER_ROLE_V1：檢視者（唯讀）角色 ───────────────────────────────────
+    //
+    // 為了不動到 `RawAccountConfig`（全專案 12 處 struct literal）與所有讀取
+    // 帳號的 SELECT，viewer 旗標以獨立查詢提供：登入時查一次寫進 session，
+    // 狀態頁以 `list_viewer_flags` 一次撈全部。
+
+    /// 帳號是否為檢視者（唯讀）。找不到帳號時回傳 false。
+    pub async fn is_viewer(&self, id: &str) -> Result<bool> {
+        let row = sqlx::query_as::<_, (bool,)>("SELECT is_viewer FROM accounts WHERE id = ?")
+            .bind(id.trim())
+            .fetch_optional(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| format!("讀取帳號 `{id}` 檢視者旗標失敗"))?;
+        Ok(row.map(|(v,)| v).unwrap_or(false))
+    }
+
+    /// 設定檢視者（唯讀）角色，回傳是否找到並更新。設為檢視者時同步取消管理員。
+    pub async fn set_viewer(&self, id: &str, is_viewer: bool) -> Result<bool> {
+        let sql = if is_viewer {
+            "UPDATE accounts SET is_viewer = 1, is_admin = 0 WHERE id = ?"
+        } else {
+            "UPDATE accounts SET is_viewer = 0 WHERE id = ?"
+        };
+        let result = sqlx::query(sql)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| format!("更新帳號 `{id}` 檢視者旗標失敗"))?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// 所有帳號的檢視者旗標（account_id → is_viewer）。
+    pub async fn list_viewer_flags(&self) -> Result<std::collections::HashMap<String, bool>> {
+        let rows = sqlx::query_as::<_, (String, bool)>("SELECT id, is_viewer FROM accounts")
+            .fetch_all(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("讀取帳號檢視者旗標失敗")?;
+        Ok(rows.into_iter().collect())
     }
 
     /// 以 Tronclass username 更新 Discord User ID。

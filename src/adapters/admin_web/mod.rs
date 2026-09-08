@@ -54,6 +54,10 @@ mod blacklist;
 mod class_reminder;
 mod bulletins;
 mod detection_schedule;
+// REST_DAY_PAGE_V1：休息日與寒暑假頁面。
+mod rest_days;
+// LOGIN_DEVICES_V1
+mod devices;
 mod digest_pref;
 
 // BULLETIN_PUSH_V1: 供 main.rs 啟動課程公告 Web Push 背景任務。
@@ -711,6 +715,148 @@ async fn alert_abnormal_traffic(state: &AdminWebState, source: &str, username: &
     notify_admins_discord(state, text).await;
 }
 
+/// LOGIN_LOCATION_ALERT_V1：登入成功後判斷「這個帳號是否第一次從這個 IP 登入」。
+///
+/// 規則（刻意保守，避免洗版）：
+/// * 該帳號從未有任何已知 IP（第一次登入）→ 只記錄，不告警。
+/// * IP 為空／loopback／私有網段（區網或反向代理未帶 X-Forwarded-For）→ 只記錄。
+/// * 同一帳號＋同一新 IP 在 SECURITY_ALERT_COOLDOWN（10 分鐘）內只告警一次。
+/// * 已知 IP → 更新 last_seen／次數，不告警。
+///
+/// 告警對象（使用者選擇：帳號持有人＋管理員）：
+/// * 持有人：Discord／LINE 文字訊息 + Web Push（點開直達 /admin/devices）。
+/// * 管理員：Discord 文字（沿用 `notify_admins_discord`）+ Web Push。
+/// 通知內容無 emoji。
+async fn check_unusual_login_location(
+    state: &AdminWebState,
+    account_id: &str,
+    ip: &str,
+    user_agent: &str,
+    method_label: &str,
+) {
+    let account_id = account_id.trim();
+    let ip = ip.trim();
+    if account_id.is_empty() || account_id == "<token-admin>" {
+        return;
+    }
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let ip_is_private = ip.is_empty()
+        || ip
+            .parse::<std::net::IpAddr>()
+            .map(|addr| match addr {
+                std::net::IpAddr::V4(v4) => {
+                    v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+                }
+                std::net::IpAddr::V6(v6) => {
+                    v6.is_loopback() || v6.is_unspecified() || (v6.segments()[0] & 0xfe00) == 0xfc00
+                }
+            })
+            .unwrap_or(true);
+
+    let known_count = state
+        .accounts_db
+        .count_known_login_ips(account_id)
+        .await
+        .unwrap_or(0);
+    let is_known = if known_count == 0 {
+        false
+    } else {
+        state
+            .accounts_db
+            .is_known_login_ip(account_id, ip)
+            .await
+            .unwrap_or(true)
+    };
+
+    // 先記憶，再決定是否告警（不論是否告警都要記住這個 IP）。
+    if let Err(error) = state.accounts_db.remember_login_ip(account_id, ip, now_unix).await {
+        warn!(account = %account_id, error = %error, "寫入登入 IP 記憶失敗");
+    }
+
+    if known_count == 0 || is_known || ip_is_private {
+        return;
+    }
+
+    let key = format!("login-location:{account_id}:{ip}");
+    if !security_should_alert(&key).await {
+        return;
+    }
+
+    let when = security_now_label();
+    let ua = if user_agent.trim().is_empty() {
+        "-".to_string()
+    } else {
+        crate::text_utils::truncate_chars(user_agent.trim(), 120).to_string()
+    };
+    info!(account = %account_id, ip = %ip, "偵測到新位置登入 Dashboard");
+    crate::logs::record_audit(
+        "web",
+        "system:login-location",
+        "login_new_location",
+        Some(account_id),
+        Some(ip),
+        "Dashboard 帳號從未見過的 IP 登入成功",
+    );
+    let _ = state
+        .accounts_db
+        .record_activity_event(crate::db::ActivityEventInput {
+            kind: "security".to_string(),
+            actor: "system:login-location".to_string(),
+            action: "login_new_location".to_string(),
+            account_id: account_id.to_string(),
+            path: String::new(),
+            result: "alert".to_string(),
+            details: format!("新位置登入（{method_label}）；UA: {ua}"),
+            ip: ip.to_string(),
+        })
+        .await;
+
+    // 帳號持有人
+    let (owner_discord, owner_line) = resolve_login_target_contacts(state, account_id).await;
+    let owner_text = format!(
+        "安全提醒：你的 Dashboard 帳號（{account_id}）剛剛從一個新的位置登入。\n登入方式：{method_label}\nIP：{ip}\n裝置：{ua}\n時間：{when}\n若不是你本人，請立即到「設定 > 登入裝置管理」登出其他裝置，並變更 Dashboard 密碼。"
+    );
+    notify_account_holder(
+        state,
+        owner_discord.as_deref(),
+        owner_line.as_deref(),
+        &owner_text,
+    )
+    .await;
+    crate::web_push_notifications::notify_security_alert(
+        vec![account_id.to_string()],
+        "Dashboard 新位置登入".to_string(),
+        format!("帳號 {account_id} 從 {ip} 以{method_label}登入。若不是你，請立即登出其他裝置。"),
+        format!("tronclass-login-location-{account_id}"),
+    );
+
+    // 管理員（Discord 文字 + Web Push）
+    let admin_text = format!(
+        "Dashboard 安全警示\n類型：新位置登入\n帳號：{account_id}\n登入方式：{method_label}\nIP：{ip}\n裝置：{ua}\n時間：{when}\n此帳號過去從未從這個 IP 成功登入。若可疑，可到 /admin/activity 查看登入審計或到黑名單頁封鎖此 IP。"
+    );
+    notify_admins_discord(state, admin_text).await;
+    let mut admin_account_ids = Vec::new();
+    if let Ok(accounts) = state.accounts_db.list().await {
+        for account in accounts {
+            if account.is_admin && account.id != account_id {
+                admin_account_ids.push(account.id);
+            }
+        }
+    }
+    if !admin_account_ids.is_empty() {
+        crate::web_push_notifications::notify_security_alert(
+            admin_account_ids,
+            "Dashboard 新位置登入".to_string(),
+            format!("帳號 {account_id} 從 {ip} 以{method_label}登入（過去未見過此 IP）。"),
+            format!("tronclass-login-location-admin-{account_id}"),
+        );
+    }
+}
+
 #[derive(Clone)]
 pub struct AdminWebState {
     // ACCOUNT_HOT_ADD_V1：改用可執行期追加的共享登錄簿（與 LINE／Discord 同一份）。
@@ -730,11 +876,51 @@ pub struct AdminWebState {
 struct AdminSession {
     account_id: String,
     is_admin: bool,
+    /// VIEWER_ROLE_V1：檢視者（唯讀）。看得到管理員視角的所有帳號狀態（敏感欄位
+    /// 遮罩），但所有 POST /admin/api/* 寫入一律 403（`require_viewer_readonly_middleware`）。
+    is_viewer: bool,
     /// A one-time first-login session authenticated with the upstream
     /// Tronclass password. It may only change the Dashboard password or log
     /// out; no account data or control API is exposed before that change.
     must_change_password: bool,
     expires_at: Instant,
+}
+
+/// LOGIN_DEVICES_V1：登入時的來源資訊，寫進 dashboard_sessions 供「登入裝置管理」頁。
+#[derive(Debug, Clone, Default)]
+struct SessionOrigin {
+    ip: String,
+    user_agent: String,
+    /// 第一次登入的 Unix 秒；0 = 現在。refresh 輪換時沿用原值，裝置頁的
+    /// 「登入時間」才不會每 12 小時被重設一次。
+    first_login_at: i64,
+}
+
+impl SessionOrigin {
+    fn from_request(headers: &HeaderMap, ip: &str) -> Self {
+        let user_agent = headers
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .map(|v| crate::text_utils::truncate_chars(v, 256).to_string())
+            .unwrap_or_default();
+        Self {
+            ip: ip.trim().to_string(),
+            user_agent,
+            first_login_at: 0,
+        }
+    }
+}
+
+/// VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：`create_session` 的完整參數。
+#[derive(Debug, Clone, Default)]
+struct NewSession {
+    account_id: String,
+    is_admin: bool,
+    is_viewer: bool,
+    must_change_password: bool,
+    origin: SessionOrigin,
 }
 
 /// A freshly issued token pair. The access token authorizes API calls
@@ -783,6 +969,7 @@ impl AdminWebState {
                             AdminSession {
                                 account_id: row.account_id,
                                 is_admin: row.is_admin,
+                                is_viewer: row.is_viewer,
                                 must_change_password: row.must_change_password,
                                 expires_at: Instant::now() + Duration::from_secs(remaining_secs),
                             },
@@ -901,6 +1088,7 @@ impl AdminWebState {
                 let session = AdminSession {
                     account_id: row.account_id,
                     is_admin: row.is_admin,
+                    is_viewer: row.is_viewer,
                     must_change_password: row.must_change_password,
                     expires_at: Instant::now() + Duration::from_secs(remaining_secs),
                 };
@@ -931,17 +1119,38 @@ impl AdminWebState {
         }
     }
 
+    /// 相容包裝：不帶來源資訊、非 viewer（測試與 refresh 輪換以外的舊呼叫點）。
     async fn create_session(
         &self,
         account_id: String,
         is_admin: bool,
         must_change_password: bool,
     ) -> SessionTokens {
+        self.create_session_with(NewSession {
+            account_id,
+            is_admin,
+            is_viewer: false,
+            must_change_password,
+            origin: SessionOrigin::default(),
+        })
+        .await
+    }
+
+    /// VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：完整版建立 session。
+    async fn create_session_with(&self, new: NewSession) -> SessionTokens {
+        let NewSession {
+            account_id,
+            is_admin,
+            is_viewer,
+            must_change_password,
+            origin,
+        } = new;
         let access = Uuid::new_v4().simple().to_string();
         let refresh = Uuid::new_v4().simple().to_string();
         let session = AdminSession {
             account_id: account_id.clone(),
             is_admin,
+            is_viewer,
             must_change_password,
             expires_at: Instant::now() + ACCESS_TOKEN_TTL,
         };
@@ -955,15 +1164,19 @@ impl AdminWebState {
 
         if let Err(e) = self
             .accounts_db
-            .insert_dashboard_session(
-                &access,
-                &account_id,
+            .insert_dashboard_session_full(&crate::db::DashboardSessionInsert {
+                token: access.clone(),
+                account_id: account_id.clone(),
                 is_admin,
+                is_viewer,
                 must_change_password,
-                access_expires_at,
-                &refresh,
+                expires_at: access_expires_at,
+                refresh_token: refresh.clone(),
                 refresh_expires_at,
-            )
+                ip: origin.ip,
+                user_agent: origin.user_agent,
+                created_at: origin.first_login_at,
+            })
             .await
         {
             warn!(error = %e, "無法將 Dashboard session 寫入資料庫");
@@ -1023,8 +1236,20 @@ impl AdminWebState {
         // Rotate: revoke the old access token's in-memory session too.
         self.sessions.write().await.remove(&row.token);
 
+        // VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：輪換後沿用 viewer 旗標與原始登入來源
+        // （裝置頁看到的仍是「同一台裝置」，不會因為每 12 小時輪換而變成新裝置）。
         let tokens = self
-            .create_session(row.account_id.clone(), row.is_admin, row.must_change_password)
+            .create_session_with(NewSession {
+                account_id: row.account_id.clone(),
+                is_admin: row.is_admin,
+                is_viewer: row.is_viewer,
+                must_change_password: row.must_change_password,
+                origin: SessionOrigin {
+                    ip: row.ip.clone(),
+                    user_agent: row.user_agent.clone(),
+                    first_login_at: row.created_at,
+                },
+            })
             .await;
 
         // Revoke the old row (identified by its refresh token) so the old
@@ -1048,6 +1273,68 @@ impl AdminWebState {
     /// Password changes invalidate every Dashboard session for the account.
     async fn revoke_account_sessions(&self, account_id: &str) {
         self.revoke_sessions_for_account(account_id).await;
+    }
+
+    /// LOGIN_DEVICES_V1：回寫 session 最近活動時間。以 token 為 key 做 60 秒節流，
+    /// 節流表最多 MAX_SESSIONS 筆，超過就整個清空重來（極端情況下只是多寫一次）。
+    async fn touch_session_last_seen(&self, token: &str) {
+        static LAST_TOUCH: once_cell::sync::Lazy<tokio::sync::Mutex<HashMap<String, Instant>>> =
+            once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(HashMap::new()));
+        const TOUCH_INTERVAL: Duration = Duration::from_secs(60);
+        let token = token.trim();
+        if token.is_empty() {
+            return;
+        }
+        let should_write = {
+            let mut map = LAST_TOUCH.lock().await;
+            let now = Instant::now();
+            let due = map
+                .get(token)
+                .map(|at| now.saturating_duration_since(*at) >= TOUCH_INTERVAL)
+                .unwrap_or(true);
+            if due {
+                if map.len() >= MAX_SESSIONS && !map.contains_key(token) {
+                    map.clear();
+                }
+                map.insert(token.to_string(), now);
+            }
+            due
+        };
+        if !should_write {
+            return;
+        }
+        let db = self.accounts_db.clone();
+        let tok = token.to_string();
+        tokio::spawn(async move {
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+            let _ = db.touch_dashboard_session(&tok, now_unix).await;
+        });
+    }
+
+    /// LOGIN_DEVICES_V1：撤銷「某帳號的其他所有 session」（保留目前這一個）。
+    async fn revoke_other_sessions(&self, account_id: &str, keep_token: &str) -> usize {
+        let keep = keep_token.trim();
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        let rows = self
+            .accounts_db
+            .list_dashboard_sessions_by_account(account_id, now_unix)
+            .await
+            .unwrap_or_default();
+        let mut revoked = 0usize;
+        for row in rows {
+            if row.token == keep {
+                continue;
+            }
+            self.revoke_session(&row.token).await;
+            revoked += 1;
+        }
+        revoked
     }
 }
 
@@ -1075,6 +1362,8 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route("/admin/static/core-api.js", get(static_assets::admin_core_api_js_handler))
         .route("/admin/static/web-push.js", get(static_assets::admin_web_push_js_handler))
+        // DASHBOARD_LIVE_EVENTS_V1
+        .route("/admin/static/live-events.js", get(static_assets::admin_live_events_js_handler))
         .route(
             "/admin/static/js/dompurify.min.js",
             get(static_assets::admin_dompurify_js_handler),
@@ -1259,6 +1548,21 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/detection-schedule",
             get(detection_schedule::page_handler),
         )
+        // REST_DAY_PAGE_V1：休息日與寒暑假（唯讀）。
+        .route("/admin/rest-days", get(rest_days::page_handler))
+        // LOGIN_DEVICES_V1：登入裝置管理（任何已登入帳號、只管自己的 session）
+        .route("/admin/devices", get(devices::page_handler))
+        .route("/admin/api/devices", get(devices::list_handler))
+        .route(
+            "/admin/api/devices/revoke",
+            post(devices::revoke_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/rest-days",
+            get(rest_days::get_handler)
+                .post(rest_days::update_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         // BULLETINS_V1: 課程公告頁＋API。
         .route("/admin/bulletins", get(bulletins::page_handler))
         .route("/admin/api/bulletins", get(bulletins::list_handler))
@@ -1358,6 +1662,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route("/admin/api/health", get(health::admin_health_api_handler))
+        // METRICS_HISTORY_V1
+        .route(
+            "/admin/api/health/history",
+            get(health::admin_health_history_handler),
+        )
         .route(
             "/admin/api/health/check",
             get(health::admin_health_check_handler),
@@ -1517,6 +1826,8 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/rollcall/events",
             get(status::admin_rollcall_events_handler),
         )
+        // DASHBOARD_LIVE_EVENTS_V1：狀態變更／版本更新事件流（前端自動刷新與自動重載）
+        .route("/admin/api/events", get(status::admin_dashboard_events_handler))
         .route(
             "/admin/api/class_reminder",
             get(class_reminder::admin_class_reminder_get_handler)
@@ -2036,6 +2347,25 @@ fn bootstrap_allowed_api_path(path: &str) -> bool {
     )
 }
 
+/// VIEWER_ROLE_V1：檢視者被允許的寫入端點（僅限自助、且不觸及監控／他人資料）。
+fn viewer_allowed_write_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/admin/api/login"
+            | "/admin/api/logout"
+            | "/admin/api/password"
+            | "/admin/api/session/refresh"
+            | "/admin/api/passkey/login/start"
+            | "/admin/api/passkey/login/finish"
+            | "/admin/api/passkey/register/start"
+            | "/admin/api/passkey/register/finish"
+            | "/admin/api/push/subscribe"
+            | "/admin/api/push/unsubscribe"
+            | "/admin/api/devices/revoke"
+            | "/admin/api/bulletins/read"
+    )
+}
+
 /// A first login may authenticate with the existing upstream Tronclass
 /// credential only when that account has no Dashboard password yet. Restrict
 /// that short-lived bootstrap session to password change/logout/status so it
@@ -2079,6 +2409,11 @@ async fn require_dashboard_password_change_middleware(
     // needs (`bootstrap_allowed_api_path`, checked above) are exempted before
     // we get here.
     let token = session_token_from_uri(request.uri());
+    // VIEWER_ROLE_V1：先把 path／method 複製成 owned 值。`axum::body::Body` 不是 Sync，
+    // 若把 `&Request` 借用跨過下面的 `.await`，整個 middleware future 會變成 !Send。
+    let path_owned = path.to_string();
+    let method = request.method().clone();
+    let is_mutating = method != Method::GET && method != Method::HEAD && method != Method::OPTIONS;
     if let Some(token) = token {
         if let Some(session) = state.authorize_any(&token).await {
             if session.must_change_password {
@@ -2091,6 +2426,24 @@ async fn require_dashboard_password_change_middleware(
                 )
                     .into_response();
             }
+            // VIEWER_ROLE_V1：檢視者唯讀閘門。所有會改變狀態的 HTTP 方法一律 403，
+            // 只放行「自己登出／換密碼／裝置管理／session refresh／已讀標記」這類
+            // 不影響其他帳號、也不影響監控狀態的自助操作。
+            // 放在這個既有的單一 chokepoint，而不是散落到每個 handler：新 handler
+            // 忘了檢查 is_viewer 也不會漏。GET 一律放行（handler 內自行遮罩）。
+            if session.is_viewer && is_mutating && !viewer_allowed_write_path(&path_owned) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({
+                        "error": "viewer_read_only",
+                        "message": "此帳號為檢視者（唯讀），不能執行此操作",
+                    })),
+                )
+                    .into_response();
+            }
+            // LOGIN_DEVICES_V1：更新 session 最近活動時間（60 秒節流，避免每個
+            // 請求都寫 SQLite）。
+            state.touch_session_last_seen(&token).await;
         }
     }
 

@@ -164,6 +164,8 @@ pub(super) async fn admin_action_handler(
             | "start_monitor"
             | "set_admin"
             | "unset_admin"
+            | "set_viewer"
+            | "unset_viewer"
             | "reset_password"
             | "mock_rollcall"
             | "runtime_settings"
@@ -483,6 +485,67 @@ pub(super) async fn handle_admin_account_action(
                 Err(e) => (
                     StatusCode::BAD_REQUEST,
                     Json(json!({ "error": format!("重製密碼失敗：{e}") })),
+                )
+                    .into_response(),
+            }
+        }
+        // VIEWER_ROLE_V1：設定／取消檢視者（唯讀）。與 set_admin 相同：改完清快取、
+        // 撤銷該帳號所有 session 強制重新登入，讓新的角色立即生效。
+        "set_viewer" | "unset_viewer" => {
+            let Some(account_id) = action
+                .account_id
+                .or(action.id)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+            else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "account_id is required" })),
+                )
+                    .into_response();
+            };
+            if account_id == session.account_id {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "不能變更自己的檢視者角色" })),
+                )
+                    .into_response();
+            }
+            let is_viewer = action_name == "set_viewer";
+            match state.accounts_db.set_viewer(&account_id, is_viewer).await {
+                Ok(true) => {
+                    super::status::invalidate_admin_status_cache().await;
+                    state.revoke_sessions_for_account(&account_id).await;
+                    crate::logs::record_audit(
+                        "web",
+                        &session.account_id,
+                        action_name,
+                        Some(&account_id),
+                        None,
+                        if is_viewer {
+                            "已設定為檢視者（唯讀），該帳號所有 session 已撤銷"
+                        } else {
+                            "已取消檢視者，該帳號所有 session 已撤銷"
+                        },
+                    );
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "ok": true,
+                            "affected": 1,
+                            "message": if is_viewer { "已設定為檢視者（唯讀）" } else { "已取消檢視者" }
+                        })),
+                    )
+                        .into_response()
+                }
+                Ok(false) => (
+                    StatusCode::NOT_FOUND,
+                    Json(json!({ "error": format!("account not found: {account_id}") })),
+                )
+                    .into_response(),
+                Err(e) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("更新檢視者失敗：{e}") })),
                 )
                     .into_response(),
             }

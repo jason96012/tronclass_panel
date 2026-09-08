@@ -310,12 +310,15 @@ mod tests {
 
     #[test]
     fn rest_day_detection() {
-        // 2026-09-05 是週六、2026-09-07 是週一
-        let sat = NaiveDate::from_ymd_opt(2026, 9, 5).unwrap();
-        let mon = NaiveDate::from_ymd_opt(2026, 9, 7).unwrap();
+        // SEMESTER_BREAK_V1：9/14 才開學，改用開學後的日期。
+        // 2026-09-19 是週六、2026-09-21 是週一（非國定假日）
+        let sat = NaiveDate::from_ymd_opt(2026, 9, 19).unwrap();
+        let mon = NaiveDate::from_ymd_opt(2026, 9, 21).unwrap();
         assert!(is_rest_day(sat, &[]));
         assert!(!is_rest_day(mon, &[]));
-        assert!(is_rest_day(mon, &["2026-09-07".to_string()]), "列入 holidays 即為假日");
+        assert!(is_rest_day(mon, &["2026-09-21".to_string()]), "列入 holidays 即為假日");
+        // 暑假期間也是休息日
+        assert!(is_rest_day(NaiveDate::from_ymd_opt(2026, 9, 7).unwrap(), &[]));
         assert!(!is_rest_day(mon, &["not-a-date".to_string()]), "格式錯誤忽略");
     }
 

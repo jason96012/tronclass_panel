@@ -300,8 +300,11 @@
     q('ttHistoryBody').innerHTML = '<div class="tt-history-empty">讀取點名紀錄中...</div>';
     modal.classList.add('visible');
     try{
-      lastStatus = null;
-      var status = await loadStatus();
+      /* STATUS_SLIM_V1：這個彈窗需要完整點名歷史；loadStatus() 走 include_history=false
+         會拿到空陣列，所以這裡直接抓完整版（其他地方仍用精簡版）。 */
+      var status = null;
+      try{ status = await api('/admin/api/status', {cache:'no-store'}); }catch(_){ status = null; }
+      if(!status){ lastStatus = null; status = await loadStatus(); }
       var acctId = accountId || selectedAccount(status);
       var account = accountById(status, acctId);
       var list = (account && account.rollcall_history || []).filter(function(h){ return courseMatches(h.course_name, course); }).sort(function(a,b){ return Number(b.timestamp||0)-Number(a.timestamp||0); });

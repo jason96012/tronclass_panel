@@ -269,6 +269,8 @@ pub(super) async fn admin_passkey_register_finish_handler(
         .await
     {
         Ok(()) => {
+            // ONBOARDING_PASSKEY_STATE_V1：status 有短快取，清掉讓 passkey_count 立即更新。
+            super::status::invalidate_admin_status_cache().await;
             crate::logs::record_audit(
                 "web",
                 &ceremony.account_id,
@@ -632,8 +634,22 @@ pub(super) async fn admin_passkey_login_finish_handler(
 
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
+    // VIEWER_ROLE_V1
+    let is_viewer = !is_admin
+        && state
+            .accounts_db
+            .is_viewer(&account_id)
+            .await
+            .unwrap_or(false);
+    let origin = SessionOrigin::from_request(&headers, &ip);
     let tokens = state
-        .create_session(account_id.clone(), is_admin, false)
+        .create_session_with(NewSession {
+            account_id: account_id.clone(),
+            is_admin,
+            is_viewer,
+            must_change_password: false,
+            origin: origin.clone(),
+        })
         .await;
     crate::logs::record_audit(
         "web",
@@ -643,5 +659,27 @@ pub(super) async fn admin_passkey_login_finish_handler(
         None,
         "Web 管理頁通行密鑰登入成功",
     );
+    // LOGIN_LOCATION_ALERT_V1 / LOGIN_DEVICES_V1：通行密鑰登入過去沒有寫入持久登入
+    // 事件，登入審計頁與「已知 IP」比對都看不到它；補上（與密碼登入同格式，
+    // action=passkey_login），並做異常地點判斷。
+    {
+        let state = state.clone();
+        let acct = account_id.clone();
+        let ip = ip.clone();
+        let user_agent = origin.user_agent.clone();
+        tokio::spawn(async move {
+            check_unusual_login_location(&state, &acct, &ip, &user_agent, "通行密鑰").await;
+            record_persistent_login_event(
+                &state,
+                &acct,
+                Some(&acct),
+                "passkey_login",
+                "success",
+                "Web 管理頁通行密鑰登入成功",
+                &ip,
+            )
+            .await;
+        });
+    }
     session_login_response(&headers, &tokens, account_id, is_admin, false)
 }
