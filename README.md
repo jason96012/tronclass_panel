@@ -110,6 +110,8 @@ echo '你的Tronclass密碼' | ./tronclass_rollcall account add my-account \
 
 帳號資料存於 SQLite（`config/accounts.db`），首次啟動自動建立。
 
+服務執行中也可以直接從 Web 管理頁（管理員 → 新增帳號）或 Discord `/add-account`／申請核准流程新增帳號：寫入資料庫後會立即登入並開始監控，**不需要重啟服務**。CLI `account add` 是離線寫入資料庫，新增後仍需重啟（或在管理頁／Discord 再新增一次相同帳號會因 id 重複而失敗，請改用重啟）。
+
 ### 4. 驗證與啟動
 
 ```bash
@@ -144,6 +146,14 @@ scan_timeout_secs = 60
 [providers.tku.schedule]
 periods = ["07:10~17:30"]      # 只在這些時段輪詢
 rest_weekdays = ["sun"]
+# 註：週六、週日、臺灣國定假日（內建 2026–2027 年）以及寒暑假（內建淡江 115 學年度：
+# 9/14 開學、1/18–2/21 寒假、2/22 開學、6/28 起暑假）整段不自動輪詢，開學日自動恢復。
+# 要加校慶／颱風假、補課日或自訂停課區間，請建立 config/holidays.json：
+#   { "extra": ["2026-11-20"], "workdays": ["2026-04-06"],
+#     "breaks": [{"from":"2027-06-28","to":"2027-09-12","name":"暑假"}],
+#     "disable_builtin_breaks": false }
+# （每 5 分鐘自動重讀；手動「立即檢查」不受休息日限制）
+# 實際生效的假日／寒暑假／月曆可在「設定 → 其他設定 → 休息日與寒暑假」（/admin/rest-days）查看。
 
 [adapters.discord]
 enabled = true
@@ -191,6 +201,8 @@ tronclass_rollcall account <子命令>
 | `account dashboard-password <id> --stdin` | 設定獨立 Dashboard 密碼 |
 | `account enable\|disable <id>` | 啟用／停用 |
 | `account remove <id>` | 刪除 |
+| `account reencrypt` | 把所有既有帳號的密碼／憑證重新寫入（啟用 at-rest 加密） |
+| `account rotate-secret [--dry-run]` | Master key 輪替：把所有密文一次收斂到目前 `TRONCLASS_MASTER_KEY`，並列出解不開的帳號；`--dry-run` 只檢查不寫入。無錯誤結束後即可移除 `TRONCLASS_MASTER_KEY_OLD` |
 
 ### 選項
 
@@ -204,6 +216,13 @@ tronclass_rollcall account <子命令>
 ---
 
 ## Web Dashboard
+
+### 第一次進入網站（新手導覽）
+
+1. 打開 `https://<你的網域>/admin`，帳號輸入**帳號 ID（或學號）**，密碼輸入 **Tronclass 密碼**（首次登入專用）。
+2. 系統會要求你設定一組**Dashboard 專用密碼**（至少 10 字），之後登入這個網站只能用它，不再接受 Tronclass 密碼。
+3. 設定完成後會自動彈出**新手導覽**，依序帶你看：帳號與監控狀態 → 點名怎麼進行（雷達全自動／QR Code 要掃描／數字碼要輸入，兩者都有倒數計時）→ 接通知（Discord 綁定、手機推播）→ 填課表 → 通行密鑰與外觀設定。每一步都會標示你「已完成／尚未」，並有「前往」按鈕直接跳到對應頁面。
+4. 導覽每個瀏覽器＋帳號只自動出現一次；之後可從頂欄「?」、手機「更多 → 新手導覽」或在網址加 `#guide` 隨時重看。
 
 啟用 `[adapters.admin_web]` 後，於 `webhook_port`（預設 8080）提供服務。
 
@@ -341,9 +360,12 @@ src/
   # 2. 舊 key 放進環境（多把以逗號分隔；或 ptero 部署寫入 config/master.old.keys，一行一個）
   export TRONCLASS_MASTER_KEY=<新 key>
   export TRONCLASS_MASTER_KEY_OLD=<舊 key>
-  # 3. 重啟服務——讀取帳號時自動把舊密文背景重加密為新 key（背景靜默執行，
+  # 3a.（建議）一次到位：先 dry-run 檢查，再實際輪替；結束碼 0 = 全部成功
+  tronclass_rollcall account rotate-secret --dry-run
+  tronclass_rollcall account rotate-secret
+  # 3b.（或）直接重啟服務——讀取帳號時自動把舊密文背景重加密為新 key（背景靜默執行，
   #    不發 info 通知；需要排查時可開 debug 層級檢視「已重加密」細節）
-  # 4. 所有帳號都出現過該 log 後，移除 _OLD 環境變數／master.old.keys 再重啟
+  # 4. rotate-secret 回報無錯誤（或所有帳號都出現過該 log）後，移除 _OLD 環境變數／master.old.keys 再重啟
   ```
 
   新寫入的密文為 `enc:v2:<key_id>:…` 信封（key id＝SHA-256(key) 前 8 bytes，無法反推 key）；舊 `enc:v1:` 信封在新週期內逐步重加密，完成後舊 key 即可退役。
