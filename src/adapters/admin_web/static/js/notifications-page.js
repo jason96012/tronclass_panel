@@ -42,6 +42,8 @@
     el.className = 'msg' + (kind ? ' ' + kind : '');
   }
   function verifySession() {
+    /* LOGIN_PERF_V1：伺服器送出這頁時已驗證過 session（<html data-auth="ok">），不必再打一次。 */
+    if (document.documentElement.getAttribute('data-auth') === 'ok') return;
     fetch('/admin/api/status', {
       credentials: 'same-origin',
       cache: 'no-store',

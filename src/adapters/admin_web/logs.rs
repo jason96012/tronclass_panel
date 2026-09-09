@@ -16,7 +16,7 @@ pub(super) async fn admin_logs_page_handler(
         return super::pages::attach_fresh_cookies(super::must_change_password_redirect(), &page, &headers);
     }
     super::pages::attach_fresh_cookies(
-        super::html_page_response(&headers, inject_theme(ADMIN_LOGS_HTML)),
+        super::html_page_response(&headers, super::pages::inject_auth_attrs(&inject_theme(ADMIN_LOGS_HTML), &page.session)),
         &page,
         &headers,
     )

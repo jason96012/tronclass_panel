@@ -23,7 +23,7 @@ pub(super) async fn admin_health_page_handler(
         return super::pages::attach_fresh_cookies(super::must_change_password_redirect(), &page, &headers);
     }
     super::pages::attach_fresh_cookies(
-        super::html_page_response(&headers, super::pages::inject_theme(super::pages::ADMIN_HEALTH_HTML)),
+        super::html_page_response(&headers, super::pages::inject_auth_attrs(&super::pages::inject_theme(super::pages::ADMIN_HEALTH_HTML), &page.session)),
         &page,
         &headers,
     )

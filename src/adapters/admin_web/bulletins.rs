@@ -56,7 +56,7 @@ pub(super) async fn page_handler(
         return super::pages::attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
     super::pages::attach_fresh_cookies(
-        html_page_response(&headers, super::pages::inject_theme(PAGE_HTML)),
+        html_page_response(&headers, super::pages::inject_auth_attrs(&super::pages::inject_theme(PAGE_HTML), &page.session)),
         &page,
         &headers,
     )
@@ -801,6 +801,12 @@ pub(super) fn start_bulletin_notifier(
                         );
                         night_logged = true;
                     }
+                    // UPDATE_TIMES_PAGE_V1：夜間跳過也記一筆，頁面不會顯示成「卡住」。
+                    crate::update_times::record_global(
+                        crate::update_times::KIND_BULLETIN_POLL,
+                        true,
+                        "夜間暫停，略過本輪",
+                    );
                     continue;
                 }
                 night_logged = false;
@@ -954,6 +960,11 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
     // VIEWER_NO_SCHOOL_API_V1：公告輪詢要登入學校系統，檢視者帳號略過。
     let enabled: Vec<_> = accounts.into_iter().filter(|a| a.enabled && !a.is_viewer).collect();
     if enabled.is_empty() {
+        crate::update_times::record_global(
+            crate::update_times::KIND_BULLETIN_POLL,
+            true,
+            "沒有啟用的帳號",
+        );
         return;
     }
     let Some(config) = crate::config::try_get_config() else {
@@ -978,23 +989,43 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
             provider_config: provider.clone(),
             request_timeout_secs: provider.api.request_timeout_secs,
         };
+        // UPDATE_TIMES_PAGE_V1：每個帳號這一輪的結果（成功＝抓到公告清單；
+        // 登入／課程清單失敗則記錯誤，時間頁能看出是哪個帳號卡住）。
+        let stamp_fail = |why: &str| {
+            crate::update_times::record_account(
+                crate::update_times::KIND_BULLETINS,
+                &raw.id,
+                false,
+                why,
+            );
+        };
         let Ok(client) = get_client(state, &account).await else {
+            stamp_fail("Tronclass 登入失敗");
             continue;
         };
         let base = account.base_url().to_string();
         let Ok(resp) = client.get(format!("{base}/api/my-courses")).send().await else {
+            stamp_fail("取得課程清單失敗（連線）");
             continue;
         };
         if !resp.status().is_success() {
+            stamp_fail(&format!("取得課程清單失敗（HTTP {}）", resp.status().as_u16()));
             continue;
         }
         let Ok(cj) = resp.json::<Value>().await else {
+            stamp_fail("解析課程清單失敗");
             continue;
         };
         // CURRENT_SEMESTER_ONLY_V1：同 list_handler，只通知當前學期課程的公告。
         let courses =
             crate::api::todos::current_course_pairs(crate::api::todos::parse_course_briefs(&cj));
         let items = fetch_all_bulletins(client, base, courses).await;
+        crate::update_times::record_account(
+            crate::update_times::KIND_BULLETINS,
+            &raw.id,
+            true,
+            format!("{} 則", items.len()),
+        );
         for b in items {
             let key = bulletin_key(&b);
             let course = b
@@ -1015,6 +1046,13 @@ async fn notify_check(state: &AdminWebState, messenger: Option<Arc<dyn AdapterMe
             });
         }
     }
+
+    // UPDATE_TIMES_PAGE_V1：整輪輪詢完成。
+    crate::update_times::record_global(
+        crate::update_times::KIND_BULLETIN_POLL,
+        true,
+        format!("{} 則公告", current.len()),
+    );
 
     // MORNING_DIGEST_V1：記錄本輪各帳號的最新公告標題（覆蓋前輪），
     // 供晨間摘要的「最新公告」段落使用。

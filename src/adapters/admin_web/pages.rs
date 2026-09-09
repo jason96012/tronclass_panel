@@ -176,7 +176,23 @@ pub(super) fn inject_theme(html: &str) -> String {
     // :root / html[data-theme] 區塊與其手機 media-query 覆蓋。
     // （此 inline <style> 由 html_page_response() 統一補上 CSP nonce。）
     // 注意：concat!() 只接受字面值（literal），不能展開 const，因此全部內聯在此。
+    //
+    // PAGE_BOOT_WATCHDOG_V1：放在 <head> 最前面、任何同步外部 <script> 之前的內聯看門狗。
+    // 若 20 秒後解析器仍卡在 <head>（readyState 還是 'loading'、<body> 尚未建立），代表某支
+    // 同步資產／被暫停的 service worker 把整頁卡死（iOS 主畫面 App 喚醒時的典型白畫面），
+    // 自動 reload 一次取代「滑掉 App 重開」。同一分頁 5 分鐘內只會自救一次，慢速網路不會
+    // 進入無限重載；正常載入時計時器到期前 readyState 早已離開 'loading'，完全不動作。
+    // （此 inline <script> 由 html_page_response() 統一補上 CSP nonce；不碰 innerHTML。）
     const SHARED_ASSETS: &str = concat!(
+        r#"<script id="PAGE_BOOT_WATCHDOG_V1">(function(){var K='tronclass_boot_watchdog_v1';try{var last=Number(sessionStorage.getItem(K)||0);if(last&&(Date.now()-last)<300000)return}catch(_){}setTimeout(function(){if(document.readyState!=='loading'||document.body)return;try{sessionStorage.setItem(K,String(Date.now()))}catch(_){}location.reload()},20000)})();</script>"#,
+        // PWA_IOS_META_V1：所有 admin 頁共用的主畫面 App meta（子頁各自的 <link rel="manifest">
+        // 重複無害；apple-touch-icon 用不透明 180px PNG，iOS 不吃 SVG）。
+        r#"<link rel="manifest" href="/manifest.webmanifest">"#,
+        r#"<link rel="apple-touch-icon" sizes="180x180" href="/admin/pwa/apple-touch-icon.png">"#,
+        r#"<meta name="apple-mobile-web-app-capable" content="yes">"#,
+        r#"<meta name="mobile-web-app-capable" content="yes">"#,
+        r#"<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">"#,
+        r#"<meta name="apple-mobile-web-app-title" content="Tronclass">"#,
         r#"<script src="/admin/static/app-settings.js?v=20260902settings10"></script>"#,
         r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
@@ -261,8 +277,17 @@ pub(super) async fn admin_dashboard_page_handler(
     if page.session.must_change_password {
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    let html = inject_auth_state(&inject_theme(ADMIN_DASHBOARD_HTML), &page.session);
+    let html = inject_auth_state(dashboard_html_themed(), &page.session);
     attach_fresh_cookies(html_page_response(&headers, html), &page, &headers)
+}
+
+/// LOGIN_PERF_V1：Dashboard 的 `inject_theme` 結果與 session 無關（共用資產標籤＋版號改寫，
+/// 對 ~150 KB 的 HTML 做多次字串掃描與配置），只算一次；每個請求只剩 `inject_auth_state`
+/// （只改 `<html>` 開頭標籤）與 `html_page_response`（nonce／ETag，必須逐次）。
+fn dashboard_html_themed() -> &'static str {
+    static THEMED: once_cell::sync::Lazy<String> =
+        once_cell::sync::Lazy::new(|| inject_theme(ADMIN_DASHBOARD_HTML));
+    THEMED.as_str()
 }
 
 pub(super) async fn admin_activity_page_handler(
@@ -277,7 +302,7 @@ pub(super) async fn admin_activity_page_handler(
     if page.session.must_change_password {
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_ACTIVITY_HTML)), &page, &headers)
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_ACTIVITY_HTML), &page.session)), &page, &headers)
 }
 
 pub(super) async fn admin_homework_page_handler(
@@ -291,7 +316,7 @@ pub(super) async fn admin_homework_page_handler(
     if page.session.must_change_password {
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_HOMEWORK_HTML)), &page, &headers)
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_HOMEWORK_HTML), &page.session)), &page, &headers)
 }
 
 // FILES_NATIVE_V1
@@ -310,7 +335,7 @@ pub(super) async fn admin_files_page_handler(
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
     let html = inject_theme(ADMIN_FILES_HTML);
-    attach_fresh_cookies(html_page_response(&headers, inject_files_office_assets(&html)), &page, &headers)
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_files_office_assets(&html), &page.session)), &page, &headers)
 }
 
 // SHARE_ADMIN_V1: 分享連結管理頁（僅管理員）。列出所有已發連結、可撤銷。
@@ -330,7 +355,7 @@ pub(super) async fn admin_shares_page_handler(
     }
     // THEME_AWARE_V1: 套用與 dashboard 相同的主題資產（theme.css + app-settings.js），
     // 讓分享管理頁背景與深淺色設定與主介面一致。
-    attach_fresh_cookies(html_page_response(&headers, inject_theme(SHARES_HTML)), &page, &headers)
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(SHARES_HTML), &page.session)), &page, &headers)
 }
 
 // PREVIEW_ENGINES_V1: 只在「雲端硬碟」頁注入 PDF.js（同源 'self'，合法於 CSP），
@@ -412,7 +437,7 @@ pub(super) async fn admin_clean_timetable_page_handler(
     if page.session.must_change_password {
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_CLEAN_TIMETABLE_HTML)), &page, &headers)
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_CLEAN_TIMETABLE_HTML), &page.session)), &page, &headers)
 }
 
 pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
@@ -460,7 +485,7 @@ pub(super) async fn admin_notifications_page_handler(
     if page.session.must_change_password {
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_NOTIFICATIONS_HTML)), &page, &headers)
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_NOTIFICATIONS_HTML), &page.session)), &page, &headers)
 }
 
 /// /admin/settings — 外觀與本機偏好設定頁。
@@ -476,7 +501,7 @@ pub(super) async fn admin_settings_page_handler(
     if page.session.must_change_password {
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_SETTINGS_HTML)), &page, &headers)
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_SETTINGS_HTML), &page.session)), &page, &headers)
 }
 
 pub(super) async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {
@@ -583,20 +608,106 @@ pub(super) fn inject_auth_state(html: &str, session: &AdminSession) -> String {
         // 沒有 class 屬性時補一個。
         new_tag = new_tag.replacen("<html", "<html class=\"tron-auth-ok dash-auth-ok\"", 1);
     }
-    let attrs = format!(
+    let new_tag = format!("{}{}>", &new_tag[..new_tag.len() - 1], auth_attrs(session));
+    format!("{}{}{}", &html[..open_at], new_tag, &html[close_at + 1..])
+}
+
+/// LOGIN_PERF_V1：`<html>` 上的驗證資料屬性（Dashboard 與所有子頁共用同一組）。
+fn auth_attrs(session: &AdminSession) -> String {
+    format!(
         " data-auth=\"ok\" data-account=\"{}\" data-admin=\"{}\" data-viewer=\"{}\"",
         html_attr_escape(&session.account_id),
         if session.is_admin { "1" } else { "0" },
         if session.is_viewer { "1" } else { "0" },
-    );
-    let new_tag = format!("{}{}>", &new_tag[..new_tag.len() - 1], attrs);
-    format!("{}{}{}", &html[..open_at], new_tag, &html[close_at + 1..])
+    )
+}
+
+/// LOGIN_PERF_V1：子頁版本——只把 `data-auth / data-account / data-admin / data-viewer` 注入
+/// `<html>`，**不動 class**（子頁的版面 class 由各頁自己的開機腳本／mobile-nav.js 控制，
+/// 直接加 `dash-auth-ok` 會改變 theme.css 對 `main` 的桌機寬度規則）。
+///
+/// 有了這組屬性，mobile-nav.js（要 is_admin）、activity／files／logs／health／timetable 的
+/// 開機驗證、notifications／settings 的 verifySession、session-security.js 的首登檢查都不必
+/// 再各打一次 `/admin/api/status`——伺服器送出這頁時 session 已經驗證過了。
+pub(super) fn inject_auth_attrs(html: &str, session: &AdminSession) -> String {
+    let Some(open_at) = html.find("<html") else {
+        return html.to_string();
+    };
+    let Some(rel_close) = html[open_at..].find('>') else {
+        return html.to_string();
+    };
+    let close_at = open_at + rel_close;
+    format!("{}{}{}", &html[..close_at], auth_attrs(session), &html[close_at..])
 }
 
 /// 登入頁（無 session 時的 `/admin`）。走 `inject_theme` 以取得 theme.css / app-settings /
 /// session-security 等共用資產；HTML 是靜態的，`html_page_response` 會給 ETag 與 CSP nonce。
 fn login_page_response(headers: &HeaderMap) -> Response {
-    html_page_response(headers, inject_theme(ADMIN_LOGIN_HTML))
+    // LOGIN_PERF_V1：登入頁沒有任何 per-session 內容，inject_theme（字串拼接＋版號改寫）
+    // 的結果全程相同，只做一次。nonce／ETag 仍由 html_page_response 逐次產生。
+    // 登入頁用不到：web-push.js（推播訂閱要已登入）、live-events.js（未登入時 SSE 只會
+    // 401 後重試三次）、dompurify + trusted-types-init（登入頁沒有任何 innerHTML 寫入；
+    // session-security.js 的密碼視窗只在已登入頁的按鈕觸發）。連同對應的 preload 一起拿掉，
+    // 首次開登入頁少 4 個請求（約 40 KB 原始碼）與對應的解析時間。
+    static LOGIN_HTML_THEMED: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
+        let themed = inject_theme(ADMIN_LOGIN_HTML);
+        strip_asset_tags(
+            &themed,
+            &[
+                "/admin/static/web-push.js",
+                "/admin/static/live-events.js",
+                "/admin/static/js/dompurify.min.js",
+                "/admin/static/js/trusted-types-init.js",
+            ],
+        )
+    });
+    html_page_response(headers, LOGIN_HTML_THEMED.clone())
+}
+
+/// LOGIN_PERF_V1：移除引用指定資產的 `<script … src="<prefix>…"></script>` 與
+/// `<link … href="<prefix>…">`（preload）標籤。只比對 URL 前綴，版號 `?sv=` 不影響；
+/// 找不到就原樣回傳。
+pub(super) fn strip_asset_tags(html: &str, url_prefixes: &[&str]) -> String {
+    let mut out = html.to_string();
+    for prefix in url_prefixes {
+        out = strip_tag_by_attr(&out, "<script", &format!("src=\"{prefix}"), Some("</script>"));
+        out = strip_tag_by_attr(&out, "<link", &format!("href=\"{prefix}"), None);
+    }
+    out
+}
+
+/// 把「開頭為 `open_tag`、屬性含 `attr_needle`」的元素整個移除；`close_tag` 為 Some 時
+/// 連同內容與結尾標籤一起移除，None 表示 void 元素（只移除到第一個 `>`）。
+/// 安全網：屬性必須位於同一個開頭標籤內（open 與屬性之間不能出現 `>`），否則
+/// （例如 inline script 字串裡剛好有同樣的 URL）跳過該處繼續往後找。
+fn strip_tag_by_attr(html: &str, open_tag: &str, attr_needle: &str, close_tag: Option<&str>) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut cursor = 0usize;
+    while let Some(rel) = html[cursor..].find(attr_needle) {
+        let attr_at = cursor + rel;
+        let candidate = html[cursor..attr_at].rfind(open_tag).map(|r| cursor + r);
+        let Some(open_at) = candidate.filter(|&o| !html[o..attr_at].contains('>')) else {
+            // 不是我們要的標籤：原樣保留到屬性之後，繼續找。
+            let skip_to = attr_at + attr_needle.len();
+            out.push_str(&html[cursor..skip_to]);
+            cursor = skip_to;
+            continue;
+        };
+        let end = match close_tag {
+            Some(close) => match html[attr_at..].find(close) {
+                Some(r) => attr_at + r + close.len(),
+                None => break,
+            },
+            None => match html[attr_at..].find('>') {
+                Some(r) => attr_at + r + 1,
+                None => break,
+            },
+        };
+        out.push_str(&html[cursor..open_at]);
+        cursor = end;
+    }
+    out.push_str(&html[cursor..]);
+    out
 }
 
 pub(super) async fn admin_page_handler(
@@ -620,7 +731,7 @@ pub(super) async fn admin_page_handler(
         );
     }
     // 第 2 / 3 態：Dashboard，驗證狀態直接注入 HTML。
-    let html = inject_auth_state(&inject_theme(ADMIN_DASHBOARD_HTML), &page.session);
+    let html = inject_auth_state(dashboard_html_themed(), &page.session);
     attach_fresh_cookies(html_page_response(&headers, html), &page, &headers)
 }
 

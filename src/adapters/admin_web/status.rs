@@ -167,17 +167,12 @@ pub(super) async fn admin_status_admin_flags_cached(
                 .into_response());
         }
     };
-    // VIEWER_ROLE_V1：viewer 旗標不在 RawAccountConfig 內，另查一次（同樣吃 30 秒快取）。
-    let viewer_flags = state
-        .accounts_db
-        .list_viewer_flags()
-        .await
-        .unwrap_or_default();
+    // VIEWER_ROLE_V1 / LOGIN_PERF_V1：`RawAccountConfig` 已含 `is_viewer`（`list()` 的
+    // SELECT 就有這欄），不必再對 accounts 表做第二次查詢。
     let flags = raw_accounts
         .into_iter()
         .map(|account| {
-            let is_viewer = !account.is_admin
-                && viewer_flags.get(&account.id).copied().unwrap_or(false);
+            let is_viewer = !account.is_admin && account.is_viewer;
             (account.id, (account.is_admin, is_viewer))
         })
         .collect::<std::collections::HashMap<_, _>>();
@@ -634,36 +629,49 @@ pub(super) async fn admin_status_handler(
     accounts.sort_by(|a, b| a.account_id.cmp(&b.account_id));
 
     let settings_started = Instant::now();
-    let settings = crate::runtime_settings::snapshot().await;
-    let settings_elapsed = settings_started.elapsed();
     let account_count = accounts.len();
-    // ACCOUNT_HOT_ADD_FEEDBACK_V1：管理員額外列出「在 DB 但沒在監控」的帳號與原因。
-    let inactive_accounts = if session.is_admin {
-        collect_inactive_accounts(&state).await
-    } else {
-        Vec::new()
-    };
-    // ONBOARDING_PASSKEY_STATE_V1：只查自己帳號的數量（COUNT 單列查詢，成本極低）；
-    // token-admin 沒有實體帳號，略過。
-    let passkey_count = if session.account_id == "<token-admin>" {
-        None
-    } else {
-        state
-            .accounts_db
-            .count_passkey_credentials(&session.account_id)
-            .await
-            .ok()
-    };
-    // ONBOARDING_PUSH_STATE_V1：同上，只查自己帳號的 COUNT。
-    let push_subscription_count = if session.account_id == "<token-admin>" {
-        None
-    } else {
-        state
-            .accounts_db
-            .count_web_push_subscriptions(&session.account_id)
-            .await
-            .ok()
-    };
+    // LOGIN_PERF_V1：settings 快照、未監控帳號清單、passkey／push 計數彼此獨立，
+    // 原本四段序列 await（每段一趟 SQLite／鎖），改成同時進行，cache miss 的
+    // 首屏 /admin/api/status 少掉三段等待時間。
+    let is_admin = session.is_admin;
+    let has_real_account = session.account_id != "<token-admin>";
+    let (settings, inactive_accounts, passkey_count, push_subscription_count) = tokio::join!(
+        crate::runtime_settings::snapshot(),
+        async {
+            // ACCOUNT_HOT_ADD_FEEDBACK_V1：管理員額外列出「在 DB 但沒在監控」的帳號與原因。
+            if is_admin {
+                collect_inactive_accounts(&state).await
+            } else {
+                Vec::new()
+            }
+        },
+        async {
+            // ONBOARDING_PASSKEY_STATE_V1：只查自己帳號的數量（COUNT 單列查詢，成本極低）；
+            // token-admin 沒有實體帳號，略過。
+            if has_real_account {
+                state
+                    .accounts_db
+                    .count_passkey_credentials(&session.account_id)
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        },
+        async {
+            // ONBOARDING_PUSH_STATE_V1：同上，只查自己帳號的 COUNT。
+            if has_real_account {
+                state
+                    .accounts_db
+                    .count_web_push_subscriptions(&session.account_id)
+                    .await
+                    .ok()
+            } else {
+                None
+            }
+        },
+    );
+    let settings_elapsed = settings_started.elapsed();
     let response_json = json!(AdminStatusResponse {
         current_account_id: session.account_id.clone(),
         is_admin: session.is_admin,

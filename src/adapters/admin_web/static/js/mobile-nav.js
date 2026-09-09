@@ -127,8 +127,16 @@
     q('moreLogoutFinalV2').onclick = logout;
   }
 
-  fetch('/admin/api/status', { credentials: 'same-origin', cache: 'no-store' })
-    .then(function (r) { return r.ok ? r.json() : {}; })
-    .then(function (j) { isAdmin = !!(j && j.is_admin); build(); })
-    .catch(function () { build(); });
+  /* LOGIN_PERF_V1：is_admin 由伺服器注入在 <html data-admin>（pages::inject_auth_attrs），
+     有的話直接建導覽列，不必等一趟 /admin/api/status 才出現底部導覽。 */
+  var injectedAuth = document.documentElement.getAttribute('data-auth') === 'ok';
+  if (injectedAuth) {
+    isAdmin = document.documentElement.getAttribute('data-admin') === '1';
+    build();
+  } else {
+    fetch('/admin/api/status', { credentials: 'same-origin', cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : {}; })
+      .then(function (j) { isAdmin = !!(j && j.is_admin); build(); })
+      .catch(function () { build(); });
+  }
 })();

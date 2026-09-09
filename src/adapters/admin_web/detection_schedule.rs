@@ -88,7 +88,7 @@ pub(super) async fn page_handler(
         return super::pages::attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
     super::pages::attach_fresh_cookies(
-        html_page_response(&headers, super::pages::inject_theme(PAGE_HTML)),
+        html_page_response(&headers, super::pages::inject_auth_attrs(&super::pages::inject_theme(PAGE_HTML), &page.session)),
         &page,
         &headers,
     )

@@ -7,7 +7,7 @@ use tracing::{debug, info, warn};
 use crate::adapters::events::{AdapterMessenger, ClassReminderEvent, OutboundMessage};
 use crate::db::{AccountsDb, ClassReminderDueRow};
 
-const CHECK_INTERVAL_SECS: u64 = 60;
+pub(crate) const CHECK_INTERVAL_SECS: u64 = 60;
 const SENT_RETENTION_DAYS: i64 = 21;
 
 pub fn start_class_reminder_scheduler(
@@ -50,6 +50,12 @@ async fn run_once(
     let today = now.format("%Y-%m-%d").to_string();
     let cutoff = now.timestamp() - SENT_RETENTION_DAYS * 24 * 60 * 60;
     let _ = accounts_db.cleanup_old_class_reminder_sent(cutoff).await;
+    // UPDATE_TIMES_PAGE_V1：每分鐘一輪；落地有 60 秒節流，不會每輪都寫檔。
+    crate::update_times::record_global(
+        crate::update_times::KIND_CLASS_REMINDER_CHECK,
+        true,
+        format!("今日 {} 堂課待檢查", entries.len()),
+    );
 
     for entry in entries {
         let Some(start_minutes) = entry_start_minutes(&entry) else {

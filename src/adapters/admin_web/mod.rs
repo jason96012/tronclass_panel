@@ -58,6 +58,8 @@ mod detection_schedule;
 mod rest_days;
 // LOGIN_DEVICES_V1
 mod devices;
+// UPDATE_TIMES_PAGE_V1：資料更新時間頁。
+mod update_times;
 mod digest_pref;
 
 // BULLETIN_PUSH_V1: 供 main.rs 啟動課程公告 Web Push 背景任務。
@@ -150,6 +152,9 @@ const SECURITY_AUTO_BLOCK_THRESHOLD: u32 = 11;
 /// 帳號持有人可從 Discord 通知按「取消這次鎖定」立即解除。
 const ACCOUNT_LOGIN_LOCK_TTL: Duration = Duration::from_secs(10 * 60);
 const SECURITY_ALERT_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+/// LOGIN_GEO_ALERT_V1：成功登入前 15 分鐘窗口內，同帳號或同 IP 的密碼失敗次數達此值，
+/// 即使新 IP 在本國也視為「可疑（疑似撞對密碼）」而告警。
+const LOGIN_GEO_SUSPICIOUS_FAILURES: u32 = 3;
 const SESSION_COOKIE_MARKER: &str = "cookie";
 const SECURE_SESSION_COOKIE: &str = "__Host-tronclass_admin_session";
 const LOCAL_SESSION_COOKIE: &str = "tronclass_admin_session";
@@ -325,7 +330,7 @@ async fn reject_blacklisted_ip_middleware(
     // finish clearing its session. Authentication, Dashboard, Filebrowser SSO
     // checks and all management APIs are denied.
     if path.starts_with("/admin/static/")
-        || path == "/admin/pwa/icon.svg"
+        || path.starts_with("/admin/pwa/")
         || path == "/healthz"
         || path == "/admin/api/logout"
         || path == "/admin/logout"
@@ -431,6 +436,21 @@ async fn record_auth_failure(username: &str, ip: &str) -> (u32, u32) {
         });
     }
     (counts[0], counts[1])
+}
+
+/// LOGIN_GEO_ALERT_V1：讀出（不清除）15 分鐘窗口內該帳號與該 IP 的密碼失敗次數，取較大者。
+/// 必須在 `clear_auth_failures` 之前呼叫。
+async fn peek_recent_auth_failures(username: &str, ip: &str) -> u32 {
+    let watch = SECURITY_WATCH.lock().await;
+    let window_start = Instant::now() - SECURITY_FAIL_WINDOW;
+    let count = |key: String| -> u32 {
+        watch
+            .fails
+            .get(&key)
+            .map(|attempts| attempts.iter().filter(|at| **at > window_start).count() as u32)
+            .unwrap_or(0)
+    };
+    count(format!("user:{}", username.trim().to_lowercase())).max(count(format!("ip:{}", ip.trim())))
 }
 
 /// 登入成功後重置該帳號與 IP 的失敗計數，讓告警只在「連續」失敗時觸發。
@@ -877,15 +897,55 @@ async fn alert_abnormal_traffic(state: &AdminWebState, source: &str, username: &
     notify_admins_discord(state, text).await;
 }
 
-/// LOGIN_LOCATION_ALERT_V1：登入成功後判斷「這個帳號是否第一次從這個 IP 登入」。
+/// LOGIN_GEO_ALERT_V1：純判斷——新 IP 是否需要告警。回 `Some(原因)` 表示要告警。
+/// 順序：Tor → 登入前多次密碼失敗 → 查不到國家 → 不在本國；都不成立（本國且乾淨）回 None。
+/// `home_countries` 為空 = 沿用舊行為（任何新 IP 都告警）。
+fn login_alert_reason(
+    geo: &crate::geoip::GeoInfo,
+    home_countries: &[String],
+    recent_failures: u32,
+) -> Option<String> {
+    if geo.is_tor {
+        return Some("來源為 Tor 出口節點".to_string());
+    }
+    if recent_failures >= LOGIN_GEO_SUSPICIOUS_FAILURES {
+        return Some(format!(
+            "登入前 15 分鐘內有 {recent_failures} 次密碼錯誤，之後才成功"
+        ));
+    }
+    if home_countries.is_empty() {
+        return Some("此帳號過去從未從這個 IP 登入".to_string());
+    }
+    if geo.country_code.is_empty() {
+        return Some("無法判定來源國家".to_string());
+    }
+    if home_countries.iter().any(|c| c == &geo.country_code) {
+        return None;
+    }
+    Some(format!(
+        "來源不在本國（{}）：{}",
+        home_countries.join("/"),
+        geo.country_code
+    ))
+}
+
+/// LOGIN_LOCATION_ALERT_V1 + LOGIN_GEO_ALERT_V1：登入成功後判斷是否需要「新位置登入」告警。
 ///
-/// 規則（刻意保守，避免洗版）：
+/// 使用者要求：不要「只要有人登入就通知」，只有 IP 不在台灣或其他真正異常才通知。
+///
+/// 規則（依序）：
 /// * 該帳號從未有任何已知 IP（第一次登入）→ 只記錄，不告警。
-/// * IP 為空／loopback／私有網段（區網或反向代理未帶 X-Forwarded-For）→ 只記錄。
+/// * IP 為空／loopback／私有網段 → 只記錄。
+/// * 已知 IP（這個帳號之前成功登入過）→ 更新 last_seen／次數，不告警。
+/// * 新 IP → 查國家（Cloudflare `CF-IPCountry` 優先，否則 ipwho.is）：
+///   - 屬於 `adapters.admin_web.login_home_countries`（預設 TW）且不是 Tor → **只記錄，不告警**。
+///   - 境外、Tor 出口節點、查不到國家（保守視為異常）→ 告警。
+/// * 另一種「真正異常」：這次成功登入前 15 分鐘內，同一帳號或同一 IP 累積 ≥3 次密碼失敗
+///   （撞對密碼的跡象）→ 即使是本國 IP 也告警（`SECURITY_WATCH` 的失敗計數在
+///   `clear_auth_failures` 之前先讀出來，由呼叫端傳入）。
 /// * 同一帳號＋同一新 IP 在 SECURITY_ALERT_COOLDOWN（10 分鐘）內只告警一次。
-/// * 已知 IP → 更新 last_seen／次數，不告警。
 ///
-/// 告警對象（使用者選擇：帳號持有人＋管理員）：
+/// 告警對象（帳號持有人＋管理員）：
 /// * 持有人：Discord／LINE 文字訊息 + Web Push（點開直達 /admin/devices）。
 /// * 管理員：Discord 文字（沿用 `notify_admins_discord`）+ Web Push。
 /// 通知內容無 emoji。
@@ -895,6 +955,8 @@ async fn check_unusual_login_location(
     ip: &str,
     user_agent: &str,
     method_label: &str,
+    cf_ipcountry: Option<&str>,
+    recent_failures: u32,
 ) {
     let account_id = account_id.trim();
     let ip = ip.trim();
@@ -943,6 +1005,41 @@ async fn check_unusual_login_location(
         return;
     }
 
+    // LOGIN_GEO_ALERT_V1：新 IP → 查國家，本國且無其他異常就安靜記錄。
+    let geo = crate::geoip::resolve(ip, cf_ipcountry).await;
+    let home_countries: Vec<String> = crate::config::try_get_config()
+        .map(|cfg| {
+            cfg.adapters
+                .admin_web
+                .login_home_countries
+                .iter()
+                .map(|c| c.trim().to_ascii_uppercase())
+                .filter(|c| !c.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["TW".to_string()]);
+    let location = geo.label();
+    let alert_reason = login_alert_reason(&geo, &home_countries, recent_failures);
+
+    // 不告警的情況也留一筆 activity（result=info），事後在活動頁仍看得到新 IP 從哪裡來。
+    let Some(reason) = alert_reason else {
+        info!(account = %account_id, ip = %ip, location = %location, "新 IP 登入（本國，不通知）");
+        let _ = state
+            .accounts_db
+            .record_activity_event(crate::db::ActivityEventInput {
+                kind: "security".to_string(),
+                actor: "system:login-location".to_string(),
+                action: "login_new_ip_home".to_string(),
+                account_id: account_id.to_string(),
+                path: String::new(),
+                result: "info".to_string(),
+                details: format!("新 IP 登入（{method_label}）；位置：{location}；本國，未通知"),
+                ip: ip.to_string(),
+            })
+            .await;
+        return;
+    };
+
     let key = format!("login-location:{account_id}:{ip}");
     if !security_should_alert(&key).await {
         return;
@@ -954,14 +1051,14 @@ async fn check_unusual_login_location(
     } else {
         crate::text_utils::truncate_chars(user_agent.trim(), 120).to_string()
     };
-    info!(account = %account_id, ip = %ip, "偵測到新位置登入 Dashboard");
+    info!(account = %account_id, ip = %ip, location = %location, %reason, "偵測到異常位置登入 Dashboard");
     crate::logs::record_audit(
         "web",
         "system:login-location",
         "login_new_location",
         Some(account_id),
         Some(ip),
-        "Dashboard 帳號從未見過的 IP 登入成功",
+        "Dashboard 帳號從異常位置登入成功",
     );
     let _ = state
         .accounts_db
@@ -972,7 +1069,7 @@ async fn check_unusual_login_location(
             account_id: account_id.to_string(),
             path: String::new(),
             result: "alert".to_string(),
-            details: format!("新位置登入（{method_label}）；UA: {ua}"),
+            details: format!("異常位置登入（{method_label}）；位置：{location}；原因：{reason}；UA: {ua}"),
             ip: ip.to_string(),
         })
         .await;
@@ -980,7 +1077,7 @@ async fn check_unusual_login_location(
     // 帳號持有人
     let (owner_discord, owner_line) = resolve_login_target_contacts(state, account_id).await;
     let owner_text = format!(
-        "安全提醒：你的 Dashboard 帳號（{account_id}）剛剛從一個新的位置登入。\n登入方式：{method_label}\nIP：{ip}\n裝置：{ua}\n時間：{when}\n若不是你本人，請立即到「設定 > 登入裝置管理」登出其他裝置，並變更 Dashboard 密碼。"
+        "安全提醒：你的 Dashboard 帳號（{account_id}）剛剛從一個異常位置登入。\n登入方式：{method_label}\n位置：{location}\nIP：{ip}\n原因：{reason}\n裝置：{ua}\n時間：{when}\n若不是你本人，請立即到「設定 > 登入裝置管理」登出其他裝置，並變更 Dashboard 密碼。"
     );
     notify_account_holder(
         state,
@@ -991,14 +1088,14 @@ async fn check_unusual_login_location(
     .await;
     crate::web_push_notifications::notify_security_alert(
         vec![account_id.to_string()],
-        "Dashboard 新位置登入".to_string(),
-        format!("帳號 {account_id} 從 {ip} 以{method_label}登入。若不是你，請立即登出其他裝置。"),
+        "Dashboard 異常位置登入".to_string(),
+        format!("帳號 {account_id} 從 {location}（{ip}）以{method_label}登入。若不是你，請立即登出其他裝置。"),
         format!("tronclass-login-location-{account_id}"),
     );
 
     // 管理員（Discord 文字 + Web Push）
     let admin_text = format!(
-        "Dashboard 安全警示\n類型：新位置登入\n帳號：{account_id}\n登入方式：{method_label}\nIP：{ip}\n裝置：{ua}\n時間：{when}\n此帳號過去從未從這個 IP 成功登入。若可疑，可到 /admin/activity 查看登入審計或到黑名單頁封鎖此 IP。"
+        "Dashboard 安全警示\n類型：異常位置登入\n帳號：{account_id}\n登入方式：{method_label}\n位置：{location}\nIP：{ip}\n原因：{reason}\n裝置：{ua}\n時間：{when}\n此帳號過去從未從這個 IP 成功登入。若可疑，可到 /admin/activity 查看登入審計或到黑名單頁封鎖此 IP。"
     );
     notify_admins_discord(state, admin_text).await;
     let mut admin_account_ids = Vec::new();
@@ -1012,8 +1109,8 @@ async fn check_unusual_login_location(
     if !admin_account_ids.is_empty() {
         crate::web_push_notifications::notify_security_alert(
             admin_account_ids,
-            "Dashboard 新位置登入".to_string(),
-            format!("帳號 {account_id} 從 {ip} 以{method_label}登入（過去未見過此 IP）。"),
+            "Dashboard 異常位置登入".to_string(),
+            format!("帳號 {account_id} 從 {location}（{ip}）以{method_label}登入；{reason}。"),
             format!("tronclass-login-location-admin-{account_id}"),
         );
     }
@@ -1046,6 +1143,16 @@ struct AdminSession {
     /// out; no account data or control API is exposed before that change.
     must_change_password: bool,
     expires_at: Instant,
+}
+
+/// LOGIN_GEO_ALERT_V1：讀取 Cloudflare `CF-IPCountry`。`sanitize_forwarded_headers_middleware`
+/// 已把非可信代理送來的這個標頭移除，所以這裡拿到的值只可能來自我們自己的代理。
+fn cf_ipcountry_header(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("cf-ipcountry")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// LOGIN_DEVICES_V1：登入時的來源資訊，寫進 dashboard_sessions 供「登入裝置管理」頁。
@@ -1546,6 +1653,9 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/manifest.webmanifest", get(pwa::manifest_handler))
         .route("/service-worker.js", get(pwa::service_worker_handler))
         .route("/admin/pwa/icon.svg", get(pwa::icon_handler))
+        .route("/admin/pwa/icon-192.png", get(pwa::icon_192_handler))
+        .route("/admin/pwa/icon-512.png", get(pwa::icon_512_handler))
+        .route("/admin/pwa/apple-touch-icon.png", get(pwa::apple_touch_icon_handler))
         .route("/admin/static/theme.css", get(static_assets::admin_theme_css_handler))
         .route(
             "/admin/static/session-security.js",
@@ -1757,6 +1867,9 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // LOGIN_DEVICES_V1：登入裝置管理（任何已登入帳號、只管自己的 session）
         .route("/admin/devices", get(devices::page_handler))
         .route("/admin/api/devices", get(devices::list_handler))
+        // UPDATE_TIMES_PAGE_V1：資料更新時間（任何已登入帳號；可見範圍同 /admin/api/status）
+        .route("/admin/update-times", get(update_times::page_handler))
+        .route("/admin/api/update-times", get(update_times::api_handler))
         .route(
             "/admin/api/devices/revoke",
             post(devices::revoke_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
@@ -2299,6 +2412,8 @@ const UNTRUSTED_FORWARDED_HEADERS: &[&str] = &[
     "cf-connecting-ip",
     "true-client-ip",
     "x-real-ip",
+    // LOGIN_GEO_ALERT_V1：國家判定也只信任代理送來的值。
+    "cf-ipcountry",
 ];
 
 /// HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): strip proxy-provenance headers unless the
@@ -2867,7 +2982,7 @@ async fn admin_security_headers_middleware(
     let is_admin_path = path.starts_with("/admin")
         || path == "/manifest.webmanifest"
         || path == "/service-worker.js";
-    let cache_static = path.starts_with("/admin/static/") || path == "/admin/pwa/icon.svg";
+    let cache_static = path.starts_with("/admin/static/") || path.starts_with("/admin/pwa/");
     // PDF_FRAME_PREVIEW_V1: 預覽端點的回應會被 Dashboard 自己的 <iframe> 內嵌
     // （PDF 走瀏覽器原生檢視器）。若沿用全站 `X-Frame-Options: DENY` +
     // `frame-ancestors 'none'`，瀏覽器會拒絕在框內顯示這份 PDF，預覽只剩空白。
@@ -3796,6 +3911,152 @@ mod tests {
         assert_eq!(pages::safe_next_path_for_test("/admin/logout"), None);
         assert_eq!(pages::safe_next_path_for_test("/admin"), None);
         assert_eq!(pages::safe_next_path_for_test("/other"), None);
+    }
+
+    /// LOGIN_PERF_V1：登入頁不載入 dompurify / trusted-types / web-push / live-events，
+    /// 但 session-security.js、app-settings.js 與 theme.css 必須保留。
+    #[tokio::test]
+    async fn login_page_omits_authenticated_only_assets() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(Request::builder().uri("/admin").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        assert!(!html.contains("/admin/static/js/dompurify.min.js"));
+        assert!(!html.contains("/admin/static/js/trusted-types-init.js"));
+        assert!(!html.contains("/admin/static/web-push.js"));
+        assert!(!html.contains("/admin/static/live-events.js"));
+        assert!(html.contains("/admin/static/session-security.js"));
+        assert!(html.contains("/admin/static/app-settings.js"));
+        assert!(html.contains("/admin/static/theme.css"));
+        assert!(html.contains("id=\"appSettingsDynamicCss\""));
+    }
+
+    /// LOGIN_PERF_V1：子頁只注入 data-* 屬性、不動 <html> 的 class。
+    #[tokio::test]
+    async fn subpage_gets_auth_attrs_without_dashboard_classes() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("sub-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/homework")
+                    .header(header::COOKIE, format!("{LOCAL_SESSION_COOKIE}={}", tokens.access))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        assert!(html.contains("<html lang=\"zh-Hant\" data-auth=\"ok\" data-account=\"sub-user\" data-admin=\"0\" data-viewer=\"0\">"));
+    }
+
+    /// LOGIN_GEO_ALERT_V1：本國新 IP 不告警；境外／Tor／未知／撞密碼／空白本國清單才告警。
+    #[test]
+    fn login_alert_reason_rules() {
+        use crate::geoip::GeoInfo;
+        let home = vec!["TW".to_string()];
+        let tw = GeoInfo { country_code: "TW".into(), ..Default::default() };
+        let jp = GeoInfo { country_code: "JP".into(), ..Default::default() };
+        let unknown = GeoInfo::default();
+        let tor = GeoInfo { is_tor: true, ..Default::default() };
+        assert!(login_alert_reason(&tw, &home, 0).is_none());
+        assert!(login_alert_reason(&tw, &home, 2).is_none());
+        assert!(login_alert_reason(&tw, &home, 3).is_some(), "撞密碼後成功要告警");
+        assert!(login_alert_reason(&jp, &home, 0).is_some());
+        assert!(login_alert_reason(&unknown, &home, 0).is_some(), "查不到國家保守告警");
+        assert!(login_alert_reason(&tor, &home, 0).is_some());
+        assert!(login_alert_reason(&tw, &[], 0).is_some(), "空清單 = 舊行為");
+        let two = vec!["TW".to_string(), "JP".to_string()];
+        assert!(login_alert_reason(&jp, &two, 0).is_none());
+    }
+
+    /// UPDATE_TIMES_PAGE_V1：頁面需登入（未登入 302 到登入頁）；API 回傳排程器清單與帳號陣列。
+    #[tokio::test]
+    async fn update_times_page_and_api_require_session() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("ut-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+
+        let anon = app
+            .clone()
+            .oneshot(Request::builder().uri("/admin/update-times").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(anon.status(), StatusCode::FOUND);
+
+        let anon_api = app
+            .clone()
+            .oneshot(Request::builder().uri("/admin/api/update-times").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(anon_api.status(), StatusCode::UNAUTHORIZED);
+
+        let page = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/update-times")
+                    .header(header::COOKIE, format!("{LOCAL_SESSION_COOKIE}={}", tokens.access))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let html = body_string(page).await;
+        assert!(html.contains("data-auth=\"ok\""));
+        assert!(html.contains("/admin/api/update-times"));
+
+        let api = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/api/update-times")
+                    .header(header::COOKIE, format!("{LOCAL_SESSION_COOKIE}={}", tokens.access))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(api.status(), StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_str(&body_string(api).await).unwrap();
+        assert!(body["server_time"].as_i64().unwrap_or(0) > 0);
+        assert!(body["started_at"].as_i64().unwrap_or(0) > 0);
+        assert_eq!(body["schedulers"].as_array().map(Vec::len), Some(5));
+        assert!(body["accounts"].is_array());
+    }
+
+    #[test]
+    fn strip_asset_tags_only_removes_matching_elements() {
+        let html = concat!(
+            "<head>",
+            "<link rel=\"preload\" href=\"/admin/static/js/dompurify.min.js?sv=abc\" as=\"script\">",
+            "<script src=\"/admin/static/js/dompurify.min.js?sv=abc\"></script>",
+            "<script src=\"/admin/static/app-settings.js?sv=abc\"></script>",
+            "<script>var s = 'src=\"/admin/static/js/dompurify.min.js\"';</script>",
+            "</head>"
+        );
+        let out = pages::strip_asset_tags(html, &["/admin/static/js/dompurify.min.js"]);
+        assert!(out.contains("app-settings.js"));
+        assert!(!out.contains("<link"));
+        assert!(!out.contains("<script src=\"/admin/static/js/dompurify"));
+        // 字串常值內的同名 URL 不能被誤刪，且外層 <script> 也要保留。
+        assert!(out.contains("var s = 'src=\"/admin/static/js/dompurify.min.js\"';"));
     }
 
     // ── LOGOUT_SERVER_SIDE_V1 ────────────────────────────────────────────────

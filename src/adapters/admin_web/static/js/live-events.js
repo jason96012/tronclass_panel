@@ -96,6 +96,25 @@
   });
   window.addEventListener('pagehide',function(){if(source){try{source.close()}catch(_){}}});
 
+  /* LIVE_RESUME_RECONNECT_V1：iOS 主畫面 App／手機瀏覽器回到前景時，被系統凍結過的 EventSource
+     常常已經斷了但 readyState 仍是 OPEN（不會觸發 onerror）。Dashboard 的輪詢看到
+     connected() 為 true 就退到每 60 秒一次 → 畫面回來了但資料不更新。
+     回前景時：距離上一個事件超過 STALE_MS（伺服器每 15 秒至少送一個 ping／keepalive）
+     就視為殭屍連線，直接重連並廣播一次 status 讓 Dashboard 立刻補抓。 */
+  var STALE_MS=45000;
+  function resumeCheck(){
+    if(document.hidden)return;
+    if(!loggedInHint())return;
+    var last=window.__tronLiveLastEventAt||0;
+    var stale=!source||source.readyState===EventSource.CLOSED||(Date.now()-last)>STALE_MS;
+    if(!stale)return;
+    retryDelay=5000;clearTimeout(retryTimer);
+    connect();
+    onStatus({reason:'resume'});
+  }
+  document.addEventListener('visibilitychange',function(){if(!document.hidden)resumeCheck()},{passive:true});
+  window.addEventListener('pageshow',function(ev){if(ev&&ev.persisted)resumeCheck()},{passive:true});
+
   window.TronclassLiveEvents={
     connected:function(){return !!(source&&source.readyState===EventSource.OPEN)},
     lastEventAt:function(){return window.__tronLiveLastEventAt||0},

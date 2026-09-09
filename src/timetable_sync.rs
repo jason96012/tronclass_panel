@@ -37,7 +37,7 @@ use crate::db::{AccountsDb, TimetableEntryInput};
 use crate::timetable_source::{compress_periods, get_timetable_source, RawTimetableRow};
 
 /// 排程器喚醒間隔。實際是否同步還要看每個帳號的 `SYNC_INTERVAL_SECS`。
-const TICK_INTERVAL_SECS: u64 = 6 * 60 * 60;
+pub(crate) const TICK_INTERVAL_SECS: u64 = 6 * 60 * 60;
 
 /// 每個帳號兩次成功同步之間的最短間隔（24 小時）。
 const SYNC_INTERVAL_SECS: i64 = 24 * 60 * 60;
@@ -106,6 +106,11 @@ async fn run_once(
         }
     };
     if states.is_empty() {
+        crate::update_times::record_global(
+            crate::update_times::KIND_TIMETABLE_SYNC_CHECK,
+            true,
+            "沒有帳號開啟自動同步",
+        );
         return;
     }
 
@@ -120,9 +125,15 @@ async fn run_once(
     let now = Local::now();
     if in_blackout_window(now) {
         debug!("課表同步：目前處於學校系統維護／資料更新時段，略過本輪");
+        crate::update_times::record_global(
+            crate::update_times::KIND_TIMETABLE_SYNC_CHECK,
+            true,
+            "學校系統維護時段，略過本輪",
+        );
         return;
     }
     let now_ts = now.timestamp();
+    let mut attempted = 0usize;
 
     for state in states {
         let Some(account) = accounts.iter().find(|a| a.id == state.account_id) else {
@@ -156,12 +167,19 @@ async fn run_once(
             }
         }
 
+        attempted += 1;
         if let Err(e) = sync_account(account, accounts_db, messenger).await {
             warn!(account = %account.id, error = %e, "課表自動同步失敗");
         }
 
         tokio::time::sleep(Duration::from_secs(ACCOUNT_GAP_SECS)).await;
     }
+    // UPDATE_TIMES_PAGE_V1：每輪檢查完成（多數輪次 0 個帳號需要同步）。
+    crate::update_times::record_global(
+        crate::update_times::KIND_TIMETABLE_SYNC_CHECK,
+        true,
+        format!("{attempted} 個帳號執行同步"),
+    );
 }
 
 /// 對單一帳號執行一次完整同步。手動觸發的 API 也走這裡。

@@ -273,6 +273,8 @@
   // 與 password.html 相同的登入檢查：未登入就導回登入頁。
   // fetch 失敗（離線／靜態預覽）時留在原頁面，設定仍可預覽。
   function verifySession() {
+    /* LOGIN_PERF_V1：/admin/settings 由伺服器驗證 session 後才送出（<html data-auth="ok">），不必再打一次。 */
+    try { if (document.documentElement.getAttribute('data-auth') === 'ok') return; } catch (_) { }
     try {
       fetch('/admin/api/status', {
         credentials: 'same-origin',

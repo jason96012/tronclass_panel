@@ -411,6 +411,16 @@ pub struct AdminWebConfig {
     /// blacklist.
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+
+    /// LOGIN_GEO_ALERT_V1：視為「本國」的國家代碼（ISO 3166-1 alpha-2）。
+    /// 從這些國家的新 IP 登入只記錄、不通知；境外／Tor／查不到國家才通知。
+    /// 預設 `["TW"]`。設成空陣列 = 恢復「任何新 IP 都通知」的舊行為。
+    #[serde(default = "default_login_home_countries")]
+    pub login_home_countries: Vec<String>,
+}
+
+fn default_login_home_countries() -> Vec<String> {
+    vec!["TW".to_string()]
 }
 
 impl Default for AdminWebConfig {
@@ -419,6 +429,7 @@ impl Default for AdminWebConfig {
             enabled: false,
             access_token: String::new(),
             trusted_proxies: Vec::new(),
+            login_home_countries: default_login_home_countries(),
         }
     }
 }

@@ -329,6 +329,21 @@ pub(super) async fn admin_homework_list_handler(
                             Ok(items)
                         })
                         .await;
+                    // UPDATE_TIMES_PAGE_V1
+                    match &fetched {
+                        Ok(items) => crate::update_times::record_account(
+                            crate::update_times::KIND_HOMEWORK,
+                            &bg_key,
+                            true,
+                            format!("{} 項", items.len()),
+                        ),
+                        Err(e) => crate::update_times::record_account(
+                            crate::update_times::KIND_HOMEWORK,
+                            &bg_key,
+                            false,
+                            e.to_string(),
+                        ),
+                    }
 
                     // REMINDERS_ON_ANY_REFRESH_V1
                     // 使用者開頁觸發的背景更新也評估一次截止提醒，讓通知不必
@@ -374,6 +389,21 @@ pub(super) async fn admin_homework_list_handler(
         Ok(items)
     })
     .await;
+    // UPDATE_TIMES_PAGE_V1
+    match &result {
+        Ok(items) => crate::update_times::record_account(
+            crate::update_times::KIND_HOMEWORK,
+            &cache_key,
+            true,
+            format!("{} 項", items.len()),
+        ),
+        Err(e) => crate::update_times::record_account(
+            crate::update_times::KIND_HOMEWORK,
+            &cache_key,
+            false,
+            e.to_string(),
+        ),
+    }
 
     match result {
         Ok(items) => (

@@ -35,6 +35,8 @@ mod auth;
 mod class_reminders;
 mod config;
 mod dashboard_auth;
+// LOGIN_GEO_ALERT_V1：登入 IP 國家判定（新位置登入告警只在境外／異常時發）。
+mod geoip;
 mod db;
 mod detection_schedule;
 mod holidays;
@@ -52,6 +54,8 @@ mod text_utils;
 mod timetable_source;
 mod timetable_sync;
 mod trusted_ip;
+// UPDATE_TIMES_PAGE_V1：各背景資料的最後更新時間登記簿。
+mod update_times;
 mod web_push_notifications;
 
 use std::io::Read;
@@ -1115,6 +1119,8 @@ async fn main() -> Result<()> {
     }
 
     let config = Arc::new(config);
+    // UPDATE_TIMES_PAGE_V1：定格啟動時間並載入上次的更新時間紀錄。
+    update_times::init();
     let line_bot = if config.adapters.line_bot.enabled {
         match adapters::line::client::LineBotClient::new(&config.adapters.line_bot) {
             Ok(bot) => Some(Arc::new(bot)),

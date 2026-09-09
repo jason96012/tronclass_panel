@@ -172,9 +172,22 @@ pub(super) fn start(state: AdminWebState) {
                                 "晨間摘要已推送"
                             );
                         }
+                        // UPDATE_TIMES_PAGE_V1
+                        crate::update_times::record_account(
+                            crate::update_times::KIND_MORNING_DIGEST,
+                            &raw.id,
+                            true,
+                            format!("送達 {delivered} 個裝置"),
+                        );
                     }
                     Err(error) => {
                         tracing::warn!(account = %raw.id, %error, "晨間摘要推送失敗");
+                        crate::update_times::record_account(
+                            crate::update_times::KIND_MORNING_DIGEST,
+                            &raw.id,
+                            false,
+                            error.to_string(),
+                        );
                     }
                 }
                 last_sent.insert(raw.id.clone(), today);

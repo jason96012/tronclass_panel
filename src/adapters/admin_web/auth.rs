@@ -150,13 +150,19 @@ pub(super) async fn admin_login_handler(
             .into_response();
     }
 
-    let mut candidates = Vec::new();
     // Try exact account-id match first, then fall back to username search.
-    if let Ok(Some(account)) = state.accounts_db.get(username).await {
+    // LOGIN_PERF_V1：兩個查詢彼此獨立，同時發出（SQLite 讀取池有 10 條連線），
+    // 以學號登入（id 查不到、要走 username）的常見路徑少等一趟。
+    let (by_id, by_username) = tokio::join!(
+        state.accounts_db.get(username),
+        state.accounts_db.find_by_username(username, None),
+    );
+    let mut candidates = Vec::new();
+    if let Ok(Some(account)) = by_id {
         candidates.push(account);
     }
     if candidates.is_empty() {
-        if let Ok(accounts) = state.accounts_db.find_by_username(username, None).await {
+        if let Ok(accounts) = by_username {
             candidates = accounts;
         }
     }
@@ -277,6 +283,8 @@ pub(super) async fn admin_login_handler(
     };
 
     state.rate_limiter.clear(&rate_key).await;
+    // LOGIN_GEO_ALERT_V1：先讀出成功前的失敗次數（疑似撞對密碼的訊號），再清零。
+    let recent_failures = peek_recent_auth_failures(username, &ip).await;
     // 登入成功即重置失敗計數，確保只有「連續」失敗才會觸發告警。
     clear_auth_failures(username, &ip).await;
 
@@ -311,13 +319,10 @@ pub(super) async fn admin_login_handler(
 
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
-    // VIEWER_ROLE_V1：登入時查一次 viewer 旗標寫進 session（管理員永遠不是 viewer）。
-    let is_viewer = !is_admin
-        && state
-            .accounts_db
-            .is_viewer(&account_id)
-            .await
-            .unwrap_or(false);
+    // VIEWER_ROLE_V1：viewer 旗標寫進 session（管理員永遠不是 viewer）。
+    // LOGIN_PERF_V1：`RawAccountConfig` 本來就帶 `is_viewer`（accounts 表同一列），
+    // 不必再多查一次 SQLite。
+    let is_viewer = !is_admin && account.is_viewer;
     let tokens = state
         .create_session_with(NewSession {
             account_id: account_id.clone(),
@@ -360,10 +365,21 @@ pub(super) async fn admin_login_handler(
         let msg = login_message.to_string();
         let ip = ip.clone();
         let user_agent = SessionOrigin::from_request(&headers, &ip).user_agent;
+        // LOGIN_GEO_ALERT_V1：Cloudflare 國家標頭（不可信來源已被 sanitize middleware 移除）。
+        let cf_ipcountry = cf_ipcountry_header(&headers);
         tokio::spawn(async move {
             // LOGIN_LOCATION_ALERT_V1：先比對「這個 IP 對這個帳號是否第一次出現」，
             // 再寫入登入事件與 IP 記憶（順序不能反，否則永遠都是「已知」）。
-            check_unusual_login_location(&state, &acct, &ip, &user_agent, "密碼").await;
+            check_unusual_login_location(
+                &state,
+                &acct,
+                &ip,
+                &user_agent,
+                "密碼",
+                cf_ipcountry.as_deref(),
+                recent_failures,
+            )
+            .await;
             record_persistent_login_event(
                 &state,
                 &actor,

@@ -22,7 +22,7 @@ use crate::config::AppConfig;
 use crate::db::AccountsDb;
 use crate::web_push_notifications;
 
-const CHECK_INTERVAL_SECS: u64 = 15 * 60; // 每 15 分鐘檢查一次
+pub(crate) const CHECK_INTERVAL_SECS: u64 = 15 * 60; // 每 15 分鐘檢查一次
 const RETENTION_DAYS: i64 = 14;
 
 /// 背景預抓間隔。
@@ -31,7 +31,7 @@ const RETENTION_DAYS: i64 = 14;
 /// 刻意設得比 `homework_cache::CACHE_TTL`（5 分鐘）短，
 /// 讓快取在使用者開頁前就已經被刷新，永遠處於「新鮮」狀態。
 /// 這樣一進網站就是命中快取（0 上游請求、立即顯示），且資料是即時的。
-const PREFETCH_INTERVAL_SECS: u64 = 4 * 60;
+pub(crate) const PREFETCH_INTERVAL_SECS: u64 = 4 * 60;
 
 /// 預抓時每個帳號之間的間隔，平滑對學校伺服器的請求流量。
 const PREFETCH_ACCOUNT_GAP_SECS: u64 = 2;
@@ -118,6 +118,12 @@ pub fn start_homework_prefetcher(
                     );
                     night_logged = true;
                 }
+                // UPDATE_TIMES_PAGE_V1：夜間跳過也記一筆，頁面才不會顯示成「卡住」。
+                crate::update_times::record_global(
+                    crate::update_times::KIND_HOMEWORK_PREFETCH,
+                    true,
+                    "夜間暫停，略過本輪",
+                );
                 continue;
             }
             night_logged = false;
@@ -203,6 +209,13 @@ async fn prefetch_all_accounts(
         {
             Ok(items) => {
                 refreshed += 1;
+                // UPDATE_TIMES_PAGE_V1
+                crate::update_times::record_account(
+                    crate::update_times::KIND_HOMEWORK,
+                    &account.id,
+                    true,
+                    format!("{} 項", items.len()),
+                );
                 // 預抓到新資料時順便評估提醒，讓通知即時。
                 // 去重表確保不會重複發送。
                 if let Err(error) =
@@ -214,6 +227,12 @@ async fn prefetch_all_accounts(
             }
             Err(e) => {
                 debug!(account = %account.id, error = %e, "預抓作業清單失敗");
+                crate::update_times::record_account(
+                    crate::update_times::KIND_HOMEWORK,
+                    &account.id,
+                    false,
+                    e.to_string(),
+                );
             }
         }
 
@@ -223,6 +242,12 @@ async fn prefetch_all_accounts(
     if refreshed > 0 {
         debug!(accounts = refreshed, "作業清單預抓完成，快取已更新");
     }
+    // UPDATE_TIMES_PAGE_V1：整輪完成（不論成功幾個帳號）。
+    crate::update_times::record_global(
+        crate::update_times::KIND_HOMEWORK_PREFETCH,
+        true,
+        format!("{refreshed} 個帳號更新"),
+    );
 }
 
 async fn run_once(
@@ -257,6 +282,8 @@ async fn run_once(
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
+    // UPDATE_TIMES_PAGE_V1
+    crate::update_times::record_global(crate::update_times::KIND_HOMEWORK_REMINDER_CHECK, true, "");
     Ok(())
 }
 

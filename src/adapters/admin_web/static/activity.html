@@ -144,6 +144,24 @@
        不再以 ?logout=1 / tronclass_dashboard_manual_logout 判斷，只清掉遺留旗標。 */
     try { localStorage.removeItem(LO); } catch (_) {}
     if (p.has('logout')) { p.delete('logout'); history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p.toString() : '') + location.hash); }
+    /* LOGIN_PERF_V1：這頁是伺服器驗證過 session 才送出的（pages::inject_auth_attrs 會在 <html>
+       寫入 data-auth="ok" 與 data-account / data-admin / data-viewer）。有這個屬性就直接進入
+       已登入版面，不再多打一次 /admin/api/status 當「開機驗證」——省一趟往返，第一幀不閃。
+       沒有屬性（理論上不會發生）才退回舊的網路驗證。 */
+    var authOk = document.documentElement.getAttribute('data-auth') === 'ok';
+    if (authOk) {
+      window.__tronAuthStatus = window.__tronAuthStatus || {
+        current_account_id: document.documentElement.getAttribute('data-account') || '',
+        is_admin: document.documentElement.getAttribute('data-admin') === '1',
+        is_viewer: document.documentElement.getAttribute('data-viewer') === '1',
+        __partial: true
+      };
+      window.__tronAuthState = 'ok';
+      document.documentElement.classList.remove('tron-auth-pending','tron-auth-logged-out');
+      document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','auth-ok');
+      if (document.body) document.body.classList.add('logged-in','auth-ok','dash-auth-ok');
+      else document.addEventListener('DOMContentLoaded', function(){ document.body.classList.add('logged-in','auth-ok','dash-auth-ok'); }, { once: true });
+    } else {
     document.documentElement.classList.add('tron-auth-pending');
     fetch('/admin/api/status', {credentials:'same-origin', cache:'no-store'}).then(function(r){
       if (r.ok) {
@@ -158,6 +176,7 @@
       var next = encodeURIComponent(location.pathname + location.search + location.hash);
       location.replace('/admin?next=' + next);
     });
+    }
   } catch(_) {
     location.replace('/admin');
   }
@@ -1141,8 +1160,7 @@
   else tidy();
   setTimeout(tidy, 80);
 })();
-</script>
-<script>(function(){function c(){var b=a.contentDocument||(a.contentWindow&&a.contentWindow.document);if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a2fb405dfba54a45',t:'MTc4NzUwMDAwMA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><style id="MANUAL_DARK_MIRROR_V1">
+</script><style id="MANUAL_DARK_MIRROR_V1">
 /* DARK_MIRROR_V1: 自動鏡像 prefers-color-scheme:dark → html[data-theme="dark"]；手動深色與系統深色同調色盤 */
 html[data-theme="dark"]{--bg:#090d16 !important;--card:#131b2a !important;--soft:#1c2638 !important;--soft2:#24324a !important;--text:#f1f5f9 !important;--muted:#94a3b8 !important;--line:#223046 !important;--line2:#334155 !important;--primary:#3b82f6 !important;--primaryText:#ffffff !important;--ok:#4ade80 !important;--okBg:rgba(34,197,94,.16) !important;--bad:#f87171 !important;--badBg:rgba(239,68,68,.16) !important;--warn:#fbbf24 !important;--warnBg:rgba(245,158,11,.16) !important;--info:#38bdf8 !important;--infoBg:rgba(56,189,248,.16) !important;--shadow:0 4px 20px rgba(0,0,0,.36) !important;}
 html[data-theme="dark"] .topbar{background:rgba(9,13,22,.92) !important;}

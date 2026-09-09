@@ -634,13 +634,8 @@ pub(super) async fn admin_passkey_login_finish_handler(
 
     let account_id = account.id.clone();
     let is_admin = account.is_admin;
-    // VIEWER_ROLE_V1
-    let is_viewer = !is_admin
-        && state
-            .accounts_db
-            .is_viewer(&account_id)
-            .await
-            .unwrap_or(false);
+    // VIEWER_ROLE_V1（LOGIN_PERF_V1：直接用同一列的 `is_viewer`，省一次查詢）
+    let is_viewer = !is_admin && account.is_viewer;
     let origin = SessionOrigin::from_request(&headers, &ip);
     let tokens = state
         .create_session_with(NewSession {
@@ -667,8 +662,20 @@ pub(super) async fn admin_passkey_login_finish_handler(
         let acct = account_id.clone();
         let ip = ip.clone();
         let user_agent = origin.user_agent.clone();
+        // LOGIN_GEO_ALERT_V1：通行密鑰不會被「猜」，失敗次數訊號不適用（傳 0）；
+        // 仍看國家：境外／Tor 的通行密鑰登入依舊通知。
+        let cf_ipcountry = cf_ipcountry_header(&headers);
         tokio::spawn(async move {
-            check_unusual_login_location(&state, &acct, &ip, &user_agent, "通行密鑰").await;
+            check_unusual_login_location(
+                &state,
+                &acct,
+                &ip,
+                &user_agent,
+                "通行密鑰",
+                cf_ipcountry.as_deref(),
+                0,
+            )
+            .await;
             record_persistent_login_event(
                 &state,
                 &acct,

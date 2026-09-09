@@ -179,6 +179,20 @@ impl AccountsDb {
         Ok(row)
     }
 
+    /// UPDATE_TIMES_PAGE_V1：只讀快照的抓取時間（不載入 items_json，避免為了一個
+    /// 時間戳把幾十 KB 的清單拉出來）。沒有快照時回 0。
+    pub async fn get_homework_snapshot_time(&self, account_id: &str) -> Result<i64> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT fetched_at FROM homework_snapshot WHERE account_id = ?",
+        )
+        .bind(account_id.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢 homework_snapshot 時間失敗")?;
+        Ok(row.map(|(ts,)| ts).unwrap_or(0))
+    }
+
     /// 寫入／更新帳號的作業清單快照。
     pub async fn save_homework_snapshot(
         &self,

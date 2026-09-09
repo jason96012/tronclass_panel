@@ -271,10 +271,20 @@
     });
   }
 
+  var firstLoginCheckStarted = false;
   async function enforceFirstLoginPasswordChange() {
+    // LOGIN_PERF_V1：伺服器驗證過才送出的頁面（<html data-auth="ok">）在 must_change_password
+    // 時根本不會被送出（pages.rs 會 307 到 /admin/password），這裡不必再問一次。
+    // 其餘頁面也只問一次——過去 boot() 的 500ms 計時器讓這支函式跑 21 次，等於每開一頁
+    // 多打 21 趟 /admin/api/status。
+    if (serverVerifiedPage()) return;
+    // 獨立登入頁沒有 session，可略過（否則殘留的 marker 會白打一趟 401）。
+    if (document.getElementById('animatedLoginForm')) return;
+    if (firstLoginCheckStarted || forcedPasswordChange) return;
     var marker = '';
     try { marker = (localStorage.getItem(SESSION_KEY) || sessionStorage.getItem(SESSION_KEY) || '').trim(); } catch (_) {}
-    if (marker !== SESSION_MARKER || forcedPasswordChange) return;
+    if (marker !== SESSION_MARKER) return;
+    firstLoginCheckStarted = true;
     try {
       var response = await fetch('/admin/api/status', {
         credentials: 'same-origin',
@@ -321,8 +331,16 @@
     location.replace(target.pathname + target.search);
   }
 
+  // LOGIN_PERF_V1：這一頁是不是伺服器驗證 session 後才送出的（pages::inject_auth_attrs）。
+  function serverVerifiedPage() {
+    try { return document.documentElement.getAttribute('data-auth') === 'ok'; } catch (_) { return false; }
+  }
+  var bootAt = Date.now();
   function validateSessionAfterResume() {
     if (document.hidden) return Promise.resolve();
+    // LOGIN_PERF_V1：剛載入的前 5 秒不做「恢復驗證」——頁面本身就是伺服器剛驗證完 session
+    // 才送出的；初次 pageshow／focus 觸發的這一趟 /admin/api/status 純屬重複。
+    if (serverVerifiedPage() && (Date.now() - bootAt) < 5000) return Promise.resolve();
     var authenticated = window.__tronAuthState === 'ok' ||
       !!(document.body && document.body.classList.contains('logged-in'));
     if (!authenticated) return Promise.resolve();
@@ -373,7 +391,11 @@
     document.addEventListener('visibilitychange', function () {
       if (!document.hidden) validateSessionAfterResume();
     }, { passive: true });
-    window.addEventListener('pageshow', validateSessionAfterResume, { passive: true });
+    window.addEventListener('pageshow', function (ev) {
+      // 只有從 bfcache 復原（persisted）時才需要重新驗證；一般載入的 pageshow 略過。
+      if (ev && ev.persisted === false) return;
+      validateSessionAfterResume();
+    }, { passive: true });
     window.addEventListener('focus', validateSessionAfterResume, { passive: true });
   }
 
