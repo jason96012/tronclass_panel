@@ -26,6 +26,16 @@
 //!
 //! 規則（static/README_SAFE_UPDATES.md 第 6 條）：Service Worker 不要加入
 //! fetch interception / cache / redirect。
+//!
+//! PWA_STATIC_CACHE_V3 — 在上述前提下「只對非 iOS」重新加入一層極窄的靜態資產快取：
+//! - 只攔同源 GET、路徑在 `/admin/static/`、`/pub/static/` 之下、且帶 `?sv=`（build id）
+//!   的請求；HTML 導覽、`/admin/api/*`、SSE、manifest、service-worker.js 本身一律不碰。
+//! - 策略：cache-first（`?sv=` 內容不可變，命中即回）；未命中走網路並在 200 時寫入
+//!   `tron-static-v3`。舊 build 的項目在 activate 與每次寫入時順手清掉（同路徑不同 sv）。
+//! - iOS／iPadOS 的 SW 完全不註冊 fetch 監聽（`self.navigator.userAgent` 判斷）：
+//!   WebKit 的 SW 行程暫停問題（見上）正是發生在有 fetch handler 時，那條路維持 V2 行為。
+//!   非 iOS 瀏覽器（Chrome／Edge／Firefox／Android）沒有這個問題，離線時靜態資產也能秒開。
+//! - 非 iOS 頁面由 web-push.js 的 boot 在閒置時註冊 SW（原本只有 iOS 啟用推播時才會註冊）。
 
 use axum::{
     http::{header, StatusCode},
@@ -101,26 +111,73 @@ pub(super) async fn manifest_handler() -> Response {
 
 pub(super) async fn service_worker_handler() -> Response {
     const SW: &str = r#"
-// Tronclass PWA service worker PWA_NO_FETCH_INTERCEPT_V2.
-// Push notifications only. There is deliberately NO fetch handler and NO
-// CacheStorage: intercepting /admin/static/* made iOS home-screen launches
-// hang on a suspended service worker (blank white page until the app was
-// force-quit). Static assets are already immutable + versioned (?sv=) so the
-// browser HTTP cache gives an instant paint without any SW involvement.
+// Tronclass PWA service worker PWA_NO_FETCH_INTERCEPT_V2 + PWA_STATIC_CACHE_V3.
+// iOS: push notifications only. There is deliberately NO fetch handler and NO
+// CacheStorage on iOS: intercepting /admin/static/* made iOS home-screen
+// launches hang on a suspended service worker (blank white page until the app
+// was force-quit).
+// Non-iOS: a narrow cache-first layer for immutable versioned static assets
+// (/admin/static/* and /pub/static/* carrying ?sv=<build id>). HTML, /admin/api,
+// SSE, manifest and this file are never intercepted.
+const STATIC_CACHE = 'tron-static-v3';
+const IS_IOS = /iPad|iPhone|iPod/.test(self.navigator.userAgent || '')
+  || (/Macintosh/.test(self.navigator.userAgent || '') && (self.navigator.maxTouchPoints || 0) > 1);
+function cacheableStaticRequest(request) {
+  if (request.method !== 'GET') return null;
+  let url;
+  try { url = new URL(request.url); } catch (_) { return null; }
+  if (url.origin !== self.location.origin) return null;
+  const p = url.pathname;
+  if (!(p.startsWith('/admin/static/') || p.startsWith('/pub/static/'))) return null;
+  if (!url.searchParams.get('sv')) return null;
+  return url;
+}
 self.addEventListener('install', event => {
   event.waitUntil(self.skipWaiting());
 });
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
-    // Evict every cache created by earlier versions (tron-shell-*,
-    // tron-static-*). Nothing is retained on disk any more.
+    // Evict every cache created by earlier versions (tron-shell-*, tron-static-v1/v2).
+    // On iOS nothing is retained on disk at all.
     try {
       const keys = await caches.keys();
-      await Promise.all(keys.map(k => caches.delete(k)));
+      await Promise.all(keys.filter(k => IS_IOS || k !== STATIC_CACHE).map(k => caches.delete(k)));
     } catch (_) {}
     await self.clients.claim();
   })());
 });
+if (!IS_IOS) {
+  self.addEventListener('fetch', event => {
+    const url = cacheableStaticRequest(event.request);
+    if (!url) return; // fall through to the network / HTTP cache untouched
+    event.respondWith((async () => {
+      let cache = null;
+      try {
+        cache = await caches.open(STATIC_CACHE);
+        const hit = await cache.match(event.request, { ignoreVary: true });
+        if (hit) return hit;
+      } catch (_) {}
+      const response = await fetch(event.request);
+      if (cache && response && response.status === 200 && response.type === 'basic') {
+        try {
+          const copy = response.clone();
+          event.waitUntil((async () => {
+            // Drop older builds of the same path (different ?sv=) before storing.
+            try {
+              const stale = (await cache.keys()).filter(req => {
+                try { const u = new URL(req.url); return u.pathname === url.pathname && u.search !== url.search; }
+                catch (_) { return false; }
+              });
+              await Promise.all(stale.map(req => cache.delete(req)));
+            } catch (_) {}
+            await cache.put(event.request, copy);
+          })());
+        } catch (_) {}
+      }
+      return response;
+    })());
+  });
+}
 self.addEventListener('push', event => {
   event.waitUntil((async () => {
     let payload = {};

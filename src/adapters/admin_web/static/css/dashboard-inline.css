@@ -1,0 +1,774 @@
+/* INLINE_SPLIT_V1：dashboard-inline.css 原本內嵌於 dashboard.html 的 <head> 內聯 <style>（三群依原順序合併；整檔在 bundle 內放在 dashboard-mobile.css 之前，與 DESKTOP_HEADER_SPACIOUS_V1／MOBILE_HEADER_TO_MORE_V1 的原始層疊順序一致），抽成靜態檔（CSP script-src/style-src 'self'；
+   由 asset_versions 統一改寫 ?sv=<build id>，內容變動即自動失效快取）。區塊順序與原 HTML 一致。 */
+
+/* ── inline style: DESKTOP_SIZE_ALWAYS_V1 (原 dashboard.html:198) ── */
+  /* 已登入 / 確認中：main 絕不能用登入卡置中（那會變成手機寬） */
+  html.tron-auth-ok body main,
+  html.dash-auth-ok body main,
+  html.tron-auth-pending body main,
+  body.logged-in main,
+  body.auth-ok main,
+  body.dash-auth-ok main{
+    display:block!important;
+    align-items:stretch!important;
+    justify-content:flex-start!important;
+    min-height:0!important;
+    width:min(1400px,100%)!important;
+    max-width:1400px!important;
+    margin-left:auto!important;
+    margin-right:auto!important;
+    padding:16px 20px 32px!important;
+    box-sizing:border-box!important;
+  }
+  html.tron-auth-ok body,
+  html.tron-auth-pending body,
+  body.logged-in{
+    min-height:100%!important;
+  }
+  html.tron-auth-ok #loginCard,
+  html.tron-auth-ok .login-card,
+  html.tron-auth-pending #loginCard,
+  html.tron-auth-pending .login-card,
+  body.logged-in #loginCard{
+    display:none!important;
+  }
+  @media (min-width:821px){
+    .tabs{display:flex!important;visibility:visible!important}
+    .cards{grid-template-columns:repeat(4,minmax(0,1fr))!important}
+    .quick{grid-template-columns:repeat(4,minmax(0,1fr))!important}
+    .two{grid-template-columns:1fr 1fr!important}
+    .next-grid{grid-template-columns:minmax(130px,.45fr) minmax(240px,1fr) minmax(160px,.7fr)!important}
+    #mobileNavFinalV2,#mobileMoreFinalV2,#mobileNav,#mobileSheet,.mobile-nav,.mobile-sheet{
+      display:none!important;visibility:hidden!important;pointer-events:none!important;
+    }
+    header.topbar,.topbar{
+      display:flex!important;flex-wrap:nowrap!important;align-items:center!important;
+      justify-content:space-between!important;
+    }
+    header.topbar .top-actions,.topbar .top-actions{display:flex!important}
+  }
+
+/* ── inline style: DESKTOP_FIRST_PAINT_V1 (原 dashboard.html:246) ── */
+  /* 第一幀就鎖桌面版，等不到外部 dashboard.css / mobile-navigation.css */
+  @media (min-width:821px){
+    html,body{min-width:0}
+    header.topbar,.topbar,.app-header{
+      display:flex!important;
+      flex-direction:row!important;
+      flex-wrap:nowrap!important;
+      align-items:center!important;
+      justify-content:space-between!important;
+    }
+    header.topbar .top-actions,.topbar .top-actions{display:flex!important}
+    .tabs{
+      display:flex!important;
+      visibility:visible!important;
+      gap:8px!important;
+      overflow:auto!important;
+    }
+    html:not(.tron-auth-logged-out) .hero,
+    html:not(.tron-auth-logged-out) .protected > .hero{
+      display:flex!important;
+      visibility:visible!important;
+      opacity:1!important;
+    }
+    main,.content,#app main{
+      width:min(1400px,100%)!important;
+      max-width:1400px!important;
+      margin-left:auto!important;
+      margin-right:auto!important;
+      padding:16px 20px 32px!important;
+    }
+    .cards{grid-template-columns:repeat(4,minmax(0,1fr))!important}
+    .quick{grid-template-columns:repeat(4,minmax(0,1fr))!important}
+    .two{grid-template-columns:1fr 1fr!important}
+    .next-grid{grid-template-columns:minmax(130px,.45fr) minmax(240px,1fr) minmax(160px,.7fr)!important}
+    #mobileNavFinalV2,#mobileMoreFinalV2,#mobileNav,#mobileSheet,
+    .mobile-nav,.mobile-sheet,.mobile-dashboard-nav{
+      display:none!important;
+      visibility:hidden!important;
+      pointer-events:none!important;
+    }
+  }
+
+/* ── inline style: MORE_DEAD_BUTTONS_CSS_V1 (原 dashboard.html:307) ── */
+  @media (max-width:820px){
+    #mobileMoreFinalV2.visible{
+      display:flex!important;
+      visibility:visible!important;
+      pointer-events:auto!important;
+    }
+    #mobileMoreFinalV2.visible,
+    #mobileMoreFinalV2.visible *{
+      pointer-events:auto!important;
+    }
+    #dashPwOverlay.visible,#passkeyTapOverlay.visible,
+    #changePasswordModal.visible,#changePasswordModal.cp-modal.visible{
+      display:flex!important;
+      visibility:visible!important;
+      pointer-events:auto!important;
+      z-index:2147483646!important;
+    }
+  }
+
+/* ── inline style: PASSKEY_MORE_TAP_CSS_V2 (原 dashboard.html:373) ── */
+  #passkeyTapOverlay{
+    display:none;position:fixed;inset:0;z-index:2147483646;
+    align-items:flex-end;justify-content:center;
+    padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px));
+    background:rgba(15,23,42,.45);
+  }
+  #passkeyTapOverlay.visible{display:flex!important}
+  #passkeyTapOverlay .pk-card{
+    width:min(440px,100%);background:#fff;color:#172033;
+    border-radius:22px;padding:20px 18px 16px;
+    box-shadow:0 24px 70px rgba(15,23,42,.32);
+  }
+  #passkeyTapOverlay h3{margin:0 0 8px;font-size:18px;font-weight:900}
+  #passkeyTapOverlay p{margin:0 0 14px;font-size:14px;line-height:1.55;color:#475569;font-weight:650}
+  #passkeyTapOverlay .pk-actions{display:flex;gap:8px}
+  #passkeyTapOverlay button{
+    flex:1;min-height:46px;border:0;border-radius:14px;font-size:15px;font-weight:850;cursor:pointer
+  }
+  #passkeyTapOverlay #pkTapGo{background:#2563eb;color:#fff}
+  #passkeyTapOverlay #pkTapClose{background:#e2e8f0;color:#0f172a}
+  #toast{z-index:2147483647!important}
+  @media(prefers-color-scheme:dark){
+    #passkeyTapOverlay .pk-card{background:#131b2a;color:#f1f5f9}
+    #passkeyTapOverlay p{color:#94a3b8}
+    #passkeyTapOverlay #pkTapClose{background:#24324a;color:#f1f5f9}
+  }
+
+/* ── inline style: PASSWORD_MORE_TAP_CSS_V2 (原 dashboard.html:603) ── */
+  #dashPwOverlay{
+    display:none;position:fixed;inset:0;z-index:2147483646;
+    align-items:flex-end;justify-content:center;
+    padding:16px 16px calc(20px + env(safe-area-inset-bottom,0px));
+    background:rgba(15,23,42,.5);
+  }
+  #dashPwOverlay.visible{display:flex!important}
+  #dashPwOverlay .pw-card{
+    width:min(440px,100%);background:#fff;color:#172033;
+    border-radius:22px;padding:20px 18px 16px;
+    box-shadow:0 24px 70px rgba(15,23,42,.32);
+    max-height:min(86dvh,640px);overflow:auto;
+  }
+  #dashPwOverlay h3{margin:0 0 6px;font-size:18px;font-weight:900}
+  #dashPwOverlay .pw-hint{margin:0 0 10px;font-size:12px;color:#64748b;font-weight:700}
+  #dashPwOverlay label{display:block;font-size:12px;font-weight:800;color:#64748b;margin:10px 0 6px}
+  #dashPwOverlay input{
+    width:100%;min-height:46px;border-radius:14px;border:1px solid #dbe3ef;
+    background:#f8fafc;color:#172033;padding:0 12px;font-size:16px;box-sizing:border-box;
+  }
+  #dashPwOverlay .pw-msg{min-height:18px;margin-top:10px;font-size:13px;font-weight:800;color:#64748b}
+  #dashPwOverlay .pw-msg.bad{color:#b91c1c}
+  #dashPwOverlay .pw-msg.ok{color:#15803d}
+  #dashPwOverlay .pw-actions{display:flex;gap:8px;margin-top:14px}
+  #dashPwOverlay .pw-actions button{
+    flex:1;min-height:46px;border:0;border-radius:14px;font-size:15px;font-weight:850;cursor:pointer
+  }
+  #dashPwOverlay #dashPwCancel{background:#e2e8f0;color:#0f172a}
+  #dashPwOverlay #dashPwSave{background:#2563eb;color:#fff}
+  @media(min-width:821px){#dashPwOverlay{align-items:center}}
+  @media(prefers-color-scheme:dark){
+    #dashPwOverlay .pw-card{background:#131b2a;color:#f1f5f9}
+    #dashPwOverlay .pw-hint,#dashPwOverlay label{color:#94a3b8}
+    #dashPwOverlay input{background:#1c2638;border-color:#334155;color:#f1f5f9}
+    #dashPwOverlay #dashPwCancel{background:#24324a;color:#f1f5f9}
+  }
+
+/* ── inline style: AUTH_GATE_MIN_V1 (原 dashboard.html:821) ── */
+  /* LOGIN_PAGE_STANDALONE_V1：登入卡已搬到 /admin 的獨立登入頁（login.html）。
+     伺服器只在 session 有效時回這份 HTML，因此 html 一律以 tron-auth-ok 送出（pages::inject_auth_state）。
+     下列規則只作為「session 在頁面存活期間失效」的保險：logged-out 時把受保護內容藏起來，
+     session-security.js 會立刻導回登入頁。 */
+  html,body{visibility:visible!important}
+  html.tron-auth-logged-out body .protected,
+  html.tron-auth-logged-out body .tabs,
+  html.tron-auth-logged-out body .view,
+  html.tron-auth-logged-out body .hero,
+  html.tron-auth-logged-out header,
+  html.tron-auth-logged-out .topbar,
+  html.tron-auth-logged-out .mobile-nav{display:none!important}
+
+/* ── inline style: dashboardMatchLoginBackgroundStyleV1 (原 dashboard.html:900) ── */
+  /* Dashboard 背景改成和登入頁相同的深色粒子/漸層背景。只作用於已登入 Dashboard。 */
+  body.dashboard-login-bg-active{
+    background:#071122!important;
+    color:var(--text,#172033);
+    min-height:100vh;
+    isolation:isolate;
+  }
+  body.dashboard-login-bg-active::before{
+    content:'';
+    position:fixed;
+    inset:0;
+    z-index:-3;
+    pointer-events:none;
+    background:
+      radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+      radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+      radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
+      linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%)!important;
+  }
+  #dashboardLoginBgParticlesV1{
+    position:fixed;
+    inset:0;
+    z-index:-2;
+    width:100vw;
+    height:100vh;
+    pointer-events:none;
+    display:none;
+  }
+  body.dashboard-login-bg-active #dashboardLoginBgParticlesV1{
+    display:block;
+  }
+  body.dashboard-login-bg-active header,
+  body.dashboard-login-bg-active .topbar,
+  body.dashboard-login-bg-active .top-bar,
+  body.dashboard-login-bg-active .dashboard-header,
+  body.dashboard-login-bg-active .app-header{
+    background:rgba(246,248,252,.86)!important;
+    backdrop-filter:blur(18px)!important;
+    border-bottom-color:rgba(219,227,239,.62)!important;
+  }
+  body.dashboard-login-bg-active main,
+  body.dashboard-login-bg-active .page,
+  body.dashboard-login-bg-active .content,
+  body.dashboard-login-bg-active .layout{
+    position:relative;
+    z-index:1;
+  }
+  body.dashboard-login-bg-active .panel,
+  body.dashboard-login-bg-active .stat,
+  body.dashboard-login-bg-active .card,
+  body.dashboard-login-bg-active .next-card,
+  body.dashboard-login-bg-active .login-card{
+    backdrop-filter:blur(16px);
+  }
+  body.dashboard-login-bg-active .mobile-nav{
+    background:rgba(255,255,255,.92)!important;
+    backdrop-filter:blur(18px)!important;
+  }
+  @media(prefers-color-scheme:dark){
+    body.dashboard-login-bg-active header,
+    body.dashboard-login-bg-active .topbar,
+    body.dashboard-login-bg-active .top-bar,
+    body.dashboard-login-bg-active .dashboard-header,
+    body.dashboard-login-bg-active .app-header{
+      background:rgba(15,23,42,.78)!important;
+      border-bottom-color:rgba(148,163,184,.18)!important;
+    }
+    body.dashboard-login-bg-active .mobile-nav{
+      background:rgba(15,23,42,.88)!important;
+      border-color:rgba(148,163,184,.22)!important;
+    }
+  }
+
+/* ── inline style: authBootSplashHiddenV1 (原 dashboard.html:1008) ── */
+  /* ADMIN_PAGE_TRI_STATE_V1：伺服器端已決定頁面，不再有「確認登入狀態」的過場。 */
+  #authBootSplash{display:none!important}
+
+/* ── inline style: glassDashboardCssV1 (原 dashboard.html:1105) ── */
+  /* ============================================================
+     Tronclass Dashboard 毛玻璃效果 CSS
+     所有卡片、面板、表格、導覽列統一加上半透明 blur 效果
+     ============================================================ */
+
+  /* --- 主卡片 & 面板：毛玻璃核心 --- */
+  .panel,
+  .stat,
+  .item,
+  .next-card,
+  .login-card,
+  #loginCard,
+  #nextClassCard,
+  #mockPanel,
+  #mockRollcallPanel {
+    background: rgba(255, 255, 255, 0.68) !important;
+    backdrop-filter: blur(20px) !important;
+    -webkit-backdrop-filter: blur(20px) !important;
+    border: 1px solid rgba(219, 227, 239, 0.48) !important;
+    box-shadow: 0 4px 28px rgba(15, 23, 42, 0.05) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .panel,
+    .stat,
+    .item,
+    .next-card,
+    .login-card,
+    #loginCard,
+    #nextClassCard,
+    #mockPanel,
+    #mockRollcallPanel {
+      background: rgba(22, 29, 41, 0.74) !important;
+      border-color: rgba(148, 163, 184, 0.16) !important;
+      box-shadow: 0 4px 28px rgba(0, 0, 0, 0.22) !important;
+    }
+  }
+
+  /* --- 頂部 header 毛玻璃 --- */
+  header.topbar,
+  .topbar,
+  .app-header,
+  .dashboard-header {
+    background: rgba(246, 248, 252, 0.72) !important;
+    backdrop-filter: blur(24px) !important;
+    -webkit-backdrop-filter: blur(24px) !important;
+    border-bottom: 1px solid rgba(219, 227, 239, 0.40) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    header.topbar,
+    .topbar,
+    .app-header,
+    .dashboard-header {
+      background: rgba(15, 23, 42, 0.78) !important;
+      border-bottom-color: rgba(148, 163, 184, 0.15) !important;
+    }
+  }
+
+  /* --- 表格容器毛玻璃 --- */
+  .table-wrap {
+    background: rgba(255, 255, 255, 0.55) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border-radius: 16px !important;
+    border: 1px solid rgba(219, 227, 239, 0.40) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .table-wrap {
+      background: rgba(22, 29, 41, 0.65) !important;
+      border-color: rgba(148, 163, 184, 0.14) !important;
+    }
+  }
+
+  table thead th,
+  .tt-stable-table th {
+    background: rgba(238, 243, 251, 0.70) !important;
+    backdrop-filter: blur(8px) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    table thead th,
+    .tt-stable-table th {
+      background: rgba(30, 41, 59, 0.70) !important;
+    }
+  }
+
+  table td,
+  .tt-stable-table td {
+    background: transparent !important;
+    border-bottom-color: rgba(219, 227, 239, 0.28) !important;
+  }
+
+  /* --- 手機底部導覽毛玻璃 --- */
+  .mobile-nav,
+  #mobileNav,
+  #mobileNavFinalV2 {
+    background: rgba(255, 255, 255, 0.82) !important;
+    backdrop-filter: blur(24px) !important;
+    -webkit-backdrop-filter: blur(24px) !important;
+    border: 1px solid rgba(219, 227, 239, 0.45) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .mobile-nav,
+    #mobileNav,
+    #mobileNavFinalV2 {
+      background: rgba(15, 23, 42, 0.88) !important;
+      border-color: rgba(148, 163, 184, 0.18) !important;
+    }
+  }
+
+  /* --- 手機更多面板 --- */
+  #mobileSheet .sheet,
+  #mobileMoreFinalV2 .sheet {
+    background: rgba(255, 255, 255, 0.82) !important;
+    backdrop-filter: blur(24px) !important;
+    -webkit-backdrop-filter: blur(24px) !important;
+    border: 1px solid rgba(219, 227, 239, 0.48) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    #mobileSheet .sheet,
+    #mobileMoreFinalV2 .sheet {
+      background: rgba(22, 29, 41, 0.86) !important;
+      border-color: rgba(148, 163, 184, 0.18) !important;
+    }
+  }
+
+  /* --- 按鈕區微毛玻璃 --- */
+  .quick button.secondary {
+    background: rgba(255, 255, 255, 0.55) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .quick button.secondary {
+      background: rgba(30, 41, 59, 0.55) !important;
+    }
+  }
+
+  .tab {
+    backdrop-filter: blur(8px) !important;
+  }
+
+  /* --- 課表編輯列 --- */
+  .tt-stable-row,
+  .tt-edit-row {
+    background: rgba(238, 240, 248, 0.65) !important;
+    backdrop-filter: blur(10px) !important;
+    border-color: rgba(216, 225, 238, 0.50) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .tt-stable-row,
+    .tt-edit-row {
+      background: rgba(30, 41, 59, 0.65) !important;
+      border-color: rgba(148, 163, 184, 0.16) !important;
+    }
+  }
+
+  /* --- 通知設定卡片 --- */
+  .notify-pref-item,
+  .notify-item {
+    background: rgba(248, 250, 252, 0.65) !important;
+    backdrop-filter: blur(10px) !important;
+    border-color: rgba(219, 227, 239, 0.40) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .notify-pref-item,
+    .notify-item {
+      background: rgba(30, 41, 59, 0.58) !important;
+      border-color: rgba(148, 163, 184, 0.14) !important;
+    }
+  }
+
+  /* --- 通知設定側邊欄 --- */
+  .notify-side-card,
+  .class-reminder-side {
+    background: rgba(248, 250, 252, 0.65) !important;
+    backdrop-filter: blur(14px) !important;
+    border-color: rgba(219, 227, 239, 0.42) !important;
+  }
+
+  /* --- 模態框 --- */
+  .modal,
+  .tt-history-modal {
+    background: rgba(255, 255, 255, 0.86) !important;
+    backdrop-filter: blur(26px) !important;
+    -webkit-backdrop-filter: blur(26px) !important;
+    border-color: rgba(219, 227, 239, 0.42) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .modal,
+    .tt-history-modal {
+      background: rgba(22, 29, 41, 0.88) !important;
+      border-color: rgba(148, 163, 184, 0.18) !important;
+    }
+  }
+
+  /* --- Toast 通知 --- */
+  .toast {
+    backdrop-filter: blur(14px) !important;
+    -webkit-backdrop-filter: blur(14px) !important;
+    background: rgba(23, 32, 51, 0.88) !important;
+  }
+
+  /* --- 維護頁卡片 --- */
+  .maint-final-card,
+  .maint-final-check {
+    background: rgba(255, 255, 255, 0.62) !important;
+    backdrop-filter: blur(14px) !important;
+    border-color: rgba(219, 227, 239, 0.42) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .maint-final-card,
+    .maint-final-check {
+      background: rgba(22, 29, 41, 0.66) !important;
+      border-color: rgba(148, 163, 184, 0.16) !important;
+    }
+  }
+
+  /* --- 點名紀錄項目 --- */
+  .tt-history-item {
+    background: rgba(248, 250, 252, 0.62) !important;
+    backdrop-filter: blur(10px) !important;
+    border-color: rgba(219, 227, 239, 0.40) !important;
+  }
+
+  /* --- 課表面板 --- */
+  .tt-stable-panel {
+    background: rgba(255, 255, 255, 0.68) !important;
+    backdrop-filter: blur(20px) !important;
+    -webkit-backdrop-filter: blur(20px) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .tt-stable-panel {
+      background: rgba(22, 29, 41, 0.72) !important;
+    }
+  }
+
+  /* --- API 缺失提示 --- */
+  .api-missing {
+    background: rgba(255, 251, 235, 0.72) !important;
+    backdrop-filter: blur(8px) !important;
+  }
+
+  /* --- 模擬點名區域 --- */
+  .mock-account {
+    background: rgba(255, 255, 255, 0.58) !important;
+    backdrop-filter: blur(8px) !important;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .mock-account {
+      background: rgba(30, 41, 59, 0.55) !important;
+    }
+  }
+
+  /* --- 課表模板列 --- */
+  .tt-stable-template {
+    background: rgba(234, 240, 248, 0.60) !important;
+    backdrop-filter: blur(10px) !important;
+    border-color: rgba(219, 227, 239, 0.38) !important;
+  }
+
+  /* --- 維護整體區塊 --- */
+  .maint-final-overall {
+    background: rgba(255, 255, 255, 0.62) !important;
+    backdrop-filter: blur(16px) !important;
+    border-color: rgba(219, 227, 239, 0.40) !important;
+  }
+
+  /* --- 常用操作區按鈕 hover --- */
+  .panel button:not(.primary):hover,
+  .stat button:not(.primary):hover {
+    background: rgba(238, 243, 251, 0.85) !important;
+  }
+
+  /* --- .protected 區域讓內容在背景上方 --- */
+  body.dashboard-login-bg-active .protected {
+    position: relative;
+    z-index: 1;
+  }
+
+/* ── inline style: DESKTOP_HEADER_SPACIOUS_V1 (原 dashboard.html:1424) ── */
+  @media (min-width:821px){
+    html.tron-auth-ok header.topbar,
+    html.tron-return-ok header.topbar,
+    html.tron-auth-ok .topbar,
+    html.tron-return-ok .topbar,
+    header.topbar,
+    .topbar{
+      display:flex!important;
+      flex-direction:row!important;
+      flex-wrap:nowrap!important;
+      align-items:center!important;
+      justify-content:space-between!important;
+      gap:28px!important;
+      padding:16px 36px!important;
+      min-height:76px!important;
+      box-sizing:border-box!important;
+    }
+    header.topbar .brand,
+    .topbar .brand{
+      display:flex!important;
+      align-items:center!important;
+      gap:14px!important;
+      flex:0 1 auto!important;
+      min-width:0!important;
+    }
+    header.topbar .mark,
+    .topbar .mark{
+      width:42px!important;
+      height:42px!important;
+      border-radius:14px!important;
+    }
+    header.topbar .title,
+    .topbar .title{
+      font-size:18px!important;
+      line-height:1.2!important;
+      white-space:nowrap!important;
+    }
+    header.topbar .sub,
+    .topbar .sub{font-size:12px!important;margin-top:3px!important}
+    header.topbar .top-actions,
+    .topbar .top-actions{
+      display:flex!important;
+      flex-direction:row!important;
+      flex-wrap:nowrap!important;
+      align-items:center!important;
+      justify-content:flex-end!important;
+      gap:12px!important;
+      margin-left:auto!important;
+      width:auto!important;
+      max-width:none!important;
+      flex:0 0 auto!important;
+    }
+    header.topbar .top-actions > button,
+    header.topbar .top-actions > a,
+    .topbar .top-actions > button,
+    .topbar .top-actions > a{
+      min-height:40px!important;
+      height:40px!important;
+      min-width:0!important;
+      padding:0 18px!important;
+      border-radius:999px!important;
+      font-size:13.5px!important;
+      font-weight:750!important;
+      flex:0 0 auto!important;
+    }
+    header.topbar .top-actions > button.icon,
+    .topbar .top-actions > button.icon{
+      width:40px!important;
+      min-width:40px!important;
+      padding:0!important;
+    }
+  }
+
+/* ── inline style: MOBILE_HEADER_TO_MORE_V1 (原 dashboard.html:1502) ── */
+  @media (max-width:820px){
+    html.tron-auth-ok header.topbar .top-actions,
+    html.tron-return-ok header.topbar .top-actions,
+    header.topbar .top-actions,
+    .topbar .top-actions,
+    #passkeyRegisterBtn,
+    #changePasswordBtn,
+    #refreshAll,
+    #logoutBtn,
+    #meLink{
+      display:none!important;
+    }
+    html.tron-auth-ok body .tabs,
+    html.tron-return-ok body .tabs,
+    body .tabs{
+      display:none!important;
+      visibility:hidden!important;
+    }
+    header.topbar,
+    .topbar{
+      display:flex!important;
+      flex-direction:row!important;
+      flex-wrap:nowrap!important;
+      align-items:center!important;
+      justify-content:flex-start!important;
+      gap:12px!important;
+      padding:10px 16px!important;
+      min-height:56px!important;
+    }
+    header.topbar .brand,
+    .topbar .brand{min-width:0}
+    .hero h1{font-size:22px!important}
+  }
+  #changePasswordModal.cp-modal{
+    position:fixed;inset:0;z-index:2147483000;display:none;
+    align-items:flex-end;justify-content:center;
+    padding:12px 12px calc(18px + env(safe-area-inset-bottom,0px));
+    background:rgba(15,23,42,.46);
+  }
+  #changePasswordModal.cp-modal.visible{display:flex}
+  #changePasswordModal .cp-card{
+    width:min(440px,100%);
+    background:var(--card,#fff);color:var(--text,#172033);
+    border:1px solid var(--line,#dbe3ef);border-radius:22px;
+    padding:18px 16px 14px;box-shadow:0 24px 70px rgba(15,23,42,.28);
+  }
+  #changePasswordModal h3{margin:0 0 12px;font-size:18px;font-weight:900}
+  #changePasswordModal label{display:block;font-size:12px;font-weight:800;color:var(--muted,#64748b);margin:10px 0 6px}
+  #changePasswordModal input{
+    width:100%;min-height:46px;border-radius:14px;border:1px solid var(--line,#dbe3ef);
+    background:var(--soft,#f8fafc);color:var(--text,#172033);padding:0 12px;font-size:16px;
+  }
+  #changePasswordModal .cp-actions{display:flex;gap:8px;margin-top:16px}
+  #changePasswordModal .cp-actions button{flex:1;min-height:44px;border-radius:14px}
+  #changePasswordModal #cpMsg{min-height:18px;margin-top:8px;font-size:13px;font-weight:800;color:var(--muted,#64748b)}
+  #changePasswordModal #cpMsg.bad{color:#b91c1c}
+  #changePasswordModal #cpMsg.ok{color:#15803d}
+  @media (min-width:821px){
+    #changePasswordModal.cp-modal{align-items:center}
+  }
+
+/* ── inline style: MOBILE_HERO_TEXT_V1 (原 dashboard.html:1667) ── */
+  .hero .hero-copy{min-width:0;width:100%}
+  .hero .hero-top{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+  }
+  .hero .hero-kicker{
+    font-size:13px;font-weight:800;letter-spacing:.08em;color:var(--muted,#64748b);
+  }
+  .hero .hero-copy h1{
+    margin:4px 0 0;font-size:28px;font-weight:850;letter-spacing:-.03em;line-height:1.15;
+    white-space:nowrap;
+  }
+  /* REST_DAY_STAT_CARD_V1：休息日時「運行中」卡改為琥珀色、文字值縮小以免溢出 */
+  .grid.cards .stat.rest-day::before{background:#F59E0B!important}
+  .grid.cards .stat.rest-day .stat-value{font-size:30px!important;color:#F59E0B!important;letter-spacing:0!important}
+  .grid.cards .stat.rest-day .stat-hint{line-height:1.45}
+  .hero #overviewHint{
+    margin-top:6px;font-size:13px;line-height:1.45;
+    word-break:keep-all;overflow-wrap:break-word;
+  }
+  @media (max-width:820px){
+    .protected > .hero,
+    .hero{
+      display:block!important;
+      margin:0 0 12px!important;
+    }
+    .hero .toolbar-right{display:none!important}
+    .hero .hero-top{margin-bottom:2px}
+    .hero .hero-kicker{font-size:12px!important}
+    .hero .hero-copy h1,
+    .protected > .hero h1{
+      font-size:26px!important;
+      line-height:1.12!important;
+      margin:2px 0 0!important;
+      white-space:nowrap!important;
+    }
+    .hero #overviewHint,
+    .protected > .hero .small{
+      margin-top:6px!important;
+      font-size:13px!important;
+      line-height:1.5!important;
+      max-width:100%!important;
+      word-break:keep-all!important;
+      overflow-wrap:break-word!important;
+    }
+    .hero #lastUpdated,
+    .hero .pill{
+      flex:0 0 auto!important;
+      font-size:11px!important;
+      white-space:nowrap!important;
+    }
+  }
+
+/* ── inline style: FRONTEND_RENDERING_OPTIMIZATIONS_V1 (原 dashboard.html:1721) ── */
+  .view:not(.active){display:none!important}
+  @media(prefers-reduced-motion:reduce){
+    *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}
+  }
+
+/* ── inline style: DESKTOP_HERO_FIRST_PAINT_V1 (原 dashboard.html:1728) ── */
+  /* 桌面版標題區第一幀就要在，不能等 auth pending 解除才出現 */
+  @media (min-width:821px){
+    html.tron-auth-ok body .hero,
+    html.tron-return-ok body .hero,
+    html.dash-auth-ok body .hero,
+    html.tron-auth-pending:not(.tron-auth-logged-out) body .hero,
+    html:not(.tron-auth-logged-out) body .protected > .hero,
+    body.logged-in .hero,
+    body.auth-ok .hero,
+    body.dash-auth-ok .hero{
+      display:flex!important;
+      visibility:visible!important;
+      opacity:1!important;
+      height:auto!important;
+      overflow:visible!important;
+    }
+  }

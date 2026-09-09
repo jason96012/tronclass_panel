@@ -54,10 +54,9 @@ impl super::ApiClient {
         let url = format!("{}/api/profile", self.base_url);
         debug!(url = %url, "GET /api/profile");
 
+        // HOST_CONCURRENCY_CAP_V1：經每主機併發上限送出
         let resp = self
-            .client
-            .get(&url)
-            .send()
+            .send_limited(&url, self.client.get(&url))
             .await
             .into_diagnostic()
             .wrap_err("GET /api/profile failed")?;

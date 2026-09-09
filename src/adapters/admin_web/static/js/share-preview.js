@@ -23,9 +23,28 @@
   }
   function hex(b) { var s = []; for (var i = 0; i < Math.min(b.length, 8); i++) s.push(b[i].toString(16)); return s.join(' '); }
   // PDFJS_PREVIEW_V1: 與雲端硬碟同款，PDF.js 逐頁渲染成 canvas（不靠瀏覽器外掛/Range）。
+  // SHARE_LAZY_PDFJS_V1：pdf.min.js 按需載入（同一頁只載一次；失敗回傳 reject 讓呼叫端顯示訊息）。
+  var pdfLibPromise = null;
+  function loadPdfLib() {
+    if (window.pdfjsLib) return Promise.resolve();
+    if (pdfLibPromise) return pdfLibPromise;
+    pdfLibPromise = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = '/pub/static/js/pdf.min.js?v=sharev7';
+      s.async = true;
+      s.onload = function () { window.pdfjsLib ? resolve() : reject(new Error('pdfjsLib missing')); };
+      s.onerror = function () { pdfLibPromise = null; reject(new Error('pdf.min.js load failed')); };
+      document.head.appendChild(s);
+    });
+    return pdfLibPromise;
+  }
   function renderPdf(buf) {
+    stage.innerHTML = '<div class="msg">PDF 引擎載入中…</div>';
+    loadPdfLib().then(function () { renderPdfNow(buf); }, function (e) { fail('PDF 引擎未載入：' + ((e && e.message) || e)); });
+  }
+  function renderPdfNow(buf) {
     if (!window.pdfjsLib) { fail('PDF 引擎未載入'); return; }
-    try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/pub/static/js/pdf.worker.min.js?v=sharev5'; } catch (_) {}
+    try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/pub/static/js/pdf.worker.min.js?v=sharev7'; } catch (_) {}
     stage.innerHTML = '<div class="msg">PDF 渲染中…</div>';
     window.pdfjsLib.getDocument({ data: buf }).promise.then(function (pdf) {
       var wrap = document.createElement('div');

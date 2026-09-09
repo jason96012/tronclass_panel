@@ -102,6 +102,21 @@ pub(super) const DASHBOARD_MOBILE_CSS: &str = include_str!("static/css/dashboard
 pub(super) const DASHBOARD_COMPONENTS_CSS: &str =
     include_str!("static/css/dashboard-components.css");
 pub(super) const DASHBOARD_ACCESS_CSS: &str = include_str!("static/css/dashboard-access.css");
+// INLINE_SPLIT_V1：dashboard／files／timetable／ai 頁原本的內聯 script/style 抽成靜態檔。
+pub(super) const DASHBOARD_HEAD_JS: &str = include_str!("static/js/dashboard-head.js");
+pub(super) const DASHBOARD_MAIN_JS: &str = include_str!("static/js/dashboard-main.js");
+pub(super) const DASHBOARD_BODY_JS: &str = include_str!("static/js/dashboard-body.js");
+pub(super) const DASHBOARD_INLINE_CSS: &str = include_str!("static/css/dashboard-inline.css");
+pub(super) const DASHBOARD_INLINE_LATE_CSS: &str =
+    include_str!("static/css/dashboard-inline-late.css");
+pub(super) const FILES_HEAD_JS: &str = include_str!("static/js/files-head.js");
+pub(super) const FILES_MAIN_JS: &str = include_str!("static/js/files-main.js");
+pub(super) const FILES_PAGE_CSS: &str = include_str!("static/css/files-page.css");
+pub(super) const TIMETABLE_HEAD_JS: &str = include_str!("static/js/timetable-head.js");
+pub(super) const TIMETABLE_MAIN_JS: &str = include_str!("static/js/timetable-main.js");
+pub(super) const TIMETABLE_PAGE_CSS: &str = include_str!("static/css/timetable-page.css");
+pub(super) const AI_PAGE_JS: &str = include_str!("static/js/ai-page.js");
+pub(super) const AI_PAGE_CSS: &str = include_str!("static/css/ai-page.css");
 pub(super) const DASHBOARD_RUNTIME_JS: &str = include_str!("static/js/dashboard-runtime.js");
 pub(super) const DASHBOARD_FEATURES_JS: &str = include_str!("static/js/dashboard-modules.js");
 
@@ -114,6 +129,48 @@ pub(super) const ADMIN_PASSWORD_HTML: &str = include_str!("static/password.html"
 pub(super) const ADMIN_PASSKEY_HTML: &str = include_str!("static/passkey.html");
 pub(super) const ADMIN_BLACKLIST_HTML: &str = include_str!("static/blacklist.html");
 pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
+/// FRIENDLY_ERROR_PAGE_V1：404／405／5xx 導覽用說明頁模板。
+pub(super) const ADMIN_ERROR_HTML: &str = include_str!("static/error.html");
+
+/// FRIENDLY_ERROR_PAGE_V1：依狀態碼填模板。`path` 只用於顯示與「重新整理」連結，
+/// 一律做 HTML 逸出；只接受以 `/` 開頭的站內路徑（其餘退回 `/admin`），避免開放式跳轉。
+pub(super) fn friendly_error_html(status: StatusCode, path: &str) -> String {
+    let (title, lead, hint) = match status {
+        StatusCode::NOT_FOUND => (
+            "找不到這個頁面",
+            "這個網址不存在，或是頁面已被移除、改名。",
+            "如果你是從書籤或舊訊息裡的連結進來，請改從 Dashboard 首頁重新進入；點名輸入頁、分享連結有時效，過期後也會出現這個畫面。",
+        ),
+        StatusCode::METHOD_NOT_ALLOWED => (
+            "這個網址不支援此操作",
+            "頁面存在，但不是這樣開啟的（例如直接在網址列輸入了只給表單送出的路徑）。",
+            "請回到 Dashboard，用畫面上的按鈕操作；若是自動化工具呼叫，請確認 HTTP method。",
+        ),
+        StatusCode::SERVICE_UNAVAILABLE | StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => (
+            "服務暫時無法使用",
+            "伺服器正在重新啟動或更新，通常幾十秒內就會恢復。",
+            "請稍候再重新整理。若持續超過幾分鐘，請通知管理員查看主機狀態。",
+        ),
+        _ => (
+            "發生了非預期的錯誤",
+            "伺服器處理這個請求時出了問題，你的資料沒有遺失。",
+            "請重新整理一次；若還是失敗，請把發生時間與你正在做的操作告訴管理員，系統 Log 已記下這次錯誤。",
+        ),
+    };
+    let safe_path = if path.starts_with('/') && !path.starts_with("//") { path } else { "/admin" };
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    ADMIN_ERROR_HTML
+        .replace("__CODE__", &status.as_u16().to_string())
+        .replace("__TITLE__", title)
+        .replace("__LEAD__", lead)
+        .replace("__HINT__", hint)
+        .replace("__PATH__", &esc(safe_path))
+}
 pub(super) const ADMIN_HOMEWORK_HTML: &str = include_str!("static/homework.html");
 pub(super) const ADMIN_FILES_HTML: &str = include_str!("static/files.html");
 pub(super) const ADMIN_SETTINGS_HTML: &str = include_str!("static/settings.html");

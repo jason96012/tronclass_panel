@@ -110,7 +110,7 @@
 </head>
 <body>
 <header class="top"><div class="brand"><div class="logo">D</div><div><b>Tronclass</b><div class="meta">Notifications</div></div></div><a href="/admin#overview" aria-label="返回 Dashboard 總覽">返回 Dashboard</a></header>
-<main>
+<main id="main" tabindex="-1">
   <div class="page-head">
     <h1>通知設定</h1>
     <p>集中管理 Discord 通知、上課前提醒、晨間摘要與即時點名提示音。電腦版與手機版皆已最佳化。</p>
@@ -142,7 +142,7 @@
     <div class="actions">
       <button id="bindingSave" class="primary" type="button">儲存綁定</button>
     </div>
-    <div id="bindingMsg" class="msg"></div>
+    <div id="bindingMsg" class="msg" role="status" aria-live="polite"></div>
   </section>
 
   <section class="card">
@@ -164,7 +164,12 @@
           <button id="notifyAllOn" class="sec" type="button">全部開啟</button>
           <button id="notifyAllOff" class="sec" type="button">全部關閉</button>
         </div>
-        <div id="notifyMsg" class="msg"></div>
+        <!-- NOTIFY_TEST_ALL_V1 -->
+        <div class="actions" style="margin-top:6px">
+          <button id="notifyTestAll" class="sec" type="button">發送所有通知類型測試</button>
+        </div>
+        <div class="small" style="margin-top:6px">會把系統會主動寄出的每一種 Discord 訊息（啟動、偵測到點名、數字／QR 點名、催促、結果、作業、公告、上課提醒、課表變更、重新認證、管理員警示、推播失效、安全警示）各發一則到<b>你自己</b>綁定的 Discord／LINE。為避開 Discord 速率限制，會每 1.5 秒送一則、約 25 秒送完；你在上方關閉的類別不會送出。</div>
+        <div id="notifyMsg" class="msg" role="status" aria-live="polite"></div>
       </div>
     </div>
   </section>
@@ -203,7 +208,7 @@
         <button id="classReminderSave" class="primary" type="button">儲存上課提醒設定</button>
         <a class="sec" href="/admin#timetable">前往課表</a>
       </div>
-      <div id="classReminderMsg" class="msg"></div>
+      <div id="classReminderMsg" class="msg" role="status" aria-live="polite"></div>
     </section>
 
     <!-- DIGEST_PER_ACCOUNT_V1：晨間摘要每帳號開關（全域時間／啟用在設定頁） -->
@@ -226,7 +231,7 @@
       <div class="actions">
         <button id="digestPrefSave" class="primary" type="button">儲存晨間摘要設定</button>
       </div>
-      <div id="digestPrefMsg" class="msg"></div>
+      <div id="digestPrefMsg" class="msg" role="status" aria-live="polite"></div>
     </section>
 
     <!-- HOMEWORK_LADDER_V1：作業截止提醒階梯（每帳號可自訂） -->
@@ -259,7 +264,7 @@
         <button id="hwLadderSave" class="primary" type="button">儲存提醒階梯</button>
         <button id="hwLadderAdd" class="sec" type="button">新增階段</button>
       </div>
-      <div id="hwLadderMsg" class="msg"></div>
+      <div id="hwLadderMsg" class="msg" role="status" aria-live="polite"></div>
     </section>
 
     <section class="card grid-single">
@@ -276,6 +281,11 @@
         </label>
         <label>音量 <input id="rollcallSoundVolume" type="range" min="0" max="100" step="5"></label>
         <button id="rollcallSoundTest" class="sec" type="button">測試音效</button>
+      </div>
+      <!-- ROLLCALL_ALERT_HAPTICS_V1 -->
+      <div class="sound-row" style="margin-top:8px">
+        <label><input id="rollcallVibrate" type="checkbox"> 手機震動（支援 Vibration API 的瀏覽器；iPhone Safari 不支援）</label>
+        <label><input id="rollcallRepeat" type="checkbox"> 彈窗未處理時每 20 秒再提醒一次（最多 3 次）</label>
       </div>
       <p class="note" style="margin-top:10px">變更會立即套用並儲存到此裝置（localStorage：tronclass_rollcall_sound_settings_v1），與控制台的提示音設定共用。</p>
     </section>

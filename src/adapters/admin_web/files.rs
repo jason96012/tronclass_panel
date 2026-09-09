@@ -990,8 +990,9 @@ __SCRIPTS__
 <body>
 <header><span class="t">__TITLE__</span><a class="dl" href="__DLATTR__">下載</a></header>
 <div id="stage"><div class="msg">載入中…</div></div>
-<script src="/pub/static/js/pdf.min.js?v=sharev6"></script>
-<script src="/pub/static/js/share-preview.js?v=sharev6"></script>
+<!-- SHARE_LAZY_PDFJS_V1：pdf.min.js（~320 KB，worker 另 ~1.08 MB）不再每次分享頁都同步載入；
+     share-preview.js 只在魔數判定為 PDF 且需要本機渲染時才動態插入 <script>。 -->
+<script src="/pub/static/js/share-preview.js?v=sharev7"></script>
 </body>
 </html>"#;
 

@@ -15,8 +15,10 @@
   }
   function start(){
     purge();
-    var n=0, timer=setInterval(function(){ purge(); n++; if(n>=48) clearInterval(timer); }, 500);
+    /* NO_POLL_ENSURE_V1：移除 48 次 × 500 ms（24 秒）輪詢；MutationObserver 已即時處理新插入的
+       「通知設定」按鈕，另在 pageshow 補跑。 */
     try{ new MutationObserver(purge).observe(document.body,{childList:true,subtree:true}); }catch(_){}
+    window.addEventListener('pageshow', purge);
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', start);
   else start();

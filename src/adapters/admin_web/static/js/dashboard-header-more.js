@@ -113,8 +113,10 @@
   window.tronOpenChangePassword=showModal;
   function start(){
     enhanceMore();
-    var n=0, timer=setInterval(function(){ enhanceMore(); n++; if(n>=24) clearInterval(timer); }, 500);
+    /* NO_POLL_ENSURE_V1：移除 24 次 × 500 ms 輪詢；MutationObserver（整棵樹 childList）已能在
+       「更多」面板建立時立刻補上按鈕，另在 pageshow 補跑一次。 */
     try{ new MutationObserver(enhanceMore).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){}
+    window.addEventListener('pageshow', enhanceMore);
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', start);
   else start();

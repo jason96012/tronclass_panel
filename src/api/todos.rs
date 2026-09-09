@@ -124,7 +124,7 @@ impl super::ApiClient {
         let todos_url = format!("{}/api/todos", self.base_url);
         debug!(url = %todos_url, "正在查詢 Tronclass 全域待辦清單 /api/todos");
 
-        if let Ok(resp) = self.client.get(&todos_url).send().await {
+        if let Ok(resp) = self.send_limited(&todos_url, self.client.get(&todos_url)).await {
             let status = resp.status();
             if status == StatusCode::UNAUTHORIZED {
                 return Err(miette::miette!(crate::api::ApiError::Unauthorized));
@@ -149,7 +149,7 @@ impl super::ApiClient {
         let my_courses_url = format!("{}/api/my-courses", self.base_url);
         debug!(url = %my_courses_url, "正在查詢學生修課清單 /api/my-courses");
 
-        if let Ok(resp) = self.client.get(&my_courses_url).send().await {
+        if let Ok(resp) = self.send_limited(&my_courses_url, self.client.get(&my_courses_url)).await {
             let status = resp.status();
             if status == StatusCode::UNAUTHORIZED {
                 return Err(miette::miette!(crate::api::ApiError::Unauthorized));
@@ -269,7 +269,7 @@ impl super::ApiClient {
                                         let effective_url = format!(
                                             "{url}?page={page}&page_size={HOMEWORK_ACTIVITIES_PAGE_SIZE}"
                                         );
-                                        let Ok(resp) = self.client.get(&effective_url).send().await else {
+                                        let Ok(resp) = self.send_limited(&effective_url, self.client.get(&effective_url)).await else {
                                             break;
                                         };
                                         if !resp.status().is_success() {

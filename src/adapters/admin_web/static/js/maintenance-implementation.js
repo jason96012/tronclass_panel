@@ -131,7 +131,7 @@
   }
   async function doAction(action){
     if(action==='stop'&&!confirm('確定要暫停全部帳號監控？'))return;
-    try{await fetch('/admin/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:action})}).then(parseResponse);toast('操作完成');loadHealth(false)}catch(e){toast(e.message||'操作失敗',false)}
+    try{var r=await fetch('/admin/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:action})}).then(parseResponse);/* ACTION_FEEDBACK_V1 */toast((r&&r.message)||'操作完成');loadHealth(false)}catch(e){toast(e.message||'操作失敗',false)}
   }
   function copyDiag(){var text=JSON.stringify({health:lastHealth,check:lastCheck,time:new Date().toISOString()},null,2); if(navigator.clipboard)navigator.clipboard.writeText(text).then(function(){toast('已複製診斷摘要')}); else prompt('請手動複製：',text)}
   function cleanupMobileNav(){
@@ -149,7 +149,9 @@
     stopAll:function(){return doAction('stop')}
   };
 
-  function boot(){renderShell();cleanupMobileNav(); if(location.hash==='#maintenance'||(q('view-maintenance')&&q('view-maintenance').classList.contains('active')))loadHealth(false); var n=0,t=setInterval(function(){cleanupMobileNav();n++;if(n>=20)clearInterval(t)},500)}
+  /* NO_POLL_ENSURE_V1：cleanupMobileNav 只在桌機寬度隱藏手機底欄；底欄由其他腳本 appendChild 到 body，
+     改用 body 直屬 childList 的 MutationObserver＋resize 取代 20 次 × 500 ms 輪詢。 */
+  function boot(){renderShell();cleanupMobileNav(); if(location.hash==='#maintenance'||(q('view-maintenance')&&q('view-maintenance').classList.contains('active')))loadHealth(false); try{new MutationObserver(function(){cleanupMobileNav()}).observe(document.body||document.documentElement,{childList:true})}catch(_){} window.addEventListener('resize',cleanupMobileNav,{passive:true})}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
   document.addEventListener('click',function(ev){if(ev.target.closest&&ev.target.closest('[data-view="maintenance"],.tab'))setTimeout(function(){renderShell();loadHealth(false);cleanupMobileNav()},100)},true);
 })();

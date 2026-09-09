@@ -366,6 +366,28 @@ fn blacklisted_browser_response() -> Response {
     response
 }
 
+/// FRIENDLY_ERROR_PAGE_V1：組出說明頁回應（狀態碼保留；帶 CSP nonce，不做 ETag／304 —
+/// 傳入空 HeaderMap 讓 html_page_response 永遠回完整本文）。
+fn friendly_error_response(status: StatusCode, path: &str) -> Response {
+    let html = pages::friendly_error_html(status, path);
+    let mut response = html_page_response(&HeaderMap::new(), html);
+    *response.status_mut() = status;
+    response
+}
+
+/// FRIENDLY_ERROR_PAGE_V1：router fallback。API 路徑與非瀏覽器請求回 JSON，其餘回說明頁。
+async fn friendly_not_found_handler(headers: HeaderMap, uri: axum::http::Uri) -> Response {
+    let path = uri.path();
+    if path.starts_with("/admin/api/") || !request_prefers_html(&headers) {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "not_found", "path": path })),
+        )
+            .into_response();
+    }
+    friendly_error_response(StatusCode::NOT_FOUND, path)
+}
+
 fn request_prefers_html(headers: &HeaderMap) -> bool {
     headers
         .get(header::ACCEPT)
@@ -2085,6 +2107,55 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/dashboard-access.css",
             get(static_assets::admin_dashboard_access_css_handler),
         )
+        // CSS_BUNDLE_V1 / INLINE_SPLIT_V1
+        .route(
+            "/admin/static/dashboard-bundle.css",
+            get(static_assets::admin_dashboard_bundle_css_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-head.js",
+            get(static_assets::admin_dashboard_head_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-main.js",
+            get(static_assets::admin_dashboard_main_js_handler),
+        )
+        .route(
+            "/admin/static/js/dashboard-body.js",
+            get(static_assets::admin_dashboard_body_js_handler),
+        )
+        .route(
+            "/admin/static/js/files-head.js",
+            get(static_assets::admin_files_head_js_handler),
+        )
+        .route(
+            "/admin/static/js/files-main.js",
+            get(static_assets::admin_files_main_js_handler),
+        )
+        .route(
+            "/admin/static/files-page.css",
+            get(static_assets::admin_files_page_css_handler),
+        )
+        .route(
+            "/admin/static/js/timetable-head.js",
+            get(static_assets::admin_timetable_head_js_handler),
+        )
+        .route(
+            "/admin/static/js/timetable-main.js",
+            get(static_assets::admin_timetable_main_js_handler),
+        )
+        .route(
+            "/admin/static/timetable-page.css",
+            get(static_assets::admin_timetable_page_css_handler),
+        )
+        .route(
+            "/admin/static/js/ai-page.js",
+            get(static_assets::admin_ai_page_js_handler),
+        )
+        .route(
+            "/admin/static/ai-page.css",
+            get(static_assets::admin_ai_page_css_handler),
+        )
         .route(
             "/admin/static/dashboard-runtime.js",
             get(static_assets::admin_dashboard_runtime_handler),
@@ -2400,6 +2471,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/homework/test-notification",
             post(homework::admin_homework_test_notification_handler),
         )
+        // NOTIFY_TEST_ALL_V1
+        .route(
+            "/admin/api/notifications/test-all",
+            post(notifications::admin_notification_test_all_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         .route("/admin/api/status", get(status::admin_status_handler))
         .route(
             "/admin/api/rollcall/events",
@@ -2513,6 +2590,15 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/timetable",
             axum::routing::get(pages::admin_clean_timetable_page_handler),
         )
+        // FRIENDLY_ERROR_PAGE_V1：沒有任何路由符合時的 404。merge 進 scanner／LINE webhook
+        // router 時，因對方沒有 fallback，這個 fallback 會成為整個 server 的 404 處理。
+        .fallback(friendly_not_found_handler)
+        // STATIC_BROTLI_PRECOMPRESS_V1：在安全標頭 middleware 內側（命中預壓縮快取的回應
+        // 仍會被補上 CSP／HSTS／Cache-Control），在 CompressionLayer 內側（已帶
+        // Content-Encoding 的回應會被它略過，不會壓兩次）。
+        .layer(axum::middleware::from_fn(
+            static_assets::precompressed_static_middleware,
+        ))
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         .layer(axum::middleware::from_fn_with_state(
             blacklist_guard_state,
@@ -2537,6 +2623,9 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             // The dashboard HTML is ~260 KB of inline script/CSS; it compresses
             // to roughly a tenth of that. Brotli beats gzip on this kind of
             // text payload, so offer it first and keep gzip as the fallback.
+            // STATIC_BROTLI_PRECOMPRESS_V1：靜態資產第二次起由 precompressed_static_middleware
+            // 直接回 quality 11 的預壓縮位元組；這一層只負責 HTML／JSON 等動態回應的即時壓縮，
+            // 因此維持預設（較低）品質換取延遲。
             tower_http::compression::CompressionLayer::new()
                 .br(true)
                 .gzip(true)
@@ -3307,11 +3396,36 @@ async fn admin_security_headers_middleware(
     // `frame-ancestors 'none'`，瀏覽器會拒絕在框內顯示這份 PDF，預覽只剩空白。
     // 這裡只放寬到 same-origin：跨站仍然無法內嵌我們的預覽回應。
     let is_framable_preview = path == "/admin/api/files/preview";
+    // STATUS_ETAG_V1：/admin/api/status 回應帶 ETag／可回 304；`no-store` 會讓瀏覽器連
+    // If-None-Match 都不送，因此這條路徑改 `private, no-cache`（仍每次驗證、不落磁碟共享）。
+    let is_status_api = path == "/admin/api/status";
     // SHARE_V1c: /pub/ 是公開分享/串流端點，需被「跨域」檢視器（Microsoft Office
     // Online、外部 <img>/<iframe>）載入。若沿用 same-origin 的 CORP 與 X-Frame-Options
     // DENY，跨域檢視器會直接拒絕載入 → Office Online 顯示 "An error occurred"。
     let is_pub = path.starts_with("/pub/");
+    // FRIENDLY_ERROR_PAGE_V1：瀏覽器導覽（Accept: text/html）拿到沒有本文的 404／405／5xx 時，
+    // 換成說明頁；API（/admin/api/）、公開分享（/pub/）、靜態資產與非 HTML 請求維持原樣，
+    // 前端 fetch 依賴的 JSON 錯誤格式不受影響。
+    let friendly_candidate = !is_pub
+        && !cache_static
+        && !path.starts_with("/admin/api/")
+        && request_prefers_html(request.headers());
+    let friendly_path = if friendly_candidate { path.to_string() } else { String::new() };
     let mut response = next.run(request).await;
+    if friendly_candidate
+        && matches!(
+            response.status(),
+            StatusCode::NOT_FOUND
+                | StatusCode::METHOD_NOT_ALLOWED
+                | StatusCode::INTERNAL_SERVER_ERROR
+                | StatusCode::BAD_GATEWAY
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::GATEWAY_TIMEOUT
+        )
+        && !is_html_document(&response)
+    {
+        response = friendly_error_response(response.status(), &friendly_path);
+    }
 
     // This middleware covers the whole Admin Web router, including `/` and
     // other redirect/error responses. Security headers must not depend on the
@@ -3379,7 +3493,7 @@ async fn admin_security_headers_middleware(
         // requests, so every navigation re-downloaded the full ~260 KB
         // dashboard. `no-cache` still revalidates on each load while allowing
         // the ETag below to answer with an empty 304.
-        if html_document {
+        if html_document || is_status_api {
             headers.insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("private, no-cache, must-revalidate"),

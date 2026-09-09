@@ -1,0 +1,80 @@
+/* INLINE_SPLIT_V1：dashboard-inline-late.css 原本內嵌於 dashboard.html 的 <body> 內聯 <style>（passkey 樣式、toast 對比、導覽避讓、手動深色鏡像；在 bundle 最末，維持原本「最後、最高優先」），抽成靜態檔（CSP script-src/style-src 'self'；
+   由 asset_versions 統一改寫 ?sv=<build id>，內容變動即自動失效快取）。區塊順序與原 HTML 一致。 */
+
+/* ── inline style: passkeyLoginRestoreFinalStyleV2 (原 dashboard.html:2125) ── */
+  .passkey-login-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  #passkeyLoginBtn,#passkeyRegisterBtn,#mobilePasskeySheetBtn{white-space:nowrap}
+  #passkeyRegisterBtn{background:var(--soft,#eef3fb);color:var(--text,#172033);border:1px solid var(--line,#dbe3ef)}
+  @media(max-width:820px){
+    .passkey-login-row{display:grid;grid-template-columns:1fr}
+    #passkeyRegisterBtn{min-height:36px;height:36px;border-radius:999px;padding:0 12px;font-size:13px}
+    #mobilePasskeySheetBtn{color:var(--primary,#2563eb)!important;font-weight:950!important}
+  }
+
+/* ── inline style: toast-contrast-v1 (原 dashboard.html:2452) ── */
+  /* TOAST_CONTRAST_V1：右下提示改為高對比實色（深底白字＋左側狀態色條），
+     雙主題一致；覆蓋前面所有 .toast 規則（id 選擇器＋文件順序最後）。 */
+  #toast.toast{
+    background:#0f172a!important;
+    color:#f8fafc!important;
+    font-weight:700!important;
+    text-shadow:0 1px 2px rgba(0,0,0,.45)!important;
+    box-shadow:0 12px 36px rgba(2,6,23,.5)!important;
+    border:1px solid rgba(148,163,184,.28)!important;
+    -webkit-backdrop-filter:none!important;
+    backdrop-filter:none!important
+  }
+  html.dark-mode #toast.toast,html[data-theme="dark"] #toast.toast{
+    background:#111c30!important;
+    border-color:rgba(148,163,184,.35)!important
+  }
+  #toast.toast.ok{border-left:4px solid #4ade80!important}
+  #toast.toast.bad{border-left:4px solid #f87171!important}
+
+/* ── inline style: nav-clearance-v2 (原 dashboard.html:2472) ── */
+  /* NAV_BOTTOM_CLEARANCE_V2：main 底部避讓對齊雲端硬碟的 150px（覆蓋
+     mobile-navigation.css 的 108px），捲到底最後一行字剛好不被導覽列擋住。 */
+  @media(max-width:820px){
+    main{padding-bottom:calc(150px + env(safe-area-inset-bottom,0px))!important}
+  }
+
+/* ── inline style: MANUAL_DARK_MIRROR_V1 (原 dashboard.html:2479) ── */
+/* DARK_MIRROR_V1: 自動鏡像 prefers-color-scheme:dark → html[data-theme="dark"]；手動深色與系統深色同調色盤 */
+html[data-theme="dark"] #passkeyTapOverlay .pk-card{background:#131b2a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #passkeyTapOverlay p{color:#94a3b8 !important;}
+html[data-theme="dark"] #passkeyTapOverlay #pkTapClose{background:#24324a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #dashPwOverlay .pw-card{background:#131b2a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #dashPwOverlay .pw-hint, html[data-theme="dark"] #dashPwOverlay label{color:#94a3b8 !important;}
+html[data-theme="dark"] #dashPwOverlay input{background:#1c2638 !important;border-color:#334155 !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] #dashPwOverlay #dashPwCancel{background:#24324a !important;color:#f1f5f9 !important;}
+html[data-theme="dark"] body.dashboard-login-bg-active header, html[data-theme="dark"] body.dashboard-login-bg-active .topbar, html[data-theme="dark"] body.dashboard-login-bg-active .top-bar, html[data-theme="dark"] body.dashboard-login-bg-active .dashboard-header, html[data-theme="dark"] body.dashboard-login-bg-active .app-header{background:rgba(15,23,42,.78)!important;border-bottom-color:rgba(148,163,184,.18)!important;}
+html[data-theme="dark"] body.dashboard-login-bg-active .mobile-nav{background:rgba(15,23,42,.88)!important;border-color:rgba(148,163,184,.22)!important;}
+html[data-theme="dark"] .panel, html[data-theme="dark"] .stat, html[data-theme="dark"] .item, html[data-theme="dark"] .next-card, html[data-theme="dark"] .login-card, html[data-theme="dark"] #loginCard, html[data-theme="dark"] #nextClassCard, html[data-theme="dark"] #mockPanel, html[data-theme="dark"] #mockRollcallPanel{background: rgba(22, 29, 41, 0.74) !important;border-color: rgba(148, 163, 184, 0.16) !important;box-shadow: 0 4px 28px rgba(0, 0, 0, 0.22) !important;}
+html[data-theme="dark"] header.topbar, html[data-theme="dark"] .topbar, html[data-theme="dark"] .app-header, html[data-theme="dark"] .dashboard-header{background: rgba(15, 23, 42, 0.78) !important;border-bottom-color: rgba(148, 163, 184, 0.15) !important;}
+html[data-theme="dark"] .table-wrap{background: rgba(22, 29, 41, 0.65) !important;border-color: rgba(148, 163, 184, 0.14) !important;}
+html[data-theme="dark"] table thead th, html[data-theme="dark"] .tt-stable-table th{background: rgba(30, 41, 59, 0.70) !important;}
+html[data-theme="dark"] .mobile-nav, html[data-theme="dark"] #mobileNav, html[data-theme="dark"] #mobileNavFinalV2{background: rgba(15, 23, 42, 0.88) !important;border-color: rgba(148, 163, 184, 0.18) !important;}
+html[data-theme="dark"] #mobileSheet .sheet, html[data-theme="dark"] #mobileMoreFinalV2 .sheet{background: rgba(22, 29, 41, 0.86) !important;border-color: rgba(148, 163, 184, 0.18) !important;}
+html[data-theme="dark"] .quick button.secondary{background: rgba(30, 41, 59, 0.55) !important;}
+html[data-theme="dark"] .tt-stable-row, html[data-theme="dark"] .tt-edit-row{background: rgba(30, 41, 59, 0.65) !important;border-color: rgba(148, 163, 184, 0.16) !important;}
+html[data-theme="dark"] .notify-pref-item, html[data-theme="dark"] .notify-item{background: rgba(30, 41, 59, 0.58) !important;border-color: rgba(148, 163, 184, 0.14) !important;}
+html[data-theme="dark"] .modal, html[data-theme="dark"] .tt-history-modal{background: rgba(22, 29, 41, 0.88) !important;border-color: rgba(148, 163, 184, 0.18) !important;}
+html[data-theme="dark"] .maint-final-card, html[data-theme="dark"] .maint-final-check{background: rgba(22, 29, 41, 0.66) !important;border-color: rgba(148, 163, 184, 0.16) !important;}
+html[data-theme="dark"] .tt-stable-panel{background: rgba(22, 29, 41, 0.72) !important;}
+html[data-theme="dark"] .mock-account{background: rgba(30, 41, 59, 0.55) !important;}
+html[data-theme="dark"]{--bg:#0B0F19!important;--card:#182232!important;--soft:#111827!important;--soft2:#1E293B!important;--text:#F1F5F9!important;--muted:#94A3B8!important;--line:#334155!important;--line2:#1E293B!important;--primary:#3B82F6!important;--primaryText:#FFFFFF!important;--ok:#4ADE80!important;--warn:#FBBF24!important;--bad:#F87171!important;}
+/* dashboard.css 外部檔的深色僅寫在 prefers media，這裡補手動深色 */
+html[data-theme="dark"] header.topbar,html[data-theme="dark"] .topbar{background:rgba(15,20,29,.92)!important;border-bottom-color:var(--line2)!important}
+html[data-theme="dark"] .next-item{background:rgba(15,23,42,.35)!important}
+html[data-theme="dark"] .mobile-nav{background:rgba(15,23,42,.94)!important}
+
+
+/* MAINT_FINAL_DARK_V1: 維護頁卡片（maintenance-implementation.js + maintenance-components.css）手動深色補齊 */
+html[data-theme="dark"] .maint-final-overall{background:linear-gradient(180deg,rgba(21,128,61,.10),#182232)!important;border-color:#334155!important;color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-overall.warn{background:linear-gradient(180deg,rgba(180,83,9,.14),#182232)!important}
+html[data-theme="dark"] .maint-final-overall.bad{background:linear-gradient(180deg,rgba(180,35,24,.14),#182232)!important}
+html[data-theme="dark"] .maint-final-card{background:#182232!important;border-color:#334155!important;color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-check,html[data-theme="dark"] .maint-final-raw{background:#111827!important;border-color:#334155!important;color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-title,html[data-theme="dark"] .maint-final-k{color:#F1F5F9!important}
+html[data-theme="dark"] .maint-final-sub,html[data-theme="dark"] .maint-final-v,html[data-theme="dark"] .maint-final-h{color:#94A3B8!important}
+html[data-theme="dark"] .maint-final-bar{background:#1E293B!important}

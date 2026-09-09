@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>__TITLE__｜Tronclass Dashboard</title>
+  <!-- FRIENDLY_ERROR_PAGE_V1：404／405／5xx 的瀏覽器導覽用說明頁（API 與非 HTML 請求仍回 JSON／純文字）。
+       內聯 style 由 html_page_response 補 CSP nonce；沒有任何 script。 -->
+  <style>
+    :root{color-scheme:light dark;font-family:Inter,"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 18% 8%,#dbeafe 0,transparent 38%),radial-gradient(circle at 88% 88%,#e0e7ff 0,transparent 38%),#f7f9ff;color:#17233b}
+    .card{width:min(100%,620px);overflow:hidden;border:1px solid rgba(148,163,184,.25);border-radius:28px;background:rgba(255,255,255,.94);box-shadow:0 26px 75px rgba(30,64,175,.14)}
+    .banner{height:8px;background:linear-gradient(90deg,#2563eb,#60a5fa,#a78bfa)}
+    .content{padding:40px 40px 34px}
+    .code{display:inline-block;padding:6px 12px;border-radius:999px;background:#e0e7ff;color:#3730a3;font-weight:900;font-size:13px;letter-spacing:.06em;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    h1{margin:18px 0 10px;font-size:clamp(26px,5vw,36px);letter-spacing:-.04em}
+    .lead{margin:0;color:#64748b;font-size:16px;line-height:1.8}
+    .hint{margin:24px 0 0;padding:16px 17px;border-radius:16px;background:#eff6ff;color:#1e40af;font-size:14px;line-height:1.7}
+    .actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:26px}
+    .actions a{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:0 18px;border-radius:12px;font-weight:800;text-decoration:none;border:1px solid #2563eb;background:#2563eb;color:#fff}
+    .actions a.sec{background:transparent;color:#1d4ed8}
+    .actions a:focus-visible{outline:3px solid rgba(59,130,246,.45);outline-offset:2px}
+    .path{margin-top:22px;color:#94a3b8;font-size:12px;word-break:break-all}
+    .path b{color:#64748b;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700}
+    @media(prefers-color-scheme:dark){
+      body{background:radial-gradient(circle at 18% 8%,#1e3a8a 0,transparent 38%),radial-gradient(circle at 88% 88%,#312e81 0,transparent 38%),#0b1220;color:#e2e8f0}
+      .card{background:rgba(15,23,42,.92);border-color:rgba(148,163,184,.2)}
+      .lead{color:#94a3b8}.hint{background:rgba(37,99,235,.14);color:#bfdbfe}.code{background:rgba(99,102,241,.22);color:#c7d2fe}
+      .actions a.sec{color:#93c5fd;border-color:#3b82f6}.path b{color:#94a3b8}
+    }
+    @media(max-width:540px){body{padding:14px}.content{padding:30px 22px}.card{border-radius:22px}}
+  </style>
+</head>
+<body>
+  <main class="card" role="main" aria-labelledby="title">
+    <div class="banner"></div>
+    <div class="content">
+      <span class="code">HTTP __CODE__</span>
+      <h1 id="title">__TITLE__</h1>
+      <p class="lead">__LEAD__</p>
+      <div class="hint">__HINT__</div>
+      <div class="actions">
+        <a href="/admin">回到 Dashboard</a>
+        <a class="sec" href="__PATH__">重新整理此頁</a>
+      </div>
+      <div class="path">你要開的網址：<b>__PATH__</b></div>
+    </div>
+  </main>
+</body>
+</html>

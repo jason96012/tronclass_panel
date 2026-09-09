@@ -160,9 +160,21 @@
     syncExisting: syncExisting,
     explicitlyBoundAccount: explicitlyBoundAccount
   };
+  // PWA_STATIC_CACHE_V3：非 iOS 瀏覽器也註冊 service worker（只快取帶 ?sv= 的靜態資產；
+  // HTML／API 不攔）。iOS 維持原本「啟用推播時才註冊」——避免 WebKit SW 暫停造成白畫面。
+  function registerStaticCacheWorker() {
+    if (isIos()) return;
+    if (!window.isSecureContext || !('serviceWorker' in navigator)) return;
+    var run = function () {
+      navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(function () {});
+    };
+    if ('requestIdleCallback' in window) window.requestIdleCallback(run, { timeout: 4000 });
+    else setTimeout(run, 1500);
+  }
   function boot() {
     syncExisting();
     ensureStatusManagementLink();
+    registerStaticCacheWorker();
     var attempts = 0;
     var timer = setInterval(function () {
       attempts += 1;

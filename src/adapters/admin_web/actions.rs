@@ -197,25 +197,44 @@ pub(super) async fn admin_action_handler(
         }
     };
 
+    // ACTION_FEEDBACK_V1：除了 affected 數字，額外回報「實際發生了什麼」——
+    // 哪些帳號本來就已是目標狀態（start 對已在跑的帳號、stop 對已停的帳號）、
+    // 哪些帳號被喚醒；前端把 message 直接當 toast，使用者不必再猜「操作完成」是什麼意思。
     let mut affected = 0usize;
+    let mut changed: Vec<String> = Vec::new();
+    let mut unchanged: Vec<String> = Vec::new();
     for account in &targets {
         match action_name.as_str() {
             "force" | "force_all" => {
                 account.force_poll_tx.notify_one();
                 affected += 1;
+                changed.push(account.account_id.clone());
             }
             "reauth" | "reauth_all" => {
                 account.reauth_tx.notify_one();
                 affected += 1;
+                changed.push(account.account_id.clone());
             }
             "start" | "start_all" => {
+                let was_running = *account.is_running.lock().await;
                 set_running(account, true).await;
                 account.force_poll_tx.notify_one();
                 affected += 1;
+                if was_running {
+                    unchanged.push(account.account_id.clone());
+                } else {
+                    changed.push(account.account_id.clone());
+                }
             }
             "stop" | "stop_all" => {
+                let was_running = *account.is_running.lock().await;
                 set_running(account, false).await;
                 affected += 1;
+                if was_running {
+                    changed.push(account.account_id.clone());
+                } else {
+                    unchanged.push(account.account_id.clone());
+                }
             }
             other => {
                 return (
@@ -228,6 +247,8 @@ pub(super) async fn admin_action_handler(
     }
 
     super::status::invalidate_admin_status_cache().await;
+
+    let message = action_feedback_message(&action_name, &changed, &unchanged, session.is_admin);
 
     info!(
         action = %action_name,
@@ -248,9 +269,81 @@ pub(super) async fn admin_action_handler(
     );
     (
         StatusCode::OK,
-        Json(json!({ "ok": true, "affected": affected })),
+        Json(json!({
+            "ok": true,
+            "affected": affected,
+            // ACTION_FEEDBACK_V1
+            "message": message,
+            "changed": changed,
+            "unchanged": unchanged,
+        })),
     )
         .into_response()
+}
+
+/// ACTION_FEEDBACK_V1：把 force／reauth／start／stop 的結果組成一句人看得懂的中文。
+/// 帳號 ID 最多列 3 個，其餘以「等 N 個帳號」帶過，避免 toast 過長。
+fn action_feedback_message(
+    action: &str,
+    changed: &[String],
+    unchanged: &[String],
+    is_admin: bool,
+) -> String {
+    fn list(ids: &[String]) -> String {
+        const SHOW: usize = 3;
+        if ids.is_empty() {
+            return String::new();
+        }
+        if ids.len() == 1 {
+            return ids[0].clone();
+        }
+        if ids.len() <= SHOW {
+            return ids.join("、");
+        }
+        format!("{} 等 {} 個帳號", ids[..SHOW].join("、"), ids.len())
+    }
+    let total = changed.len() + unchanged.len();
+    if total == 0 {
+        return "沒有符合條件的帳號，未執行任何操作".to_string();
+    }
+    match action {
+        "force" | "force_all" => {
+            let scope = if total == 1 {
+                list(changed)
+            } else if action == "force" && !is_admin {
+                // 一般使用者按 Force 會喚醒全部帳號一起檢查（見上方 targets 邏輯）。
+                format!("全部 {total} 個帳號")
+            } else {
+                format!("{total} 個帳號")
+            };
+            format!("已要求 {scope} 立即檢查點名，結果會在下次輪詢後更新")
+        }
+        "reauth" | "reauth_all" => {
+            let scope = if total == 1 { list(changed) } else { format!("{total} 個帳號") };
+            format!("已要求 {scope} 重新登入學校系統，數秒內可在帳號卡看到結果")
+        }
+        "start" | "start_all" => {
+            let mut parts = Vec::new();
+            if !changed.is_empty() {
+                parts.push(format!("已啟動 {} 的監控並立即檢查一次", list(changed)));
+            }
+            if !unchanged.is_empty() {
+                parts.push(format!("{} 原本就在監控中", list(unchanged)));
+            }
+            parts.join("；")
+        }
+        "stop" | "stop_all" => {
+            let mut parts = Vec::new();
+            if !changed.is_empty() {
+                parts.push(format!("已暫停 {} 的監控，期間不會偵測點名", list(changed)));
+            }
+            if !unchanged.is_empty() {
+                parts.push(format!("{} 原本就是暫停狀態", list(unchanged)));
+            }
+            parts.join("；")
+        }
+        _ => format!("操作完成，影響 {total} 個帳號"),
+    }
 }
 
 pub(super) async fn handle_admin_account_action(
