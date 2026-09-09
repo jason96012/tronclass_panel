@@ -118,6 +118,73 @@ pub(super) async fn admin_login_handler(
 
     let client = ip.clone();
     let rate_key = format!("login:{}:{client}", username.to_lowercase());
+
+    // Try exact account-id match first, then fall back to username search.
+    // LOGIN_PERF_V1：兩個查詢彼此獨立，同時發出（SQLite 讀取池有 10 條連線），
+    // 以學號登入（id 查不到、要走 username）的常見路徑少等一趟。
+    let (by_id, by_username) = tokio::join!(
+        state.accounts_db.get(username),
+        state.accounts_db.find_by_username(username, None),
+    );
+    let mut candidates = Vec::new();
+    if let Ok(Some(account)) = by_id {
+        candidates.push(account);
+    }
+    if candidates.is_empty() {
+        if let Ok(accounts) = by_username {
+            candidates = accounts;
+        }
+    }
+
+    // LOGIN_TIERED_LOCKOUT_V1 第一層：帳號密碼登入若在鎖定中，直接回 423，不做驗證。
+    // 鍵含輸入名稱與所有候選帳號的 id / 學號（與上鎖時一致）。
+    // LOGIN_LOCKED_RETRY_NO_COUNT_V1：鎖定中的嘗試不再計入失敗（見下方說明）；
+    // 持有人可由 Discord「取消這次鎖定」，登入頁會自動偵測並解除倒數。
+    {
+        let mut lock_keys: Vec<String> = vec![username.to_string()];
+        for account in &candidates {
+            lock_keys.push(account.id.clone());
+            lock_keys.push(account.username.clone());
+        }
+        if let Some(remaining) = login_lock_remaining(&lock_keys).await {
+            warn!(username = %username, client = %client, remaining, "admin web login rejected: account temporarily locked");
+            // LOGIN_LOCKED_RETRY_NO_COUNT_V1：鎖定中的嘗試「不計入」失敗計數。
+            // 舊行為會把持有人焦急重試的每一下都算成失敗，導致：(1) 60 秒速率窗被塞滿，
+            // DC 按「取消這次鎖定」後立刻重試變成 429；(2) 自己的 IP 被推向第二層黑名單。
+            // 密碼在 423 路徑根本沒被驗證，攻擊者也得不到任何資訊，不需要計數。
+            // 仍寫審計事件，並以冷卻方式提醒管理員有人在鎖定期間持續嘗試。
+            {
+                let state = state.clone();
+                let user = username.to_string();
+                let ip = ip.clone();
+                tokio::spawn(async move {
+                    record_persistent_login_event(
+                        &state,
+                        &user,
+                        None,
+                        "login_locked",
+                        "failed",
+                        "Dashboard login rejected: account temporarily locked",
+                        &ip,
+                    )
+                    .await;
+                    alert_locked_retry(&state, &user, &ip).await;
+                });
+            }
+            return (
+                StatusCode::LOCKED,
+                Json(json!({
+                    "error": "account_locked",
+                    "retry_after_secs": remaining,
+                    "lock_ttl_secs": ACCOUNT_LOGIN_LOCK_TTL.as_secs(),
+                })),
+            )
+                .into_response();
+        }
+    }
+
+    // LOGIN_LOCKED_RETRY_NO_COUNT_V1：速率限制移到鎖定檢查之後——鎖定中的請求直接 423，
+    // 不再先吃到 429（「嘗試次數過多」）讓使用者搞不清楚到底是被鎖還是太快。
     if !state.rate_limiter.check(&rate_key).await {
         warn!(username = %username, client = %client, "admin web login rate limited");
         // The sixth request is rejected by the five-attempt login rate limiter
@@ -148,63 +215,6 @@ pub(super) async fn admin_login_handler(
             Json(json!({ "error": "too many attempts; please wait" })),
         )
             .into_response();
-    }
-
-    // Try exact account-id match first, then fall back to username search.
-    // LOGIN_PERF_V1：兩個查詢彼此獨立，同時發出（SQLite 讀取池有 10 條連線），
-    // 以學號登入（id 查不到、要走 username）的常見路徑少等一趟。
-    let (by_id, by_username) = tokio::join!(
-        state.accounts_db.get(username),
-        state.accounts_db.find_by_username(username, None),
-    );
-    let mut candidates = Vec::new();
-    if let Ok(Some(account)) = by_id {
-        candidates.push(account);
-    }
-    if candidates.is_empty() {
-        if let Ok(accounts) = by_username {
-            candidates = accounts;
-        }
-    }
-
-    // LOGIN_TIERED_LOCKOUT_V1 第一層：帳號密碼登入若在鎖定中，直接回 423，不做驗證。
-    // 鍵含輸入名稱與所有候選帳號的 id / 學號（與上鎖時一致）。這次嘗試仍計入失敗，
-    // 攻擊者持續打會走到第二層（IP 黑名單）；持有人可由 Discord「取消這次鎖定」。
-    {
-        let mut lock_keys: Vec<String> = vec![username.to_string()];
-        for account in &candidates {
-            lock_keys.push(account.id.clone());
-            lock_keys.push(account.username.clone());
-        }
-        if let Some(remaining) = login_lock_remaining(&lock_keys).await {
-            warn!(username = %username, client = %client, remaining, "admin web login rejected: account temporarily locked");
-            {
-                let state = state.clone();
-                let user = username.to_string();
-                let ip = ip.clone();
-                tokio::spawn(async move {
-                    record_persistent_login_event(
-                        &state,
-                        &user,
-                        None,
-                        "login_locked",
-                        "failed",
-                        "Dashboard login rejected: account temporarily locked",
-                        &ip,
-                    )
-                    .await;
-                    alert_password_failures(&state, &user, &ip).await;
-                });
-            }
-            return (
-                StatusCode::LOCKED,
-                Json(json!({
-                    "error": "account_locked",
-                    "retry_after_secs": remaining,
-                })),
-            )
-                .into_response();
-        }
     }
 
     // LOGIN_CANDIDATE_FILTER_V1：先「篩選」再「驗證」——不再對每個候選帳號都跑一次
@@ -257,6 +267,11 @@ pub(super) async fn admin_login_handler(
             None,
             "Web 管理頁登入失敗",
         );
+        // LOGIN_FAIL_TIERED_MSG_V1：失敗計數改為同步取得（兩筆 SQLite INSERT，毫秒級），
+        // 回應才能帶「還可以再試幾次就會鎖定」；帳號存在與否一律同一種回應形狀與文字，
+        // 只是數字不同——計數是以「輸入的名稱」為鍵，不存在的帳號同樣會累計，不洩漏存在性。
+        let (user_fails, ip_fails) = record_auth_failure(username, &ip).await;
+        let remaining_attempts = SECURITY_FAIL_ALERT_THRESHOLD.saturating_sub(user_fails);
         // PERFORMANCE_LOGIN_RESPONSE_V1:
         // Fire-and-forget the failure audit and security alert so the user
         // gets the 401 response immediately instead of waiting for SQLite
@@ -276,10 +291,33 @@ pub(super) async fn admin_login_handler(
                     &ip,
                 )
                 .await;
-                alert_password_failures(&state, &user, &ip).await;
+                alert_password_failures_counted(&state, &user, &ip, user_fails, ip_fails).await;
             });
         }
-        return unauthorized_response();
+        // 剛好達到門檻：這一下就會觸發鎖定（背景任務正在上鎖），直接告訴使用者已鎖定，
+        // 免得下一次點擊才看到 423。
+        if remaining_attempts == 0 {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "unauthorized",
+                    "locked": true,
+                    "retry_after_secs": ACCOUNT_LOGIN_LOCK_TTL.as_secs(),
+                    "lock_ttl_secs": ACCOUNT_LOGIN_LOCK_TTL.as_secs(),
+                })),
+            )
+                .into_response();
+        }
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "unauthorized",
+                "remaining_attempts": remaining_attempts,
+                "lock_after": SECURITY_FAIL_ALERT_THRESHOLD,
+                "lock_ttl_secs": ACCOUNT_LOGIN_LOCK_TTL.as_secs(),
+            })),
+        )
+            .into_response();
     };
 
     state.rate_limiter.clear(&rate_key).await;
@@ -704,4 +742,63 @@ pub(super) async fn admin_password_change_handler(
         account.is_admin,
         false,
     )
+}
+
+
+// ── LOGIN_LOCK_LIVE_STATUS_V1 ─────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminLoginLockStatusRequest {
+    #[serde(default)]
+    pub(super) username: String,
+}
+
+/// LOGIN_LOCK_LIVE_STATUS_V1：登入頁在 423 之後每 5 秒輪詢一次，鎖定一被 Discord 取消
+/// （或到期）就自動解除按鈕、清掉倒數——不必重整或重開頁面。
+///
+/// 只回「鎖定中／剩餘秒數」，不回帳號是否存在（不存在的名稱永遠是 locked=false，
+/// 與「存在但沒鎖」一模一樣）。每 IP 每分鐘 20 次（IP_RATE_LIMIT_MAX_ATTEMPTS）足夠
+/// 5 秒一次的輪詢，也擋得住拿它當探測器。
+pub(super) async fn admin_login_lock_status_handler(
+    State(state): State<AdminWebState>,
+    ClientIp(ip): ClientIp,
+    Json(req): Json<AdminLoginLockStatusRequest>,
+) -> Response {
+    if ip_is_blacklisted(&state, &ip).await {
+        return blocked_ip_response();
+    }
+    if !state
+        .rate_limiter
+        .check_limit_memory(&format!("lock-status-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
+        .await
+    {
+        return rate_limited_response();
+    }
+    if let Err(response) = validate_admin_text(&req.username, ADMIN_MAX_USERNAME_BYTES, "username") {
+        return response;
+    }
+    let username = req.username.trim();
+    if username.is_empty() {
+        return (StatusCode::OK, Json(json!({ "locked": false }))).into_response();
+    }
+    // 鍵集合與登入時一致（輸入名稱 + 候選帳號 id／學號），否則以學號上鎖、以 id 查會漏。
+    let (by_id, by_username) = tokio::join!(
+        state.accounts_db.get(username),
+        state.accounts_db.find_by_username(username, None),
+    );
+    let mut lock_keys: Vec<String> = vec![username.to_string()];
+    if let Ok(Some(account)) = by_id {
+        lock_keys.push(account.id.clone());
+        lock_keys.push(account.username.clone());
+    } else if let Ok(accounts) = by_username {
+        for account in accounts {
+            lock_keys.push(account.id.clone());
+            lock_keys.push(account.username.clone());
+        }
+    }
+    let body = match login_lock_remaining(&lock_keys).await {
+        Some(remaining) => json!({ "locked": true, "retry_after_secs": remaining }),
+        None => json!({ "locked": false }),
+    };
+    (StatusCode::OK, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }

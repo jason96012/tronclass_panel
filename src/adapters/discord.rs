@@ -789,6 +789,8 @@ impl DiscordRuntime {
                 }
                 let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
                 let removed = crate::adapters::admin_web::cancel_login_lock(&key_refs).await;
+                // LOGIN_UNLOCK_ALSO_IP_V1：來源 IP 的失敗計數一併歸零（避免解鎖後再錯兩下就進黑名單）。
+                crate::adapters::admin_web::clear_ip_failure_count(&ip).await;
                 crate::logs::record_audit(
                     "discord",
                     &user_id,
@@ -797,10 +799,47 @@ impl DiscordRuntime {
                     Some(&ip),
                     "帳號持有人由 Discord 取消登入鎖定",
                 );
-                if removed {
-                    OutboundMessage::Text(format!("[安全] 已取消帳號 `{account_id}` 的登入鎖定，現在可以直接重新登入。"))
+                // LOGIN_UNLOCK_ALSO_IP_V1：舊版把鎖定期間的每次重試都算失敗，持有人常常
+                // 在按到「取消這次鎖定」前就已把自己的 IP 推進第二層自動黑名單——鎖解了、
+                // 頁面重整還是進不去（/admin 直接回封鎖頁）。這裡順手把「這個 IP 的自動黑名單」
+                // 一併解除（只限 system:auto-login-failure 且屬於此 Discord 使用者的帳號；
+                // 管理員手動封鎖的不動）。
+                let ip_unblocked = if is_admin {
+                    self.accounts_db
+                        .unblock_automatic_ip_for_discord_user(&ip, &user_id)
+                        .await
+                        .unwrap_or(false)
+                        || match self.accounts_db.auto_block_owner_for_ip(&ip).await {
+                            Ok(Some(owner)) if owner == account_id => {
+                                self.accounts_db.unblock_ip(&ip).await.unwrap_or(false)
+                            }
+                            _ => false,
+                        }
                 } else {
-                    OutboundMessage::Text(format!("[安全] 帳號 `{account_id}` 目前沒有生效中的鎖定（可能已到期），可直接登入。"))
+                    self.accounts_db
+                        .unblock_automatic_ip_for_discord_user(&ip, &user_id)
+                        .await
+                        .unwrap_or(false)
+                };
+                if ip_unblocked {
+                    crate::logs::record_audit(
+                        "discord",
+                        &user_id,
+                        "ip_blacklist_owner_unblock",
+                        Some(&account_id),
+                        Some(&ip),
+                        "取消登入鎖定時一併解除來源 IP 的自動黑名單",
+                    );
+                }
+                let ip_note = if ip_unblocked {
+                    format!("\n來源 IP `{ip}` 的自動黑名單也已一併解除。")
+                } else {
+                    String::new()
+                };
+                if removed {
+                    OutboundMessage::Text(format!("[安全] 已取消帳號 `{account_id}` 的登入鎖定，現在可以直接重新登入（登入頁會自動解除鎖定狀態，不必重整）。{ip_note}"))
+                } else {
+                    OutboundMessage::Text(format!("[安全] 帳號 `{account_id}` 目前沒有生效中的鎖定（可能已到期），可直接登入。{ip_note}"))
                 }
             };
             reply_component(ctx, &component, message, true).await?;

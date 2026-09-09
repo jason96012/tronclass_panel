@@ -82,6 +82,28 @@ impl AccountsDb {
         Ok(())
     }
 
+    /// LOGIN_UNLOCK_CLEARS_RATE_V1：清掉某 scope 下所有以 `prefix` 開頭的鍵（例如
+    /// `login:{user}:` 涵蓋所有來源 IP）。`prefix` 內的 `%`／`_`／`!` 會跳脫，不當萬用字元。
+    pub async fn throttle_clear_prefix(&self, scope: &str, prefix: &str) -> Result<u64> {
+        // 以 `!` 作為 LIKE 跳脫字元（避免 SQL／Rust 字面值的反斜線混淆）。
+        let escaped = prefix
+            .replace('!', "!!")
+            .replace('%', "!%")
+            .replace('_', "!_");
+        let pattern = format!("{escaped}%");
+        let affected = sqlx::query(
+            "DELETE FROM auth_throttle_events WHERE scope = ? AND key LIKE ? ESCAPE '!'",
+        )
+        .bind(scope)
+        .bind(&pattern)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("依前綴清除節流事件失敗")?
+        .rows_affected();
+        Ok(affected)
+    }
+
     /// 刪除所有早於 `before` 的事件與已到期的鎖（背景任務每 5 分鐘呼叫）。
     pub async fn throttle_prune(&self, before: i64, now: i64) -> Result<u64> {
         let events = sqlx::query("DELETE FROM auth_throttle_events WHERE at <= ?")

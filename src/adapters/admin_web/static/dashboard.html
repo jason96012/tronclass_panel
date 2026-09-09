@@ -132,6 +132,25 @@
     return statusRequestByKey[key].then(function (response) { return response.clone(); });
   };
 
+  // LOGIN_PREFETCH_STATUS_V1：登入頁在跳轉前已把 /admin/api/status?history_limit=8 的結果
+  // 放進 sessionStorage；這裡把它種進同一個去重快取（同 key），首屏的第一個 loadStatus()
+  // 直接命中、零往返。只接受 15 秒內的預抓，用完即刪（只給登入後第一屏用）。
+  (function seedFromLoginPrefetch() {
+    var raw = null;
+    try { raw = sessionStorage.getItem('tronclass_status_prefetch_v1'); sessionStorage.removeItem('tronclass_status_prefetch_v1'); } catch (_) {}
+    if (!raw) return;
+    try {
+      var parsed = JSON.parse(raw);
+      if (!parsed || !parsed.status || !parsed.status.accounts) return;
+      if ((Date.now() - Number(parsed.at || 0)) > 15000) return;
+      var url = new URL('/admin/api/status?history_limit=8', location.origin);
+      var key = statusKey(url);
+      var response = new Response(JSON.stringify(parsed.status), { status: 200, headers: { 'content-type': 'application/json' } });
+      // 以預抓時間為準（不是現在），讓 20 秒的去重快取扣掉登入→跳轉的耗時。
+      statusCacheByKey[key] = { response: response, at: Number(parsed.at) || Date.now() };
+    } catch (_) {}
+  })();
+
   window.TronclassStatusFetchCoordinator = {
     clear: clearStatusCache,
     activeTtlMs: ACTIVE_CACHE_MS,

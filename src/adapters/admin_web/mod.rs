@@ -210,6 +210,25 @@ fn throttle_db() -> Option<&'static AccountsDb> {
     THROTTLE_DB.get()
 }
 
+/// LOGIN_UNLOCK_CLEARS_RATE_V1：`RateLimiter` 的記憶體退路表也登記一份，
+/// 讓 `cancel_login_lock`（沒有 state）能連同 60 秒速率窗一起清掉。
+static RATE_LIMIT_MEMORY: once_cell::sync::OnceCell<Arc<Mutex<HashMap<String, Vec<Instant>>>>> =
+    once_cell::sync::OnceCell::new();
+
+/// LOGIN_UNLOCK_CLEARS_RATE_V1：清掉某個「帳號鍵」的密碼登入速率窗（所有來源 IP）。
+/// 鍵格式 `login:{user}:{ip}`，DC 端不知道 IP，所以用前綴 `login:{user}:` 清。
+async fn clear_login_rate_window_for(user_key: &str) {
+    let prefix = format!("login:{}:", user_key.trim().to_lowercase());
+    if let Some(db) = throttle_db() {
+        if let Err(error) = db.throttle_clear_prefix("rate", &prefix).await {
+            warn!(error = %error, "清除 SQLite 登入速率窗失敗");
+        }
+    }
+    if let Some(memory) = RATE_LIMIT_MEMORY.get() {
+        memory.lock().await.retain(|key, _| !key.starts_with(&prefix));
+    }
+}
+
 fn unix_now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -673,14 +692,39 @@ pub async fn cancel_login_lock(keys: &[&str]) -> bool {
             }
         }
     }
+    // LOGIN_UNLOCK_CLEARS_RATE_V1：鎖定前那 5 次失敗也填滿了 60 秒的速率窗；
+    // 不清掉的話，持有人按完「取消這次鎖定」馬上重試會吃到 429，看起來像解鎖沒生效。
+    for key in keys {
+        clear_login_rate_window_for(key).await;
+    }
     let mut watch = SECURITY_WATCH.lock().await;
     for key in keys {
         watch.fails.remove(&format!("user:{}", login_lock_key(key)));
         watch
             .last_alert
             .remove(&format!("fail-user:{}", login_lock_key(key)));
+        watch
+            .last_alert
+            .remove(&format!("locked-retry:{}", login_lock_key(key)));
     }
     removed
+}
+
+/// LOGIN_UNLOCK_ALSO_IP_V1：持有人由 Discord 取消鎖定時，順帶把「該來源 IP」的失敗計數歸零。
+/// 否則鎖定前累積的 5 次 IP 失敗還留著，之後同一 IP 再錯幾次就會直接跳到自動黑名單門檻。
+pub async fn clear_ip_failure_count(ip: &str) {
+    let ip = ip.trim();
+    if ip.is_empty() {
+        return;
+    }
+    if let Some(db) = throttle_db() {
+        if let Err(error) = db.throttle_clear("fail", &format!("ip:{ip}")).await {
+            warn!(error = %error, "清除 SQLite IP 失敗計數失敗");
+        }
+    }
+    let mut watch = SECURITY_WATCH.lock().await;
+    watch.fails.remove(&format!("ip:{ip}"));
+    watch.last_alert.remove(&format!("fail-ip:{ip}"));
 }
 
 async fn admin_discord_recipients(state: &AdminWebState) -> Vec<String> {
@@ -746,6 +790,50 @@ async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAler
 
 async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str) {
     let (user_fails, ip_fails) = record_auth_failure(username, ip).await;
+    alert_password_failures_counted(state, username, ip, user_fails, ip_fails).await;
+}
+
+/// LOGIN_LOCKED_RETRY_NO_COUNT_V1：鎖定中（423）的重試不再計入帳號／IP 失敗計數
+/// （持有人焦急連按不會把自己的 IP 推進黑名單），但仍以冷卻方式告知管理員有人持續嘗試。
+async fn alert_locked_retry(state: &AdminWebState, username: &str, ip: &str) {
+    let key = format!("locked-retry:{}", username.trim().to_lowercase());
+    if !security_should_alert(&key).await {
+        return;
+    }
+    let target_account = resolve_login_target_account(state, username).await;
+    let owner_account_id = target_account
+        .as_ref()
+        .map(|account| account.id.clone())
+        .unwrap_or_else(|| username.trim().to_string());
+    // 只讀不寫：拿現有計數當告警內文（user/ip 取 max 與登入成功路徑同一口徑）。
+    let fails = peek_recent_auth_failures(username, ip).await;
+    let (user_fails, ip_fails) = (fails, fails);
+    notify_admins_security_alert(
+        state,
+        SecurityAlertEvent {
+            username: username.trim().to_string(),
+            ip: ip.trim().to_string(),
+            user_failures: user_fails,
+            ip_failures: ip_fails,
+            timestamp: security_now_label(),
+            ip_is_blacklisted: false,
+            account_id: owner_account_id,
+            allow_owner_unblock: false,
+            login_locked: true,
+        },
+    )
+    .await;
+}
+
+/// LOGIN_FAIL_TIERED_MSG_V1：失敗計數已由呼叫端同步取得（回應要帶「再錯 N 次會鎖定」），
+/// 這裡只做告警／鎖定／黑名單。
+async fn alert_password_failures_counted(
+    state: &AdminWebState,
+    username: &str,
+    ip: &str,
+    user_fails: u32,
+    ip_fails: u32,
+) {
     // 解析被嘗試登入的帳號（可能為 None：隨機 username）；持有人綁定由此取得。
     let target_account = resolve_login_target_account(state, username).await;
     let (target_discord, target_line) = contacts_of(target_account.as_ref());
@@ -1427,7 +1515,12 @@ impl AdminWebState {
         let state = Self {
             accounts,
             monitor_spawner: None,
-            rate_limiter: RateLimiter::with_db(accounts_db.clone()),
+            rate_limiter: {
+                let limiter = RateLimiter::with_db(accounts_db.clone());
+                // LOGIN_UNLOCK_CLEARS_RATE_V1
+                let _ = RATE_LIMIT_MEMORY.set(Arc::clone(&limiter.attempts));
+                limiter
+            },
             accounts_db,
             scanner,
             messenger,
@@ -2252,6 +2345,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/logout",
             post(auth::admin_logout_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
+        // LOGIN_LOCK_LIVE_STATUS_V1：登入頁的鎖定倒數輪詢（公開、只回 locked/剩餘秒數）。
+        .route(
+            "/admin/api/login/lock-status",
+            post(auth::admin_login_lock_status_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         .route(
             "/admin/api/password",
             post(auth::admin_password_change_handler)
@@ -2824,6 +2923,7 @@ fn bootstrap_allowed_api_path(path: &str) -> bool {
     matches!(
         path,
         "/admin/api/login"
+            | "/admin/api/login/lock-status"
             | "/admin/api/logout"
             | "/admin/api/password"
             | "/admin/api/status"
@@ -2839,6 +2939,7 @@ fn viewer_allowed_write_path(path: &str) -> bool {
     matches!(
         path,
         "/admin/api/login"
+            | "/admin/api/login/lock-status"
             | "/admin/api/logout"
             | "/admin/api/password"
             | "/admin/api/session/refresh"
@@ -4754,6 +4855,8 @@ mod tests {
             "/admin/api/password",
             "/admin/api/logout",
             "/admin/api/session/refresh",
+            // LOGIN_LOCK_LIVE_STATUS_V1：登入頁（未登入）輪詢用，必須放行。
+            "/admin/api/login/lock-status",
         ] {
             assert!(
                 bootstrap_allowed_api_path(path),
