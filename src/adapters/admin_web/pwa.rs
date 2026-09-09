@@ -46,25 +46,36 @@ pub(super) async fn manifest_handler() -> Response {
         // PWA_IOS_META_V1：啟動閃屏底色對齊 Dashboard 深色背景（dashboard-login-bg-active
         // 為 #071122），避免每次開 App 先白一下再變深，也讓真正卡住的白畫面更容易辨識。
         "background_color": "#071122",
-        // PWA_IOS_META_V1：iOS／Android 主畫面都不吃 SVG 圖示（iOS 會拿網頁截圖當圖示），
-        // 補 PNG 192／512；SVG 保留給支援的平台。
+        // PWA_ICON_FULL_BLEED_V1：iOS 17+／macOS Sonoma+ 的 Safari 會優先讀 manifest icons
+        // （即使頁面有 apple-touch-icon）。purpose 含 "any" 的圖示會被 Safari 當成「形狀不定」
+        // → 縮小後墊在白色方塊上（使用者看到的「照片小小一張在白框裡」就是這個）；
+        // 只有 purpose 純 "maskable" 才會滿版填滿再套系統圓角。因此：
+        //   1. maskable 條目放最前面、且不與 any 合寫（"any maskable" 會被當 any 處理）；
+        //   2. SVG 從 manifest 拿掉（Safari 會偏好 sizes:any 的 SVG，蓋過 PNG；路由保留給舊連結）；
+        //   3. any 條目留給 Windows／舊 Android 等不套遮罩的平台。
         "icons": [
             {
-                "src": "/admin/pwa/icon-192.png",
-                "sizes": "192x192",
-                "type": "image/png",
-                "purpose": "any maskable"
-            },
-            {
-                "src": "/admin/pwa/icon-512.png",
+                "src": "/admin/pwa/icon-512.png?v=pwaicon9",
                 "sizes": "512x512",
                 "type": "image/png",
-                "purpose": "any maskable"
+                "purpose": "maskable"
             },
             {
-                "src": "/admin/pwa/icon.svg",
-                "sizes": "any",
-                "type": "image/svg+xml",
+                "src": "/admin/pwa/icon-192.png?v=pwaicon9",
+                "sizes": "192x192",
+                "type": "image/png",
+                "purpose": "maskable"
+            },
+            {
+                "src": "/admin/pwa/icon-512.png?v=pwaicon9",
+                "sizes": "512x512",
+                "type": "image/png",
+                "purpose": "any"
+            },
+            {
+                "src": "/admin/pwa/icon-192.png?v=pwaicon9",
+                "sizes": "192x192",
+                "type": "image/png",
                 "purpose": "any"
             }
         ],
@@ -142,6 +153,38 @@ self.addEventListener('push', event => {
       ];
     }
     await self.registration.showNotification(title, options);
+  })());
+});
+// PUSH_GONE_VISIBLE_V1：推播服務輪替端點時（iOS/Android 都會發生），自動以同一組 VAPID
+// 公鑰重新訂閱並告訴伺服器「舊端點 → 新端點」。少了這段，舊端點下次發送就是 410 →
+// 訂閱被移除 → 使用者得手動再開一次。fetch 走同源 cookie（不需 token）。
+self.addEventListener('pushsubscriptionchange', event => {
+  event.waitUntil((async () => {
+    const oldSub = event.oldSubscription || null;
+    const oldEndpoint = oldSub ? oldSub.endpoint : '';
+    let key = null;
+    try {
+      if (oldSub && oldSub.options && oldSub.options.applicationServerKey) {
+        key = oldSub.options.applicationServerKey;
+      } else {
+        const res = await fetch('/admin/api/push/config', { credentials: 'same-origin', cache: 'no-store' });
+        const cfg = await res.json();
+        const raw = atob(String(cfg.public_key || '').replace(/-/g, '+').replace(/_/g, '/'));
+        key = Uint8Array.from(raw, ch => ch.charCodeAt(0));
+      }
+      const fresh = event.newSubscription
+        || await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      const json = fresh.toJSON();
+      await fetch('/admin/api/push/rotate', {
+        method: 'POST',
+        credentials: 'same-origin',
+        cache: 'no-store',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ old_endpoint: oldEndpoint, new_subscription: json })
+      });
+    } catch (_) {
+      // 失敗時不做事：舊端點會在下次發送時被 PUSH_STALE_CLEANUP_V1 清掉並提醒使用者。
+    }
   })());
 });
 self.addEventListener('notificationclick', event => {

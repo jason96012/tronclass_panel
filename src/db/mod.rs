@@ -21,6 +21,7 @@
 
 mod accounts;
 mod activity;
+mod auth_throttle;
 mod blacklist;
 mod homework;
 mod materials;

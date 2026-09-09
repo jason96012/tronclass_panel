@@ -417,10 +417,23 @@ pub struct AdminWebConfig {
     /// 預設 `["TW"]`。設成空陣列 = 恢復「任何新 IP 都通知」的舊行為。
     #[serde(default = "default_login_home_countries")]
     pub login_home_countries: Vec<String>,
+
+    /// CSP_STYLE_ATTR_STAGED_V1：內聯 `style="…"` 屬性的 CSP 策略。
+    /// - `"report"`（預設）：正式 CSP 仍允許 `style-src-attr 'unsafe-inline'`，另送一份
+    ///   `Content-Security-Policy-Report-Only` 把 style-src-attr 收成 `'none'`；瀏覽器只回報
+    ///   不阻擋，違規會透過 client-log.js 進到系統 Log（來源 `client:csp_violation`）。
+    /// - `"enforce"`：正式 CSP 直接 `style-src-attr 'none'`（頁面裡尚未改成 class 的內聯樣式會失效）。
+    /// - `"inline"`：維持舊行為，不送 Report-Only。
+    #[serde(default = "default_csp_style_attr_mode")]
+    pub csp_style_attr_mode: String,
 }
 
 fn default_login_home_countries() -> Vec<String> {
     vec!["TW".to_string()]
+}
+
+fn default_csp_style_attr_mode() -> String {
+    "report".to_string()
 }
 
 impl Default for AdminWebConfig {
@@ -430,6 +443,7 @@ impl Default for AdminWebConfig {
             access_token: String::new(),
             trusted_proxies: Vec::new(),
             login_home_countries: default_login_home_countries(),
+            csp_style_attr_mode: default_csp_style_attr_mode(),
         }
     }
 }

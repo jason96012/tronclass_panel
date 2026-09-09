@@ -19,7 +19,7 @@
     if(old) old.remove();
     var layer=document.createElement('div');
     layer.id='tronCenterPw';
-    layer.setAttribute('style', LAYER_CSS);
+    layer.style.cssText = LAYER_CSS;
     layer.innerHTML='<div style="'+CARD_CSS+'">'
       +'<h3 style="margin:0 0 8px;font-size:18px;font-weight:900">變更密碼</h3>'
       +'<p style="margin:0 0 12px;font-size:13px;line-height:1.5;color:#64748b;font-weight:700">這是 Dashboard 專用密碼，不是 Tronclass 密碼。</p>'
@@ -72,7 +72,7 @@
     if(old) old.remove();
     var layer=document.createElement('div');
     layer.id='tronCenterPk';
-    layer.setAttribute('style', LAYER_CSS);
+    layer.style.cssText = LAYER_CSS;
     layer.innerHTML='<div style="'+CARD_CSS+'">'
       +'<h3 style="margin:0 0 8px;font-size:18px;font-weight:900">設定通行密鑰</h3>'
       +'<p id="tronCPkMsg" style="margin:0 0 14px;font-size:14px;line-height:1.55;color:#475569;font-weight:650"></p>'

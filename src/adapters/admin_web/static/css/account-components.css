@@ -128,3 +128,9 @@ html.dash-role-user .tab[data-view="settings"],
   #accountsBody .actions-cell button[data-action="force"],
   #accountsBody .actions-cell button:first-child{grid-column:1/-1!important}
 }
+
+/* REAUTH_VISIBLE_V1：帳號列「連續失敗」欄下方的最近重新認證紀錄 */
+.reauth-hint{margin-top:4px;max-width:260px;white-space:normal;display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.reauth-hint .pill{min-height:22px;padding:0 8px;font-size:11px}
+.reauth-hint.reauth-bad{color:var(--bad,#f87171)}
+.reauth-hint .reauth-msg{flex-basis:100%;opacity:.75;word-break:break-all}

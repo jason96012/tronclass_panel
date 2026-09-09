@@ -1,45 +1,8 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-<script id="SUBPAGE_TOKEN_BOOT_V1">
-(function(){
-  if(window.SUBPAGE_TOKEN_BOOT_V1) return;
-  window.SUBPAGE_TOKEN_BOOT_V1 = true;
-  try{
-    var u=new URL(location.href);
-    var tok=(u.searchParams.get('token')||window.__tronBootToken||'').trim();
-    if(tok) window.__tronBootToken=tok;
-  }catch(_){}
-  var native=window.fetch;
-  window.fetch=function(input, init){
-    try{
-      var tok=window.__tronBootToken||'';
-      var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
-      if(tok && url.origin===location.origin && url.pathname.indexOf('/admin/api/')===0 &&
-         url.pathname!=='/admin/api/login' && !url.searchParams.get('token')){
-        // F-03: token removed, auth via HttpOnly cookie
-        input=url.pathname+url.search+url.hash;
-      }
-    }catch(_){}
-    return native.apply(this, arguments);
-  };
-  document.addEventListener('click', function(ev){
-    var a=ev.target && ev.target.closest && ev.target.closest('a[href]');
-    if(!a) return;
-    try{
-      var href=a.getAttribute('href')||'';
-      var dest=new URL(href, location.origin);
-      if(dest.origin!==location.origin) return;
-      if(!(dest.pathname==='/admin'||dest.pathname==='/admin/'||dest.pathname==='/admin/dashboard'||dest.pathname==='/admin/timetable'||dest.pathname.indexOf('/admin/')===0)) return;
-      var tok=window.__tronBootToken||'';
-      if(tok && !dest.searchParams.get('token')){
-        // F-03: token removed, auth via HttpOnly cookie
-        a.setAttribute('href', dest.pathname+dest.search+dest.hash);
-      }
-    }catch(_){}
-  }, true);
-})();
-</script>
+<!-- SUBPAGE_FETCH_SHARED_V1：子頁唯一的 window.fetch 包裝（cookie 認證、剝 token、401→refresh 重試）；取代原 SUBPAGE_TOKEN_BOOT_V1 內聯區塊 -->
+<script src="/admin/static/subpage-fetch.js?v=20260909subfetch"></script>
 
 <style id="REMOVE_UGLY_LOGIN_V1">
   html{visibility:hidden!important}
@@ -57,6 +20,10 @@
   html.tron-auth-pending #loginCard,
   html:not(.tron-auth-logged-out) #loginCard{display:none!important}
   html.tron-auth-logged-out #loginCard:has(.animated-login-card-inner){display:block!important}
+    /* CLIENT_ERROR_REPORT_V1：可展開的詳細欄（堆疊／來源） */
+    .log-details{margin-top:4px}
+    .log-details summary{cursor:pointer;font-size:12px;color:var(--muted)}
+    .log-details pre{margin:4px 0 0;padding:8px;border-radius:8px;background:var(--soft,#eef3fb);font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto}
 </style>
 <script id="BAN_CRUDE_LOGIN_V1">
 (function(){
@@ -562,6 +529,13 @@
           <option value="warn">WARN (警告)</option>
           <option value="error">ERROR (錯誤)</option>
         </select>
+        <!-- CLIENT_ERROR_REPORT_V1：只看前端回報（client:*）與監控看門狗 -->
+        <select id="sysSourceFilter">
+          <option value="">全部來源</option>
+          <option value="client:">前端錯誤回報</option>
+          <option value="monitor_watchdog">監控看門狗</option>
+          <option value="panic">程式 panic</option>
+        </select>
         <input id="sysSearch" type="search" placeholder="搜尋模組 / 帳號 / 訊息...">
       </div>
     </div>
@@ -670,10 +644,14 @@
   function renderSystem(){
     const kw = (q('sysSearch') ? q('sysSearch').value : '').trim().toLowerCase();
     const lf = (q('sysLevelFilter') ? q('sysLevelFilter').value : '').trim().toLowerCase();
+    const sf = (q('sysSourceFilter') ? q('sysSourceFilter').value : '').trim().toLowerCase();
     let arr = Array.isArray(systemList) ? systemList : [];
     
     if (lf) {
       arr = arr.filter(x => String(x.level || 'info').toLowerCase().includes(lf));
+    }
+    if (sf) {
+      arr = arr.filter(x => String(x.target || x.source || x.module || '').toLowerCase().indexOf(sf) === 0);
     }
     if (kw) {
       arr = arr.filter(x => ((x.target||x.source||x.module||'')+' '+(x.account_id||'')+' '+(x.message||x.msg||x.text||'')).toLowerCase().includes(kw));
@@ -690,7 +668,7 @@
           '<td>' + pill(lvl, (x.level || 'INFO').toUpperCase()) + '</td>' +
           '<td><b>' + esc(x.target || x.source || x.module || '系統') + '</b></td>' +
           '<td><span class="small">' + esc(x.account_id || '-') + '</span></td>' +
-          '<td><div class="code-msg">' + esc(x.message || x.msg || x.text || '-') + '</div></td>' +
+          '<td><div class="code-msg">' + esc(x.message || x.msg || x.text || '-') + (x.details ? '<details class="log-details"><summary>詳細</summary><pre>' + esc(x.details) + '</pre></details>' : '') + '</div></td>' +
         '</tr>';
       }).join('') : '<tr><td colspan="5" class="empty">沒有符合的系統 Log</td></tr>';
     }
@@ -709,7 +687,7 @@
             '<span class="log-card-target">' + esc(x.account_id || '-') + '</span>' +
           '</div>' +
           '<div class="log-card-body">' +
-            esc(x.message || x.msg || x.text || '-') +
+            esc(x.message || x.msg || x.text || '-') + (x.details ? '<details class="log-details"><summary>詳細</summary><pre>' + esc(x.details) + '</pre></details>' : '') +
           '</div>' +
         '</div>';
       }).join('') : '<div class="empty">目前沒有系統 Log</div>';
@@ -759,6 +737,7 @@
       _logsDebounce = setTimeout(renderSystem, 120);
     };
     if (q('sysLevelFilter')) q('sysLevelFilter').onchange = renderSystem;
+    if (q('sysSourceFilter')) q('sysSourceFilter').onchange = renderSystem;
 
     loadSystemLogs();
     setInterval(() => { if (!document.hidden && token()) loadSystemLogs(); }, 15000);

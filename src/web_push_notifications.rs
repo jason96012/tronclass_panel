@@ -753,13 +753,18 @@ impl WebPushService {
             // PUSH_STALE_CLEANUP_V1：有訂閱被移除 → 透過 Discord／LINE 提醒該使用者重新啟用。
             if removed > 0 {
                 let remaining = total.saturating_sub(removed);
-                self.notify_subscription_expired(
-                    account_id,
-                    removed,
-                    remaining,
-                    removal_reason.unwrap_or_else(|| "推播服務拒絕".to_string()),
-                )
-                .await;
+                let reason = removal_reason.unwrap_or_else(|| "推播服務拒絕".to_string());
+                // PUSH_GONE_VISIBLE_V1：先寫進健康紀錄（推播狀態頁／管理員總覽會顯示黃色橫幅），
+                // 再送 Discord 提醒；提醒有 12 小時冷卻，但狀態頁的標記會一直留到重新啟用。
+                if let Err(error) = self
+                    .db
+                    .record_web_push_removed(account_id, removed, remaining, &reason)
+                    .await
+                {
+                    warn!(account = %account_id, %error, "寫入推播訂閱移除紀錄失敗");
+                }
+                self.notify_subscription_expired(account_id, removed, remaining, reason)
+                    .await;
             }
         }
         (ok, failed)

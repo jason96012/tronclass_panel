@@ -2,12 +2,115 @@
 
 use super::*;
 
-pub(super) async fn healthz_handler() -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Json(json!({ "ok": true, "service": "tronclass_dashboard" })),
-    )
-        .into_response()
+/// HEALTHZ_REAL_V1：真正的健康檢查（給 Pterodactyl／uptime 監測／Cloudflare health check 用）。
+///
+/// 檢查項目：
+/// 1. SQLite 可寫可讀（寫入 `web_push_settings` 的 `system:healthz_probe` 再讀回；不動 schema）。
+/// 2. 每個「執行中」帳號的監控循環心跳是否在看門狗門檻內（MONITOR_WATCHDOG_V1）。
+///
+/// 任一項失敗 → 503 + `ok:false` 與各項細節；全部正常 → 200。
+/// 不需登入（黑名單／同源／密碼中介層皆放行 /healthz），所以回應不含帳號識別以外的敏感資料，
+/// 帳號 id 也只在 503 時列出失聯者。
+pub(super) async fn healthz_handler(State(state): State<AdminWebState>) -> Response {
+    let started = std::time::Instant::now();
+    let now = chrono::Local::now().timestamp();
+
+    // ── 1. 資料庫讀寫 ─────────────────────────────────────────────────────
+    let db_probe_value = now.to_string();
+    let db_result = async {
+        state
+            .accounts_db
+            .set_web_push_setting("system:healthz_probe", &db_probe_value)
+            .await?;
+        let read_back = state
+            .accounts_db
+            .get_web_push_setting("system:healthz_probe")
+            .await?;
+        Ok::<bool, miette::Report>(read_back.as_deref() == Some(db_probe_value.as_str()))
+    };
+    let db_result = tokio::time::timeout(std::time::Duration::from_secs(5), db_result).await;
+    let (db_ok, db_error) = match db_result {
+        Ok(Ok(true)) => (true, None),
+        Ok(Ok(false)) => (false, Some("read-back mismatch".to_string())),
+        Ok(Err(error)) => (false, Some(error.to_string())),
+        Err(_) => (false, Some("timeout (5s)".to_string())),
+    };
+    let db_latency_ms = started.elapsed().as_millis() as u64;
+
+    // ── 2. 監控循環心跳 ───────────────────────────────────────────────────
+    let poll_interval_secs =
+        crate::runtime_settings::poll_interval(state.default_poll_interval_secs)
+            .await
+            .as_secs()
+            .max(1);
+    let threshold_secs = crate::monitor_watchdog::stale_after_secs(poll_interval_secs);
+    let accounts = state.accounts.snapshot();
+    let mut running = 0usize;
+    let mut paused = 0usize;
+    let mut starting = 0usize;
+    let mut stale: Vec<serde_json::Value> = Vec::new();
+    let mut oldest_heartbeat_age: Option<i64> = None;
+    for account in accounts.iter() {
+        let is_running = *account.is_running.lock().await;
+        if !is_running {
+            paused += 1;
+            continue;
+        }
+        running += 1;
+        let heartbeat = account.last_heartbeat();
+        if heartbeat <= 0 {
+            starting += 1;
+            continue;
+        }
+        // MONITOR_WATCHDOG_V1：哨兵值 1 = 循環已異常結束、等待看門狗重生。
+        let crashed = heartbeat == crate::adapters::requests::HEARTBEAT_CRASHED;
+        let age = if crashed { 0 } else { now.saturating_sub(heartbeat) };
+        if !crashed {
+            oldest_heartbeat_age = Some(oldest_heartbeat_age.map_or(age, |old| old.max(age)));
+        }
+        if crate::monitor_watchdog::is_stale(heartbeat, now, poll_interval_secs) {
+            let last_poll = account.monitor_status.lock().await.last_poll_timestamp;
+            stale.push(json!({
+                "account_id": account.account_id,
+                "heartbeat_age_secs": age,
+                "crashed": crashed,
+                "last_poll_timestamp": last_poll,
+            }));
+        }
+    }
+    let monitors_ok = stale.is_empty();
+    let ok = db_ok && monitors_ok;
+
+    let body = json!({
+        "ok": ok,
+        "service": "tronclass_dashboard",
+        "version": env!("CARGO_PKG_VERSION"),
+        "time": now,
+        "checks": {
+            "database": {
+                "ok": db_ok,
+                "latency_ms": db_latency_ms,
+                "error": db_error,
+            },
+            "monitors": {
+                "ok": monitors_ok,
+                "total": accounts.len(),
+                "running": running,
+                "paused": paused,
+                "starting": starting,
+                "stale": stale,
+                "poll_interval_secs": poll_interval_secs,
+                "stale_after_secs": threshold_secs,
+                "oldest_heartbeat_age_secs": oldest_heartbeat_age,
+            },
+        },
+    });
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 
 pub(super) async fn admin_health_page_handler(
@@ -631,4 +734,112 @@ mod regex_tests {
         let _ = &*super::CLOUDFLARED_RECOVERY_RE;
         let _ = &*super::CLOUDFLARED_RESTART_TS_RE;
     }
+}
+
+// ── CLIENT_ERROR_REPORT_V1 ────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct ClientLogRequest {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    page: String,
+    #[serde(default)]
+    stack: String,
+    #[serde(default)]
+    source: String,
+    #[serde(default)]
+    line: u64,
+    #[serde(default)]
+    col: u64,
+    #[serde(default)]
+    ua: String,
+    #[serde(default)]
+    standalone: bool,
+    #[serde(default)]
+    visibility: String,
+}
+
+/// CLIENT_ERROR_REPORT_V1：每個 session 每分鐘最多幾筆（sendBeacon 沒有回應也沒關係）。
+const CLIENT_LOG_MAX_PER_MINUTE: u32 = 30;
+
+fn sanitize_client_field(value: &str, max_chars: usize) -> String {
+    let cleaned: String = value
+        .chars()
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect();
+    crate::text_utils::truncate_chars(cleaned.trim(), max_chars).to_string()
+}
+
+/// CLIENT_ERROR_REPORT_V1：前端錯誤／看門狗事件回報。
+///
+/// - 需登入（access cookie；sendBeacon 會帶同源 cookie）。未登入回 401 但不寫任何東西。
+/// - 每 session 每分鐘 30 筆（走 RateLimiter 的記憶體視窗，不寫 SQLite；key 以 session 帳號區分）。
+/// - body 由 `ADMIN_TINY_BODY_LIMIT`（8 KB）擋掉超大 payload；欄位再各自截斷、濾控制字元。
+/// - 寫入 `crate::logs::record_system`（kind=system，source=client）→ /admin/logs 可見，
+///   同時以 tracing warn 輸出到 console。
+pub(super) async fn client_log_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminQuery>,
+    ClientIp(ip): ClientIp,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some(session) = state.authorize_any(&query.token).await else {
+        return unauthorized_response();
+    };
+    // sendBeacon 送出的 Content-Type 可能是 text/plain 或 application/json，
+    // 所以不用 Json 抽取器，自己解析。
+    let request: ClientLogRequest = serde_json::from_slice(&body).unwrap_or_default();
+    let rate_key = format!("client-log:{}", session.account_id);
+    if !state
+        .rate_limiter
+        .check_limit_memory(&rate_key, CLIENT_LOG_MAX_PER_MINUTE)
+        .await
+    {
+        return rate_limited_response();
+    }
+    let kind = {
+        let raw = sanitize_client_field(&request.kind, 32);
+        if raw.is_empty() { "client_error".to_string() } else { raw }
+    };
+    let message = sanitize_client_field(&request.message, 1000);
+    if message.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "message is required" }))).into_response();
+    }
+    let page = sanitize_client_field(&request.page, 200);
+    let source = sanitize_client_field(&request.source, 300);
+    let stack = sanitize_client_field(&request.stack, 2000);
+    let ua = sanitize_client_field(&request.ua, 200);
+    let visibility = sanitize_client_field(&request.visibility, 16);
+    let level = match kind.as_str() {
+        "boot_watchdog_reload" | "js_error" | "unhandled_rejection" => "ERROR",
+        _ => "WARN",
+    };
+    let mut details = format!(
+        "page={page} account={} ip={ip} standalone={} visibility={visibility} ua={ua}",
+        session.account_id, request.standalone
+    );
+    if !source.is_empty() {
+        details.push_str(&format!("\nsource={source}:{}:{}", request.line, request.col));
+    }
+    if !stack.is_empty() {
+        details.push_str("\nstack=");
+        details.push_str(&stack);
+    }
+    tracing::warn!(
+        kind = %kind,
+        account = %session.account_id,
+        page = %page,
+        message = %message,
+        "client-side error report"
+    );
+    crate::logs::record_system(
+        level,
+        &format!("client:{kind}"),
+        format!("[{}] {message}", session.account_id),
+        Some(details),
+    );
+    (StatusCode::NO_CONTENT, ()).into_response()
 }

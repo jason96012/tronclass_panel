@@ -47,6 +47,14 @@ struct PushSubscriptionKeys {
     auth: String,
 }
 
+/// PUSH_GONE_VISIBLE_V1：`pushsubscriptionchange` 輪替請求。
+#[derive(Debug, Deserialize)]
+pub(super) struct PushRotateRequest {
+    #[serde(default)]
+    old_endpoint: String,
+    new_subscription: PushSubscriptionRequest,
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct PushUnsubscribeRequest {
     endpoint: String,
@@ -234,10 +242,60 @@ pub(super) async fn subscribe_handler(
         )
         .await
     {
-        Ok(()) => Json(json!({"ok": true, "account_id": account_id})).into_response(),
+        Ok(()) => {
+            // PUSH_GONE_VISIBLE_V1：重新啟用即清掉「訂閱曾被移除」的橫幅標記。
+            let _ = state.accounts_db.clear_web_push_removed(&account_id).await;
+            Json(json!({"ok": true, "account_id": account_id})).into_response()
+        }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("儲存推播訂閱失敗：{error}")})),
+        )
+            .into_response(),
+    }
+}
+
+/// PUSH_GONE_VISIBLE_V1：瀏覽器觸發 `pushsubscriptionchange`（推播服務輪替端點）時，
+/// service worker 以新訂閱呼叫這裡，把舊端點換成新端點。沒有這條路徑時，舊端點下次發送
+/// 會收到 404/410 → 被移除 → 使用者得手動再開一次推播。
+///
+/// 安全性：需登入 cookie（service worker 的 fetch 會帶同源 cookie）；只會動「這個帳號」的列，
+/// 舊端點不屬於此帳號時不會刪別人的訂閱（`delete_web_push_subscription` 以 account_id 過濾）。
+pub(super) async fn rotate_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<PushRotateRequest>,
+) -> Response {
+    let account_id = match authenticated_account(&state, &headers, &query).await {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    if let Err(message) = validate_subscription(&request.new_subscription) {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
+    }
+    if request.old_endpoint.len() > 2048 {
+        return (StatusCode::BAD_REQUEST, Json(json!({"error": "old_endpoint 過長"}))).into_response();
+    }
+    match state
+        .accounts_db
+        .replace_web_push_endpoint(
+            &account_id,
+            request.old_endpoint.trim(),
+            &request.new_subscription.endpoint,
+            &request.new_subscription.keys.p256dh,
+            &request.new_subscription.keys.auth,
+        )
+        .await
+    {
+        Ok(replaced) => {
+            let _ = state.accounts_db.clear_web_push_removed(&account_id).await;
+            tracing::info!(account = %account_id, replaced, "Web Push 端點已依 pushsubscriptionchange 輪替");
+            Json(json!({"ok": true, "replaced": replaced})).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": format!("更新推播訂閱失敗：{error}")})),
         )
             .into_response(),
     }

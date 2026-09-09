@@ -152,6 +152,16 @@ pub(super) async fn admin_live_events_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::LIVE_EVENTS_JS)
 }
 
+// SUBPAGE_FETCH_SHARED_V1
+pub(super) async fn admin_subpage_fetch_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::SUBPAGE_FETCH_JS)
+}
+
+// CLIENT_ERROR_REPORT_V1
+pub(super) async fn admin_client_log_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::CLIENT_LOG_JS)
+}
+
 pub(super) async fn admin_dompurify_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::DOMPURIFY_JS)
 }

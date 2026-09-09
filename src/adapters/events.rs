@@ -224,7 +224,7 @@ impl MonitorEventNotice {
             lines.push(format!("建議：{}", d.advice));
         }
         match self.kind {
-            MonitorEventKind::LoopCrashed => lines.push("請重啟服務以恢復此帳號的監控。".to_string()),
+            MonitorEventKind::LoopCrashed => lines.push("監控看門狗會在 30 秒內自動重新登入並重啟此帳號的監控（結果另行通知）；若反覆發生，請檢查系統 Log。".to_string()),
             MonitorEventKind::AutoReauthFailed => {
                 lines.push("系統會以逐步拉長的間隔自動重試；也可輸入 /reauth 立即再試。".to_string())
             }
@@ -622,4 +622,36 @@ pub struct MonitorStatus {
     /// FAILURE_DIAGNOSIS_V1：最近一次輪詢／重登失敗的分類與自助建議；成功後清空。
     #[serde(default)]
     pub last_failure: Option<crate::monitor_alerts::FailureDiagnosis>,
+    /// REAUTH_VISIBLE_V1：最近一次重新認證（手動 /reauth 或連續失敗後自動）的時間與結果，
+    /// 讓儀表板帳號列看得到「自動重登有沒有在動、上次成不成功」。
+    #[serde(default)]
+    pub last_reauth: Option<ReauthRecord>,
+}
+
+/// REAUTH_VISIBLE_V1：單次重新認證的紀錄。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReauthRecord {
+    /// 發生時間（Unix 秒）。
+    pub at: i64,
+    /// 是否成功。
+    pub ok: bool,
+    /// 觸發來源：`manual`（/reauth、儀表板「重登」）或 `auto`（連續失敗／認證錯誤）。
+    pub trigger: String,
+    /// 失敗時的截短錯誤訊息；成功為空字串。
+    pub message: String,
+}
+
+impl ReauthRecord {
+    pub fn new(ok: bool, trigger: &str, message: &str) -> Self {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        Self {
+            at,
+            ok,
+            trigger: trigger.to_string(),
+            message: crate::text_utils::truncate_chars(message.trim(), 200).to_string(),
+        }
+    }
 }

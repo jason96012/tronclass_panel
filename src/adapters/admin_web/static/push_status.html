@@ -16,7 +16,9 @@
     .push-page-brand{display:flex!important;align-items:center!important;gap:14px!important;min-width:0!important}.push-page-heading{min-width:0}.push-page-logo{flex:0 0 auto!important}.push-page-back{flex:0 0 auto!important;white-space:nowrap!important;width:auto!important}
     @media(max-width:720px){.push-page-header{min-height:76px!important;margin-bottom:18px!important;padding:12px 13px!important;border-radius:18px!important}.push-page-brand{gap:10px!important}.push-page-logo{width:46px!important;height:46px!important;border-radius:14px!important;font-size:22px!important}.push-page-heading h1{font-size:20px!important;line-height:1.18!important;white-space:nowrap!important}.push-page-subtitle{margin-top:3px!important;font-size:12px!important}.push-page-back{padding:9px 11px!important;font-size:14px!important}}
     @media(max-width:380px){.wrap{width:calc(100% - 16px)!important}.push-page-header{padding:10px!important}.push-page-brand{gap:8px!important}.push-page-logo{width:42px!important;height:42px!important}.push-page-heading h1{font-size:18px!important}.push-page-back{padding:8px 9px!important;font-size:13px!important}}
-  </style>
+      .push-removed{display:block;margin:4px 0 6px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.5;color:#92400e;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.35)}
+    html[data-theme="dark"] .push-removed{color:#fbbf24}
+</style>
 </head>
 <body>
   <main class="wrap">
@@ -70,8 +72,20 @@
     function q(id){return document.getElementById(id)}
     function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
     function ts(v){return v?new Date(Number(v)*1000).toLocaleString():'—'}
+    /* PUSH_GONE_VISIBLE_V1：伺服器曾自動移除此帳號的失效訂閱 → 顯示醒目提示（重新啟用後後端會清掉） */
+    function removedLine(h){
+      if(!h||!h.removed_at)return '';
+      var n=Number(h.removed_devices||0),left=Number(h.removed_remaining||0);
+      return '<span class="push-removed">推播訂閱曾於 '+ts(h.removed_at)+' 被自動移除 '+n+' 台（'+esc(h.removed_reason||'推播服務拒絕')+'）'+(left>0?'，仍有 '+left+' 台有效':'，目前沒有任何有效裝置')+'；請按「啟用／修復此手機」重新啟用。</span>';
+    }
     function healthLine(h,detail){
       if(!h)return '<span style="font-size:12px;color:var(--muted)">推播：尚無發送紀錄</span>';
+      var removed=removedLine(h);
+      if(removed&&detail)return removed+healthLineInner(h,detail);
+      if(removed)return removed;
+      return healthLineInner(h,detail);
+    }
+    function healthLineInner(h,detail){
       if(Number(h.consecutive_fails)>0){
         var extra=detail&&h.last_error?'<br><span style="font-size:12px;color:var(--muted)">'+esc(String(h.last_error).slice(0,90))+'</span>':'';
         return '<span style="font-size:12px;color:var(--bad)">推播：連續 '+Number(h.consecutive_fails)+' 次失敗'+extra+'</span>';

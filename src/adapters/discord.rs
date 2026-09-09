@@ -2146,7 +2146,7 @@ fn notice_card_for(message: &OutboundMessage) -> Option<NoticeCard> {
                 card = card.field("錯誤", truncate_embed(event.error.trim(), 300), false);
             }
             let hint = match event.kind {
-                crate::adapters::events::MonitorEventKind::LoopCrashed => "請重啟服務以恢復此帳號的監控。",
+                crate::adapters::events::MonitorEventKind::LoopCrashed => "監控看門狗會在 30 秒內自動重新登入並重啟此帳號的監控（結果另行通知）；若反覆發生，請檢查系統 Log。",
                 crate::adapters::events::MonitorEventKind::AutoReauthFailed => {
                     "系統會以逐步拉長的間隔自動重試；也可輸入 /reauth 立即再試。"
                 }

@@ -1,45 +1,8 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-<script id="SUBPAGE_TOKEN_BOOT_V1">
-(function(){
-  if(window.SUBPAGE_TOKEN_BOOT_V1) return;
-  window.SUBPAGE_TOKEN_BOOT_V1 = true;
-  try{
-    var u=new URL(location.href);
-    var tok=(u.searchParams.get('token')||window.__tronBootToken||'').trim();
-    if(tok) window.__tronBootToken=tok;
-  }catch(_){}
-  var native=window.fetch;
-  window.fetch=function(input, init){
-    try{
-      var tok=window.__tronBootToken||'';
-      var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
-      if(tok && url.origin===location.origin && url.pathname.indexOf('/admin/api/')===0 &&
-         url.pathname!=='/admin/api/login' && !url.searchParams.get('token')){
-        // F-03: token removed, auth via HttpOnly cookie
-        input=url.pathname+url.search+url.hash;
-      }
-    }catch(_){}
-    return native.apply(this, arguments);
-  };
-  document.addEventListener('click', function(ev){
-    var a=ev.target && ev.target.closest && ev.target.closest('a[href]');
-    if(!a) return;
-    try{
-      var href=a.getAttribute('href')||'';
-      var dest=new URL(href, location.origin);
-      if(dest.origin!==location.origin) return;
-      if(!(dest.pathname==='/admin'||dest.pathname==='/admin/'||dest.pathname==='/admin/dashboard'||dest.pathname==='/admin/timetable'||dest.pathname.indexOf('/admin/')===0)) return;
-      var tok=window.__tronBootToken||'';
-      if(tok && !dest.searchParams.get('token')){
-        // F-03: token removed, auth via HttpOnly cookie
-        a.setAttribute('href', dest.pathname+dest.search+dest.hash);
-      }
-    }catch(_){}
-  }, true);
-})();
-</script>
+<!-- SUBPAGE_FETCH_SHARED_V1：子頁唯一的 window.fetch 包裝（cookie 認證、剝 token、401→refresh 重試）；取代原 SUBPAGE_TOKEN_BOOT_V1 內聯區塊 -->
+<script src="/admin/static/subpage-fetch.js?v=20260909subfetch"></script>
 
 <style id="REMOVE_UGLY_LOGIN_V1">
   html{visibility:hidden!important}
@@ -374,19 +337,7 @@ html{visibility:hidden!important}
   function rememberInput(){ return q('rememberPassword')||q('rememberLogin')||document.querySelector('input[type="checkbox"]'); }
   function fillSaved(){ var saved=savedUsername(); var u=usernameInput(); if(u&&saved&&!u.value)u.value=saved; var r=rememberInput(); if(r&&saved)r.checked=true; }
 
-  // Keep API token current for all Admin pages.
-  window.fetch = function(input, init){
-    try {
-      var u = new URL(typeof input === 'string' ? input : input.url, location.origin);
-      if (u.pathname.indexOf('/admin/api/') === 0 && u.pathname !== '/admin/api/login' && u.pathname.indexOf('/admin/api/passkey/login/') !== 0) {
-        var t = token();
-        /* cookie session: do not fake 401 */
-        // F-03: token removed, auth via HttpOnly cookie
-        input = u.pathname + u.search + u.hash;
-      }
-    } catch(_) {}
-    return nativeFetch(input, init);
-  };
+  // SUBPAGE_FETCH_SHARED_V1：原本這裡的 window.fetch 包裝（剝 token）已由 subpage-fetch.js 統一處理。
 
   async function parseResponse(res){ var body=await res.json().catch(function(){return{}}); if(!res.ok){var e=new Error(body.error||('HTTP '+res.status));e.status=res.status;e.body=body;throw e;} return body; }
   async function loginApi(username,password){ username=String(username||'').trim(); password=String(password||''); if(!username||!password)throw new Error('請輸入帳號與密碼'); var res=await nativeFetch('/admin/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:username,password:password})}); var body=await parseResponse(res); if(!body.token)throw new Error('登入成功但沒有收到 session token'); return body; }
@@ -471,21 +422,7 @@ html{visibility:hidden!important}
     return nativeReplaceState(state, title, url);
   };
 
-  if (nativeFetch) {
-    window.fetch = function(input, init){
-      try {
-        var u = new URL(typeof input === 'string' ? input : input.url, location.origin);
-        if (u.origin === location.origin && u.pathname.startsWith('/admin/api/') && u.pathname !== '/admin/api/login') {
-          var t = latestToken();
-          if (t && !u.searchParams.get('token')) {
-            // F-03: token removed, auth via HttpOnly cookie
-            input = u.pathname + u.search + u.hash;
-          }
-        }
-      } catch(_) {}
-      return nativeFetch(input, init);
-    };
-  }
+  // SUBPAGE_FETCH_SHARED_V1：原本這裡的 window.fetch 包裝（剝 token）已由 subpage-fetch.js 統一處理。
 
   document.addEventListener('click', function(ev){
     var a = ev.target.closest && ev.target.closest('a[href]');

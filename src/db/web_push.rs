@@ -171,6 +171,86 @@ impl AccountsDb {
         self.set_web_push_setting(&key, &entry.to_string()).await
     }
 
+    /// PUSH_GONE_VISIBLE_V1：把「訂閱被自動移除」寫進健康紀錄，讓推播狀態頁與管理員總覽
+    /// 看得到「何時、幾台、為什麼被移除」，而不是只在 Discord 收到一次提醒。
+    /// 使用者重新啟用（`upsert_web_push_subscription` 之後呼叫 `clear_web_push_removed`）即清除。
+    pub async fn record_web_push_removed(
+        &self,
+        account_id: &str,
+        removed_devices: usize,
+        remaining_devices: usize,
+        reason: &str,
+    ) -> Result<()> {
+        let key = format!("push_health_v1:{}", account_id.trim());
+        let now = chrono::Local::now().timestamp();
+        let mut entry: serde_json::Value = match self.get_web_push_setting(&key).await? {
+            Some(raw) => serde_json::from_str(&raw).unwrap_or(serde_json::json!({})),
+            None => serde_json::json!({}),
+        };
+        if !entry.is_object() {
+            entry = serde_json::json!({});
+        }
+        let Some(object) = entry.as_object_mut() else {
+            return Ok(());
+        };
+        let previous = object
+            .get("removed_total")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        object.insert("removed_at".to_string(), serde_json::json!(now));
+        object.insert("removed_devices".to_string(), serde_json::json!(removed_devices));
+        object.insert("removed_remaining".to_string(), serde_json::json!(remaining_devices));
+        object.insert(
+            "removed_reason".to_string(),
+            serde_json::json!(super::truncate_event_text(reason.to_string(), 200)),
+        );
+        object.insert(
+            "removed_total".to_string(),
+            serde_json::json!(previous + removed_devices as u64),
+        );
+        self.set_web_push_setting(&key, &entry.to_string()).await
+    }
+
+    /// PUSH_GONE_VISIBLE_V1：使用者重新啟用推播後清除「已被移除」標記。
+    pub async fn clear_web_push_removed(&self, account_id: &str) -> Result<()> {
+        let key = format!("push_health_v1:{}", account_id.trim());
+        let Some(raw) = self.get_web_push_setting(&key).await? else {
+            return Ok(());
+        };
+        let mut entry: serde_json::Value = serde_json::from_str(&raw).unwrap_or(serde_json::json!({}));
+        let Some(object) = entry.as_object_mut() else {
+            return Ok(());
+        };
+        let had = object.remove("removed_at").is_some();
+        object.remove("removed_devices");
+        object.remove("removed_remaining");
+        object.remove("removed_reason");
+        if had {
+            self.set_web_push_setting(&key, &entry.to_string()).await?;
+        }
+        Ok(())
+    }
+
+    /// PUSH_GONE_VISIBLE_V1：瀏覽器端 `pushsubscriptionchange` 後把舊端點換成新端點
+    /// （同帳號、同裝置；新端點若已存在則只更新金鑰）。回傳是否找到舊端點。
+    pub async fn replace_web_push_endpoint(
+        &self,
+        account_id: &str,
+        old_endpoint: &str,
+        new_endpoint: &str,
+        p256dh: &str,
+        auth: &str,
+    ) -> Result<bool> {
+        let existed = if old_endpoint.trim().is_empty() {
+            false
+        } else {
+            self.delete_web_push_subscription(account_id, old_endpoint).await?
+        };
+        self.upsert_web_push_subscription(account_id, new_endpoint, p256dh, auth)
+            .await?;
+        Ok(existed)
+    }
+
     /// PUSH_HEALTH_V1：讀取單一帳號的推播發送健康紀錄。
     pub async fn get_web_push_health(
         &self,

@@ -73,6 +73,10 @@ pub(super) const CORE_API_JS: &str = include_str!("static/js/core-api.js");
 pub(super) const WEB_PUSH_JS: &str = include_str!("static/js/web-push.js");
 // DASHBOARD_LIVE_EVENTS_V1
 pub(super) const LIVE_EVENTS_JS: &str = include_str!("static/js/live-events.js");
+/// SUBPAGE_FETCH_SHARED_V1：子頁共用的唯一 window.fetch 包裝（同步、在 inline script 之前）。
+pub(super) const SUBPAGE_FETCH_JS: &str = include_str!("static/js/subpage-fetch.js");
+/// CLIENT_ERROR_REPORT_V1：前端錯誤／看門狗事件回報。
+pub(super) const CLIENT_LOG_JS: &str = include_str!("static/js/client-log.js");
 pub(super) const ACCOUNTS_MODULE_JS: &str = include_str!("static/js/accounts.js");
 pub(super) const MOCK_ROLLCALL_MODULE_JS: &str = include_str!("static/js/mock-rollcall.js");
 pub(super) const TIMETABLE_UI_MODULE_JS: &str = include_str!("static/js/timetable.js");
@@ -188,7 +192,11 @@ pub(super) fn inject_theme(html: &str) -> String {
         // PWA_IOS_META_V1：所有 admin 頁共用的主畫面 App meta（子頁各自的 <link rel="manifest">
         // 重複無害；apple-touch-icon 用不透明 180px PNG，iOS 不吃 SVG）。
         r#"<link rel="manifest" href="/manifest.webmanifest">"#,
-        r#"<link rel="apple-touch-icon" sizes="180x180" href="/admin/pwa/apple-touch-icon.png">"#,
+        // PWA_ICON_FULL_BLEED_V1：apple-touch-icon 不帶 sizes（Safari 只認一張 180 滿版圖，多餘屬性
+        // 會讓部分版本走「依裝置挑尺寸」的舊路徑）；另補 rel="icon" PNG，Safari 分享面板／書籤
+        // 找不到 favicon 時會退回「小圖墊白底」的顯示方式。
+        r#"<link rel="apple-touch-icon" href="/admin/pwa/apple-touch-icon.png?v=pwaicon9">"#,
+        r#"<link rel="icon" type="image/png" sizes="192x192" href="/admin/pwa/icon-192.png?v=pwaicon9">"#,
         r#"<meta name="apple-mobile-web-app-capable" content="yes">"#,
         r#"<meta name="mobile-web-app-capable" content="yes">"#,
         r#"<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">"#,
@@ -203,6 +211,8 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
         r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#,
         r#"<script defer src="/admin/static/live-events.js?v=20260908live"></script>"#,
+        // CLIENT_ERROR_REPORT_V1：前端錯誤回報（defer；未登入頁由 login_page_response 剝掉）。
+        r#"<script defer src="/admin/static/client-log.js?v=20260909clientlog"></script>"#,
         r#"<style id="appSettingsDynamicCss">
 html[data-app-settings][data-theme="dark"]{color-scheme:dark!important}
 html[data-app-settings][data-theme="light"]{color-scheme:light!important}
@@ -656,6 +666,7 @@ fn login_page_response(headers: &HeaderMap) -> Response {
             &[
                 "/admin/static/web-push.js",
                 "/admin/static/live-events.js",
+                "/admin/static/client-log.js",
                 "/admin/static/js/dompurify.min.js",
                 "/admin/static/js/trusted-types-init.js",
             ],

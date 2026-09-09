@@ -74,6 +74,8 @@ pub(super) struct AdminAccountStatus {
     started_at: i64,
     /// FAILURE_DIAGNOSIS_V1：最近一次失敗的分類與自助建議（成功後為 None）。
     last_failure: Option<crate::monitor_alerts::FailureDiagnosis>,
+    /// REAUTH_VISIBLE_V1：最近一次重新認證的時間／結果／觸發來源。
+    last_reauth: Option<crate::adapters::events::ReauthRecord>,
 }
 
 // Cache admin flags for /admin/api/status to avoid querying accounts.db on every dashboard refresh.
@@ -579,6 +581,13 @@ pub(super) async fn admin_status_handler(
                     }
                     d
                 });
+                // REAUTH_VISIBLE_V1：同 last_failure 的遮罩規則（檢視者看別人不給原始錯誤）。
+                let last_reauth = status.last_reauth.clone().map(|mut r| {
+                    if mask_sensitive && account.account_id != session_account_id {
+                        r.message = String::new();
+                    }
+                    r
+                });
                 drop(status);
 
                 // PERFORMANCE_STATUS_TARGET_V1:
@@ -619,6 +628,7 @@ pub(super) async fn admin_status_handler(
                     consecutive_failures,
                     started_at,
                     last_failure,
+                    last_reauth,
                 }
             }
         })

@@ -222,9 +222,56 @@ pub struct RequestAccountState {
     pub is_running: Arc<Mutex<bool>>,
     pub force_poll_tx: Arc<tokio::sync::Notify>,
     pub reauth_tx: Arc<tokio::sync::Notify>,
+    /// MONITOR_WATCHDOG_V1：監控循環的心跳（Unix 秒）。循環每次迭代、每段等待／退避
+    /// 睡眠中至少每 60 秒更新一次；看門狗與 /healthz 據此判斷循環是否卡死。
+    /// 0 代表循環尚未開始（啟動延遲中）。
+    pub heartbeat: Arc<std::sync::atomic::AtomicI64>,
+    /// MONITOR_WATCHDOG_V1：循環任務的中止把手；看門狗判定卡死時用它殺掉舊任務再重生。
+    /// 用 std Mutex（只在同步區段短暫持鎖）。
+    pub loop_abort: Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
 }
 
+/// MONITOR_WATCHDOG_V1：心跳哨兵值——循環已異常結束（非 0、且一定早於任何門檻）。
+pub const HEARTBEAT_CRASHED: i64 = 1;
+
 impl RequestAccountState {
+    /// MONITOR_WATCHDOG_V1：更新心跳為現在時間。
+    pub fn beat(&self) {
+        let now = chrono::Local::now().timestamp();
+        self.heartbeat
+            .store(now, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// MONITOR_WATCHDOG_V1：最近一次心跳（Unix 秒；0 = 尚未開始；1 = 循環已異常結束）。
+    pub fn last_heartbeat(&self) -> i64 {
+        self.heartbeat.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// MONITOR_WATCHDOG_V1：循環以 Err 結束時呼叫。把心跳設成哨兵值 `HEARTBEAT_CRASHED`，
+    /// 看門狗下一輪掃描（30 秒內）就會把它當成卡死立刻重生，不必等心跳逾時。
+    pub fn mark_loop_crashed(&self) {
+        self.heartbeat
+            .store(HEARTBEAT_CRASHED, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// MONITOR_WATCHDOG_V1：記錄目前跑這個帳號循環的任務把手（重生時覆蓋）。
+    pub fn set_loop_abort(&self, handle: tokio::task::AbortHandle) {
+        let mut guard = self
+            .loop_abort
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *guard = Some(handle);
+    }
+
+    /// MONITOR_WATCHDOG_V1：取走任務把手（取走後看門狗才能 abort，避免重複中止）。
+    pub fn take_loop_abort(&self) -> Option<tokio::task::AbortHandle> {
+        let mut guard = self
+            .loop_abort
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        guard.take()
+    }
+
     pub fn new(
         account_id: impl Into<String>,
         user_id: impl Into<String>,
@@ -261,6 +308,8 @@ impl RequestAccountState {
             is_running: Arc::new(Mutex::new(true)),
             force_poll_tx: Arc::new(tokio::sync::Notify::new()),
             reauth_tx: Arc::new(tokio::sync::Notify::new()),
+            heartbeat: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            loop_abort: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }
@@ -333,6 +382,30 @@ impl AccountRegistry {
 
     pub fn is_empty(&self) -> bool {
         self.read().list.is_empty()
+    }
+
+    /// MONITOR_WATCHDOG_V1：移除一個 runtime 帳號（看門狗重生前把舊的登錄拿掉，
+    /// 否則 `MonitorSpawner::spawn_account` 會因「已在監控中」拒絕）。
+    /// 回傳被移除的狀態（沒有則 None）。
+    pub fn remove(&self, account_id: &str) -> Option<RequestAccountState> {
+        let mut guard = self
+            .inner
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let index = *guard.by_id.get(account_id)?;
+        let mut list: Vec<RequestAccountState> = guard.list.iter().cloned().collect();
+        if index >= list.len() {
+            return None;
+        }
+        let removed = list.remove(index);
+        let by_id = list
+            .iter()
+            .enumerate()
+            .map(|(i, account)| (account.account_id.clone(), i))
+            .collect();
+        guard.by_id = by_id;
+        guard.list = Arc::new(list);
+        Some(removed)
     }
 
     /// 追加一個 runtime 帳號；account_id 已存在時回傳 false 且不變更。
@@ -917,6 +990,7 @@ mod tests {
             consecutive_failures: 0,
             started_at: 0,
             last_failure: None,
+            last_reauth: None,
         }))
     }
 
@@ -994,6 +1068,7 @@ mod tests {
             consecutive_failures: 0,
             started_at: 1_699_900_000,
             last_failure: None,
+            last_reauth: None,
         };
         let msg = OutboundMessage::Status(StatusMessage::Single(status.clone()));
         assert_eq!(msg, OutboundMessage::Status(StatusMessage::Single(status)));

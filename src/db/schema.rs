@@ -602,5 +602,44 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 homework_reminder_preferences 資料表失敗")?;
 
+    // LOGIN_THROTTLE_SQLITE_V1
+    // 登入／通行密鑰／密碼變更等敏感端點的節流事件，改存 SQLite：
+    // 服務重啟（或 Pterodactyl 自動重啟）後計數不歸零，攻擊者無法靠「打到重啟」清零。
+    // 一列 = 一次嘗試；查詢只看 window 內的列，過期列由 prune 定期清掉。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS auth_throttle_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT NOT NULL,
+            key TEXT NOT NULL,
+            at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 auth_throttle_events 資料表失敗")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_auth_throttle_scope_key_at
+         ON auth_throttle_events(scope, key, at)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 auth_throttle_events index 失敗")?;
+
+    // LOGIN_THROTTLE_SQLITE_V1：第一層「帳號密碼登入鎖定」的到期時間（Unix 秒）。
+    // 鍵為小寫的帳號 id／學號／使用者輸入名稱（與 admin_web 上鎖時一致）。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS login_locks (
+            key TEXT PRIMARY KEY NOT NULL,
+            until INTEGER NOT NULL,
+            created_at INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 login_locks 資料表失敗")?;
+
     Ok(())
 }

@@ -90,6 +90,14 @@ const ASSETS: &[(&str, &str)] = &[
         include_str!("static/js/live-events.js"),
     ),
     (
+        "/admin/static/subpage-fetch.js",
+        include_str!("static/js/subpage-fetch.js"),
+    ),
+    (
+        "/admin/static/client-log.js",
+        include_str!("static/js/client-log.js"),
+    ),
+    (
         "/admin/static/accounts.js",
         include_str!("static/js/accounts.js"),
     ),

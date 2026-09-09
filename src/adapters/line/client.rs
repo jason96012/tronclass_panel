@@ -899,6 +899,7 @@ mod tests {
                 consecutive_failures: 0,
                 started_at: 1_699_000_000,
                 last_failure: None,
+                last_reauth: None,
             },
         )));
 
@@ -928,6 +929,7 @@ mod tests {
             consecutive_failures: 0,
             started_at: 1_699_000_000,
             last_failure: None,
+            last_reauth: None,
         });
 
         assert!(text.contains("2023"));

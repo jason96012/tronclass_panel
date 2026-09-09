@@ -39,7 +39,7 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::account::{AccountConfig, AccountsFile};
 use crate::adapters::events::{
     AdapterAccountTarget, AdapterMessenger, MonitorEventKind, MonitorEventNotice, MonitorStatus,
-    OutboundMessage, RollcallHistoryEntry, SystemStartedEvent,
+    OutboundMessage, ReauthRecord, RollcallHistoryEntry, SystemStartedEvent,
 };
 use crate::adapters::requests::{
     create_number_code_channel, create_qrcode_channel, AccountRegistry, NumberCodeReceiver,
@@ -93,6 +93,15 @@ impl ForceCascade {
             return;
         }
         peers.push(ForceCascadePeer { account_id, notify });
+    }
+
+    /// MONITOR_WATCHDOG_V1：看門狗重生循環前移除舊的 cascade 對象（新循環會重新 add_peer）。
+    pub fn remove_peer(&self, account_id: &str) {
+        let mut peers = self
+            .peers
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        peers.retain(|peer| peer.account_id != account_id);
     }
 
     async fn notify_peers_once(
@@ -276,6 +285,7 @@ impl MonitorContext {
             consecutive_failures: 0,
             started_at,
             last_failure: None,
+            last_reauth: None,
         }));
 
         let adapter_target = Arc::new(Mutex::new(AdapterAccountTarget::new(
@@ -400,6 +410,41 @@ impl MonitorSpawner {
         }
     }
 
+    /// MONITOR_WATCHDOG_V1：看門狗用——中止卡死的循環、從登錄簿與 cascade 移除舊狀態，
+    /// 再走 `spawn_account` 重新登入並起一條新循環。
+    ///
+    /// 舊的 `RequestAccountState` 被移除後，Web／Discord 的 status 會短暫看不到該帳號
+    /// （通常數秒，直到新循環登入完成）；若重生失敗，呼叫端應通知管理員。
+    pub async fn respawn_account(&self, account_id: &str) -> std::result::Result<HotAddedMonitor, String> {
+        let account_id = account_id.trim().to_string();
+        if let Some(old) = self.registry.remove(&account_id) {
+            if let Some(handle) = old.take_loop_abort() {
+                handle.abort();
+            } else {
+                warn!(account = %account_id, "看門狗：舊循環沒有可用的中止把手（可能仍在背景執行）");
+            }
+            // 把舊狀態標成未執行，避免任何殘留引用把它當成活的。
+            *old.is_running.lock().await = false;
+        }
+        self.force_cascade.remove_peer(&account_id);
+        self.spawn_account(&account_id).await
+    }
+
+    /// MONITOR_WATCHDOG_V1：共用登錄簿（看門狗掃描心跳用）。
+    pub fn registry(&self) -> &AccountRegistry {
+        &self.registry
+    }
+
+    /// MONITOR_WATCHDOG_V1：帳號資料庫（看門狗通知管理員時取收件人）。
+    pub fn accounts_db(&self) -> &AccountsDb {
+        &self.accounts_db
+    }
+
+    /// MONITOR_WATCHDOG_V1：adapter messenger（看門狗通知管理員）。
+    pub fn messenger(&self) -> Option<Arc<dyn AdapterMessenger>> {
+        self.messenger.as_ref().map(Arc::clone)
+    }
+
     /// 以 accounts.db 內既有的帳號 id 熱啟動監控循環。
     ///
     /// 會實際登入一次（與服務啟動時相同），因此可能耗時數秒到數十秒；
@@ -470,11 +515,18 @@ impl MonitorSpawner {
         let task_account_id = account.id.clone();
         let task_messenger = self.messenger.as_ref().map(Arc::clone);
         let task_target = ctx.adapter_target.lock().await.clone();
-        tokio::spawn(async move {
+        // MONITOR_WATCHDOG_V1：把任務把手掛到 request_account，看門狗判定卡死時可中止再重生。
+        let request_account_for_abort = ctx.request_account.clone();
+        let request_account_for_crash = ctx.request_account.clone();
+        let handle = tokio::spawn(async move {
             match run_monitor_loop(ctx).await {
                 Ok(()) => warn!(account = %task_account_id, "熱啟動的監控循環提前正常結束"),
                 Err(e) => {
                     error!(account = %task_account_id, error = %e, "熱啟動的監控循環異常結束");
+                    // MONITOR_WATCHDOG_V1：標記已崩潰 → 看門狗 30 秒內重生（不用等心跳逾時）。
+                    if let Some(request_account) = request_account_for_crash.as_ref() {
+                        request_account.mark_loop_crashed();
+                    }
                     notify_background(
                         task_messenger,
                         task_target,
@@ -492,6 +544,9 @@ impl MonitorSpawner {
                 }
             }
         });
+        if let Some(request_account) = request_account_for_abort {
+            request_account.set_loop_abort(handle.abort_handle());
+        }
 
         info!(
             account = %account.id,
@@ -620,8 +675,18 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
     // REST_DAY_NO_POLL_V1：同一個休息日只記一次 log。
     let mut last_rest_day_logged: Option<chrono::NaiveDate> = None;
 
+    // MONITOR_WATCHDOG_V1：心跳來源（無 interactive adapter 時為 None，看門狗自然略過）。
+    let heartbeat_account = ctx.request_account.clone();
+    let beat = || {
+        if let Some(account) = heartbeat_account.as_ref() {
+            account.beat();
+        }
+    };
+    beat();
+
     loop {
         // ── 等待觸發（定時、強制 or 重新認證）──────────────────────────────────
+        beat();
         let normal_poll_interval =
             crate::runtime_settings::poll_interval(provider_poll_interval_secs).await;
         // REST_DAY_NO_POLL_V1：週六、週日與國定假日整天不做自動輪詢。
@@ -673,6 +738,7 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                 timetable_policy.interval,
                 force_poll_notify.as_deref(),
                 reauth_notify.as_deref(),
+                heartbeat_account.as_ref(),
             )
             .await
         } else {
@@ -681,9 +747,11 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                 force_poll_notify.as_deref(),
                 reauth_notify.as_deref(),
                 &schedule,
+                heartbeat_account.as_ref(),
             )
             .await
         };
+        beat();
 
         // Refresh cached target once per iteration
         cached_target = ctx.adapter_target.lock().await.clone();
@@ -700,6 +768,11 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                 info!("收到重新認證請求");
                 if let Err(e) = do_reauth(&mut ctx).await {
                     error!(error = %e, "重新認證失敗");
+                    // REAUTH_VISIBLE_V1：記錄手動重登失敗。
+                    {
+                        let mut s = ctx.status.lock().await;
+                        s.last_reauth = Some(ReauthRecord::new(false, "manual", &format!("{e:#}")));
+                    }
                     // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                     notify_background(
                         ctx.messenger.clone(),
@@ -716,6 +789,11 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                     );
                 } else {
                     consecutive_failures = 0;
+                    // REAUTH_VISIBLE_V1：記錄手動重登成功。
+                    {
+                        let mut s = ctx.status.lock().await;
+                        s.last_reauth = Some(ReauthRecord::new(true, "manual", ""));
+                    }
                     // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
                     notify_background(
                         ctx.messenger.clone(),
@@ -787,6 +865,7 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
             let mut s = ctx.status.lock().await;
             s.last_poll_timestamp = Some(poll_timestamp);
         }
+        beat();
 
         // ── 執行輪詢 ──────────────────────────────────────────────────────────
         info!("🔄 開始輪詢簽到列表...");
@@ -901,6 +980,8 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                                 let mut s = ctx.status.lock().await;
                                 s.consecutive_failures = 0;
                                 s.last_failure = None;
+                                // REAUTH_VISIBLE_V1
+                                s.last_reauth = Some(ReauthRecord::new(true, "auto", ""));
                             }
                             if let Some(bot) = &ctx.messenger {
                                 // PERFORMANCE_MONITOR_TARGET_CACHE_V1: use cached target
@@ -927,6 +1008,8 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                                     &reauth_text,
                                     is_auth_error_report(&reauth_err),
                                 ));
+                                // REAUTH_VISIBLE_V1
+                                s.last_reauth = Some(ReauthRecord::new(false, "auto", &reauth_text));
                             }
                             // MONITOR_ALERT_GRADING_V1：自動重新認證失敗 → 嚴重。
                             crate::monitor_alerts::report_failure(
@@ -965,7 +1048,7 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                                 "重新認證失敗，等待 {} 秒後重試",
                                 wait.as_secs()
                             );
-                            tokio::time::sleep(wait).await;
+                            sleep_with_heartbeat(wait, heartbeat_account.as_ref()).await;
                         }
                     }
                 } else {
@@ -977,7 +1060,7 @@ pub async fn run_monitor_loop(mut ctx: MonitorContext) -> Result<()> {
                         "等待 {} 秒後重試...",
                         wait.as_secs()
                     );
-                    tokio::time::sleep(wait).await;
+                    sleep_with_heartbeat(wait, heartbeat_account.as_ref()).await;
                 }
             }
         }
@@ -1353,6 +1436,7 @@ async fn wait_for_trigger(
     force_poll_notify: Option<&tokio::sync::Notify>,
     reauth_notify: Option<&tokio::sync::Notify>,
     schedule: &PollingScheduleConfig,
+    heartbeat: Option<&RequestAccountState>,
 ) -> MonitorTrigger {
     if let Some(next_window) =
         next_poll_window(schedule, Local::now().weekday(), Local::now().time())
@@ -1363,10 +1447,31 @@ async fn wait_for_trigger(
             "目前不在課堂時段內，等待下一個輪詢時段"
         );
 
-        return wait_for_duration(next_window.wait, force_poll_notify, reauth_notify).await;
+        return wait_for_duration(next_window.wait, force_poll_notify, reauth_notify, heartbeat).await;
     }
 
-    wait_for_duration(poll_interval, force_poll_notify, reauth_notify).await
+    wait_for_duration(poll_interval, force_poll_notify, reauth_notify, heartbeat).await
+}
+
+/// MONITOR_WATCHDOG_V1：等待期間每段最多 `HEARTBEAT_SLICE` 就更新一次心跳。
+/// 這樣「休息日等 30 分鐘」「夜間等到 07:00」「退避等 8 分鐘」都不會被看門狗誤判為卡死；
+/// 只有真正卡在 await 裡（例如 HTTP 連線沒有逾時、鎖死）心跳才會停。
+const HEARTBEAT_SLICE: Duration = Duration::from_secs(60);
+
+/// MONITOR_WATCHDOG_V1：分段睡眠並維持心跳（不可被 force/reauth 打斷的等待用這個）。
+async fn sleep_with_heartbeat(total: Duration, heartbeat: Option<&RequestAccountState>) {
+    let deadline = tokio::time::Instant::now() + total;
+    loop {
+        if let Some(account) = heartbeat {
+            account.beat();
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return;
+        }
+        let slice = (deadline - now).min(HEARTBEAT_SLICE);
+        tokio::time::sleep(slice).await;
+    }
 }
 
 /// POLL_BACKOFF_V1：失敗後的重試等待時間。
@@ -1390,30 +1495,53 @@ async fn wait_for_duration(
     duration: Duration,
     force_poll_notify: Option<&tokio::sync::Notify>,
     reauth_notify: Option<&tokio::sync::Notify>,
+    heartbeat: Option<&RequestAccountState>,
 ) -> MonitorTrigger {
-    match (force_poll_notify, reauth_notify) {
-        (Some(force_notify), Some(reauth_notify)) => {
-            tokio::select! {
-                _ = tokio::time::sleep(duration) => MonitorTrigger::Timer,
-                _ = force_notify.notified() => MonitorTrigger::ForcePoll,
-                _ = reauth_notify.notified() => MonitorTrigger::Reauth,
-            }
+    // MONITOR_WATCHDOG_V1：把整段等待切成 ≤60 秒的片段，每片開頭更新心跳。
+    // Notify 的喚醒語意不變：`notified()` 每次重建，但 Notify 內建的「先 notify 後 await
+    // 也會立刻醒」permit 機制讓片段之間不會漏掉觸發。
+    let deadline = tokio::time::Instant::now() + duration;
+    loop {
+        if let Some(account) = heartbeat {
+            account.beat();
         }
-        (Some(force_notify), None) => {
-            tokio::select! {
-                _ = tokio::time::sleep(duration) => MonitorTrigger::Timer,
-                _ = force_notify.notified() => MonitorTrigger::ForcePoll,
-            }
+        let now = tokio::time::Instant::now();
+        let remaining = deadline.saturating_duration_since(now);
+        if remaining.is_zero() {
+            return MonitorTrigger::Timer;
         }
-        (None, Some(reauth_notify)) => {
-            tokio::select! {
-                _ = tokio::time::sleep(duration) => MonitorTrigger::Timer,
-                _ = reauth_notify.notified() => MonitorTrigger::Reauth,
+        let slice = remaining.min(HEARTBEAT_SLICE);
+        let is_last = slice >= remaining;
+        let outcome = match (force_poll_notify, reauth_notify) {
+            (Some(force_notify), Some(reauth_notify)) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(slice) => None,
+                    _ = force_notify.notified() => Some(MonitorTrigger::ForcePoll),
+                    _ = reauth_notify.notified() => Some(MonitorTrigger::Reauth),
+                }
             }
+            (Some(force_notify), None) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(slice) => None,
+                    _ = force_notify.notified() => Some(MonitorTrigger::ForcePoll),
+                }
+            }
+            (None, Some(reauth_notify)) => {
+                tokio::select! {
+                    _ = tokio::time::sleep(slice) => None,
+                    _ = reauth_notify.notified() => Some(MonitorTrigger::Reauth),
+                }
+            }
+            (None, None) => {
+                tokio::time::sleep(slice).await;
+                None
+            }
+        };
+        if let Some(trigger) = outcome {
+            return trigger;
         }
-        (None, None) => {
-            tokio::time::sleep(duration).await;
-            MonitorTrigger::Timer
+        if is_last {
+            return MonitorTrigger::Timer;
         }
     }
 }
@@ -1808,7 +1936,7 @@ mod tests {
     async fn test_wait_for_trigger_timeout() {
         let interval = Duration::from_millis(50);
         let result =
-            wait_for_trigger(interval, None, None, &PollingScheduleConfig::default()).await;
+            wait_for_trigger(interval, None, None, &PollingScheduleConfig::default(), None).await;
         assert_eq!(result, MonitorTrigger::Timer, "應為定時觸發");
     }
 
@@ -1829,6 +1957,7 @@ mod tests {
             Some(&notify),
             None,
             &PollingScheduleConfig::default(),
+            None,
         )
         .await;
         assert_eq!(result, MonitorTrigger::ForcePoll, "應為強制觸發");
@@ -1853,6 +1982,7 @@ mod tests {
             Some(&notify),
             None,
             &PollingScheduleConfig::default(),
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -1882,6 +2012,7 @@ mod tests {
             None,
             Some(&notify),
             &PollingScheduleConfig::default(),
+            None,
         )
         .await;
         let elapsed = start.elapsed();
@@ -1898,7 +2029,7 @@ mod tests {
         let interval = Duration::from_millis(100);
         let start = std::time::Instant::now();
         let result =
-            wait_for_trigger(interval, None, None, &PollingScheduleConfig::default()).await;
+            wait_for_trigger(interval, None, None, &PollingScheduleConfig::default(), None).await;
         let elapsed = start.elapsed();
 
         assert_eq!(result, MonitorTrigger::Timer, "應為定時觸發");
@@ -1977,6 +2108,7 @@ mod tests {
             consecutive_failures: 2,
             started_at: 1_699_900_000,
             last_failure: None,
+            last_reauth: None,
         };
 
         assert!(status.is_running);
@@ -2001,6 +2133,7 @@ mod tests {
             consecutive_failures: 0,
             started_at: 0,
             last_failure: None,
+            last_reauth: None,
         };
 
         assert_eq!(status.last_poll_timestamp, None);
@@ -2039,6 +2172,7 @@ mod tests {
             consecutive_failures: 0,
             started_at: 0,
             last_failure: None,
+            last_reauth: None,
         }));
 
         let mut handles = Vec::new();

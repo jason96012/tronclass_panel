@@ -197,12 +197,39 @@ pub(super) fn validate_optional_admin_text(
 #[derive(Clone, Default)]
 struct RateLimiter {
     attempts: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+    /// LOGIN_THROTTLE_SQLITE_V1：有 DB 時以 SQLite 為主（重啟不歸零）；DB 出錯退回記憶體。
+    db: Option<AccountsDb>,
+}
+
+/// LOGIN_THROTTLE_SQLITE_V1：`record_auth_failure` / `lock_account_login` 等自由函式
+/// 也要能碰 DB（Discord 的 `cancel_login_lock` 沒有 state 可傳），所以在
+/// `AdminWebState::new` 時登記一份 handle。
+static THROTTLE_DB: once_cell::sync::OnceCell<AccountsDb> = once_cell::sync::OnceCell::new();
+
+fn throttle_db() -> Option<&'static AccountsDb> {
+    THROTTLE_DB.get()
+}
+
+fn unix_now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 impl RateLimiter {
     fn new() -> Self {
         Self {
             attempts: Arc::new(Mutex::new(HashMap::new())),
+            db: None,
+        }
+    }
+
+    /// LOGIN_THROTTLE_SQLITE_V1：帶 SQLite 後端的速率限制器。
+    fn with_db(db: AccountsDb) -> Self {
+        Self {
+            attempts: Arc::new(Mutex::new(HashMap::new())),
+            db: Some(db),
         }
     }
 
@@ -211,6 +238,23 @@ impl RateLimiter {
     }
 
     async fn check_limit(&self, key: &str, max_attempts: u32) -> bool {
+        // LOGIN_THROTTLE_SQLITE_V1：先走 SQLite；語意同記憶體版——被拒絕的嘗試不記入窗口。
+        if let Some(db) = self.db.as_ref() {
+            let now = unix_now_secs();
+            let since = now - RATE_LIMIT_WINDOW.as_secs() as i64;
+            match db.throttle_count("rate", key, since).await {
+                Ok(count) if count >= max_attempts => return false,
+                Ok(_) => match db.throttle_record("rate", key, now, RATE_LIMIT_WINDOW.as_secs() as i64).await {
+                    Ok(_) => return true,
+                    Err(error) => warn!(error = %error, "節流寫入 SQLite 失敗，退回記憶體計數"),
+                },
+                Err(error) => warn!(error = %error, "節流讀取 SQLite 失敗，退回記憶體計數"),
+            }
+        }
+        self.check_limit_memory(key, max_attempts).await
+    }
+
+    async fn check_limit_memory(&self, key: &str, max_attempts: u32) -> bool {
         let mut map = self.attempts.lock().await;
         let now = Instant::now();
         let window_start = now - RATE_LIMIT_WINDOW;
@@ -239,6 +283,11 @@ impl RateLimiter {
     }
 
     async fn clear(&self, key: &str) {
+        if let Some(db) = self.db.as_ref() {
+            if let Err(error) = db.throttle_clear("rate", key).await {
+                warn!(error = %error, "清除 SQLite 節流計數失敗");
+            }
+        }
         self.attempts.lock().await.remove(key);
     }
 }
@@ -331,6 +380,8 @@ async fn reject_blacklisted_ip_middleware(
     // checks and all management APIs are denied.
     if path.starts_with("/admin/static/")
         || path.starts_with("/admin/pwa/")
+        || path.starts_with("/apple-touch-icon")
+        || path.starts_with("/favicon.")
         || path == "/healthz"
         || path == "/admin/api/logout"
         || path == "/admin/logout"
@@ -401,6 +452,23 @@ async fn security_should_alert(key: &str) -> bool {
 }
 
 async fn record_auth_failure(username: &str, ip: &str) -> (u32, u32) {
+    // LOGIN_THROTTLE_SQLITE_V1：失敗計數先寫 SQLite（重啟不歸零）；任一步失敗退回記憶體。
+    if let Some(db) = throttle_db() {
+        let now = unix_now_secs();
+        let window = SECURITY_FAIL_WINDOW.as_secs() as i64;
+        let user_key = format!("user:{}", username.trim().to_lowercase());
+        let ip_key = format!("ip:{}", ip.trim());
+        let user = db.throttle_record("fail", &user_key, now, window).await;
+        let ip_count = db.throttle_record("fail", &ip_key, now, window).await;
+        match (user, ip_count) {
+            (Ok(u), Ok(i)) => return (u, i),
+            (user, ip_count) => {
+                if let Err(error) = user.and(ip_count) {
+                    warn!(error = %error, "失敗計數寫入 SQLite 失敗，退回記憶體計數");
+                }
+            }
+        }
+    }
     let mut watch = SECURITY_WATCH.lock().await;
     let now = Instant::now();
     // LOGIN_TIERED_LOCKOUT_V1：改用 15 分鐘觀察窗口（原本沿用 60 秒速率限制窗口）。
@@ -441,6 +509,21 @@ async fn record_auth_failure(username: &str, ip: &str) -> (u32, u32) {
 /// LOGIN_GEO_ALERT_V1：讀出（不清除）15 分鐘窗口內該帳號與該 IP 的密碼失敗次數，取較大者。
 /// 必須在 `clear_auth_failures` 之前呼叫。
 async fn peek_recent_auth_failures(username: &str, ip: &str) -> u32 {
+    if let Some(db) = throttle_db() {
+        let since = unix_now_secs() - SECURITY_FAIL_WINDOW.as_secs() as i64;
+        let user = db
+            .throttle_count("fail", &format!("user:{}", username.trim().to_lowercase()), since)
+            .await;
+        let ip_count = db
+            .throttle_count("fail", &format!("ip:{}", ip.trim()), since)
+            .await;
+        if let (Ok(u), Ok(i)) = (&user, &ip_count) {
+            return (*u).max(*i);
+        }
+        if let Err(error) = user.and(ip_count) {
+            warn!(error = %error, "讀取 SQLite 失敗計數失敗，退回記憶體計數");
+        }
+    }
     let watch = SECURITY_WATCH.lock().await;
     let window_start = Instant::now() - SECURITY_FAIL_WINDOW;
     let count = |key: String| -> u32 {
@@ -455,6 +538,16 @@ async fn peek_recent_auth_failures(username: &str, ip: &str) -> u32 {
 
 /// 登入成功後重置該帳號與 IP 的失敗計數，讓告警只在「連續」失敗時觸發。
 async fn clear_auth_failures(username: &str, ip: &str) {
+    if let Some(db) = throttle_db() {
+        let user_key = format!("user:{}", username.trim().to_lowercase());
+        let ip_key = format!("ip:{}", ip.trim());
+        if let Err(error) = db.throttle_clear("fail", &user_key).await {
+            warn!(error = %error, "清除 SQLite 失敗計數失敗");
+        }
+        if let Err(error) = db.throttle_clear("fail", &ip_key).await {
+            warn!(error = %error, "清除 SQLite 失敗計數失敗");
+        }
+    }
     let mut watch = SECURITY_WATCH.lock().await;
     watch
         .fails
@@ -485,6 +578,18 @@ fn login_lock_key(value: &str) -> String {
 
 /// 對一組鍵上鎖；回傳 `true` 表示這次「新建立」了鎖（之前沒有生效中的鎖）。
 async fn lock_account_login(keys: &[&str]) -> bool {
+    // LOGIN_THROTTLE_SQLITE_V1：鎖定先寫 SQLite（重啟後仍鎖著）；失敗退回記憶體。
+    if let Some(db) = throttle_db() {
+        let now = unix_now_secs();
+        let owned: Vec<String> = keys.iter().map(|k| login_lock_key(k)).collect();
+        match db
+            .login_lock_insert(&owned, now + ACCOUNT_LOGIN_LOCK_TTL.as_secs() as i64, now)
+            .await
+        {
+            Ok(created) => return created,
+            Err(error) => warn!(error = %error, "登入鎖定寫入 SQLite 失敗，退回記憶體鎖定"),
+        }
+    }
     let mut locks = LOGIN_LOCKS.lock().await;
     let now = Instant::now();
     locks.retain(|_, lock| lock.until > now);
@@ -516,6 +621,23 @@ async fn lock_account_login(keys: &[&str]) -> bool {
 
 /// 任一鍵仍在鎖定中 → 回傳剩餘秒數（取最大值）。
 async fn login_lock_remaining(keys: &[String]) -> Option<u64> {
+    if let Some(db) = throttle_db() {
+        match db.login_lock_remaining(keys, unix_now_secs()).await {
+            Ok(remaining) => {
+                // DB 是主要來源；記憶體只在 DB 失敗時才有東西，但仍看一下以免退路期間的鎖被略過。
+                let memory = login_lock_remaining_memory(keys).await;
+                return match (remaining, memory) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            Err(error) => warn!(error = %error, "讀取 SQLite 登入鎖定失敗，退回記憶體鎖定"),
+        }
+    }
+    login_lock_remaining_memory(keys).await
+}
+
+async fn login_lock_remaining_memory(keys: &[String]) -> Option<u64> {
     let mut locks = LOGIN_LOCKS.lock().await;
     let now = Instant::now();
     locks.retain(|_, lock| lock.until > now);
@@ -535,6 +657,19 @@ pub async fn cancel_login_lock(keys: &[&str]) -> bool {
         for key in keys {
             if locks.remove(&login_lock_key(key)).is_some() {
                 removed = true;
+            }
+        }
+    }
+    // LOGIN_THROTTLE_SQLITE_V1：同時解除 SQLite 中的鎖與該帳號的失敗計數。
+    if let Some(db) = throttle_db() {
+        let owned: Vec<String> = keys.iter().map(|k| login_lock_key(k)).collect();
+        match db.login_lock_remove(&owned).await {
+            Ok(db_removed) => removed = removed || db_removed,
+            Err(error) => warn!(error = %error, "移除 SQLite 登入鎖定失敗"),
+        }
+        for key in &owned {
+            if let Err(error) = db.throttle_clear("fail", &format!("user:{key}")).await {
+                warn!(error = %error, "清除 SQLite 失敗計數失敗");
             }
         }
     }
@@ -1277,17 +1412,26 @@ impl AdminWebState {
                     .unwrap_or_default()
                     .as_secs() as i64;
                 let _ = accounts_db_clone.delete_expired_dashboard_sessions(now_unix).await;
+                // LOGIN_THROTTLE_SQLITE_V1：清掉超過最長觀察窗（15 分鐘）的節流事件與過期鎖。
+                let _ = accounts_db_clone
+                    .throttle_prune(now_unix - SECURITY_FAIL_WINDOW.as_secs() as i64, now_unix)
+                    .await;
             }
         });
+
+        // LOGIN_THROTTLE_SQLITE_V1：登記給 record_auth_failure / lock_account_login 等自由函式用。
+        // 測試會建多個 state（不同暫存 DB）；OnceCell 只收第一個，之後的 set 失敗無妨——
+        // 節流函式退回記憶體路徑，測試語意不變。
+        let _ = THROTTLE_DB.set(accounts_db.clone());
 
         let state = Self {
             accounts,
             monitor_spawner: None,
+            rate_limiter: RateLimiter::with_db(accounts_db.clone()),
             accounts_db,
             scanner,
             messenger,
             sessions,
-            rate_limiter: RateLimiter::new(),
             default_poll_interval_secs: default_poll_interval_secs.max(1),
         };
         load_runtime_theme();
@@ -1656,6 +1800,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/pwa/icon-192.png", get(pwa::icon_192_handler))
         .route("/admin/pwa/icon-512.png", get(pwa::icon_512_handler))
         .route("/admin/pwa/apple-touch-icon.png", get(pwa::apple_touch_icon_handler))
+        // PWA_ICON_FULL_BLEED_V1：iOS 在找不到／忽略 <link> 時會直接向網站根目錄要這幾個檔名；
+        // 沒有的話就退回網頁截圖或「小圖墊白底」。全部指向同一張 180 滿版 PNG。
+        .route("/apple-touch-icon.png", get(pwa::apple_touch_icon_handler))
+        .route("/apple-touch-icon-precomposed.png", get(pwa::apple_touch_icon_handler))
+        .route("/apple-touch-icon-180x180.png", get(pwa::apple_touch_icon_handler))
+        .route("/favicon.ico", get(pwa::icon_192_handler))
+        .route("/favicon.png", get(pwa::icon_192_handler))
         .route("/admin/static/theme.css", get(static_assets::admin_theme_css_handler))
         .route(
             "/admin/static/session-security.js",
@@ -1671,6 +1822,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route("/admin/static/core-api.js", get(static_assets::admin_core_api_js_handler))
         .route("/admin/static/web-push.js", get(static_assets::admin_web_push_js_handler))
+        // SUBPAGE_FETCH_SHARED_V1 / CLIENT_ERROR_REPORT_V1
+        .route("/admin/static/subpage-fetch.js", get(static_assets::admin_subpage_fetch_js_handler))
+        .route("/admin/static/client-log.js", get(static_assets::admin_client_log_js_handler))
+        .route(
+            "/admin/api/client-log",
+            post(health::client_log_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         // DASHBOARD_LIVE_EVENTS_V1
         .route("/admin/static/live-events.js", get(static_assets::admin_live_events_js_handler))
         .route(
@@ -2132,6 +2290,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/api/push/unsubscribe",
             post(web_push::unsubscribe_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // PUSH_GONE_VISIBLE_V1：service worker 的 pushsubscriptionchange 端點輪替。
+        .route(
+            "/admin/api/push/rotate",
+            post(web_push::rotate_handler).layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
         )
         .route("/admin/api/push/test", post(web_push::test_handler))
         .route(
@@ -2685,6 +2848,8 @@ fn viewer_allowed_write_path(path: &str) -> bool {
             | "/admin/api/passkey/register/finish"
             | "/admin/api/push/subscribe"
             | "/admin/api/push/unsubscribe"
+            | "/admin/api/push/rotate"
+            | "/admin/api/client-log"
             | "/admin/api/devices/revoke"
             | "/admin/api/bulletins/read"
     )
@@ -2895,7 +3060,48 @@ fn generate_csp_nonce() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
+/// CSP_STYLE_ATTR_STAGED_V1：內聯 style 屬性的策略（見 `AdminWebConfig::csp_style_attr_mode`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CspStyleAttrMode {
+    /// 正式 CSP 允許 'unsafe-inline'，另送 Report-Only（預設）。
+    Report,
+    /// 正式 CSP 直接 'none'。
+    Enforce,
+    /// 舊行為：允許且不回報。
+    Inline,
+}
+
+fn csp_style_attr_mode() -> CspStyleAttrMode {
+    let raw = crate::config::try_get_config()
+        .map(|cfg| cfg.adapters.admin_web.csp_style_attr_mode.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    match raw.as_str() {
+        "enforce" | "strict" | "none" => CspStyleAttrMode::Enforce,
+        "inline" | "off" | "unsafe-inline" => CspStyleAttrMode::Inline,
+        _ => CspStyleAttrMode::Report,
+    }
+}
+
 fn csp_header_value(nonce: Option<&str>) -> String {
+    let style_attr = if csp_style_attr_mode() == CspStyleAttrMode::Enforce {
+        "'none'"
+    } else {
+        "'unsafe-inline'"
+    };
+    csp_header_value_with_style_attr(nonce, style_attr)
+}
+
+/// CSP_STYLE_ATTR_STAGED_V1：Report-Only 版本（style-src-attr 'none'），只在 `report` 模式
+/// 對 HTML 頁面加送。違規由瀏覽器觸發 `securitypolicyviolation`（disposition=report），
+/// client-log.js 會把它回報到 /admin/api/client-log。
+fn csp_report_only_header_value(nonce: &str) -> Option<String> {
+    if csp_style_attr_mode() != CspStyleAttrMode::Report {
+        return None;
+    }
+    Some(csp_header_value_with_style_attr(Some(nonce), "'none'"))
+}
+
+fn csp_header_value_with_style_attr(nonce: Option<&str>, style_attr: &str) -> String {
     let script_nonce = nonce
         .map(|value| format!(" 'nonce-{value}'"))
         .unwrap_or_default();
@@ -2903,8 +3109,20 @@ fn csp_header_value(nonce: Option<&str>) -> String {
         .map(|value| format!(" 'nonce-{value}'"))
         .unwrap_or_default();
     format!(
-        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com https://docs.google.com; worker-src 'self' blob:; upgrade-insecure-requests"
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr {style_attr}; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com https://docs.google.com; worker-src 'self' blob:; upgrade-insecure-requests"
     )
+}
+
+/// CSP_STYLE_ATTR_STAGED_V1：把 Report-Only 標頭掛到 HTML 回應（有才掛）。
+fn apply_csp_report_only(response: &mut Response, nonce: &str) {
+    if let Some(value) = csp_report_only_header_value(nonce) {
+        if let Ok(value) = value.parse::<HeaderValue>() {
+            response.headers_mut().insert(
+                HeaderName::from_static("content-security-policy-report-only"),
+                value,
+            );
+        }
+    }
 }
 
 /// Add a per-response nonce to every inline `<script>` and `<style>` element.
@@ -3110,6 +3328,7 @@ fn html_page_response(headers: &HeaderMap, html: String) -> Response {
                 .headers_mut()
                 .insert(header::CONTENT_SECURITY_POLICY, value);
         }
+        apply_csp_report_only(&mut response, &nonce);
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store, max-age=0"),
@@ -3126,6 +3345,7 @@ fn html_page_response(headers: &HeaderMap, html: String) -> Response {
             .headers_mut()
             .insert(header::CONTENT_SECURITY_POLICY, value);
     }
+    apply_csp_report_only(&mut response, &nonce);
     // Admin HTML contains account/session-specific state. Never let Safari,
     // the installed PWA, or an intermediary reuse it after a server restart.
     response.headers_mut().insert(
@@ -3931,6 +4151,7 @@ mod tests {
         assert!(!html.contains("/admin/static/js/trusted-types-init.js"));
         assert!(!html.contains("/admin/static/web-push.js"));
         assert!(!html.contains("/admin/static/live-events.js"));
+        assert!(!html.contains("/admin/static/client-log.js"));
         assert!(html.contains("/admin/static/session-security.js"));
         assert!(html.contains("/admin/static/app-settings.js"));
         assert!(html.contains("/admin/static/theme.css"));

@@ -1,119 +1,8 @@
 <!doctype html>
-<html lang="zh-Hant">
+<html lang="zh-Hant" data-fetch-dedupe="1">
 <head>
-<!-- TT_STATUS_FETCH_DEDUPE_V1_START -->
-<script id="ttStatusFetchDedupeV1">
-(function () {
-  'use strict';
-  if (window.TT_STATUS_FETCH_DEDUPE_V1) return;
-  window.TT_STATUS_FETCH_DEDUPE_V1 = true;
-
-  // This page defines loadStatus() twice and calls it from four places, with
-  // no coordination, so /admin/api/status was firing 10+ times per load.
-  // The dashboard already solves this by wrapping fetch; the same guard is
-  // applied here so none of the existing callers need to change.
-  var nativeFetch = window.fetch.bind(window);
-  var cacheByKey = Object.create(null);
-  var inflightByKey = Object.create(null);
-  var ACTIVE_TTL = 20000;
-  var HIDDEN_TTL = 60000;
-
-  function urlOf(input) {
-    try {
-      if (typeof input === 'string') return new URL(input, location.origin);
-      if (input && input.url) return new URL(input.url, location.origin);
-    } catch (_) {}
-    return null;
-  }
-  function methodOf(input, init) {
-    return String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-  }
-  function coalescable(url) {
-    return url.pathname === '/admin/api/status'
-        || url.pathname === '/admin/api/timetable';
-  }
-  function keyOf(url) {
-    var c = new URL(url.href);
-    c.searchParams.delete('token');
-    if (c.pathname === '/admin/api/status') {
-      // history_limit is meaningless once include_history=false.
-      var noHist = c.searchParams.get('include_history') === 'false'
-        || c.searchParams.get('history_limit') === '0';
-      c.searchParams.delete('history_limit');
-      c.searchParams.delete('include_history');
-      if (noHist) c.searchParams.set('include_history', 'false');
-    }
-    try { c.searchParams.sort(); } catch (_) {}
-    return c.pathname + c.search;
-  }
-  function clearAll() {
-    cacheByKey = Object.create(null);
-    inflightByKey = Object.create(null);
-  }
-  function writes(url, method) {
-    return method !== 'GET' && (
-      url.pathname.indexOf('/admin/api/timetable') === 0 ||
-      url.pathname === '/admin/api/action'
-    );
-  }
-
-  window.fetch = function (input, init) {
-    var url = urlOf(input);
-    if (!url) return nativeFetch(input, init);
-    var method = methodOf(input, init);
-    if (writes(url, method)) clearAll();
-    if (method !== 'GET' || !coalescable(url)) return nativeFetch(input, init);
-
-    var key = keyOf(url);
-    var hit = cacheByKey[key];
-    var ttl = document.hidden ? HIDDEN_TTL : ACTIVE_TTL;
-    if (hit && (Date.now() - hit.at) < ttl) return Promise.resolve(hit.res.clone());
-    if (inflightByKey[key]) {
-      return inflightByKey[key].then(function (r) { return r.clone(); });
-    }
-
-    inflightByKey[key] = nativeFetch(input, init).then(function (res) {
-      delete inflightByKey[key];
-      if (res && res.ok) cacheByKey[key] = { res: res, at: Date.now() };
-      return res;
-    }, function (err) {
-      delete inflightByKey[key];
-      throw err;
-    });
-    return inflightByKey[key].then(function (r) { return r.clone(); });
-  };
-
-  document.addEventListener('visibilitychange', function () {
-    if (!document.hidden) clearAll();
-  }, { passive: true });
-})();
-</script>
-<!-- TT_STATUS_FETCH_DEDUPE_V1_END -->
-
-<script id="SUBPAGE_TOKEN_BOOT_V1">
-(function(){
-  if(window.SUBPAGE_TOKEN_BOOT_V1) return;
-  window.SUBPAGE_TOKEN_BOOT_V1 = true;
-  try{
-    var u=new URL(location.href);
-    var tok=(u.searchParams.get('token')||window.__tronBootToken||'').trim();
-    if(tok) window.__tronBootToken=tok;
-  }catch(_){}
-  var native=window.fetch;
-  window.fetch=function(input, init){
-    try{
-      var tok=window.__tronBootToken||'';
-      var url=new URL(typeof input==='string'?input:(input&&input.url)||'', location.origin);
-      /* TOKEN_STORAGE_PURGE_V1: cookie-only——不再把 token 附加到 API URL
-         （伺服端 middleware 會以 HttpOnly cookie 注入），僅確保 same-origin credentials。 */
-      void tok; void url;
-    }catch(_){}
-    init = init || {};
-    if(!init.credentials) init.credentials='same-origin';
-    return native.call(this, input, init);
-  };
-})();
-</script>
+<!-- SUBPAGE_FETCH_SHARED_V1：子頁唯一的 window.fetch 包裝（cookie 認證、剝 token、401→refresh 重試）；取代原 SUBPAGE_TOKEN_BOOT_V1 內聯區塊 -->
+<script src="/admin/static/subpage-fetch.js?v=20260909subfetch"></script>
 
 <style id="REMOVE_UGLY_LOGIN_V1">
   html{visibility:hidden!important}
@@ -326,22 +215,7 @@
   })();
   </script>
 
-  <script id="optimizeV47TTAuth">
-  (function(){
-    'use strict';
-    var K='tronclass_admin_session';
-    var _fetch=window.fetch.bind(window);
-    window.fetch=function(u,o){
-      return _fetch(u,o).then(function(r){
-        if(r.status===401){
-          try{localStorage.removeItem(K);sessionStorage.removeItem(K)}catch(_){}
-          location.replace('/admin?v=auth&t='+Date.now());
-        }
-        return r;
-      });
-    };
-  })();
-  </script>
+  <!-- optimizeV47TTAuth 已併入 subpage-fetch.js（401 → refresh 失敗才導回登入頁） -->
 
 <style id="cleanMobileTimetableCardsStyleV1">
   /* 手機版課表卡片美化：徹底移除課程名稱下方深藍色線條與左側厚藍條 */

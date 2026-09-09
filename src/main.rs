@@ -46,6 +46,7 @@ mod logs;
 mod metrics_history;
 mod monitor;
 mod monitor_alerts;
+mod monitor_watchdog;
 mod rollcalls;
 mod runtime_settings;
 mod secret_encryption;
@@ -1450,21 +1451,80 @@ async fn main() -> Result<()> {
     let mut monitor_tasks = tokio::task::JoinSet::new();
     for ctx in contexts {
         let account_id = ctx.account.id.clone();
-        monitor_tasks.spawn(async move {
+        // MONITOR_WATCHDOG_V1：把任務把手掛到 request_account，看門狗判定卡死時可中止再重生。
+        let request_account = ctx.request_account.clone();
+        let request_account_for_crash = ctx.request_account.clone();
+        let handle = monitor_tasks.spawn(async move {
             match monitor::run_monitor_loop(ctx).await {
                 Ok(()) => Ok(account_id),
-                Err(e) => Err((account_id, e.to_string())),
+                Err(e) => {
+                    // MONITOR_WATCHDOG_V1：標記已崩潰 → 看門狗 30 秒內重生。
+                    if let Some(request_account) = request_account_for_crash.as_ref() {
+                        request_account.mark_loop_crashed();
+                    }
+                    Err((account_id, e.to_string()))
+                }
             }
         });
+        if let Some(request_account) = request_account {
+            request_account.set_loop_abort(handle);
+        }
     }
 
-    let monitor_result = tokio::select! {
-        joined = monitor_tasks.join_next() => {
-            Some(joined)
-        }
-        _ = shutdown_notify.notified() => {
-            info!("收到關閉通知，開始優雅關閉");
-            None
+    // MONITOR_WATCHDOG_V1：啟動看門狗（每 30 秒掃心跳；卡死 → 中止 + 重生 + 通知管理員）。
+    let watchdog_handle = {
+        let default_poll_interval_secs = config
+            .providers
+            .values()
+            .map(|provider| provider.api.poll_interval_secs)
+            .min()
+            .unwrap_or(10);
+        monitor_watchdog::spawn(monitor_spawner.clone(), default_poll_interval_secs)
+    };
+
+    // MONITOR_WATCHDOG_V1：看門狗 abort 掉的任務會以 JoinError::is_cancelled 回到這裡，
+    // 那不是程式錯誤（新循環已由 spawner 另外 spawn），要繼續等下一個 join 而不是結束服務。
+    let monitor_result = loop {
+        let outcome = tokio::select! {
+            joined = monitor_tasks.join_next() => Some(joined),
+            _ = shutdown_notify.notified() => {
+                info!("收到關閉通知，開始優雅關閉");
+                None
+            }
+        };
+        match outcome {
+            Some(Some(Err(join_err))) if join_err.is_cancelled() => {
+                info!("監控循環任務已被看門狗中止並重生，主程序繼續執行");
+                continue;
+            }
+            // MONITOR_WATCHDOG_V1：單一帳號的循環異常結束不再拖垮整個服務
+            // （舊行為：return Err → 整個面板／Bot 一起退出，等 Pterodactyl 重啟）。
+            // 任務已在結束前呼叫 mark_loop_crashed()，看門狗會在下一輪掃描（30 秒內）
+            // 重新登入並重生該帳號，並通知管理員；其他帳號與 Web／Discord 不受影響。
+            Some(Some(Ok(Err((account_id, err))))) => {
+                error!(account = %account_id, error = %err, "監控循環異常結束，交由看門狗重生");
+                logs::record_system(
+                    "ERROR",
+                    "monitor",
+                    format!("帳號 {account_id} 的監控循環異常結束：{err}；看門狗將自動重生"),
+                    None,
+                );
+                continue;
+            }
+            Some(Some(Ok(Ok(account_id)))) => {
+                warn!(account = %account_id, "監控循環提前正常結束");
+                continue;
+            }
+            // JoinSet 已空（所有初始循環都結束／被看門狗接手）：不能就此退出服務——
+            // 重生後的循環是由 MonitorSpawner 另行 spawn，不在這個 JoinSet 裡。
+            // 改為單純等待關閉信號。
+            Some(None) => {
+                info!("初始監控任務集合已清空，重生後的循環由看門狗管理；主程序等待關閉信號");
+                shutdown_notify.notified().await;
+                info!("收到關閉通知，開始優雅關閉");
+                break None;
+            }
+            other => break other,
         }
     };
 
@@ -1476,6 +1536,7 @@ async fn main() -> Result<()> {
             Some(Ok(Err((account_id, err)))) => {
                 error!(account = %account_id, error = %err, "監控循環異常結束");
                 monitor_tasks.abort_all();
+                watchdog_handle.abort();
                 return Err(miette::miette!(
                     "account `{}` monitor failed: {}",
                     account_id,
@@ -1484,6 +1545,7 @@ async fn main() -> Result<()> {
             }
             Some(Err(join_err)) => {
                 monitor_tasks.abort_all();
+                watchdog_handle.abort();
                 return Err(miette::miette!("monitor task join failed: {}", join_err));
             }
             None => {}
@@ -1494,6 +1556,7 @@ async fn main() -> Result<()> {
     info!("清理資源...");
 
     monitor_tasks.abort_all();
+    watchdog_handle.abort();
 
     if let Some(handle) = webhook_handle {
         handle.abort();
