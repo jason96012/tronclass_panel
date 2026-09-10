@@ -145,8 +145,12 @@ impl AccountsDb {
             .foreign_keys(true)
             // SQLITE_POOL_PRAGMAS_V1：mmap_size／cache_size／temp_store 同樣是 per-connection；
             // 原本只在其中一條連線生效，其餘 9 條仍是預設（2 MB cache、無 mmap）。
-            .pragma("mmap_size", "268435456")
-            .pragma("cache_size", "-64000")
+            // SQLITE_POOL_MEMORY_GUARD_V1：既然現在 10 條連線都會套用，上限要以「×10」來看：
+            // 64 MB cache ×10 = 640 MB、256 MB mmap ×10，在有記憶體上限的容器會被 OOM。
+            // 改為每條 16 MB page cache（×10 = 160 MB 上限，實際只有活躍連線會用到）、
+            // mmap 64 MB（accounts.db 遠小於此，mmap 是共享檔案映射，不會重複佔用）。
+            .pragma("mmap_size", "67108864")
+            .pragma("cache_size", "-16000")
             .pragma("temp_store", "MEMORY");
 
         // SQLITE_POOL_PRAGMAS_V1：連線池設定
@@ -239,10 +243,11 @@ async fn apply_sqlite_runtime_pragmas(pool: &SqlitePool) -> Result<()> {
         .into_diagnostic()
         .wrap_err("設定 SQLite synchronous=NORMAL 失敗")?;
 
-    let _ = sqlx::query("PRAGMA mmap_size = 268435456")
+    // SQLITE_POOL_MEMORY_GUARD_V1：與 connect options 一致（這裡只會跑在借到的那一條上）。
+    let _ = sqlx::query("PRAGMA mmap_size = 67108864")
         .execute(pool)
         .await;
-    let _ = sqlx::query("PRAGMA cache_size = -64000")
+    let _ = sqlx::query("PRAGMA cache_size = -16000")
         .execute(pool)
         .await;
     let _ = sqlx::query("PRAGMA temp_store = MEMORY")

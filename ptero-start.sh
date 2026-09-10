@@ -976,7 +976,17 @@ hot_rebuild_if_needed() {
   fi
   printf '%s\n' "$now" > logs/hot-rebuild.last
   echo "[watchdog] 偵測到原始碼內容有變，背景重新編譯（服務持續運作）"
-  if cargo build --release --no-default-features; then
+  # HOT_REBUILD_LOW_PRIORITY_V1：release 編譯（lto + codegen-units=1）會吃滿所有 CPU 數分鐘，
+  # 同一容器裡正在服務的 Dashboard 會被餓死 → /admin/api/status 幾十秒都回不來、
+  # Cloudflare 回 502/524，使用者看到「頁面有殼但數字全是 —」。降低編譯優先權
+  # （nice 15；有 ionice 再加磁碟低優先權），並限制平行工作數（預設 nproc-1，至少 1），
+  # 讓服務程序永遠搶得到 CPU。可用 HOT_REBUILD_JOBS 覆寫工作數。
+  local _jobs _nproc _nice=()
+  _nproc="$(nproc 2>/dev/null || echo 2)"
+  _jobs="${HOT_REBUILD_JOBS:-$(( _nproc > 1 ? _nproc - 1 : 1 ))}"
+  command -v nice >/dev/null 2>&1 && _nice=(nice -n 15)
+  command -v ionice >/dev/null 2>&1 && _nice+=(ionice -c 3)
+  if ${_nice[@]+"${_nice[@]}"} env CARGO_BUILD_JOBS="$_jobs" cargo build --release --no-default-features; then
     printf '%s\n' "$cur" > logs/src-hash
     touch "$bin" 2>/dev/null || true
     touch logs/hot-rebuild.pending

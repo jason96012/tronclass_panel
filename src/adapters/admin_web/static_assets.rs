@@ -34,8 +34,28 @@ enum PrecompressState {
 static PRECOMPRESSED: once_cell::sync::Lazy<std::sync::RwLock<HashMap<String, PrecompressState>>> =
     once_cell::sync::Lazy::new(|| std::sync::RwLock::new(HashMap::new()));
 
-/// 單一靜態資產本文上限（pdf.worker.min.js 約 1.3 MB；留足夠餘裕）。
-const PRECOMPRESS_MAX_BODY: usize = 32 * 1024 * 1024;
+/// 單一靜態資產本文上限（pdf.worker.min.js 約 1.3 MB；再大的就不值得佔記憶體壓）。
+const PRECOMPRESS_MAX_BODY: usize = 4 * 1024 * 1024;
+
+/// STATIC_BROTLI_MEMORY_GUARD_V1：同一時間只允許一個 brotli 壓縮工作。
+/// 首頁一次會拉 40 多個資產，原本每個都各自 spawn_blocking 平行壓（q11＋4 MB 視窗，
+/// 每個工作數十 MB 的工作記憶體），在 Pterodactyl 這種有記憶體上限的容器裡會被 OOM
+/// 砍掉 → 服務重啟 → 使用者再開頁又重壓一輪 → 再被砍，外觀就是 Cloudflare 502／白畫面、
+/// 主控台一直刷「預壓縮完成」。排成一次一個後峰值記憶體固定，壓完的結果一樣會快取。
+static PRECOMPRESS_GATE: once_cell::sync::Lazy<tokio::sync::Semaphore> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Semaphore::new(1));
+
+/// STATIC_BROTLI_MEMORY_GUARD_V1：環境變數 TRONCLASS_STATIC_PRECOMPRESS=0 可整個關掉預壓縮
+/// （回到 tower-http 逐次壓縮）。預設開啟。
+fn precompress_enabled() -> bool {
+    static CACHED: once_cell::sync::Lazy<bool> = once_cell::sync::Lazy::new(|| {
+        !matches!(
+            std::env::var("TRONCLASS_STATIC_PRECOMPRESS").ok().as_deref().map(str::trim),
+            Some("0") | Some("false") | Some("off") | Some("no")
+        )
+    });
+    *CACHED
+}
 
 fn precompress_eligible_path(path: &str) -> bool {
     (path.starts_with("/admin/static/") || path.starts_with("/pub/static/"))
@@ -65,9 +85,11 @@ fn accepts_brotli(headers: &HeaderMap) -> bool {
 fn brotli_compress(raw: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut input = raw;
     let mut out = Vec::with_capacity(raw.len() / 3 + 64);
+    // STATIC_BROTLI_MEMORY_GUARD_V1：q9／1 MB 視窗。對 JS/CSS 這種大小的檔案，壓縮率與
+    // q11／4 MB 幾乎相同（差距 <3%），但 CPU 時間與工作記憶體都少一個數量級。
     let params = brotli::enc::BrotliEncoderParams {
-        quality: 11,
-        lgwin: 22,
+        quality: 9,
+        lgwin: 20,
         ..Default::default()
     };
     brotli::enc::BrotliCompress(&mut input, &mut out, &params)?;
@@ -97,7 +119,7 @@ pub(super) async fn precompressed_static_middleware(
     next: axum::middleware::Next,
 ) -> Response {
     let path = request.uri().path().to_string();
-    if request.method() != Method::GET || !precompress_eligible_path(&path) {
+    if !precompress_enabled() || request.method() != Method::GET || !precompress_eligible_path(&path) {
         return next.run(request).await;
     }
     let wants_br = accepts_brotli(request.headers());
@@ -149,6 +171,8 @@ pub(super) async fn precompressed_static_middleware(
     let raw = bytes.clone();
     let key = path.clone();
     tokio::spawn(async move {
+        // STATIC_BROTLI_MEMORY_GUARD_V1：排隊，一次只壓一個（見 PRECOMPRESS_GATE 說明）。
+        let _gate = PRECOMPRESS_GATE.acquire().await;
         let started = Instant::now();
         let raw_len = raw.len();
         let compressed = tokio::task::spawn_blocking(move || brotli_compress(&raw)).await;
@@ -165,7 +189,8 @@ pub(super) async fn precompressed_static_middleware(
                         })),
                     );
                 }
-                info!(
+                // STATIC_BROTLI_MEMORY_GUARD_V1：降為 debug，避免每次啟動刷 60 多行到主控台。
+                tracing::debug!(
                     path = %key,
                     raw_len,
                     compressed_len,

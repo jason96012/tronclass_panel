@@ -88,6 +88,8 @@ static ADMIN_STATUS_ADMIN_FLAG_CACHE: once_cell::sync::Lazy<
 
 const ADMIN_STATUS_SHORT_CACHE_TTL: Duration = Duration::from_secs(2);
 const ADMIN_STATUS_HISTORY_LIMIT: usize = 30;
+/// STATUS_HANDLER_DEADLINE_V1：cache miss 時組裝回應的硬性期限（見 admin_status_handler）。
+const ADMIN_STATUS_BUILD_DEADLINE: Duration = Duration::from_secs(10);
 
 // Cache status responses briefly to absorb burst dashboard refreshes.
 // The key includes the session role/account because the payload contains
@@ -433,6 +435,19 @@ pub(super) async fn admin_dashboard_events_handler(
         .into_response()
 }
 
+/// STATUS_HANDLER_DEADLINE_V1：組裝逾時的回應（503 + Retry-After，no-store）。
+fn status_unavailable_response() -> Response {
+    let mut response = (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": "status_timeout", "message": "伺服器忙碌中，狀態組裝逾時，請稍後再試" })),
+    )
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::RETRY_AFTER, HeaderValue::from_static("5"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
 /// STATUS_ETAG_V1：/admin/api/status 的 JSON 回應統一由這裡送出。
 /// 以回應本文的 SHA-256 前 16 bytes 當強 ETag；客戶端（dashboard-head.js 的 fetch 包裝）
 /// 帶 `If-None-Match` 命中時回 304 空本文——Dashboard 每 20～60 秒輪詢一次，內容多半沒變，
@@ -703,73 +718,95 @@ pub(super) async fn admin_status_handler(
         return response;
     }
 
-    let admin_flags_started = Instant::now();
-    // VIEWER_ROLE_V1：檢視者也看全部帳號的管理員徽章（唯讀資訊）。
-    let admin_by_id = if session.is_admin || session.is_viewer {
-        match admin_status_admin_flags_cached(&state).await {
-            Ok(flags) => flags,
-            Err(resp) => return resp,
-        }
-    } else {
-        std::collections::HashMap::new()
+    // STATUS_HANDLER_DEADLINE_V1：整段「組裝回應」加硬性期限。這條 API 是 Dashboard 首屏唯一
+    // 依賴：任何一把帳號鎖被拖住、SQLite 等 busy_timeout（15 秒）、或熱重編把 CPU 吃光時，
+    // 原本會無限等下去，前端拿不到回應就永遠停在「尚未更新／—」。現在超過期限直接回 503
+    // （Retry-After: 5），前端 STATUS_LOAD_FEEDBACK_V1 會顯示原因並退避重試，而不是掛死。
+    // 期限比前端 20 秒逾時短，讓錯誤訊息一定是伺服器給的、有 HTTP 狀態可查。
+    let build = async {
+        let admin_flags_started = Instant::now();
+        // VIEWER_ROLE_V1：檢視者也看全部帳號的管理員徽章（唯讀資訊）。
+        let admin_by_id = if session.is_admin || session.is_viewer {
+            match admin_status_admin_flags_cached(&state).await {
+                Ok(flags) => flags,
+                Err(resp) => return Err(resp),
+            }
+        } else {
+            std::collections::HashMap::new()
+        };
+        let admin_flags_elapsed = admin_flags_started.elapsed();
+
+        let visible_accounts = resolve_visible_accounts(&state, &session);
+        // VIEWER_ROLE_V1：檢視者看得到所有帳號，但個資欄位遮罩
+        // （Tronclass 帳號、LINE／Discord ID 只留頭尾）。
+        let mask_sensitive = session.is_viewer && !session.is_admin;
+        let session_account_id = session.account_id.as_str();
+        // PERFORMANCE_STATUS_PAYLOAD_V1:
+        // Build the response directly while each account status is locked instead
+        // of cloning the full MonitorStatus.  The dashboard only renders the first
+        // 30 history entries, so cap history in the hot /admin/api/status payload.
+        // STATUS_SPLIT_V1：每帳號快照抽成 account_status_snapshot()，這裡只剩組裝與並行。
+        let status_futures: Vec<_> = visible_accounts
+            .iter()
+            .map(|account| {
+                let (account_admin, account_viewer) = admin_by_id
+                    .get(&account.account_id)
+                    .copied()
+                    .unwrap_or((false, false));
+                account_status_snapshot(
+                    account,
+                    account_admin,
+                    account_viewer,
+                    history_limit,
+                    mask_sensitive,
+                    session_account_id,
+                )
+            })
+            .collect();
+        let account_locks_started = Instant::now();
+        let mut accounts = futures::future::join_all(status_futures).await;
+        let account_locks_elapsed = account_locks_started.elapsed();
+        accounts.sort_by(|a, b| a.account_id.cmp(&b.account_id));
+
+        let settings_started = Instant::now();
+        let account_count = accounts.len();
+        // LOGIN_PERF_V1：settings 快照、未監控帳號清單、passkey／push 計數彼此獨立，
+        // 原本四段序列 await（每段一趟 SQLite／鎖），改成同時進行，cache miss 的
+        // 首屏 /admin/api/status 少掉三段等待時間。（STATUS_SPLIT_V1：抽成 collect_status_extras）
+        let (settings, inactive_accounts, passkey_count, push_subscription_count) =
+            collect_status_extras(&state, &session).await;
+        let settings_elapsed = settings_started.elapsed();
+        let response_json = json!(AdminStatusResponse {
+            current_account_id: session.account_id.clone(),
+            is_admin: session.is_admin,
+            is_viewer: session.is_viewer,
+            must_change_password: false,
+            default_poll_interval_secs: state.default_poll_interval_secs,
+            settings,
+            digest: super::morning_digest::digest_status(),
+            accounts,
+            inactive_accounts,
+            // REST_DAY_NO_POLL_V1
+            rest_day: crate::holidays::rest_day_reason(chrono::Local::now().date_naive()),
+            passkey_count,
+            push_subscription_count,
+        });
+        Ok::<_, Response>((response_json, admin_flags_elapsed, account_locks_elapsed, settings_elapsed, account_count))
     };
-    let admin_flags_elapsed = admin_flags_started.elapsed();
-
-    let visible_accounts = resolve_visible_accounts(&state, &session);
-    // VIEWER_ROLE_V1：檢視者看得到所有帳號，但個資欄位遮罩
-    // （Tronclass 帳號、LINE／Discord ID 只留頭尾）。
-    let mask_sensitive = session.is_viewer && !session.is_admin;
-    let session_account_id = session.account_id.as_str();
-    // PERFORMANCE_STATUS_PAYLOAD_V1:
-    // Build the response directly while each account status is locked instead
-    // of cloning the full MonitorStatus.  The dashboard only renders the first
-    // 30 history entries, so cap history in the hot /admin/api/status payload.
-    // STATUS_SPLIT_V1：每帳號快照抽成 account_status_snapshot()，這裡只剩組裝與並行。
-    let status_futures: Vec<_> = visible_accounts
-        .iter()
-        .map(|account| {
-            let (account_admin, account_viewer) = admin_by_id
-                .get(&account.account_id)
-                .copied()
-                .unwrap_or((false, false));
-            account_status_snapshot(
-                account,
-                account_admin,
-                account_viewer,
-                history_limit,
-                mask_sensitive,
-                session_account_id,
-            )
-        })
-        .collect();
-    let account_locks_started = Instant::now();
-    let mut accounts = futures::future::join_all(status_futures).await;
-    let account_locks_elapsed = account_locks_started.elapsed();
-    accounts.sort_by(|a, b| a.account_id.cmp(&b.account_id));
-
-    let settings_started = Instant::now();
-    let account_count = accounts.len();
-    // LOGIN_PERF_V1：settings 快照、未監控帳號清單、passkey／push 計數彼此獨立，
-    // 原本四段序列 await（每段一趟 SQLite／鎖），改成同時進行，cache miss 的
-    // 首屏 /admin/api/status 少掉三段等待時間。（STATUS_SPLIT_V1：抽成 collect_status_extras）
-    let (settings, inactive_accounts, passkey_count, push_subscription_count) =
-        collect_status_extras(&state, &session).await;
-    let settings_elapsed = settings_started.elapsed();
-    let response_json = json!(AdminStatusResponse {
-        current_account_id: session.account_id.clone(),
-        is_admin: session.is_admin,
-        is_viewer: session.is_viewer,
-        must_change_password: false,
-        default_poll_interval_secs: state.default_poll_interval_secs,
-        settings,
-        digest: super::morning_digest::digest_status(),
-        accounts,
-        inactive_accounts,
-        // REST_DAY_NO_POLL_V1
-        rest_day: crate::holidays::rest_day_reason(chrono::Local::now().date_naive()),
-        passkey_count,
-        push_subscription_count,
-    });
+    let (response_json, admin_flags_elapsed, account_locks_elapsed, settings_elapsed, account_count) =
+        match tokio::time::timeout(ADMIN_STATUS_BUILD_DEADLINE, build).await {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(response)) => return response,
+            Err(_) => {
+                warn!(
+                    account = %session.account_id,
+                    deadline_ms = ADMIN_STATUS_BUILD_DEADLINE.as_millis(),
+                    auth_ms = auth_elapsed.as_millis(),
+                    "STATUS_HANDLER_DEADLINE_V1: /admin/api/status 組裝逾時（帳號鎖／SQLite／CPU 被佔住）"
+                );
+                return status_unavailable_response();
+            }
+        };
 
     let response = status_json_response(&headers, &response_json);
     admin_status_short_cache_put(cache_key, response_json).await;
