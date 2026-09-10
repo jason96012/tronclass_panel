@@ -535,8 +535,20 @@ pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Respons
     (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, loc)]).into_response()
 }
 
-pub(super) async fn admin_password_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_PASSWORD_HTML))
+// SEC_SENSITIVE_PAGE_AUTH_V1（審查 L-04）：改密碼／通行密鑰頁改為伺服器端驗 session
+// （與其他子頁一致，含第 3 態 refresh 輪換），未登入直接 302 回登入頁，不再把頁面
+// 殼先送給匿名者再靠前端 JS 導走。`authorize_any` 讓「首次登入必須改密碼」的
+// bootstrap session 仍能進入密碼頁。Cache-Control 由 admin_security_headers_middleware
+// 對這兩條路徑強制 `no-store`。
+pub(super) async fn admin_password_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        return admin_login_redirect("/admin/password");
+    };
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_PASSWORD_HTML)), &page, &headers)
 }
 
 /// /admin/notifications — 通知設定獨立頁（NOTIFICATIONS_STANDALONE_PAGE_V1）。
@@ -571,8 +583,19 @@ pub(super) async fn admin_settings_page_handler(
     attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_SETTINGS_HTML), &page.session)), &page, &headers)
 }
 
-pub(super) async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {
-    html_page_response(&headers, inject_theme(ADMIN_PASSKEY_HTML))
+/// SEC_SENSITIVE_PAGE_AUTH_V1：通行密鑰頁同樣先在伺服器端驗 session；首次登入尚未改密碼者導去密碼頁。
+pub(super) async fn admin_passkey_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        return admin_login_redirect("/admin/passkey");
+    };
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
+    }
+    attach_fresh_cookies(html_page_response(&headers, inject_theme(ADMIN_PASSKEY_HTML)), &page, &headers)
 }
 
 // ── ADMIN_PAGE_TRI_STATE_V1 ──────────────────────────────────────────────────

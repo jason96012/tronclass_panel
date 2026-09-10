@@ -678,6 +678,9 @@ else
   export TRONCLASS_MASTER_KEY="$(tr -d '\r\n ' < config/master.key)"
   echo "[ptero-start] 已自動產生 at-rest 加密 master key → config/master.key（請勿外流或變更）"
 fi
+# SEC_MASTER_KEY_FAIL_CLOSED_V1：正式部署一定有 key（上面三條路徑保證），因此讓程式在
+# key 缺失／無效時拒絕啟動，避免學校密碼以明文落地（可設 0 關閉，不建議）。
+export TRONCLASS_REQUIRE_MASTER_KEY="${TRONCLASS_REQUIRE_MASTER_KEY:-1}"
 
 # MASTER_KEY_ROTATION_V1：舊 key 僅供解密＋背景重加密（一行一個 64 hex key）。
 # 輪替步驟：

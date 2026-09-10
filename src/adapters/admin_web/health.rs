@@ -11,7 +11,20 @@ use super::*;
 /// 任一項失敗 → 503 + `ok:false` 與各項細節；全部正常 → 200。
 /// 不需登入（黑名單／同源／密碼中介層皆放行 /healthz），所以回應不含帳號識別以外的敏感資料，
 /// 帳號 id 也只在 503 時列出失聯者。
-pub(super) async fn healthz_handler(State(state): State<AdminWebState>) -> Response {
+pub(super) async fn healthz_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+) -> Response {
+    // SEC_HEALTHZ_AGGREGATE_V1（審查 §6.2）：公開 /healthz 只回聚合數字；
+    // stale 帳號 ID 明細僅在帶有效管理員 session cookie 時附上。
+    let show_detail = {
+        let token = session_cookie_from_headers(&headers).unwrap_or_default();
+        !token.is_empty()
+            && state
+                .authorize(&token)
+                .await
+                .is_some_and(|session| session.is_admin)
+    };
     let started = std::time::Instant::now();
     let now = chrono::Local::now().timestamp();
 
@@ -79,6 +92,7 @@ pub(super) async fn healthz_handler(State(state): State<AdminWebState>) -> Respo
         }
     }
     let monitors_ok = stale.is_empty();
+    let stale_count = stale.len();
     let ok = db_ok && monitors_ok;
 
     let body = json!({
@@ -98,7 +112,8 @@ pub(super) async fn healthz_handler(State(state): State<AdminWebState>) -> Respo
                 "running": running,
                 "paused": paused,
                 "starting": starting,
-                "stale": stale,
+                "stale_count": stale_count,
+                "stale": if show_detail { serde_json::Value::Array(stale) } else { serde_json::Value::Null },
                 "poll_interval_secs": poll_interval_secs,
                 "stale_after_secs": threshold_secs,
                 "oldest_heartbeat_age_secs": oldest_heartbeat_age,

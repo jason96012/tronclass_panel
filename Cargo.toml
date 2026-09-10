@@ -94,7 +94,10 @@ rand = "0.10.0"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 
 [features]
-default = ["ocr"]
+# SEC_OCR_OPT_IN_V1（審查 H-01）：ddddocr 是 git master 依賴（不可重現、供應鏈風險），
+# 預設不再啟用；需要驗證碼 OCR 時明確加 `--features ocr`。ptero-start.sh 本來就用
+# `--no-default-features` 建置，行為不變。
+default = []
 ocr = ["dep:ddddocr"]
 
 [dev-dependencies]

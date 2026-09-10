@@ -19,7 +19,8 @@
   }
   // 各頁舊底欄（課表頁 ttMobileNavV2 等）讓位給共用導覽列；body 預留空間。
   // 更多面板內 a/button 字級統一（避免某些頁的 button 預設字級較小）。
-  var st = document.createElement('style');
+  /* CSP_DYNAMIC_STYLE_NONCE_V1：帶 nonce，否則整段導覽列樣式被 CSP 擋掉。 */
+  var st = window.tronCreateStyle ? window.tronCreateStyle('', '') : document.createElement('style');
   st.textContent = '#ttMobileNavV2{display:none!important}' +
     /* 手機：底部導覽列不遮內容（雲端硬碟未載入此腳本，不受影響）。
        NAV_BOTTOM_CLEARANCE_V2：內容避讓 150px＋safe-area——與雲端硬碟

@@ -179,7 +179,7 @@
     const old = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '匯入中…'; }
     try {
-      const start = await api('/admin/api/files/import', {}, 60000);
+      const start = await api('/admin/api/files/import', { method: 'POST' }, 60000); // SEC_SIDE_EFFECT_POST_V1
       if (!start.ok){ alert(start.error || start.message || '匯入無法開始'); return; }
       if (start.accepted === false){ alert(start.error || start.message || '匯入無法開始'); return; }
       // 輪詢進度(最多約 10 分鐘)。
@@ -757,7 +757,7 @@
   async function shareFile(path){
     let link = null;
     try {
-      const res = await fetch('/admin/api/files/share-link?path=' + encodeURIComponent(path), { cache: 'no-store' });
+      const res = await fetch('/admin/api/files/share-link?path=' + encodeURIComponent(path), { method: 'POST', cache: 'no-store', credentials: 'same-origin' }); // SEC_SIDE_EFFECT_POST_V1
       if (res.ok) { const j = await res.json(); if (j && j.public_path) link = location.origin + j.public_path; }
     } catch (_) {}
     if (!link) { toast('無法產生分享連結'); return; }

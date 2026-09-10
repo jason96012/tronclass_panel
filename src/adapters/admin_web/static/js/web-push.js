@@ -137,7 +137,8 @@
     link.className = 'button secondary push-status-desktop-link';
     if (passkey.nextElementSibling !== link) passkey.insertAdjacentElement('afterend', link);
     if (!document.getElementById('pushStatusDesktopLinkStyle')) {
-      var style = document.createElement('style');
+      /* CSP_DYNAMIC_STYLE_NONCE_V1 */
+      var style = window.tronCreateStyle ? window.tronCreateStyle('pushStatusDesktopLinkStyle', '') : document.createElement('style');
       style.id = 'pushStatusDesktopLinkStyle';
       style.textContent = '#pushStatusManagementLink{display:inline-flex;align-items:center;justify-content:center;min-height:36px;height:36px;padding:0 12px;border-radius:999px;white-space:nowrap;text-decoration:none;font-size:13px;font-weight:760}@media(max-width:820px){#pushStatusManagementLink{display:none!important}}';
       document.head.appendChild(style);

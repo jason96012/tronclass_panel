@@ -211,8 +211,13 @@
     return 'data:image/png;base64,' + btoa(binary);
   }
 
+  // DOCX_STRICT_NS_V1：Word「Strict Open XML」另存（或部分第三方工具）使用的命名空間是
+  // http://purl.oclc.org/ooxml/wordprocessingml/main，而非 Transitional 的
+  // schemas.openxmlformats.org/…；原本寫死 Transitional 命名空間會讓 body 找不到，
+  // 誤報「document.xml 沒有 body 節點」。Word 元素在 docx 內 localName 不會與其他
+  // 命名空間衝突（DrawingML 文字走 w:txbxContent），因此一律用 '*' 依 localName 查找。
   var W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-  var W_R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+  var W_NS_STRICT = 'http://purl.oclc.org/ooxml/wordprocessingml/main';
 
   // 讀取「可能在命名空間前綴內」的屬性（如 w:val）。getAttribute('val') 對前綴屬性會回傳 null，
   // 改用 attributes 依 localName 比對，才能穩定取到值。
@@ -229,28 +234,28 @@
   function docxRunStyle(rPr) {
     if (!rPr) return {};
     var st = {};
-    if (rPr.getElementsByTagNameNS(W_NS, 'b')[0]) st.fontWeight = 'bold';
-    if (rPr.getElementsByTagNameNS(W_NS, 'i')[0]) st.fontStyle = 'italic';
-    if (rPr.getElementsByTagNameNS(W_NS, 'u')[0]) st.textDecoration = 'underline';
-    var color = rPr.getElementsByTagNameNS(W_NS, 'color')[0];
+    if (rPr.getElementsByTagNameNS('*', 'b')[0]) st.fontWeight = 'bold';
+    if (rPr.getElementsByTagNameNS('*', 'i')[0]) st.fontStyle = 'italic';
+    if (rPr.getElementsByTagNameNS('*', 'u')[0]) st.textDecoration = 'underline';
+    var color = rPr.getElementsByTagNameNS('*', 'color')[0];
     var colorVal = color && attrLocal(color, 'val');
     if (colorVal && colorVal !== 'auto') {
       st.color = '#' + colorVal;
     }
-    var sz = rPr.getElementsByTagNameNS(W_NS, 'sz')[0];
+    var sz = rPr.getElementsByTagNameNS('*', 'sz')[0];
     var szV = sz && parseInt(attrLocal(sz, 'val'), 10);
     if (!isNaN(szV) && szV > 0) st.fontSize = (szV / 2) + 'pt'; // 單位為半 pt
     return st;
   }
 
   function docxParaHtml(p, media) {
-    var pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
+    var pPr = p.getElementsByTagNameNS('*', 'pPr')[0];
     var styleName = '';
     var pstyle = '';
     if (pPr) {
-      var pStyle = pPr.getElementsByTagNameNS(W_NS, 'pStyle')[0];
+      var pStyle = pPr.getElementsByTagNameNS('*', 'pStyle')[0];
       if (pStyle) styleName = attrLocal(pStyle, 'val');
-      var jc = pPr.getElementsByTagNameNS(W_NS, 'jc')[0];
+      var jc = pPr.getElementsByTagNameNS('*', 'jc')[0];
       if (jc) {
         var v = attrLocal(jc, 'val');
         if (v === 'center') pstyle += 'text-align:center;';
@@ -267,22 +272,22 @@
     var bullet = /ListBullet|List/i.test(styleName);
 
     var html = '';
-    var runs = p.getElementsByTagNameNS(W_NS, 'r');
+    var runs = p.getElementsByTagNameNS('*', 'r');
     for (var i = 0; i < runs.length; i++) {
-      var rPr = runs[i].getElementsByTagNameNS(W_NS, 'rPr')[0];
+      var rPr = runs[i].getElementsByTagNameNS('*', 'rPr')[0];
       var st = docxRunStyle(rPr);
-      var t = runs[i].getElementsByTagNameNS(W_NS, 't')[0];
+      var t = runs[i].getElementsByTagNameNS('*', 't')[0];
       if (t) {
         var txt = (t.textContent || '').replace(/\u00a0/g, ' ');
         if (i === 0) txt = txt.replace(/^[\s\u2022]+/, ''); // 避免標題已含 • 又再加上
         html += '<span style="' + styleAttr(st) + '">' + escapeHtml(txt) + '</span>';
       }
       // 內嵌圖片
-      var drawing = runs[i].getElementsByTagNameNS(W_NS, 'drawing')[0];
+      var drawing = runs[i].getElementsByTagNameNS('*', 'drawing')[0];
       if (drawing) {
         var blip = drawing.getElementsByTagNameNS(NS_A, 'blip')[0];
         if (blip) {
-          var relId = blip.getAttributeNS(W_R_NS, 'embed');
+          var relId = attrLocal(blip, 'embed'); // Strict OOXML 的 r: 命名空間不同，改依 localName 取
           var src = relId && media[relId];
           if (src) html += '<img src="' + src + '" alt="" style="display:block;max-width:100%;height:auto;margin:8px 0;">';
         }
@@ -300,7 +305,7 @@
 
   function docxCellHtml(tc, media) {
     var html = '';
-    var ps = tc.getElementsByTagNameNS(W_NS, 'p');
+    var ps = tc.getElementsByTagNameNS('*', 'p');
     for (var pi = 0; pi < ps.length; pi++) {
       html += docxParaHtml(ps[pi], media);
     }
@@ -309,10 +314,10 @@
   }
 
   function docxTableHtml(tbl, media) {
-    var rows = tbl.getElementsByTagNameNS(W_NS, 'tr');
+    var rows = tbl.getElementsByTagNameNS('*', 'tr');
     var html = '<table style="border-collapse:collapse;width:100%;margin:8px 0;"><tbody>';
     for (var r = 0; r < rows.length; r++) {
-      var cells = rows[r].getElementsByTagNameNS(W_NS, 'tc');
+      var cells = rows[r].getElementsByTagNameNS('*', 'tc');
       html += '<tr>';
       for (var c = 0; c < cells.length; c++) html += docxCellHtml(cells[c], media);
       html += '</tr>';
@@ -389,6 +394,25 @@
       '，不是標準 OOXML zip 結構，無法在本機預覽。' + hint + '</div>';
   }
 
+  // DOCX_STRICT_NS_V1：最後手段的純文字擷取（不經 DOM）。命名空間前綴不限 w:。
+  function docxRegexFallback(text) {
+    if (!text) return '';
+    var bodyAt = text.search(/<(?:[\w-]+:)?body[\s>]/);
+    var src = bodyAt >= 0 ? text.slice(bodyAt) : text;
+    var paras = src.split(/<(?:[\w-]+:)?p[\s>]/);
+    var out = '', total = 0;
+    for (var i = 1; i < paras.length; i++) {
+      var texts = [], m, re = /<(?:[\w-]+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w-]+:)?t>/g;
+      while ((m = re.exec(paras[i])) !== null) { if (m[1]) texts.push(m[1]); }
+      if (/<(?:[\w-]+:)?tab\b/.test(paras[i])) texts.push('\t');
+      var line = texts.join('').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+      total += line.length;
+      out += '<p style="margin:0 0 6px 0;white-space:pre-wrap;">' + (line ? escapeHtml(line) : '&nbsp;') + '</p>';
+    }
+    if (!total) return '';
+    return '<div class="tron-docx"><div class="tron-office-note" style="font-size:12px;opacity:.7;margin-bottom:10px;">以簡化模式顯示（僅文字，無格式／圖片）。</div>' + out + '</div>';
+  }
+
   async function renderWord(arrayBuffer) {
     var zip = await JSZip.loadAsync(arrayBuffer);
     var docText = await zipText(zip, 'word/document.xml');
@@ -396,9 +420,16 @@
       return '<div class="tron-office-error">此 Word 檔缺少 word/document.xml（可能是舊版 .doc 二進位格式）。請按上方「下載」查看。</div>';
     }
     var docXml = xml(docText);
-    var body = docXml.getElementsByTagNameNS(W_NS, 'body')[0];
+    var body = docXml.getElementsByTagNameNS('*', 'body')[0];
     if (!body) {
-      return '<div class="tron-office-error">此 Word 檔的 document.xml 沒有 body 節點，無法解析。請按上方「下載」查看。</div>';
+      // DOCX_STRICT_NS_V1：DOMParser 失敗（parsererror）或結構異常時，退回 regex 直接抓
+      // <w:t> 文字並以 <w:p> 分段——至少看得到內容，而不是只給一句「無法解析」。
+      var fallback = docxRegexFallback(docText);
+      if (fallback) return fallback;
+      var why = docXml.getElementsByTagName('parsererror').length
+        ? 'document.xml 不是合法的 XML（瀏覽器解析失敗）'
+        : 'document.xml 沒有 body 節點（根元素命名空間：' + escapeHtml((docXml.documentElement && docXml.documentElement.namespaceURI) || '無') + '）';
+      return '<div class="tron-office-error">此 Word 檔的 ' + why + '，無法解析。請按上方「下載」查看。</div>';
     }
 
     // rels 只用來對照內嵌圖片；缺失時頂多沒有圖，不該整份失敗。

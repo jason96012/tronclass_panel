@@ -630,6 +630,10 @@ pub(super) async fn admin_files_office_embed_handler(
         )
             .into_response();
     }
+    // SEC_PUB_SECURE_PATH_V1：簽發前先以 secure resolver 確認檔案存在且不是 symlink。
+    if !matches!(secure_existing_material_path(&materials_root(), &rel), Ok(p) if p.is_file()) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "file not found" }))).into_response();
+    }
     let exp = office_now_secs() + OFFICE_EMBED_TTL_SECS;
     let sig = office_sig(&rel_str, exp);
     let public_path = format!("/pub/office?path={}&exp={exp}&sig={sig}", pct(&rel_str));
@@ -790,9 +794,13 @@ pub(super) async fn admin_files_share_link_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminFilesQuery>,
 ) -> Response {
-    let Some(_session) = state.authorize(&query.token).await else {
+    let Some(session) = state.authorize(&query.token).await else {
         return unauthorized_response();
     };
+    // SEC_SIDE_EFFECT_POST_V1：檢視者不可建立公開分享（middleware 已擋非 GET，這裡再明確一次）。
+    if session.is_viewer {
+        return unauthorized_response();
+    }
     let Some(rel) = query
         .path
         .as_deref()
@@ -801,6 +809,10 @@ pub(super) async fn admin_files_share_link_handler(
     else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid path" }))).into_response();
     };
+    // SEC_PUB_SECURE_PATH_V1：簽發分享連結前確認檔案真實存在（非 symlink、未逃出 root）。
+    if !matches!(secure_existing_material_path(&materials_root(), &rel), Ok(p) if p.is_file()) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "file not found" }))).into_response();
+    }
     let rel_str = rel.to_string_lossy().into_owned();
     let exp = office_now_secs() + SHARE_TTL_SECS;
     let sig = office_sig(&rel_str, exp);
@@ -953,10 +965,14 @@ pub(super) async fn public_office_file_handler(
     let Some(rel) = safe_relative_path(&path).filter(|p| !p.as_os_str().is_empty()) else {
         return (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid path" }))).into_response();
     };
-    let full = materials_root().join(&rel);
-    if !full.is_file() {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
-    }
+    // SEC_PUB_SECURE_PATH_V1（審查 M-02）：公開串流也走管理端同一套 resolver——
+    // 拒絕 symlink 元件、canonicalize 後確認仍在 materials root 之下。原本
+    // `root.join(rel).is_file()` 會 follow symlink，樹內若被放進指向 root 外的連結，
+    // 已簽章的公開連結就能讀到 root 外檔案。
+    let full = match secure_existing_material_path(&materials_root(), &rel) {
+        Ok(p) if p.is_file() => p,
+        _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+    };
     // SHARE_V1: dl=1 → attachment（下載）；否則 inline（預覽/供檢視器抓取）。
     let disposition = if query.dl.as_deref() == Some("1") { "attachment" } else { "inline" };
     tracing::info!(path = %path, disposition, "pub office streaming file");
@@ -1024,10 +1040,11 @@ pub(super) async fn public_share_preview_handler(
     let Some(rel) = safe_relative_path(&path).filter(|p| !p.as_os_str().is_empty()) else {
         return (StatusCode::BAD_REQUEST, "invalid path").into_response();
     };
-    let full = materials_root().join(&rel);
-    if !full.is_file() {
-        return (StatusCode::NOT_FOUND, "檔案不存在").into_response();
-    }
+    // SEC_PUB_SECURE_PATH_V1：同上，公開分享頁／raw 串流一律經 secure resolver。
+    let full = match secure_existing_material_path(&materials_root(), &rel) {
+        Ok(p) if p.is_file() => p,
+        _ => return (StatusCode::NOT_FOUND, "檔案不存在").into_response(),
+    };
     // SHARE_V1b: raw=1 → 同一簽章驗證後直接串流原始檔（分享頁 fetch 與
     // Office Online 的 src 都用這個），不再依賴 /pub/office，避免兩端點差異。
     if query.raw.as_deref() == Some("1") {

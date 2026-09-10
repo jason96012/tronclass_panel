@@ -73,7 +73,7 @@
 | `tku` | 淡江大學 | NEAI SSO |
 | `tronclass` | 通用 Tronclass | 尚未內建登入流程 |
 
-> 輔大的驗證碼辨識需要 `ocr` feature（預設啟用），該功能依賴 `ddddocr`，需要 `libstdc++`。精簡容器請改用 `--no-default-features` 編譯，但如此便無法自動登入輔大。
+> 輔大的驗證碼辨識需要 `ocr` feature（**預設不啟用**，需明確加 `--features ocr`），該功能依賴 `ddddocr`（git 依賴），需要 `libstdc++`。未啟用時無法自動登入輔大。
 
 ---
 

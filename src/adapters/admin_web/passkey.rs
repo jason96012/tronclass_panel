@@ -101,9 +101,25 @@ pub(super) fn passkey_webauthn_from_headers(headers: &HeaderMap) -> Result<Webau
         )
             .into_response());
     };
+    // SEC_PASSKEY_REQUIRE_UV_V1（審查 M-08）：伺服器端強制 UV 旗標——沒有生物辨識／PIN
+    // 的「按一下即過」roaming key 不再算通過登入；challenge 也會改為
+    // `userVerification: "required"`。平台 passkey（Face ID／Touch ID／Windows Hello／
+    // iCloud 鑰匙圈）本來就會做 UV，既有註冊不受影響。若真有無 PIN 的硬體金鑰需求，
+    // 可用環境變數 `TRONCLASS_PASSKEY_REQUIRE_UV=0` 暫時關閉（不建議）。
     Ok(Webauthn::new(rp_id, "Tronclass Rollcall", &origin)
         .authenticator_attachment(Attachment::Any)
-        .require_user_verification(false))
+        .require_user_verification(passkey_require_uv()))
+}
+
+fn passkey_require_uv() -> bool {
+    !matches!(
+        std::env::var("TRONCLASS_PASSKEY_REQUIRE_UV")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "0" | "false" | "no" | "off"
+    )
 }
 
 pub(super) async fn cleanup_passkey_states() {

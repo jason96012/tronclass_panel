@@ -186,15 +186,16 @@ pub(super) async fn admin_action_handler(
         return handle_admin_account_action(&state, &session, &action_name, action).await;
     }
 
-    let targets = if action_name == "force" && !session.is_admin {
-        // 一般使用者按任一 Force 時，立即喚醒所有帳號一起檢查，避免等待
-        // 先由該使用者帳號偵測到點名後才 cascade，造成速度過慢。
-        state.accounts.all()
-    } else {
-        match resolve_targets(&state, &session, account_id.as_deref()) {
-            Ok(targets) => targets,
-            Err(resp) => return resp,
-        }
+    // SEC_FORCE_SELF_ONLY_V1（審查 M-06）：一般使用者的 force 只喚醒自己的帳號；
+    // 舊行為「喚醒全部帳號」讓任何低權限帳號都能觸發全站對學校 API 的同步輪詢
+    // （放大請求量／踩到學校限流）。跨帳號 cascade 仍由監控本身在偵測到點名時處理。
+    // `*_all` 動作一律限管理員（非管理員本來也只會解析到自己，這裡明確拒絕）。
+    if action_name.ends_with("_all") && !session.is_admin {
+        return unauthorized_response();
+    }
+    let targets = match resolve_targets(&state, &session, account_id.as_deref()) {
+        Ok(targets) => targets,
+        Err(resp) => return resp,
     };
 
     // ACTION_FEEDBACK_V1：除了 affected 數字，額外回報「實際發生了什麼」——
@@ -308,14 +309,9 @@ fn action_feedback_message(
     }
     match action {
         "force" | "force_all" => {
-            let scope = if total == 1 {
-                list(changed)
-            } else if action == "force" && !is_admin {
-                // 一般使用者按 Force 會喚醒全部帳號一起檢查（見上方 targets 邏輯）。
-                format!("全部 {total} 個帳號")
-            } else {
-                format!("{total} 個帳號")
-            };
+            // SEC_FORCE_SELF_ONLY_V1：一般使用者只會喚醒自己（total == 1）。
+            let _ = is_admin;
+            let scope = if total == 1 { list(changed) } else { format!("{total} 個帳號") };
             format!("已要求 {scope} 立即檢查點名，結果會在下次輪詢後更新")
         }
         "reauth" | "reauth_all" => {

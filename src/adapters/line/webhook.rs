@@ -66,7 +66,20 @@ pub fn build_router(state: LineWebhookState, webhook_path: &str) -> Router {
         .route("/number", get(number_page_handler))
         .route("/number/status", get(number_status_handler))
         .route("/number/submit", post(number_submit_handler))
-        .layer(TraceLayer::new_for_http())
+        // SEC_TRACE_NO_QUERY_V1：TraceLayer 預設 span 會記完整 URI（含 ?token=…）。
+        // 改為只記 method＋path，避免 scanner／number 的 query bearer token 進入應用程式日誌。
+        .layer(TraceLayer::new_for_http().make_span_with(|req: &axum::extract::Request| {
+            tracing::debug_span!(
+                "request",
+                method = %req.method(),
+                path = %req.uri().path(),
+            )
+        }))
+        // SEC_SCANNER_HARDEN_V1：LINE webhook 內建的 scanner 路由也套同一組限流＋安全標頭。
+        // middleware 內只對 /scanner*、/number* 生效，webhook_path 原樣放行。
+        .layer(axum::middleware::from_fn(
+            crate::adapters::scanner::scanner_public_hardening_middleware,
+        ))
         .with_state(state);
 
     if let Some(admin_web) = admin_web {

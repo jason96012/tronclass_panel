@@ -1100,6 +1100,22 @@ async fn main() -> Result<()> {
         at_rest_encryption = crate::secret_encryption::is_encryption_enabled(),
         "at-rest 加密狀態（需 TRONCLASS_MASTER_KEY 環境變數為有效的 64 hex）"
     );
+    // SEC_MASTER_KEY_FAIL_CLOSED_V1（審查 L-02）：正式環境不得以明文落地學校密碼。
+    // 設 `TRONCLASS_REQUIRE_MASTER_KEY=1`（建議在 ptero-start.sh／容器環境固定設定）後，
+    // 未設定有效 master key 直接拒絕啟動；未設此變數時維持舊行為但改以 warn 提醒。
+    if !crate::secret_encryption::is_encryption_enabled() {
+        let require = std::env::var("TRONCLASS_REQUIRE_MASTER_KEY")
+            .map(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(false);
+        if require {
+            return Err(miette::miette!(
+                "TRONCLASS_REQUIRE_MASTER_KEY 已啟用，但 TRONCLASS_MASTER_KEY 未設定或無效（需 64 hex）；為避免學校密碼以明文落地，拒絕啟動"
+            ));
+        }
+        tracing::warn!(
+            "未設定 TRONCLASS_MASTER_KEY：學校密碼與 API key 將以明文寫入 SQLite。正式環境請設定 master key，並可加上 TRONCLASS_REQUIRE_MASTER_KEY=1 讓缺 key 時拒絕啟動"
+        );
+    }
 
     info!(
         version = VERSION,

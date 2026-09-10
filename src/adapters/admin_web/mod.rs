@@ -2337,9 +2337,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(files::admin_files_office_embed_handler),
         )
         // SHARE_V1: 核發免登入可預覽分享連結
+        // SEC_SIDE_EFFECT_POST_V1（審查 M-03）：有副作用（落盤分享紀錄）→ POST，
+        // 自動納入 same-origin CSRF gate 與 viewer 唯讀 gate。
         .route(
             "/admin/api/files/share-link",
-            get(files::admin_files_share_link_handler),
+            post(files::admin_files_share_link_handler),
         )
         // PREVIEW_LOG_V1: 前端預覽報錯回報（後台日誌可見）。
         .route(
@@ -2398,9 +2400,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // MATERIALS_IMPORT_V1: 自動從 iClass 匯入教材到教材雲端硬碟。
         // MATERIALS_IMPORT_SHARED_V1: 匯入核心改為背景 job（立即回 202，
         // 避免佔住 HTTP request 直到 proxy 逾時 → 502）；另提供進度查詢。
+        // SEC_SIDE_EFFECT_POST_V1（審查 M-03）：啟動背景匯入是副作用 → POST。
         .route(
             "/admin/api/files/import",
-            get(materials_import::admin_materials_import_handler),
+            post(materials_import::admin_materials_import_handler),
         )
         .route(
             "/admin/api/files/import/status",
@@ -2961,44 +2964,77 @@ async fn session_cookie_to_query_middleware(
     }
 
     let session_token = session_cookie_from_headers(&headers);
-    let has_token_param = request
-        .uri()
-        .query()
-        .is_some_and(|q| q.contains("token="));
-
-    // Fast path: no cookie and no token= in URL — pass through unchanged.
-    if session_token.is_none() && !has_token_param {
+    // SEC_TOKEN_SCRUB_DECODED_V2（審查 M-01 ＋ 2026-09-10 動態測試「立即修補建議」#1）：
+    // 不再有任何以 raw 字串判斷的快速路徑。只要 /admin 範圍的請求「帶有 query」或
+    // 「帶有 session cookie」，就一律把 query 交給 form-urlencoded 解析、移除 decoded
+    // 名稱等於 `token` 的所有參數（`token=`、`to%6ben=`、`%74oken=`、重複多個都算），
+    // 再只注入 HttpOnly cookie 的值。唯一的 pass-through 是「沒 query 也沒 cookie」——
+    // 這種請求不可能夾帶 URL token。
+    let has_query = request.uri().query().is_some_and(|q| !q.is_empty());
+    if session_token.is_none() && !has_query {
         return next.run(request).await;
     }
 
     let (mut parts, body) = request.into_parts();
-    let rewritten = {
-        let path = parts.uri.path().to_string();
-        let existing_query = parts.uri.query().unwrap_or("");
-        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-        // Always strip externally-supplied `token` parameters. Only the
-        // HttpOnly cookie value (if present) is re-injected below.
-        for (name, value) in url::form_urlencoded::parse(existing_query.as_bytes()) {
-            if name != "token" {
-                serializer.append_pair(&name, &value);
-            }
-        }
-        if let Some(ref token) = session_token {
-            serializer.append_pair("token", token);
-        }
-        let query_string = serializer.finish();
-        if query_string.is_empty() {
-            path
-        } else {
-            format!("{path}?{query_string}")
-        }
+    let path = parts.uri.path().to_string();
+    let existing_query = parts.uri.query().unwrap_or("");
+    let scrubbed = scrub_token_query(existing_query, session_token.as_deref());
+    if scrubbed.foreign_token_seen {
+        // SEC_URL_TOKEN_ATTEMPT_LOG_V1：有人把「長得像真 token」的值放進 URL（不是前端的
+        // `token=cookie` 相容標記）。只記路徑，不記值；供管理者比對 proxy log 並輪替 session。
+        tracing::warn!(
+            path = %path,
+            has_cookie = session_token.is_some(),
+            "admin URL 內出現 session token 形式的 query 參數，已移除（請勿把 token 放在網址）"
+        );
+    }
+    let rewritten = if scrubbed.query.is_empty() {
+        path
+    } else {
+        format!("{path}?{}", scrubbed.query)
     };
     if let Ok(uri) = rewritten.parse() {
         parts.uri = uri;
+    } else {
+        // 重組失敗時寧可拿掉整個 query，也不讓原始（可能含 token 的）query 流到 handler。
+        if let Ok(uri) = parts.uri.path().parse() {
+            parts.uri = uri;
+        }
     }
 
     next.run(axum::extract::Request::from_parts(parts, body))
         .await
+}
+
+/// SEC_TOKEN_SCRUB_DECODED_V2：純函式，便於單元測試。
+/// 對 `existing_query` 做 form-urlencoded 解析，丟掉所有 decoded 名稱 == `token` 的參數，
+/// 其餘參數原序保留（重新編碼），最後若有 cookie token 則附加 `token=<cookie>`。
+/// `foreign_token_seen`：被丟掉的 token 參數中，有值「符合 session token 格式且不等於 cookie 值」。
+struct ScrubbedQuery {
+    query: String,
+    foreign_token_seen: bool,
+}
+
+fn scrub_token_query(existing_query: &str, cookie_token: Option<&str>) -> ScrubbedQuery {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    let mut foreign_token_seen = false;
+    for (name, value) in url::form_urlencoded::parse(existing_query.as_bytes()) {
+        if name == "token" {
+            let trimmed = value.trim();
+            if is_valid_session_token_format(trimmed) && Some(trimmed) != cookie_token {
+                foreign_token_seen = true;
+            }
+            continue;
+        }
+        serializer.append_pair(&name, &value);
+    }
+    if let Some(token) = cookie_token {
+        serializer.append_pair("token", token);
+    }
+    ScrubbedQuery {
+        query: serializer.finish(),
+        foreign_token_seen,
+    }
 }
 
 fn session_token_from_uri(uri: &axum::http::Uri) -> Option<String> {
@@ -3403,6 +3439,8 @@ async fn admin_security_headers_middleware(
     // Online、外部 <img>/<iframe>）載入。若沿用 same-origin 的 CORP 與 X-Frame-Options
     // DENY，跨域檢視器會直接拒絕載入 → Office Online 顯示 "An error occurred"。
     let is_pub = path.starts_with("/pub/");
+    // SEC_SENSITIVE_PAGE_AUTH_V1：密碼／通行密鑰頁一律 no-store（不留在 bfcache／磁碟）。
+    let is_sensitive_page = path == "/admin/password" || path == "/admin/passkey";
     // FRIENDLY_ERROR_PAGE_V1：瀏覽器導覽（Accept: text/html）拿到沒有本文的 404／405／5xx 時，
     // 換成說明頁；API（/admin/api/）、公開分享（/pub/）、靜態資產與非 HTML 請求維持原樣，
     // 前端 fetch 依賴的 JSON 錯誤格式不受影響。
@@ -3493,7 +3531,8 @@ async fn admin_security_headers_middleware(
         // requests, so every navigation re-downloaded the full ~260 KB
         // dashboard. `no-cache` still revalidates on each load while allowing
         // the ETag below to answer with an empty 304.
-        if html_document || is_status_api {
+        // SEC_SENSITIVE_PAGE_AUTH_V1：密碼／通行密鑰頁不走 no-cache 分支，落到下方 no-store。
+        if (html_document || is_status_api) && !is_sensitive_page {
             headers.insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("private, no-cache, must-revalidate"),
@@ -5355,5 +5394,97 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert_eq!(location, "/admin");
+    }
+
+    // ── SEC_TOKEN_SCRUB_DECODED_V2 回歸測試（2026-09-10 動態測試「立即修補建議」#2）──
+
+    #[test]
+    fn scrub_removes_plain_and_percent_encoded_token_names() {
+        for q in [
+            "token=0123456789abcdef0123456789abcdef",
+            "to%6ben=0123456789abcdef0123456789abcdef",
+            "%74oken=0123456789abcdef0123456789abcdef",
+            "%74%6f%6b%65%6e=0123456789abcdef0123456789abcdef",
+            "a=1&token=0123456789abcdef0123456789abcdef&b=2",
+            "token=x&to%6ben=0123456789abcdef0123456789abcdef&token=y",
+        ] {
+            let out = scrub_token_query(q, None);
+            assert!(
+                !url::form_urlencoded::parse(out.query.as_bytes()).any(|(n, _)| n == "token"),
+                "token survived scrub for query `{q}` → `{}`",
+                out.query
+            );
+            assert!(out.foreign_token_seen, "foreign token not flagged for `{q}`");
+        }
+        let out = scrub_token_query("a=1&token=0123456789abcdef0123456789abcdef&b=2", None);
+        assert_eq!(out.query, "a=1&b=2");
+    }
+
+    #[test]
+    fn scrub_reinjects_only_cookie_token_and_ignores_legacy_marker() {
+        let cookie = "ffffffffffffffffffffffffffffffff";
+        let out = scrub_token_query("token=cookie&x=y", Some(cookie));
+        assert_eq!(out.query, format!("x=y&token={cookie}"));
+        assert!(!out.foreign_token_seen, "`token=cookie` marker must not be flagged");
+        let out = scrub_token_query("to%6ben=0123456789abcdef0123456789abcdef", Some(cookie));
+        assert_eq!(out.query, format!("token={cookie}"));
+        assert!(out.foreign_token_seen);
+        let out = scrub_token_query("", None);
+        assert_eq!(out.query, "");
+    }
+
+    #[tokio::test]
+    async fn encoded_query_token_without_cookie_is_not_authenticated() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("scrub-user".to_string(), false, false)
+            .await;
+        let access = tokens.access;
+        for q in ["token", "to%6ben", "%74oken", "%74%6f%6b%65%6e"] {
+            let app = build_admin_router(state.clone());
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/admin/api/status?{q}={access}"))
+                        .header("x-forwarded-proto", "https")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "URL token via `{q}=` must never authenticate"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn encoded_query_token_with_cookie_still_uses_cookie_session() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("cookie-owner".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/api/status?to%6ben=0123456789abcdef0123456789abcdef")
+                    .header(
+                        header::COOKIE,
+                        format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                    )
+                    .header("x-forwarded-proto", "https")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
