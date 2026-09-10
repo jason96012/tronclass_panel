@@ -814,7 +814,8 @@ pub(super) async fn client_log_handler(
     let ua = sanitize_client_field(&request.ua, 200);
     let visibility = sanitize_client_field(&request.visibility, 16);
     let level = match kind.as_str() {
-        "boot_watchdog_reload" | "js_error" | "unhandled_rejection" => "ERROR",
+        // INLINE_SPLIT_DEAD_BLOCK_V1：mo_storm = 前端 MutationObserver 風暴斷路器觸發（頁面差點卡死），視同錯誤。
+        "boot_watchdog_reload" | "js_error" | "unhandled_rejection" | "mo_storm" => "ERROR",
         _ => "WARN",
     };
     let mut details = format!(

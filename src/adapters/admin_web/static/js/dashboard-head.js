@@ -1,6 +1,59 @@
 /* INLINE_SPLIT_V1：dashboard-head.js 原本內嵌於 dashboard.html 的 <head> 內聯 <script>，抽成靜態檔（CSP script-src/style-src 'self'；
    由 asset_versions 統一改寫 ?sv=<build id>，內容變動即自動失效快取）。區塊順序與原 HTML 一致。 */
 
+/* ── MO_STORM_GUARD_V1：MutationObserver 風暴斷路器（防禦性）──
+   若某個 observer 的 callback 在 2 秒內同步觸發超過 3000 次（正常開機每個 observer 只有數十次），
+   代表「callback 內的 DOM 寫入 → 再次觸發自己」的無限 microtask 迴圈（主執行緒會被卡死、畫面永遠是「—」）。
+   此時立刻 disconnect 該 observer，並透過 client-log 回報 kind=mo_storm（含建立點堆疊），讓問題在後台可見而非靜默。 */
+(function(){
+  'use strict';
+  if (window.MO_STORM_GUARD_V1) return;
+  window.MO_STORM_GUARD_V1 = true;
+  var Native = window.MutationObserver;
+  if (typeof Native !== 'function') return;
+  var LIMIT = 3000, WINDOW_MS = 2000, reported = 0;
+  function report(origin, count){
+    if (reported >= 3) return;
+    reported += 1;
+    var msg = 'MutationObserver storm broken: ' + count + ' callbacks within ' + WINDOW_MS + 'ms (observer disconnected)';
+    try { console.error('[MO_STORM_GUARD_V1]', msg, origin); } catch(_) {}
+    var tries = 0;
+    (function send(){
+      try {
+        if (window.TronclassClientLog && typeof window.TronclassClientLog.report === 'function') {
+          window.TronclassClientLog.report('mo_storm', msg, { stack: origin });
+          return;
+        }
+      } catch(_) {}
+      if (++tries < 20) setTimeout(send, 500);
+    })();
+  }
+  function Guarded(callback){
+    if (!(this instanceof Guarded)) throw new TypeError("Failed to construct 'MutationObserver': Please use the 'new' operator");
+    var origin = '';
+    try { origin = String((new Error()).stack || '').split('\n').slice(1, 5).join('\n'); } catch(_) {}
+    var count = 0, windowStart = 0, tripped = false, self = this;
+    var native = new Native(function(records, observer){
+      if (tripped) return;
+      var now = Date.now();
+      if (now - windowStart > WINDOW_MS) { windowStart = now; count = 0; }
+      if (++count > LIMIT) {
+        tripped = true;
+        try { native.disconnect(); } catch(_) {}
+        report(origin, count);
+        return;
+      }
+      return callback.call(self, records, self);
+    });
+    this.__native = native;
+  }
+  Guarded.prototype.observe = function(target, options){ return this.__native.observe(target, options); };
+  Guarded.prototype.disconnect = function(){ return this.__native.disconnect(); };
+  Guarded.prototype.takeRecords = function(){ return this.__native.takeRecords(); };
+  try { Guarded.prototype.constructor = Guarded; } catch(_) {}
+  try { window.MutationObserver = Guarded; window.__nativeMutationObserver = Native; } catch(_) {}
+})();
+
 /* ── inline block: dashboardPerformanceGuardV2 (原 dashboard.html:12) ── */
 (function () {
   'use strict';
@@ -130,6 +183,38 @@
     });
   }
 
+  // STATUS_FETCH_TIMEOUT_V1：/admin/api/status 與 timetable 的請求一律加 20 秒逾時。
+  // 原本沒有逾時：伺服器忙碌（熱重編佔滿 CPU／SQLite 等鎖）或 iOS 回前景後 socket 已死
+  // 但瀏覽器不報錯時，nativeFetch 會一直 pending；而下面的去重表 statusRequestByKey 會讓
+  // 之後每 15 秒的輪詢全部掛在同一個永遠不會結束的 promise 上 → 畫面永遠停在「尚未更新／—」。
+  // 逾時後以 TimeoutError 拒絕（status=0），呼叫端（loadStatus）走失敗重試路徑。
+  var STATUS_FETCH_TIMEOUT_MS = 20000;
+  function timedFetch(input, init) {
+    if (typeof AbortController !== 'function') return nativeFetch(input, init);
+    var ctrl = new AbortController();
+    var upstream = init && init.signal;
+    if (upstream) {
+      if (upstream.aborted) ctrl.abort();
+      else upstream.addEventListener('abort', function () { ctrl.abort(); }, { once: true });
+    }
+    var timedOut = false;
+    var timer = setTimeout(function () { timedOut = true; ctrl.abort(); }, STATUS_FETCH_TIMEOUT_MS);
+    var next = Object.assign({}, init, { signal: ctrl.signal });
+    return nativeFetch(input, next).then(function (response) {
+      clearTimeout(timer);
+      return response;
+    }, function (error) {
+      clearTimeout(timer);
+      if (timedOut) {
+        var err = new Error('status_timeout');
+        err.name = 'TimeoutError';
+        err.status = 0;
+        throw err;
+      }
+      throw error;
+    });
+  }
+
   window.fetch = function (input, init) {
     // RUNTIME_PATCH_CONSOLIDATE_V1：原 HTTPONLY_SESSION_V2 的「fetch 預設帶 cookie」併入這裡，
     // 整頁只剩這一層 window.fetch 包裝（session-security.js 在更早的 <head> 注入點已抓到原生 fetch）。
@@ -148,7 +233,7 @@
 
     var isStatusPath = url.pathname === '/admin/api/status';
     var sendInit = isStatusPath ? withIfNoneMatch(input, init, key) : init;
-    statusRequestByKey[key] = nativeFetch(input, sendInit).then(function (response) {
+    statusRequestByKey[key] = timedFetch(input, sendInit).then(function (response) {
       delete statusRequestByKey[key];
       if (isStatusPath && response && response.status === 304) {
         var revived = reviveFrom304(key, response);
@@ -158,7 +243,7 @@
         }
         // 沒有可用的舊本文（理論上不會：只有記得 ETag 才會送 If-None-Match）→ 不帶條件重抓一次。
         delete statusEtagByKey[key];
-        return nativeFetch(input, init).then(function (fresh) {
+        return timedFetch(input, init).then(function (fresh) {
           if (fresh && fresh.ok) statusCacheByKey[key] = { response: fresh, at: Date.now() };
           return fresh;
         });
@@ -239,6 +324,12 @@
 
 /* ── inline block: MORE_ALLOW_NAV_V1 (原 dashboard.html:290) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="MORE_ALLOW_NAV_V1">，瀏覽器會把有 id 的元素暴露成
+     window.MORE_ALLOW_NAV_V1（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.MORE_ALLOW_NAV_V1) return;
   window.MORE_ALLOW_NAV_V1=true;
   document.addEventListener('click', function(ev){
@@ -255,6 +346,12 @@
 
 /* ── inline block: MORE_DEAD_BUTTONS_V1 (原 dashboard.html:328) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="MORE_DEAD_BUTTONS_V1">，瀏覽器會把有 id 的元素暴露成
+     window.MORE_DEAD_BUTTONS_V1（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.MORE_DEAD_BUTTONS_V1) return;
   window.MORE_DEAD_BUTTONS_V1 = true;
   function elOf(ev){
@@ -297,6 +394,12 @@
 
 /* ── inline block: PASSKEY_MORE_TAP_V2 (原 dashboard.html:402) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="PASSKEY_MORE_TAP_V2">，瀏覽器會把有 id 的元素暴露成
+     window.PASSKEY_MORE_TAP_V2（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.PASSKEY_MORE_TAP_V2) return;
   window.PASSKEY_MORE_TAP_V2 = true;
 
@@ -498,6 +601,12 @@
 
 /* ── inline block: PASSWORD_MORE_TAP_V2 (原 dashboard.html:642) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="PASSWORD_MORE_TAP_V2">，瀏覽器會把有 id 的元素暴露成
+     window.PASSWORD_MORE_TAP_V2（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.PASSWORD_MORE_TAP_V2) return;
   window.PASSWORD_MORE_TAP_V2 = true;
 
@@ -829,6 +938,12 @@
 
 /* ── inline block: MORE_PASSKEY_PASSWORD_FORCE_V1 (原 dashboard.html:1579) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="MORE_PASSKEY_PASSWORD_FORCE_V1">，瀏覽器會把有 id 的元素暴露成
+     window.MORE_PASSKEY_PASSWORD_FORCE_V1（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.MORE_PASSKEY_PASSWORD_FORCE_V1) return;
   window.MORE_PASSKEY_PASSWORD_FORCE_V1 = true;
   function q(id){ return document.getElementById(id); }

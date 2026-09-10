@@ -971,6 +971,12 @@
 
 /* ── inline block: FILES_MOBILE_HEADER_BACK_V1 (原 files.html:2046) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="FILES_MOBILE_HEADER_BACK_V1">，瀏覽器會把有 id 的元素暴露成
+     window.FILES_MOBILE_HEADER_BACK_V1（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.FILES_MOBILE_HEADER_BACK_V1) return;
   window.FILES_MOBILE_HEADER_BACK_V1 = true;
   function tok(){
@@ -994,7 +1000,7 @@
         a.className='button primary';
         top.appendChild(a);
       }
-      a.textContent='回控制台';
+      if(a.textContent!=='回控制台') a.textContent='回控制台'; /* INLINE_SPLIT_DEAD_BLOCK_V1：冪等寫入 */
       a.href=href();
       a.style.display='inline-flex';
     }
@@ -1013,6 +1019,12 @@
 
 /* ── inline block: FILES_TOP_BACK_V2 (原 files.html:2089) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="FILES_TOP_BACK_V2">，瀏覽器會把有 id 的元素暴露成
+     window.FILES_TOP_BACK_V2（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.FILES_TOP_BACK_V2) return;
   window.FILES_TOP_BACK_V2 = true;
   function tok(){

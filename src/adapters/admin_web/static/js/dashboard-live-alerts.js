@@ -47,18 +47,33 @@
   // SSE delivers a point-in-time alert from the monitor (normally within a
   // few hundred milliseconds). The periodic status check below remains only
   // as a fallback for proxies/browsers that do not keep an event stream open.
+  /* ROLLCALL_SSE_WATCHDOG_V1：原本只建一次 EventSource——(1) 伺服器重啟／401 時瀏覽器會把
+     readyState 設為 CLOSED 並放棄，不再自動重連；(2) iOS 回到前景後 socket 常已死但不觸發
+     onerror（readyState 停在 CONNECTING／OPEN）。兩種情況徽章都永遠停在「連線中」。
+     現在：連線 20 秒內沒 open／之後 45 秒沒任何 ping 就視為殭屍，關掉重連（5s→10s→…→60s 退避）；
+     回到前景時也檢查一次。 */
+  var liveSource=null,liveRetryTimer=null,liveRetryDelay=5000,liveLastPingAt=0,liveOpenTimer=null,liveStaleTimer=null;
+  var LIVE_OPEN_TIMEOUT_MS=20000,LIVE_STALE_MS=45000;
+  function closeLive(){if(liveSource){try{liveSource.close()}catch(_){}liveSource=null}clearTimeout(liveOpenTimer);clearTimeout(liveStaleTimer);liveOpenTimer=null;liveStaleTimer=null}
+  function scheduleLiveReconnect(){clearTimeout(liveRetryTimer);var d=liveRetryDelay;liveRetryDelay=Math.min(liveRetryDelay*2,60000);liveRetryTimer=setTimeout(function(){liveRetryTimer=null;if(!document.hidden)connectLiveEvents();else scheduleLiveReconnect()},d)}
+  function armStaleTimer(){clearTimeout(liveStaleTimer);liveStaleTimer=setTimeout(function(){if(!liveSource)return;if((Date.now()-liveLastPingAt)>=LIVE_STALE_MS){setLiveStatus('reconnecting');closeLive();scheduleLiveReconnect()}else armStaleTimer()},LIVE_STALE_MS)}
   function connectLiveEvents(){
     if(!('EventSource' in window)){setLiveStatus('reconnecting');return;}
+    closeLive();
     try{
       setLiveStatus('connecting');
       var source=new EventSource('/admin/api/rollcall/events');
+      liveSource=source;
       // Keep a reference so a browser does not garbage-collect an otherwise
       // background EventSource connection.
       window.__tronRollcallEventSource=source;
-      source.onopen=function(){setLiveStatus('connected');};
-      source.onerror=function(){setLiveStatus('reconnecting');};
-      source.addEventListener('ping',function(){if(source.readyState===EventSource.OPEN)setLiveStatus('connected');});
+      liveOpenTimer=setTimeout(function(){if(liveSource===source&&source.readyState!==EventSource.OPEN){setLiveStatus('reconnecting');closeLive();scheduleLiveReconnect()}},LIVE_OPEN_TIMEOUT_MS);
+      source.onopen=function(){if(liveSource!==source)return;liveRetryDelay=5000;liveLastPingAt=Date.now();clearTimeout(liveOpenTimer);liveOpenTimer=null;setLiveStatus('connected');armStaleTimer()};
+      source.onerror=function(){if(liveSource!==source)return;setLiveStatus('reconnecting');if(source.readyState===EventSource.CLOSED){closeLive();scheduleLiveReconnect()}};
+      source.addEventListener('ping',function(){if(liveSource!==source)return;liveLastPingAt=Date.now();if(source.readyState===EventSource.OPEN)setLiveStatus('connected');});
       source.addEventListener('rollcall',function(ev){
+        if(liveSource!==source)return;
+        liveLastPingAt=Date.now();
         setLiveStatus('connected');
         var items=[];try{items=JSON.parse(ev.data||'[]')}catch(_){}
         var s=seen();
@@ -69,8 +84,11 @@
           mark(key);show(item);break;
         }
       });
-    }catch(_){setLiveStatus('reconnecting');}
+    }catch(_){setLiveStatus('reconnecting');scheduleLiveReconnect();}
   }
+  document.addEventListener('visibilitychange',function(){if(document.hidden)return;if(!liveSource||liveSource.readyState===EventSource.CLOSED||(Date.now()-liveLastPingAt)>LIVE_STALE_MS){liveRetryDelay=5000;clearTimeout(liveRetryTimer);liveRetryTimer=null;connectLiveEvents()}},{passive:true});
+  window.addEventListener('online',function(){liveRetryDelay=5000;clearTimeout(liveRetryTimer);liveRetryTimer=null;connectLiveEvents()});
+  window.addEventListener('pagehide',function(){closeLive()});
   function dismiss(){box.classList.remove('visible');stopRepeat();flashTitle(false)}
   go.addEventListener('click',dismiss);close.addEventListener('click',dismiss);box.addEventListener('click',function(e){if(e.target===box)dismiss()});
   document.addEventListener('keydown',function(e){if(e.key==='Escape'&&box.classList.contains('visible'))dismiss()});

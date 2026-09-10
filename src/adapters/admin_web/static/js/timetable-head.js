@@ -1,8 +1,67 @@
 /* INLINE_SPLIT_V1：timetable-head.js 原本內嵌於 timetable.html 的 <head> 內聯 <script>，抽成靜態檔（CSP script-src/style-src 'self'；
    由 asset_versions 統一改寫 ?sv=<build id>，內容變動即自動失效快取）。區塊順序與原 HTML 一致。 */
 
+/* ── MO_STORM_GUARD_V1：MutationObserver 風暴斷路器（防禦性）──
+   若某個 observer 的 callback 在 2 秒內同步觸發超過 3000 次（正常開機每個 observer 只有數十次），
+   代表「callback 內的 DOM 寫入 → 再次觸發自己」的無限 microtask 迴圈（主執行緒會被卡死、畫面永遠是「—」）。
+   此時立刻 disconnect 該 observer，並透過 client-log 回報 kind=mo_storm（含建立點堆疊），讓問題在後台可見而非靜默。 */
+(function(){
+  'use strict';
+  if (window.MO_STORM_GUARD_V1) return;
+  window.MO_STORM_GUARD_V1 = true;
+  var Native = window.MutationObserver;
+  if (typeof Native !== 'function') return;
+  var LIMIT = 3000, WINDOW_MS = 2000, reported = 0;
+  function report(origin, count){
+    if (reported >= 3) return;
+    reported += 1;
+    var msg = 'MutationObserver storm broken: ' + count + ' callbacks within ' + WINDOW_MS + 'ms (observer disconnected)';
+    try { console.error('[MO_STORM_GUARD_V1]', msg, origin); } catch(_) {}
+    var tries = 0;
+    (function send(){
+      try {
+        if (window.TronclassClientLog && typeof window.TronclassClientLog.report === 'function') {
+          window.TronclassClientLog.report('mo_storm', msg, { stack: origin });
+          return;
+        }
+      } catch(_) {}
+      if (++tries < 20) setTimeout(send, 500);
+    })();
+  }
+  function Guarded(callback){
+    if (!(this instanceof Guarded)) throw new TypeError("Failed to construct 'MutationObserver': Please use the 'new' operator");
+    var origin = '';
+    try { origin = String((new Error()).stack || '').split('\n').slice(1, 5).join('\n'); } catch(_) {}
+    var count = 0, windowStart = 0, tripped = false, self = this;
+    var native = new Native(function(records, observer){
+      if (tripped) return;
+      var now = Date.now();
+      if (now - windowStart > WINDOW_MS) { windowStart = now; count = 0; }
+      if (++count > LIMIT) {
+        tripped = true;
+        try { native.disconnect(); } catch(_) {}
+        report(origin, count);
+        return;
+      }
+      return callback.call(self, records, self);
+    });
+    this.__native = native;
+  }
+  Guarded.prototype.observe = function(target, options){ return this.__native.observe(target, options); };
+  Guarded.prototype.disconnect = function(){ return this.__native.disconnect(); };
+  Guarded.prototype.takeRecords = function(){ return this.__native.takeRecords(); };
+  try { Guarded.prototype.constructor = Guarded; } catch(_) {}
+  try { window.MutationObserver = Guarded; window.__nativeMutationObserver = Native; } catch(_) {}
+})();
+
 /* ── inline block: BAN_CRUDE_LOGIN_V1 (原 timetable.html:29) ── */
 (function(){
+  /* INLINE_SPLIT_DEAD_BLOCK_V1：這段原本是 <script id="BAN_CRUDE_LOGIN_V1">，瀏覽器會把有 id 的元素暴露成
+     window.BAN_CRUDE_LOGIN_V1（truthy），所以下一行的守衛在正式環境「永遠」提前 return，這段程式從未執行過。
+     INLINE_SPLIT_V1 拆成外部檔後 id 消失、守衛失效，整段被意外復活；其中的 MutationObserver 與
+     無條件 textContent 寫入會互相觸發，形成同步無限迴圈，把主執行緒卡死（手機版總覽永遠顯示「—」）。
+     為維持與拆分前完全相同的行為，這裡明確停用，不再依賴 id 陰影。 */
+  if(true) return;
   if(window.BAN_CRUDE_LOGIN_V1) return;
   window.BAN_CRUDE_LOGIN_V1 = true;
   function isCrude(card){
