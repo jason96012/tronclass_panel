@@ -1080,7 +1080,7 @@ pub(super) async fn public_share_preview_handler(
     let office_src = format!("/pub/office?path={}&exp={embed_exp}&sig={embed_sig}", pct(&rel_str));
     let is_modern_office = ["docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf"].contains(&ext.as_str());
     let scripts = if is_modern_office {
-        "<script src=\"/pub/static/js/jszip.min.js?v=sharev6\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev6\"></script>"
+        "<script src=\"/pub/static/js/jszip.min.js?v=sharev6\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev7\"></script>"
     } else {
         ""
     };

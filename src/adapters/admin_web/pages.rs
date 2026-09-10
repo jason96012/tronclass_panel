@@ -459,7 +459,7 @@ pub(super) fn inject_files_office_assets(html: &str) -> String {
     if (loaded.__p && loaded.__p[name]) return loaded.__p[name];
     var urls = {
       pdf:     ['/admin/static/js/pdf.min.js?v=pdfjs1'],
-      office:  ['/admin/static/js/jszip.min.js?v=officeview6','/admin/static/js/office-view.js?v=officeview10'],
+      office:  ['/admin/static/js/jszip.min.js?v=officeview6','/admin/static/js/office-view.js?v=officeview11'],
       qrcode:  ['/admin/static/js/qrcode.min.js?v=qrshare1']
     };
     var list = urls[name];
