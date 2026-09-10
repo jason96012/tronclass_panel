@@ -739,6 +739,9 @@
     height:100%!important;
     max-height:100%!important;
     border-radius:0!important;
+    /* IOS_SAFE_AREA_TOP_V1：全螢幕預覽的標題列不要被狀態列蓋住（背景會延伸到邊框區） */
+    border-top:env(safe-area-inset-top,0px) solid transparent!important;
+    border-bottom:env(safe-area-inset-bottom,0px) solid transparent!important;
   }
 }
 

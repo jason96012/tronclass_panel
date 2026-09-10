@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex, nofollow">
   <title>__TITLE__｜Tronclass Dashboard</title>
   <!-- FRIENDLY_ERROR_PAGE_V1：404／405／5xx 的瀏覽器導覽用說明頁（API 與非 HTML 請求仍回 JSON／純文字）。
@@ -10,7 +10,7 @@
   <style>
     :root{color-scheme:light dark;font-family:Inter,"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif}
     *{box-sizing:border-box}
-    body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 18% 8%,#dbeafe 0,transparent 38%),radial-gradient(circle at 88% 88%,#e0e7ff 0,transparent 38%),#f7f9ff;color:#17233b}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;padding:calc(24px + env(safe-area-inset-top,0px)) 24px calc(24px + env(safe-area-inset-bottom,0px));background:radial-gradient(circle at 18% 8%,#dbeafe 0,transparent 38%),radial-gradient(circle at 88% 88%,#e0e7ff 0,transparent 38%),#f7f9ff;color:#17233b}
     .card{width:min(100%,620px);overflow:hidden;border:1px solid rgba(148,163,184,.25);border-radius:28px;background:rgba(255,255,255,.94);box-shadow:0 26px 75px rgba(30,64,175,.14)}
     .banner{height:8px;background:linear-gradient(90deg,#2563eb,#60a5fa,#a78bfa)}
     .content{padding:40px 40px 34px}
@@ -30,7 +30,7 @@
       .lead{color:#94a3b8}.hint{background:rgba(37,99,235,.14);color:#bfdbfe}.code{background:rgba(99,102,241,.22);color:#c7d2fe}
       .actions a.sec{color:#93c5fd;border-color:#3b82f6}.path b{color:#94a3b8}
     }
-    @media(max-width:540px){body{padding:14px}.content{padding:30px 22px}.card{border-radius:22px}}
+    @media(max-width:540px){body{padding:calc(14px + env(safe-area-inset-top,0px)) 14px calc(14px + env(safe-area-inset-bottom,0px))}.content{padding:30px 22px}.card{border-radius:22px}}
   </style>
 </head>
 <body>

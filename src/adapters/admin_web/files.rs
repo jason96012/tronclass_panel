@@ -979,9 +979,9 @@ const SHARE_PAGE: &str = r#"<!doctype html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>__TITLE__</title>
-<link rel="stylesheet" href="/pub/static/css/share.css?v=sharev6">
+<link rel="stylesheet" href="/pub/static/css/share.css?v=sharev8">
 <meta id="share-ext" content="__EXTATTR__">
 <meta id="share-raw" content="__RAWATTR__">
 <meta id="share-office" content="__OFFICEATTR__">
