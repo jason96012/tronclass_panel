@@ -21,6 +21,10 @@ reqwest = { version = "0.12.28", features = ["cookies", "json", "rustls-tls", "m
 axum = { version = "0.8.8", features = ["json", "multipart"] }
 tower = { version = "0.5.3" }
 tower-http = { version = "0.6.8", features = ["trace", "compression-gzip", "compression-br", "compression-deflate", "fs"] }
+# STATIC_BROTLI_PRECOMPRESS_V1：靜態資產（/admin/static、/pub/static）第一次被要求後以 quality 11
+# 壓一次放記憶體，之後直接吐預壓縮位元組；tower-http 的即時壓縮只剩 HTML／JSON 在用。
+# brotli 本來就是 tower-http compression-br 的間接相依（Cargo.lock 已有 8.0.x），不會多下載東西。
+brotli = { version = "8", default-features = false, features = ["std"] }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
