@@ -616,7 +616,9 @@ impl super::ApiClient {
         debug!(url = %url, "GET /api/radar/rollcalls");
 
         let resp = self
-            .send_limited(&url, self.client.get(&url))
+            .client
+            .get(&url)
+            .send()
             .await
             .into_diagnostic()
             .wrap_err("GET /api/radar/rollcalls failed")?;
@@ -635,7 +637,9 @@ impl super::ApiClient {
         debug!(url = %url, "GET student_rollcalls for number_code");
 
         let resp = self
-            .send_limited(&url, self.client.get(&url))
+            .client
+            .get(&url)
+            .send()
             .await
             .into_diagnostic()
             .wrap_err_with(|| {
@@ -697,7 +701,10 @@ impl super::ApiClient {
         debug!(url = %url, code = %number_code, "PUT answer_number_rollcall");
 
         let resp = self
-            .send_limited(&url, self.client.put(&url).json(&body))
+            .client
+            .put(&url)
+            .json(&body)
+            .send()
             .await
             .into_diagnostic()
             .wrap_err_with(|| {
@@ -792,7 +799,10 @@ impl super::ApiClient {
         debug!(url = %url, lat = latitude, lon = longitude, "PUT answer (radar rollcall)");
 
         let resp = self
-            .send_limited(&url, self.client.put(&url).json(&body))
+            .client
+            .put(&url)
+            .json(&body)
+            .send()
             .await
             .into_diagnostic()
             .wrap_err_with(|| format!("PUT /api/rollcall/{rollcall_id}/answer failed"))?;
@@ -848,7 +858,10 @@ impl super::ApiClient {
         debug!(url = %url, "PUT answer_self_registration_rollcall");
 
         let resp = self
-            .send_limited(&url, self.client.put(&url).json(&serde_json::json!({})))
+            .client
+            .put(&url)
+            .json(&serde_json::json!({}))
+            .send()
             .await
             .into_diagnostic()
             .wrap_err_with(|| {
@@ -900,7 +913,10 @@ impl super::ApiClient {
         debug!(url = %url, "PUT answer_qr_rollcall");
 
         let resp = self
-            .send_limited(&url, self.client.put(&url).json(&body))
+            .client
+            .put(&url)
+            .json(&body)
+            .send()
             .await
             .into_diagnostic()
             .wrap_err_with(|| {

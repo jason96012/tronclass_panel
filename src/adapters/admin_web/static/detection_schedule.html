@@ -61,6 +61,11 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
   .grid{grid-template-columns:1fr;gap:12px}.wide{grid-column:auto}.card{padding:16px;border-radius:17px;box-shadow:0 5px 18px rgba(15,23,42,.06)}.fields,.lesson-list{grid-template-columns:1fr}.summary{grid-template-columns:repeat(3,1fr);gap:7px}.metric{padding:10px}.metric b{font-size:17px}.actions{display:grid;grid-template-columns:1fr 1fr}.actions .primary,.actions .button{width:100%}.lesson{align-items:flex-start}.lesson .time{font-size:12px}
 }
 @media(max-width:390px){.top{padding-inline:0}.brand{gap:9px}.logo{width:44px;height:44px}.brand b{font-size:17px}.brand .meta{font-size:11px}.top a{min-height:42px;padding:0 11px;font-size:12px}.summary{grid-template-columns:1fr 1fr}.metric:last-child{grid-column:1/-1}}
+
+  /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  .mt12{margin-top:12px}
+  .mt14{margin-top:14px}
+  .span-full{grid-column:1/-1}
 </style>
 </head>
 <body>
@@ -73,7 +78,7 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
       <div class="field"><label for="account">套用帳號</label><select id="account"></select></div>
       <div class="summary"><div class="metric"><span class="meta">可用課程</span><b id="usable">-</b></div><div class="metric"><span class="meta">課內頻率</span><b id="insideRate">-</b></div><div class="metric"><span class="meta">課外頻率</span><b id="outsideRate">-</b></div></div>
       <div id="activeWindows" class="windows"></div>
-      <div id="serverTime" class="meta" style="margin-top:12px"></div>
+      <div id="serverTime" class="meta mt12"></div>
     </section>
     <section class="card">
       <h2>偵測規則</h2>
@@ -81,9 +86,9 @@ body{font-family:Inter,"Noto Sans TC",-apple-system,BlinkMacSystemFont,"Segoe UI
       <div class="fields">
         <div class="field"><label for="before">上課前（分鐘）</label><input id="before" type="number" min="0" max="180" step="1"></div>
         <div class="field"><label for="after">下課後（分鐘）</label><input id="after" type="number" min="0" max="180" step="1"></div>
-        <div class="field" style="grid-column:1/-1"><label for="outside">課外巡檢間隔（分鐘）</label><input id="outside" type="number" min="1" max="60" step="1"></div>
+        <div class="field span-full"><label for="outside">課外巡檢間隔（分鐘）</label><input id="outside" type="number" min="1" max="60" step="1"></div>
       </div>
-      <div class="hint" style="margin-top:14px">07:00–19:00：課內使用系統正常頻率，課外使用上方頻率。19:00–07:00：停止自動輪詢。儲存後立即套用。</div>
+      <div class="hint mt14">07:00–19:00：課內使用系統正常頻率，課外使用上方頻率。19:00–07:00：停止自動輪詢。儲存後立即套用。</div>
       <div class="actions"><button id="save" class="primary">儲存設定</button><button id="reload" class="button" type="button">重新整理</button></div><div id="message" class="message"></div>
     </section>
     <section class="card wide"><div class="toolbar"><h2>每週課表偵測依據</h2><a class="button" href="/admin/timetable">編輯課表</a></div><div id="lessons" class="lesson-list"></div></section>

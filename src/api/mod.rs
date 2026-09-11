@@ -7,12 +7,10 @@ pub mod profile;
 pub mod rollcall;
 pub mod todos;
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use miette::{IntoDiagnostic, Result, WrapErr};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use reqwest::{
     cookie::Jar,
     header::{self, HeaderMap, HeaderValue},
@@ -40,64 +38,6 @@ pub enum ApiError {
     Json(String),
 }
 
-// ─── HOST_CONCURRENCY_CAP_V1：每個 Tronclass 主機的同時連線上限 ──────────────
-// 多帳號同時輪詢時，同一台 Tronclass 主機可能瞬間收到十幾個請求（狀態頁、
-// 作業同步、點名輪詢一起發），容易被學校端視為異常流量。這裡以「主機名」為單位
-// 放一個 Semaphore，超過上限的請求會排隊等待，不會失敗。
-// 上限可用環境變數 TRONCLASS_HOST_MAX_INFLIGHT 覆寫（1..=32）。
-
-/// 預設每個主機最多同時 6 個 in-flight 請求。
-pub(crate) const TRONCLASS_HOST_MAX_INFLIGHT_DEFAULT: usize = 6;
-
-static HOST_LIMITERS: once_cell::sync::Lazy<Mutex<HashMap<String, Arc<Semaphore>>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
-
-fn host_max_inflight() -> usize {
-    static CACHED: once_cell::sync::Lazy<usize> = once_cell::sync::Lazy::new(|| {
-        std::env::var("TRONCLASS_HOST_MAX_INFLIGHT")
-            .ok()
-            .and_then(|v| v.trim().parse::<usize>().ok())
-            .filter(|v| (1..=32).contains(v))
-            .unwrap_or(TRONCLASS_HOST_MAX_INFLIGHT_DEFAULT)
-    });
-    *CACHED
-}
-
-/// 由 URL 取出「scheme://host:port」作為限流 key；解析失敗時退回整個字串。
-pub(crate) fn host_limit_key(url: &str) -> String {
-    match reqwest::Url::parse(url) {
-        Ok(parsed) => {
-            let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-            match parsed.port() {
-                Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
-                None => format!("{}://{}", parsed.scheme(), host),
-            }
-        }
-        Err(_) => url.trim().to_ascii_lowercase(),
-    }
-}
-
-fn host_semaphore(url: &str) -> Arc<Semaphore> {
-    let key = host_limit_key(url);
-    let mut map = HOST_LIMITERS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    map.entry(key)
-        .or_insert_with(|| Arc::new(Semaphore::new(host_max_inflight())))
-        .clone()
-}
-
-/// 取得該主機的一個連線名額；名額用完時會 await 排隊。
-/// 回傳的 permit 在 drop 時自動釋放。Semaphore 永不關閉，理論上不會失敗；
-/// 萬一失敗則回傳 None（呼叫端照常送出請求，不因限流器本身出錯而中斷點名）。
-pub(crate) async fn acquire_host_slot(url: &str) -> Option<OwnedSemaphorePermit> {
-    let sem = host_semaphore(url);
-    match sem.acquire_owned().await {
-        Ok(permit) => Some(permit),
-        Err(_) => None,
-    }
-}
-
 // ─── API 客戶端 ───────────────────────────────────────────────────────────────
 /// Tronclass API 客戶端
 pub struct ApiClient {
@@ -114,18 +54,6 @@ impl ApiClient {
             client,
             base_url: base_url.into(),
         }
-    }
-
-    /// HOST_CONCURRENCY_CAP_V1：受每主機併發上限保護的送出。
-    /// permit 只涵蓋「送出 → 收到回應標頭」這段（Tronclass API 回應都很小，
-    /// body 讀取幾乎不佔連線時間），避免長時間 body 讀取把其他帳號的點名卡住。
-    pub(crate) async fn send_limited(
-        &self,
-        url: &str,
-        request: reqwest::RequestBuilder,
-    ) -> reqwest::Result<reqwest::Response> {
-        let _permit = acquire_host_slot(url).await;
-        request.send().await
     }
 
     /// 通用回應處理：反序列化 JSON，遇到 401/403 轉換為 Unauthorized 錯誤

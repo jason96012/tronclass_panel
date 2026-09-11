@@ -211,13 +211,8 @@
     return 'data:image/png;base64,' + btoa(binary);
   }
 
-  // DOCX_STRICT_NS_V1：Word「Strict Open XML」另存（或部分第三方工具）使用的命名空間是
-  // http://purl.oclc.org/ooxml/wordprocessingml/main，而非 Transitional 的
-  // schemas.openxmlformats.org/…；原本寫死 Transitional 命名空間會讓 body 找不到，
-  // 誤報「document.xml 沒有 body 節點」。Word 元素在 docx 內 localName 不會與其他
-  // 命名空間衝突（DrawingML 文字走 w:txbxContent），因此一律用 '*' 依 localName 查找。
   var W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-  var W_NS_STRICT = 'http://purl.oclc.org/ooxml/wordprocessingml/main';
+  var W_R_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 
   // 讀取「可能在命名空間前綴內」的屬性（如 w:val）。getAttribute('val') 對前綴屬性會回傳 null，
   // 改用 attributes 依 localName 比對，才能穩定取到值。
@@ -234,29 +229,28 @@
   function docxRunStyle(rPr) {
     if (!rPr) return {};
     var st = {};
-    if (rPr.getElementsByTagNameNS('*', 'b')[0]) st.fontWeight = 'bold';
-    if (rPr.getElementsByTagNameNS('*', 'i')[0]) st.fontStyle = 'italic';
-    if (rPr.getElementsByTagNameNS('*', 'u')[0]) st.textDecoration = 'underline';
-    var color = rPr.getElementsByTagNameNS('*', 'color')[0];
+    if (rPr.getElementsByTagNameNS(W_NS, 'b')[0]) st.fontWeight = 'bold';
+    if (rPr.getElementsByTagNameNS(W_NS, 'i')[0]) st.fontStyle = 'italic';
+    if (rPr.getElementsByTagNameNS(W_NS, 'u')[0]) st.textDecoration = 'underline';
+    var color = rPr.getElementsByTagNameNS(W_NS, 'color')[0];
     var colorVal = color && attrLocal(color, 'val');
     if (colorVal && colorVal !== 'auto') {
       st.color = '#' + colorVal;
     }
-    var sz = rPr.getElementsByTagNameNS('*', 'sz')[0];
+    var sz = rPr.getElementsByTagNameNS(W_NS, 'sz')[0];
     var szV = sz && parseInt(attrLocal(sz, 'val'), 10);
     if (!isNaN(szV) && szV > 0) st.fontSize = (szV / 2) + 'pt'; // 單位為半 pt
     return st;
   }
 
   function docxParaHtml(p, media) {
-    var pPr = p.getElementsByTagNameNS('*', 'pPr')[0];
+    var pPr = p.getElementsByTagNameNS(W_NS, 'pPr')[0];
     var styleName = '';
     var pstyle = '';
     if (pPr) {
-      var pStyle = pPr.getElementsByTagNameNS('*', 'pStyle')[0];
+      var pStyle = pPr.getElementsByTagNameNS(W_NS, 'pStyle')[0];
       if (pStyle) styleName = attrLocal(pStyle, 'val');
-      if (pPr.getElementsByTagNameNS('*', 'numPr')[0]) styleName += ' ListNum';
-      var jc = pPr.getElementsByTagNameNS('*', 'jc')[0];
+      var jc = pPr.getElementsByTagNameNS(W_NS, 'jc')[0];
       if (jc) {
         var v = attrLocal(jc, 'val');
         if (v === 'center') pstyle += 'text-align:center;';
@@ -273,41 +267,22 @@
     var bullet = /ListBullet|List/i.test(styleName);
 
     var html = '';
-    var runs = p.getElementsByTagNameNS('*', 'r');
+    var runs = p.getElementsByTagNameNS(W_NS, 'r');
     for (var i = 0; i < runs.length; i++) {
-      // DOCX_BLOCK_WALK_V1：mc:AlternateContent 的 Choice 與 Fallback 內容重複（文字方塊常見），
-      // 只取 Fallback（瀏覽器本來就畫不了 Choice 的 wps 圖形），避免文字出現兩次。
-      if (docxInsideChoice(runs[i], p)) continue;
-      var rPr = runs[i].getElementsByTagNameNS('*', 'rPr')[0];
+      var rPr = runs[i].getElementsByTagNameNS(W_NS, 'rPr')[0];
       var st = docxRunStyle(rPr);
-      // DOCX_BLOCK_WALK_V1：一個 run 可能有多個 <w:t>，中間夾 <w:tab>／<w:br>；原本只取第一個 t
-      // 會吃掉後面的文字。改為依序走 run 的直接子節點。
-      var txt = '';
-      var rk = runs[i].childNodes;
-      for (var k = 0; k < rk.length; k++) {
-        var rn = rk[k];
-        if (rn.nodeType !== 1) continue;
-        var rl = rn.localName;
-        if (rl === 't') txt += (rn.textContent || '');
-        else if (rl === 'tab') txt += '\t';
-        else if (rl === 'br' || rl === 'cr') txt += '\n';
-        else if (rl === 'noBreakHyphen') txt += '\u2011';
-        else if (rl === 'softHyphen') txt += '\u00ad';
-        else if (rl === 'sym') txt += '\u25a1';
-      }
-      if (txt) {
-        txt = txt.replace(/\u00a0/g, ' ');
-        if (i === 0) txt = txt.replace(/^[ \u2022]+/, ''); // 避免標題已含 • 又再加上
-        var sty = styleAttr(st);
-        if (/[\t\n]/.test(txt)) sty += 'white-space:pre-wrap;';
-        html += '<span style="' + sty + '">' + escapeHtml(txt) + '</span>';
+      var t = runs[i].getElementsByTagNameNS(W_NS, 't')[0];
+      if (t) {
+        var txt = (t.textContent || '').replace(/\u00a0/g, ' ');
+        if (i === 0) txt = txt.replace(/^[\s\u2022]+/, ''); // 避免標題已含 • 又再加上
+        html += '<span style="' + styleAttr(st) + '">' + escapeHtml(txt) + '</span>';
       }
       // 內嵌圖片
-      var drawing = runs[i].getElementsByTagNameNS('*', 'drawing')[0];
+      var drawing = runs[i].getElementsByTagNameNS(W_NS, 'drawing')[0];
       if (drawing) {
         var blip = drawing.getElementsByTagNameNS(NS_A, 'blip')[0];
         if (blip) {
-          var relId = attrLocal(blip, 'embed'); // Strict OOXML 的 r: 命名空間不同，改依 localName 取
+          var relId = blip.getAttributeNS(W_R_NS, 'embed');
           var src = relId && media[relId];
           if (src) html += '<img src="' + src + '" alt="" style="display:block;max-width:100%;height:auto;margin:8px 0;">';
         }
@@ -324,83 +299,25 @@
   }
 
   function docxCellHtml(tc, media) {
-    // DOCX_BLOCK_WALK_V1：儲存格內容走區塊遍歷（支援巢狀表格、內容控制項）。
-    var html = docxBlocksHtml(tc, media, 0);
+    var html = '';
+    var ps = tc.getElementsByTagNameNS(W_NS, 'p');
+    for (var pi = 0; pi < ps.length; pi++) {
+      html += docxParaHtml(ps[pi], media);
+    }
     if (!html) html = '&nbsp;';
     return '<td style="border:1px solid #cbd2e0;padding:6px 8px;vertical-align:top;">' + html + '</td>';
   }
 
-  // DOCX_BLOCK_WALK_V1：只收「直接」子列／子格（可穿過 sdt／customXml 等包裝），
-  // 原本 getElementsByTagNameNS('*','tr') 會把巢狀表格的列也拉到外層，內容重複。
-  function docxDirectChildren(el, localName, depth) {
-    var out = [];
-    var kids = el.childNodes;
-    for (var i = 0; i < kids.length; i++) {
-      var n = kids[i];
-      if (n.nodeType !== 1) continue;
-      if (n.localName === localName) out.push(n);
-      else if (depth < 6 && DOCX_BLOCK_WRAPPERS[n.localName]) {
-        out = out.concat(docxDirectChildren(n, localName, depth + 1));
-      }
-    }
-    return out;
-  }
-
   function docxTableHtml(tbl, media) {
-    var rows = docxDirectChildren(tbl, 'tr', 0);
+    var rows = tbl.getElementsByTagNameNS(W_NS, 'tr');
     var html = '<table style="border-collapse:collapse;width:100%;margin:8px 0;"><tbody>';
     for (var r = 0; r < rows.length; r++) {
-      var cells = docxDirectChildren(rows[r], 'tc', 0);
+      var cells = rows[r].getElementsByTagNameNS(W_NS, 'tc');
       html += '<tr>';
       for (var c = 0; c < cells.length; c++) html += docxCellHtml(cells[c], media);
       html += '</tr>';
     }
     html += '</tbody></table>';
-    return html;
-  }
-
-  // DOCX_BLOCK_WALK_V1：Word 的段落／表格不一定是 <w:body> 的「直接」子節點——
-  // 內容控制項（w:sdt/w:sdtContent，範本、表單、目錄極常見）、customXml、追蹤修訂
-  // （w:ins/w:del）、smartTag 都會再包一層；原本只掃 body 直接子節點，這類檔案會被
-  // 誤判成「無法解析（可能是舊版 .doc）」。這裡遞迴穿過包裝元素找 p／tbl。
-  var DOCX_BLOCK_WRAPPERS = {
-    sdt: 1, sdtContent: 1, customXml: 1, smartTag: 1, ins: 1, del: 1,
-    moveTo: 1, moveFrom: 1, txbxContent: 1, Fallback: 1, Choice: 1
-  };
-
-  function docxInsideChoice(el, stopAt) {
-    var n = el.parentNode;
-    while (n && n !== stopAt) {
-      if (n.localName === 'Choice') {
-        // 只有在同層真的有 Fallback 時才略過 Choice；否則 Choice 是唯一內容，得保留。
-        var par = n.parentNode;
-        if (par && par.getElementsByTagNameNS('*', 'Fallback').length) return true;
-        return false;
-      }
-      n = n.parentNode;
-    }
-    return false;
-  }
-
-  function docxBlocksHtml(container, media, depth) {
-    var html = '';
-    var kids = container.childNodes;
-    for (var c = 0; c < kids.length; c++) {
-      var node = kids[c];
-      if (node.nodeType !== 1) continue;
-      var ln = node.localName;
-      if (ln === 'p') html += docxParaHtml(node, media);
-      else if (ln === 'tbl') html += docxTableHtml(node, media);
-      else if (ln === 'sectPr' || ln === 'sdtPr' || ln === 'sdtEndPr' || ln === 'tblPr' || ln === 'tblGrid' || ln === 'bookmarkStart' || ln === 'bookmarkEnd') continue;
-      else if (ln === 'altChunk') {
-        html += '<div class="tron-office-note" style="font-size:12px;opacity:.7;margin:6px 0;">（此處有外部嵌入內容 altChunk，僅能於 Word 中檢視）</div>';
-      } else if (ln === 'AlternateContent') {
-        var pick = node.getElementsByTagNameNS('*', 'Fallback')[0] || node.getElementsByTagNameNS('*', 'Choice')[0];
-        if (pick && depth < 16) html += docxBlocksHtml(pick, media, depth + 1);
-      } else if (depth < 16 && (DOCX_BLOCK_WRAPPERS[ln] || node.getElementsByTagNameNS('*', 'p').length)) {
-        html += docxBlocksHtml(node, media, depth + 1);
-      }
-    }
     return html;
   }
 
@@ -472,25 +389,6 @@
       '，不是標準 OOXML zip 結構，無法在本機預覽。' + hint + '</div>';
   }
 
-  // DOCX_STRICT_NS_V1：最後手段的純文字擷取（不經 DOM）。命名空間前綴不限 w:。
-  function docxRegexFallback(text) {
-    if (!text) return '';
-    var bodyAt = text.search(/<(?:[\w-]+:)?body[\s>]/);
-    var src = bodyAt >= 0 ? text.slice(bodyAt) : text;
-    var paras = src.split(/<(?:[\w-]+:)?p[\s>]/);
-    var out = '', total = 0;
-    for (var i = 1; i < paras.length; i++) {
-      var texts = [], m, re = /<(?:[\w-]+:)?t(?:\s[^>]*)?>([\s\S]*?)<\/(?:[\w-]+:)?t>/g;
-      while ((m = re.exec(paras[i])) !== null) { if (m[1]) texts.push(m[1]); }
-      if (/<(?:[\w-]+:)?tab\b/.test(paras[i])) texts.push('\t');
-      var line = texts.join('').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-      total += line.length;
-      out += '<p style="margin:0 0 6px 0;white-space:pre-wrap;">' + (line ? escapeHtml(line) : '&nbsp;') + '</p>';
-    }
-    if (!total) return '';
-    return '<div class="tron-docx"><div class="tron-office-note" style="font-size:12px;opacity:.7;margin-bottom:10px;">以簡化模式顯示（僅文字，無格式／圖片）。</div>' + out + '</div>';
-  }
-
   async function renderWord(arrayBuffer) {
     var zip = await JSZip.loadAsync(arrayBuffer);
     var docText = await zipText(zip, 'word/document.xml');
@@ -498,16 +396,9 @@
       return '<div class="tron-office-error">此 Word 檔缺少 word/document.xml（可能是舊版 .doc 二進位格式）。請按上方「下載」查看。</div>';
     }
     var docXml = xml(docText);
-    var body = docXml.getElementsByTagNameNS('*', 'body')[0];
+    var body = docXml.getElementsByTagNameNS(W_NS, 'body')[0];
     if (!body) {
-      // DOCX_STRICT_NS_V1：DOMParser 失敗（parsererror）或結構異常時，退回 regex 直接抓
-      // <w:t> 文字並以 <w:p> 分段——至少看得到內容，而不是只給一句「無法解析」。
-      var fallback = docxRegexFallback(docText);
-      if (fallback) return fallback;
-      var why = docXml.getElementsByTagName('parsererror').length
-        ? 'document.xml 不是合法的 XML（瀏覽器解析失敗）'
-        : 'document.xml 沒有 body 節點（根元素命名空間：' + escapeHtml((docXml.documentElement && docXml.documentElement.namespaceURI) || '無') + '）';
-      return '<div class="tron-office-error">此 Word 檔的 ' + why + '，無法解析。請按上方「下載」查看。</div>';
+      return '<div class="tron-office-error">此 Word 檔的 document.xml 沒有 body 節點，無法解析。請按上方「下載」查看。</div>';
     }
 
     // rels 只用來對照內嵌圖片；缺失時頂多沒有圖，不該整份失敗。
@@ -527,22 +418,16 @@
       }
     }
 
-    // DOCX_BLOCK_WALK_V1：遞迴遍歷（穿過 sdt／customXml／ins 等包裝）。
-    var html = docxBlocksHtml(body, media, 0);
+    var html = '';
+    var children = body.childNodes;
+    for (var c = 0; c < children.length; c++) {
+      var node = children[c];
+      if (node.nodeType !== 1) continue;
+      if (node.localName === 'p') html += docxParaHtml(node, media);
+      else if (node.localName === 'tbl') html += docxTableHtml(node, media);
+    }
     if (!html) {
-      // 走到這裡代表 zip 與 XML 都正常（不是舊版 .doc），只是沒有找到段落／表格：
-      // 先試 regex 純文字擷取，再不行就照實回報（空白文件／只有物件），不再誤導成舊格式。
-      var fb = docxRegexFallback(docText);
-      if (fb) return fb;
-      var tCount = docXml.getElementsByTagNameNS('*', 't').length;
-      var kidsNames = [];
-      for (var bi = 0; bi < body.childNodes.length && kidsNames.length < 8; bi++) {
-        if (body.childNodes[bi].nodeType === 1) kidsNames.push(body.childNodes[bi].localName);
-      }
-      var reason = tCount === 0
-        ? '此 Word 檔沒有可顯示的文字內容（可能是空白文件，或內容全為圖片／物件／嵌入式檔案）。'
-        : '此 Word 檔的結構無法辨識（body 子節點：' + escapeHtml(kidsNames.join(', ') || '無') + '）。';
-      return '<div class="tron-office-error">' + reason + '請按上方「下載」查看。</div>';
+      return '<div class="tron-office-error">此 Word 檔無法解析（可能是舊版 .doc 二進位格式）。請按上方「下載」查看。</div>';
     }
     return '<div class="tron-docx">' + html + '</div>';
   }

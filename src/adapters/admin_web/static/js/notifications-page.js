@@ -159,7 +159,7 @@
       renderNotifyPrefs(body.preferences || []);
       setMsg('notifyMsg', '');
     } catch (e) {
-      q('notifyList').innerHTML = '<div class="small" style="color:var(--bad)">讀取失敗：' + esc(e.message || e) + '</div>';
+      q('notifyList').innerHTML = '<div class="small c-bad">讀取失敗：' + esc(e.message || e) + '</div>';
     }
   }
   async function saveNotifyPrefs() {
@@ -318,9 +318,8 @@
   var SOUND_KEY = 'tronclass_rollcall_sound_settings_v1';
   function soundGet() {
     try {
-      // ROLLCALL_ALERT_HAPTICS_V1：vibrate／repeat 與 dashboard-live-alerts.js 的預設值一致。
-      return Object.assign({ enabled: true, volume: 0.35, pattern: 'double', vibrate: true, repeat: true }, JSON.parse(localStorage.getItem(SOUND_KEY) || '{}'));
-    } catch (_) { return { enabled: true, volume: 0.35, pattern: 'double', vibrate: true, repeat: true }; }
+      return Object.assign({ enabled: true, volume: 0.35, pattern: 'double' }, JSON.parse(localStorage.getItem(SOUND_KEY) || '{}'));
+    } catch (_) { return { enabled: true, volume: 0.35, pattern: 'double' }; }
   }
   function soundSet(next) {
     var value = Object.assign(soundGet(), next || {});
@@ -356,17 +355,7 @@
     enabled.checked = !!value.enabled;
     pattern.value = value.pattern || 'double';
     volume.value = Math.round(Number(value.volume == null ? 0.35 : value.volume) * 100);
-    var vibrate = q('rollcallVibrate'), repeat = q('rollcallRepeat');
-    if (vibrate) vibrate.checked = value.vibrate !== false;
-    if (repeat) repeat.checked = value.repeat !== false;
-    function save() {
-      var next = { enabled: !!enabled.checked, pattern: pattern.value, volume: Number(volume.value) / 100 };
-      if (vibrate) next.vibrate = !!vibrate.checked;
-      if (repeat) next.repeat = !!repeat.checked;
-      soundSet(next);
-    }
-    if (vibrate) vibrate.addEventListener('change', function () { save(); if (vibrate.checked && typeof navigator.vibrate === 'function') { try { navigator.vibrate([120, 60, 120]); } catch (_) { } } });
-    if (repeat) repeat.addEventListener('change', save);
+    function save() { soundSet({ enabled: !!enabled.checked, pattern: pattern.value, volume: Number(volume.value) / 100 }); }
     enabled.addEventListener('change', save);
     pattern.addEventListener('change', save);
     volume.addEventListener('input', save);
@@ -387,22 +376,6 @@
     if (allOff) allOff.addEventListener('click', function () { setAllNotify(false); });
     var account = q('notifyAccount');
     if (account) account.addEventListener('change', loadNotifyPrefs);
-    // NOTIFY_TEST_ALL_V1：所有 Discord 通知類型各發一則（後端逐則排程，避開速率限制）。
-    var testAll = q('notifyTestAll');
-    if (testAll) testAll.addEventListener('click', async function () {
-      if (!confirm('會在約 25 秒內陸續收到十幾則測試訊息（Discord／LINE），確定要發送？')) return;
-      testAll.disabled = true;
-      setMsg('notifyMsg', '排程中…');
-      try {
-        var res = await api('/admin/api/notifications/test-all', { method: 'POST' });
-        setMsg('notifyMsg', (res && res.message) || ('已排程 ' + (res && res.scheduled) + ' 則測試訊息'), 'ok');
-        var wait = Math.max(5, Number((res && res.estimated_secs) || 25)) * 1000 + 3000;
-        setTimeout(function () { testAll.disabled = false; }, wait);
-      } catch (e) {
-        setMsg('notifyMsg', e.message || '發送測試失敗', 'bad');
-        testAll.disabled = false;
-      }
-    });
 
     var crReload = q('classReminderReload');
     if (crReload) crReload.addEventListener('click', function () { fillAccountSelect(q('classReminderAccount'), loadClassReminderPrefs); });

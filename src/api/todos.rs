@@ -124,7 +124,7 @@ impl super::ApiClient {
         let todos_url = format!("{}/api/todos", self.base_url);
         debug!(url = %todos_url, "正在查詢 Tronclass 全域待辦清單 /api/todos");
 
-        if let Ok(resp) = self.send_limited(&todos_url, self.client.get(&todos_url)).await {
+        if let Ok(resp) = self.client.get(&todos_url).send().await {
             let status = resp.status();
             if status == StatusCode::UNAUTHORIZED {
                 return Err(miette::miette!(crate::api::ApiError::Unauthorized));
@@ -149,7 +149,7 @@ impl super::ApiClient {
         let my_courses_url = format!("{}/api/my-courses", self.base_url);
         debug!(url = %my_courses_url, "正在查詢學生修課清單 /api/my-courses");
 
-        if let Ok(resp) = self.send_limited(&my_courses_url, self.client.get(&my_courses_url)).await {
+        if let Ok(resp) = self.client.get(&my_courses_url).send().await {
             let status = resp.status();
             if status == StatusCode::UNAUTHORIZED {
                 return Err(miette::miette!(crate::api::ApiError::Unauthorized));
@@ -269,7 +269,7 @@ impl super::ApiClient {
                                         let effective_url = format!(
                                             "{url}?page={page}&page_size={HOMEWORK_ACTIVITIES_PAGE_SIZE}"
                                         );
-                                        let Ok(resp) = self.send_limited(&effective_url, self.client.get(&effective_url)).await else {
+                                        let Ok(resp) = self.client.get(&effective_url).send().await else {
                                             break;
                                         };
                                         if !resp.status().is_success() {
@@ -320,11 +320,17 @@ impl super::ApiClient {
                                 // SUBMISSION_PAGINATION_V1
                                 // 用 Entry 的互斥分支，避免把 item 同時移動進 and_modify 閉包與
                                 // or_insert（否則觸發 E0382）。occupied 分支只有在「新版本已繳交
-                                // 且舊版未繳」時才用新版本覆蓋，否則保留舊版。
-                                // （item 只在互斥的其中一個分支被移動，借用檢查器接受。）
+                                // 且舊版未繳」或「新版本帶分數而舊版沒有」時才用新版本覆蓋，
+                                // 否則保留舊版。（item 只在互斥的其中一個分支被移動，借用檢查器接受。）
+                                // HOMEWORK_SCORE_PREFER_V1：`/homework-activities` 的版本帶有
+                                // 使用者分數（`score`），`/activities` 與全域待辦的版本一律沒有；
+                                // 完成順序不固定，若無分數的版本先進來就會把分數蓋掉，
+                                // 因此「帶分數」也作為覆蓋條件之一。
                                 match merged.entry(item.id) {
                                     std::collections::hash_map::Entry::Occupied(mut e) => {
-                                        if item.is_submitted && !e.get().is_submitted {
+                                        let prefer_new = (item.is_submitted && !e.get().is_submitted)
+                                            || (item.score.is_some() && e.get().score.is_none());
+                                        if prefer_new {
                                             e.insert(item);
                                         }
                                     }
@@ -334,9 +340,18 @@ impl super::ApiClient {
                                 }
                             }
                         }
+                        // HOMEWORK_SCORE_PREFER_V1：全域待辦（/api/todos）先進 results，
+                        // 同一份作業若也出現在逐課端點，優先採「已繳交／帶分數」的版本，
+                        // 避免 homework-activities 的分數被無分數的全域版本卡掉。
                         for (_, item) in merged {
                             if seen_ids.insert(item.id) {
                                 results.push(item);
+                            } else if let Some(existing) = results.iter_mut().find(|r| r.id == item.id) {
+                                let prefer_new = (item.is_submitted && !existing.is_submitted)
+                                    || (item.score.is_some() && existing.score.is_none());
+                                if prefer_new {
+                                    *existing = item;
+                                }
                             }
                         }
                     }
@@ -394,6 +409,75 @@ impl super::ApiClient {
                     skipped = before - results.len(),
                     "嚴格模式：已隱藏無法判定為當前學期的作業"
                 );
+            }
+        }
+
+        // EXAM_SCORE_V1（測驗分數）
+        // `/api/courses/{id}/exams` 的項目不含分數；分數在另一個端點
+        // `/api/courses/{id}/exam-scores?no-intercept=true`，回應格式：
+        //   {"exam_scores":[{"activity_id":166930,"score":77.5,"submission_scores":[...]}]}
+        // 只對「結果中確實有測驗」的課程補抓一次，activity_id 即測驗項目 id，
+        // 逐一比對後把分數寫回 item.score。未繳交的測驗不會出現在 exam_scores
+        // 裡（保持 score = None → 前端顯示「未評分」）。失敗只記 log 不影響主流程。
+        // 放在三道學期防線之後：只為「最終會顯示」的測驗抓分數，不浪費請求。
+        let exam_course_ids: HashSet<u64> = results
+            .iter()
+            .filter(|item| item.item_type.eq_ignore_ascii_case("exam"))
+            .filter_map(|item| item.course_id)
+            .collect();
+        if !exam_course_ids.is_empty() {
+            let fetched_maps: Vec<HashMap<u64, f64>> = futures::stream::iter(
+                exam_course_ids.into_iter().map(|course_id| async move {
+                    let url = format!(
+                        "{}/api/courses/{}/exam-scores?no-intercept=true",
+                        self.base_url, course_id
+                    );
+                    let resp = match self.client.get(&url).send().await {
+                        Ok(resp) => resp,
+                        Err(err) => {
+                            debug!(course_id, error = %err, "測驗分數請求失敗（略過）");
+                            return HashMap::new();
+                        }
+                    };
+                    if !resp.status().is_success() {
+                        debug!(course_id, status = %resp.status(), "測驗分數端點非 2xx（略過）");
+                        return HashMap::new();
+                    }
+                    let bytes = match resp.bytes().await {
+                        Ok(bytes) => bytes,
+                        Err(err) => {
+                            debug!(course_id, error = %err, "測驗分數回應讀取失敗（略過）");
+                            return HashMap::new();
+                        }
+                    };
+                    let json: serde_json::Value = match serde_json::from_slice(&bytes) {
+                        Ok(json) => json,
+                        Err(err) => {
+                            debug!(course_id, error = %err, "測驗分數 JSON 解析失敗（略過）");
+                            return HashMap::new();
+                        }
+                    };
+                    parse_exam_scores(&json)
+                }),
+            )
+            .buffer_unordered(COURSE_FETCH_CONCURRENCY)
+            .collect()
+            .await;
+            let exam_scores: HashMap<u64, f64> =
+                fetched_maps.into_iter().flatten().collect();
+            if exam_scores.is_empty() {
+                debug!("測驗分數端點未回傳任何分數");
+            } else {
+                let mut applied = 0usize;
+                for item in results.iter_mut() {
+                    if item.item_type.eq_ignore_ascii_case("exam") {
+                        if let Some(score) = exam_scores.get(&item.id) {
+                            item.score = Some(*score);
+                            applied += 1;
+                        }
+                    }
+                }
+                debug!(total = exam_scores.len(), applied, "已套用測驗分數");
             }
         }
 
@@ -483,6 +567,35 @@ pub fn parse_todos_json(
     }
 
     items
+}
+
+/// EXAM_SCORE_V1：解析 `/api/courses/{id}/exam-scores` 回應為
+/// `activity_id → score` 對照表。
+///
+/// 實測格式：
+/// ```json
+/// {"exam_scores":[{"activity_id":166930,"score":77.5,
+///   "submission_scores":[...]}]}
+/// ```
+/// - `activity_id`：測驗項目 id（等同 `/exams` 項目的 `id`）
+/// - `score`：數字型分數；未評分時端點直接省略該筆（不會有 score=null）
+/// - 混入未知欄位一律容忍（只取認識的兩個鍵）；格式不符回傳空 map，
+///   呼叫端以空 map 視同「沒分數」，不影響主流程。
+pub fn parse_exam_scores(root: &serde_json::Value) -> HashMap<u64, f64> {
+    let mut map = HashMap::new();
+    let Some(entries) = root.get("exam_scores").and_then(|v| v.as_array()) else {
+        return map;
+    };
+    for entry in entries {
+        let (Some(activity_id), Some(score)) = (
+            entry.get("activity_id").and_then(parse_u64),
+            entry.get("score").and_then(parse_f64),
+        ) else {
+            continue;
+        };
+        map.insert(activity_id, score);
+    }
+    map
 }
 
 /// 解析單一節點為標準 `TronclassTodoItem`
@@ -1568,5 +1681,126 @@ mod tests {
         assert_eq!(items[0].course_name.as_deref(), Some("計算機組織"));
         assert!(!items[0].is_completed_or_submitted());
         assert!(items[0].allow_late_submission);
+    }
+
+    // ── 分數（EXAM_SCORE_V1 / HOMEWORK_SCORE_PREFER_V1）────────────────────
+
+    #[test]
+    fn test_parse_exam_scores_real_payload() {
+        // 淡江 iClass 實測格式（course 254576 微積分，2026-09-11）
+        let raw = r#"{
+            "exam_scores": [
+                {"activity_id": 165979, "score": 100.0, "submission_scores": []},
+                {"activity_id": 166331, "score": 77.5, "submission_scores": []},
+                {"activity_id": 166930, "score": 94.0}
+            ]
+        }"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let map = parse_exam_scores(&val);
+        assert_eq!(map.len(), 3);
+        assert_eq!(map.get(&165979), Some(&100.0));
+        assert_eq!(map.get(&166331), Some(&77.5));
+        assert_eq!(map.get(&166930), Some(&94.0));
+        assert!(!map.contains_key(&166931)); // 未繳交的測驗不會出現
+    }
+
+    #[test]
+    fn test_parse_exam_scores_tolerates_malformed_entries() {
+        // 缺 activity_id / 分數非數字 / 缺 score 鍵 → 整筆略過，不影響其他筆
+        let raw = r#"{
+            "exam_scores": [
+                {"score": 88.0},
+                {"activity_id": 111, "score": "not-a-number"},
+                {"activity_id": 222},
+                {"activity_id": 333, "score": 60.0},
+                "not-an-object"
+            ]
+        }"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let map = parse_exam_scores(&val);
+        assert_eq!(map.len(), 1);
+        assert_eq!(map.get(&333), Some(&60.0));
+    }
+
+    #[test]
+    fn test_parse_exam_scores_wrong_or_missing_container() {
+        for raw in [
+            r#"{"scores": [{"activity_id": 1, "score": 2.0}]}"#,
+            r#"{"exam_scores": {}}"#,
+            r#"{}"#,
+            r#"[]"#,
+        ] {
+            let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+            assert!(parse_exam_scores(&val).is_empty(), "應容忍格式：{raw}");
+        }
+    }
+
+    #[test]
+    fn test_parse_exam_scores_string_score() {
+        // 部分學校實體會把分數序列化成字串；parse_f64 需能吃下
+        let raw = r#"{"exam_scores": [{"activity_id": 7, "score": "86.0"}]}"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let map = parse_exam_scores(&val);
+        assert_eq!(map.get(&7), Some(&86.0));
+    }
+
+    #[test]
+    fn test_parse_homework_score_string_from_homework_activities() {
+        // homework-activities 的 score 是字串（"90"）；確認既有管線能解析成 f64
+        let raw = r#"{
+            "homework_activities": [
+                {
+                    "id": 99001,
+                    "title": "作業一",
+                    "course_id": 254574,
+                    "submitted": true,
+                    "score": "90"
+                }
+            ]
+        }"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let items = parse_todos_json(&val, Some("中國語文能力"), Some(254574));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].score, Some(90.0));
+        assert!(items[0].is_completed_or_submitted());
+    }
+
+    #[test]
+    fn test_parse_exam_item_has_no_score_until_merged() {
+        // /exams 端點項目本身不含分數（score=None），
+        // 分數由 get_todos 的 exam-scores 階段補上（見 EXAM_SCORE_V1）。
+        let raw = r#"{
+            "exams": [
+                {
+                    "id": 165979,
+                    "title": "Quiz 1",
+                    "type": "exam",
+                    "course_id": 254576,
+                    "end_time": 1788100000
+                }
+            ]
+        }"#;
+        let val: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let items = parse_todos_json(&val, Some("微積分"), Some(254576));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].item_type, "exam");
+        assert_eq!(items[0].score, None);
+        assert_eq!(items[0].course_id, Some(254576));
+
+        // 模擬 get_todos 合併：exam-scores 對照表寫回 item.score
+        let score_raw = r#"{"exam_scores": [{"activity_id": 165979, "score": 100.0}]}"#;
+        let score_val: serde_json::Value = serde_json::from_str(score_raw).unwrap();
+        let mut map = parse_exam_scores(&score_val);
+        if let Some(score) = map.remove(&165979) {
+            let mut merged = items;
+            for item in merged.iter_mut() {
+                if item.item_type == "exam" && item.id == 165979 {
+                    item.score = Some(score);
+                }
+            }
+            assert_eq!(merged[0].score, Some(100.0));
+        } else {
+            panic!("exam-scores 應包含 165979");
+        }
     }
 }

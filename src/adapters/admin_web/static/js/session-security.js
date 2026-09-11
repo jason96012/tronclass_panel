@@ -242,10 +242,13 @@
 
   function ensurePasswordButton() {
     if (document.getElementById('dashboardPasswordButtonV1')) return;
-    var host = document.querySelector('.top-actions, .actions, header .toolbar-right');
+    var host = document.querySelector('.top-actions, header .toolbar-right');
     if (!host) return;
     // TOPBAR_LOGOUT_ONLY_V1: 所有頁面的頂欄 header 一律不注入變更密碼
     //（變更密碼改由手機更多面板與設定頁進入）。
+    // SUBPAGE_ACTIONS_NO_INJECT_V1: '.actions' 也從候選移除——它會命中各子頁
+    // 卡片內的按鈕列（如點名偵測排程的「儲存設定／重新整理」），把變更密碼
+    // 按鈕插進卡片裡。host 候選僅剩 header 內的選擇器，一律被下方 guard 擋下。
     if (host.closest('header')) return;
     var button = document.createElement('button');
     button.id = 'dashboardPasswordButtonV1';

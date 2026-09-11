@@ -261,15 +261,24 @@ impl QrScannerRegistry {
             return Err(ScannerError::AccountNotPending);
         }
 
-        // SEC_SCANNER_MIN_STATUS_V1：與 number_status 共用同一個遮罩化組裝函式。
-        let mut status = status_result_from_sets(
-            account_id,
-            &entry.all_accounts,
-            &entry.completed_accounts,
-            entry.accounts.keys(),
-        );
-        status.expires_in_secs = secs_until(entry.expires_at, now);
-        Ok(status)
+        let mut pending_accounts = entry.accounts.keys().cloned().collect::<Vec<_>>();
+        pending_accounts.sort();
+        let mut completed_accounts = entry.completed_accounts.iter().cloned().collect::<Vec<_>>();
+        completed_accounts.sort();
+        let mut all_accounts = entry.all_accounts.iter().cloned().collect::<Vec<_>>();
+        all_accounts.sort();
+
+        Ok(ScannerStatusResult {
+            total_count: all_accounts.len(),
+            completed_count: completed_accounts.len(),
+            pending_count: pending_accounts.len(),
+            completed_accounts,
+            pending_accounts,
+            all_accounts,
+            last_error: None,
+            expires_in_secs: secs_until(entry.expires_at, now),
+            submitted_code: None,
+        })
     }
 
     /// Register one account as waiting for a number code.
@@ -418,7 +427,6 @@ impl QrScannerRegistry {
         }
 
         let mut status = status_result_from_sets(
-            account_id,
             &entry.all_accounts,
             &entry.completed_accounts,
             entry.accounts.keys(),
@@ -633,122 +641,6 @@ pub fn alternate_public_url(_url: &str) -> Option<String> {
     None
 }
 
-// SEC_SCANNER_HARDEN_V1（審查 M-05）：公開 /scanner、/number 路由的最小防護——
-// (a) 每 IP 固定窗限流（status 輪詢 1.5s/頁，給多分頁餘裕；submit 較嚴）；
-// (b) 連續錯誤（400：token 錯／不在等待名單）計「失誤」，超量的 IP 暫時 429，防暴力猜 token；
-// (c) 回應統一補安全標頭（Referrer-Policy / nosniff / no-store / CSP / frame-ancestors）。
-// 只掛在 scanner 路由本身（在 merge admin router 之前），不影響後台既有標頭策略。
-static SCANNER_RATE: once_cell::sync::Lazy<std::sync::Mutex<HashMap<String, (u64, u32)>>> =
-    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
-
-fn scanner_now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// 固定窗計數：`bucket` 由「類別|ip」組成；回傳 true 代表已超過 `limit`。
-fn scanner_rate_hit(bucket: String, limit: u32, window_secs: u64) -> bool {
-    let now = scanner_now_secs();
-    let Ok(mut map) = SCANNER_RATE.lock() else {
-        return false;
-    };
-    if map.len() > 8192 {
-        map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
-    }
-    let entry = map.entry(bucket).or_insert((now, 0));
-    if now.saturating_sub(entry.0) >= window_secs {
-        *entry = (now, 1);
-        return false;
-    }
-    entry.1 = entry.1.saturating_add(1);
-    entry.1 > limit
-}
-
-/// 只讀不加：檢查失誤桶是否已超量。
-fn scanner_rate_over(bucket: &str, limit: u32, window_secs: u64) -> bool {
-    let now = scanner_now_secs();
-    let Ok(map) = SCANNER_RATE.lock() else {
-        return false;
-    };
-    map.get(bucket)
-        .is_some_and(|(start, count)| now.saturating_sub(*start) < window_secs && *count > limit)
-}
-
-const SCANNER_CSP: &str = "default-src 'self'; \
-script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://static.cloudflareinsights.com; \
-style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; \
-connect-src 'self' https://cloudflareinsights.com; frame-src 'self' https://challenges.cloudflare.com; \
-frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
-
-pub async fn scanner_public_hardening_middleware(
-    crate::trusted_ip::ClientIp(ip): crate::trusted_ip::ClientIp,
-    request: axum::extract::Request,
-    next: axum::middleware::Next,
-) -> Response {
-    let path = request.uri().path().to_string();
-    // 只處理 /scanner*、/number*；同一 Router 內的其他路由（例如 LINE webhook path）原樣放行。
-    if !(path == "/scanner"
-        || path.starts_with("/scanner/")
-        || path == "/number"
-        || path.starts_with("/number/"))
-    {
-        return next.run(request).await;
-    }
-    let is_submit = path.ends_with("/submit");
-    let is_status = path.ends_with("/status");
-    let is_asset = path.ends_with(".js");
-
-    // 失誤桶（5 分鐘內超過 40 次 400）→ 該 IP 的 status/submit 一律 429。
-    let strike_bucket = format!("strike|{ip}");
-    if (is_submit || is_status) && scanner_rate_over(&strike_bucket, 40, 300) {
-        return scanner_too_many();
-    }
-    let (class, limit) = if is_submit {
-        ("submit", 30)
-    } else if is_status {
-        ("status", 240)
-    } else if is_asset {
-        ("asset", 120)
-    } else {
-        ("page", 60)
-    };
-    if scanner_rate_hit(format!("{class}|{ip}"), limit, 60) {
-        return scanner_too_many();
-    }
-
-    let mut response = next.run(request).await;
-    if (is_submit || is_status) && response.status() == StatusCode::BAD_REQUEST {
-        // 只累計，不因這一次就擋；下一次請求會先看失誤桶。
-        let _ = scanner_rate_hit(strike_bucket, u32::MAX, 300);
-    }
-
-    let headers = response.headers_mut();
-    let set_if_absent = |headers: &mut axum::http::HeaderMap, name: header::HeaderName, value: &'static str| {
-        if !headers.contains_key(&name) {
-            headers.insert(name, header::HeaderValue::from_static(value));
-        }
-    };
-    set_if_absent(headers, header::REFERRER_POLICY, "no-referrer");
-    set_if_absent(headers, header::X_CONTENT_TYPE_OPTIONS, "nosniff");
-    set_if_absent(headers, header::X_FRAME_OPTIONS, "DENY");
-    set_if_absent(headers, header::CACHE_CONTROL, "no-store");
-    if !is_asset {
-        set_if_absent(headers, header::CONTENT_SECURITY_POLICY, SCANNER_CSP);
-    }
-    response
-}
-
-fn scanner_too_many() -> Response {
-    (
-        StatusCode::TOO_MANY_REQUESTS,
-        [(header::CACHE_CONTROL, "no-store")],
-        Json(serde_json::json!({ "error": "too many requests" })),
-    )
-        .into_response()
-}
-
 pub fn build_scanner_router(scanner: Arc<QrScannerRegistry>) -> Router {
     build_scanner_router_with_admin(scanner, None)
 }
@@ -765,17 +657,7 @@ pub fn build_scanner_router_with_admin(
         .route("/number", get(number_page_handler))
         .route("/number/status", get(number_status_handler))
         .route("/number/submit", post(number_submit_handler))
-        // SEC_TRACE_NO_QUERY_V1：TraceLayer 預設 span 會記完整 URI（含 ?token=…）。
-        // 改為只記 method＋path，避免 scanner／number 的 query bearer token 進入應用程式日誌。
-        .layer(TraceLayer::new_for_http().make_span_with(|req: &axum::extract::Request| {
-            tracing::debug_span!(
-                "request",
-                method = %req.method(),
-                path = %req.uri().path(),
-            )
-        }))
-        // SEC_SCANNER_HARDEN_V1：限流＋安全標頭，僅作用於上述公開路由。
-        .layer(axum::middleware::from_fn(scanner_public_hardening_middleware))
+        .layer(TraceLayer::new_for_http())
         .with_state(ScannerHttpState::new(scanner));
 
     if let Some(admin_web) = admin_web {
@@ -920,38 +802,17 @@ fn cleanup_expired_number_locked(
     inner.retain(|_, entry| entry.expires_at >= now);
 }
 
-/// SEC_SCANNER_MIN_STATUS_V1：把「不是自己」的帳號遮罩成 `410***56`（短 ID 為 `4***`）。
-fn mask_account_for(viewer: &str, account: &str) -> String {
-    if account == viewer {
-        return account.to_string();
-    }
-    let chars: Vec<char> = account.chars().collect();
-    if chars.len() >= 6 {
-        let head: String = chars[..3].iter().collect();
-        let tail: String = chars[chars.len() - 2..].iter().collect();
-        format!("{head}***{tail}")
-    } else if let Some(first) = chars.first() {
-        format!("{first}***")
-    } else {
-        "***".to_string()
-    }
-}
-
 fn status_result_from_sets<'a>(
-    viewer: &str,
     all_accounts: &HashSet<String>,
     completed_accounts: &HashSet<String>,
     pending_accounts_iter: impl Iterator<Item = &'a String>,
 ) -> ScannerStatusResult {
-    let mut pending_accounts = pending_accounts_iter
-        .map(|a| mask_account_for(viewer, a))
-        .collect::<Vec<_>>();
+    let mut pending_accounts = pending_accounts_iter.cloned().collect::<Vec<_>>();
     pending_accounts.sort();
-    let mut completed_accounts = completed_accounts
-        .iter()
-        .map(|a| mask_account_for(viewer, a))
-        .collect::<Vec<_>>();
+    let mut completed_accounts = completed_accounts.iter().cloned().collect::<Vec<_>>();
     completed_accounts.sort();
+    let mut all_accounts = all_accounts.iter().cloned().collect::<Vec<_>>();
+    all_accounts.sort();
 
     ScannerStatusResult {
         total_count: all_accounts.len(),
@@ -959,6 +820,7 @@ fn status_result_from_sets<'a>(
         pending_count: pending_accounts.len(),
         completed_accounts,
         pending_accounts,
+        all_accounts,
         last_error: None,
         expires_in_secs: 0,
         submitted_code: None,
@@ -1017,10 +879,9 @@ pub struct ScannerStatusResult {
     pub total_count: usize,
     pub completed_count: usize,
     pub pending_count: usize,
-    /// SEC_SCANNER_MIN_STATUS_V1（審查 M-05）：公開 /status 只回「自己的完整帳號」，
-    /// 其他帳號一律遮罩（`410***56`），且不再回傳完整 `all_accounts` 名冊。
     pub completed_accounts: Vec<String>,
     pub pending_accounts: Vec<String>,
+    pub all_accounts: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
     /// ROLLCALL_INPUT_COUNTDOWN_V1：距離這個 rollcall 等待輸入逾時還剩幾秒

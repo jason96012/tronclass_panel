@@ -216,6 +216,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .hw-meta-label{font-size:11px;font-weight:750;color:var(--ds-muted);text-transform:uppercase;letter-spacing:.03em}
 .hw-meta-val{font-size:13px;font-weight:750;color:var(--ds-text)}
 .hw-meta-val.deadline{color:#ef4444;font-weight:850}
+/* SCORE_DISPLAY_V1：分數欄配色（已評分綠色強調；未評分灰色，含老師未公布分數） */
+.hw-meta-val.score-graded{color:#15803d;font-weight:850}
+.hw-meta-val.score-ungraded{color:var(--ds-muted);font-weight:700}
 .hw-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:12px;border-top:1px solid var(--ds-line-soft);font-size:12px}
 .hw-complete-btn{margin-left:auto;padding:6px 12px;border:1px solid var(--ds-line-soft);border-radius:999px;background:transparent;color:var(--ds-muted);font-size:12px;cursor:pointer;transition:all .15s ease;white-space:nowrap}
 .hw-complete-btn:hover{border-color:#10b981;color:#10b981}
@@ -304,7 +307,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   .filter-dropdowns input{grid-column:1 / -1}
 
   /* ── 作業卡片 ───────────────────────────────────── */
-  .hw-grid{gap:12px}
+  .hw-grid{gap:16px}
   .hw-card{padding:16px;border-radius:18px;box-shadow:none}
   .hw-title{font-size:16px;line-height:1.45;margin:0 0 12px}
   .hw-meta-grid{gap:10px;padding:11px 13px;border-radius:13px;margin-bottom:13px;font-size:12.5px}
@@ -346,6 +349,18 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   .hw-title{font-size:16px}
   .hw-meta-grid{grid-template-columns:1fr}
 }
+
+  /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  .hidden-init{display:none}
+  .mt14{margin-top:14px}
+  .span-full{grid-column:1/-1}
+  .pill-row{display:flex;align-items:center;gap:8px}
+  .empty-box.err-box{border-color:rgba(239,68,68,.5);background:rgba(239,68,68,.02)}
+  .err-icon{font-size:36px;margin-bottom:8px}
+  .err-title{color:#ef4444}
+  .err-msg{max-width:600px;margin:0 auto 14px;line-height:1.6;color:var(--ds-text)}
+  .err-hint{font-size:13px;color:var(--ds-muted);margin:0 auto 18px}
+  .button.err-btn{border-color:#ef4444!important;color:#ef4444!important}
 </style>
 </head>
 <body>
@@ -381,7 +396,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     </div>
   </section>
 
-  <section class="hw-group" id="accountSelectorWrap" style="display:none">
+  <section class="hw-group hidden-init" id="accountSelectorWrap">
     <h2 class="hw-group-title">帳號</h2>
     <div class="hw-group-body">
       <div class="hw-row">
@@ -444,7 +459,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 
 
 
-  <main id="homeworkContainer" class="hw-grid" style="margin-top:14px">
+  <main id="homeworkContainer" class="hw-grid mt14">
     <div class="loading-box">
       <div class="spinner"></div>
       正在向 Tronclass 獲取最新作業待辦清單…
@@ -528,6 +543,17 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     if (isNaN(d.getTime())) return isoStr;
     const pad = n => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  // SCORE_DISPLAY_V1：分數格式化。
+  // 後端 score 是 f64（JSON 數字，如 100、77.5），少數來源也可能是字串（"86.0"）。
+  // 統一轉數字：整數去掉小數點（100 而非 100.0），小數保留（77.5），
+  // 無法解析回傳 null（呼叫端以 null 判斷「未評分」）。
+  function formatScore(val) {
+    if (val == null) return null;
+    const n = Number(val);
+    if (!isFinite(n)) return null;
+    return Number.isInteger(n) ? String(n) : String(Math.round(n * 10) / 10);
   }
 
   function getRemainingMs(isoStr) {
@@ -743,17 +769,39 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         file: '📎 檔案'
       }[item.item_type] || '📝 作業';
 
+      // SCORE_DISPLAY_V1：狀態膠囊只顯示繳交狀態（分數移到上方「截止期限」旁邊，
+      // 不再與遲交設定並排顯示；有分數的項目必然已繳交，✅ 已繳交即為其狀態）。
       const statusText = userDone
         ? '✅ 已完成（手動標記）'
-        : (item.score != null
-          ? `💯 已評分：${item.score} 分`
-          : (submitted
-            ? '✅ 已繳交'
-            : (rem != null && rem <= 0 ? '❌ 逾期未繳' : '⏳ 未繳交')));
+        : (submitted
+          ? '✅ 已繳交'
+          : (rem != null && rem <= 0 ? '❌ 逾期未繳' : '⏳ 未繳交'));
 
-      const statusClass = (submitted || userDone || item.score != null)
+      const statusClass = (submitted || userDone)
         ? 'good'
         : (rem != null && rem <= 0 ? 'bad' : 'warn');
+
+      // SCORE_DISPLAY_V1：作業／測驗／問答類的「分數」放在「截止期限」旁邊同一列
+      //（截止期限不再跨滿整行）。已評分 → 💯 綠色分數；未評分（score=null，
+      // 含老師未公布）→ 灰色「未評分」。其他類型（教材、連結等）不計分，
+      // 截止期限維持跨滿整行。
+      // 不做及格/不及格變色：API 未提供滿分（score_percentage 是權重非滿分），
+      // 無法正確判斷（例如滿分 5 分拿 4 分並非不及格），統一綠色強調「已評分」。
+      const gradable = ['homework', 'quiz', 'exam', 'discussion', 'questionnaire'].includes(item.item_type);
+      const scoreVal = formatScore(item.score);
+      const deadlineMetaHtml = gradable
+        ? `<div class="hw-meta-item">
+                <span class="hw-meta-label">截止期限</span>
+                <span class="hw-meta-val deadline">⏰ ${esc(formatDateTime(item.end_time))}</span>
+              </div>
+              <div class="hw-meta-item">
+                <span class="hw-meta-label">分數</span>
+                <span class="hw-meta-val ${scoreVal != null ? 'score-graded' : 'score-ungraded'}">${scoreVal != null ? `💯 ${esc(scoreVal)} 分` : '未評分'}</span>
+              </div>`
+        : `<div class="hw-meta-item span-full">
+                <span class="hw-meta-label">截止期限</span>
+                <span class="hw-meta-val deadline">⏰ ${esc(formatDateTime(item.end_time))}</span>
+              </div>`;
 
       const lateNotice = item.allow_late_submission
         ? '<span class="status-pill warn">⚠️ 允許遲交</span>'
@@ -782,14 +830,11 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
                 <span class="hw-meta-label">開放時間</span>
                 <span class="hw-meta-val">${esc(formatDateTime(item.start_time))}</span>
               </div>
-              <div class="hw-meta-item" style="grid-column:1/-1">
-                <span class="hw-meta-label">截止期限</span>
-                <span class="hw-meta-val deadline">⏰ ${esc(formatDateTime(item.end_time))}</span>
-              </div>
+              ${deadlineMetaHtml}
             </div>
           </div>
           <div class="hw-footer">
-            <div style="display:flex;align-items:center;gap:8px">
+            <div class="pill-row">
               <span class="status-pill ${statusClass}">${esc(statusText)}</span>
               ${lateNotice}
             </div>
@@ -876,12 +921,12 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       renderList();
     } catch (err) {
       container.innerHTML = `
-        <div class="empty-box" style="border-color:rgba(239,68,68,.5);background:rgba(239,68,68,.02)">
-          <div style="font-size:36px;margin-bottom:8px">⚠️</div>
-          <h3 style="color:#ef4444">無法載入作業資料</h3>
-          <p style="max-width:600px;margin:0 auto 14px;line-height:1.6;color:var(--ds-text)">${esc(err.message || '連線 Tronclass 失敗')}</p>
-          <p style="font-size:13px;color:var(--ds-muted);margin:0 auto 18px">提示：若學校端登入驗證碼或 Session 過期，請點擊下方重新整理或至 Dashboard 確認帳號連線狀態。</p>
-          <button class="button" id="retryBtn" type="button" style="border-color:#ef4444!important;color:#ef4444!important">🔄 重新整理</button>
+        <div class="empty-box err-box">
+          <div class="err-icon">⚠️</div>
+          <h3 class="err-title">無法載入作業資料</h3>
+          <p class="err-msg">${esc(err.message || '連線 Tronclass 失敗')}</p>
+          <p class="err-hint">提示：若學校端登入驗證碼或 Session 過期，請點擊下方重新整理或至 Dashboard 確認帳號連線狀態。</p>
+          <button class="button err-btn" id="retryBtn" type="button">🔄 重新整理</button>
         </div>
       `;
       const retry = q('retryBtn');

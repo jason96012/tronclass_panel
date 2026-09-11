@@ -210,25 +210,6 @@ fn throttle_db() -> Option<&'static AccountsDb> {
     THROTTLE_DB.get()
 }
 
-/// LOGIN_UNLOCK_CLEARS_RATE_V1：`RateLimiter` 的記憶體退路表也登記一份，
-/// 讓 `cancel_login_lock`（沒有 state）能連同 60 秒速率窗一起清掉。
-static RATE_LIMIT_MEMORY: once_cell::sync::OnceCell<Arc<Mutex<HashMap<String, Vec<Instant>>>>> =
-    once_cell::sync::OnceCell::new();
-
-/// LOGIN_UNLOCK_CLEARS_RATE_V1：清掉某個「帳號鍵」的密碼登入速率窗（所有來源 IP）。
-/// 鍵格式 `login:{user}:{ip}`，DC 端不知道 IP，所以用前綴 `login:{user}:` 清。
-async fn clear_login_rate_window_for(user_key: &str) {
-    let prefix = format!("login:{}:", user_key.trim().to_lowercase());
-    if let Some(db) = throttle_db() {
-        if let Err(error) = db.throttle_clear_prefix("rate", &prefix).await {
-            warn!(error = %error, "清除 SQLite 登入速率窗失敗");
-        }
-    }
-    if let Some(memory) = RATE_LIMIT_MEMORY.get() {
-        memory.lock().await.retain(|key, _| !key.starts_with(&prefix));
-    }
-}
-
 fn unix_now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -364,28 +345,6 @@ fn blacklisted_browser_response() -> Response {
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     response
-}
-
-/// FRIENDLY_ERROR_PAGE_V1：組出說明頁回應（狀態碼保留；帶 CSP nonce，不做 ETag／304 —
-/// 傳入空 HeaderMap 讓 html_page_response 永遠回完整本文）。
-fn friendly_error_response(status: StatusCode, path: &str) -> Response {
-    let html = pages::friendly_error_html(status, path);
-    let mut response = html_page_response(&HeaderMap::new(), html);
-    *response.status_mut() = status;
-    response
-}
-
-/// FRIENDLY_ERROR_PAGE_V1：router fallback。API 路徑與非瀏覽器請求回 JSON，其餘回說明頁。
-async fn friendly_not_found_handler(headers: HeaderMap, uri: axum::http::Uri) -> Response {
-    let path = uri.path();
-    if path.starts_with("/admin/api/") || !request_prefers_html(&headers) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not_found", "path": path })),
-        )
-            .into_response();
-    }
-    friendly_error_response(StatusCode::NOT_FOUND, path)
 }
 
 fn request_prefers_html(headers: &HeaderMap) -> bool {
@@ -714,39 +673,14 @@ pub async fn cancel_login_lock(keys: &[&str]) -> bool {
             }
         }
     }
-    // LOGIN_UNLOCK_CLEARS_RATE_V1：鎖定前那 5 次失敗也填滿了 60 秒的速率窗；
-    // 不清掉的話，持有人按完「取消這次鎖定」馬上重試會吃到 429，看起來像解鎖沒生效。
-    for key in keys {
-        clear_login_rate_window_for(key).await;
-    }
     let mut watch = SECURITY_WATCH.lock().await;
     for key in keys {
         watch.fails.remove(&format!("user:{}", login_lock_key(key)));
         watch
             .last_alert
             .remove(&format!("fail-user:{}", login_lock_key(key)));
-        watch
-            .last_alert
-            .remove(&format!("locked-retry:{}", login_lock_key(key)));
     }
     removed
-}
-
-/// LOGIN_UNLOCK_ALSO_IP_V1：持有人由 Discord 取消鎖定時，順帶把「該來源 IP」的失敗計數歸零。
-/// 否則鎖定前累積的 5 次 IP 失敗還留著，之後同一 IP 再錯幾次就會直接跳到自動黑名單門檻。
-pub async fn clear_ip_failure_count(ip: &str) {
-    let ip = ip.trim();
-    if ip.is_empty() {
-        return;
-    }
-    if let Some(db) = throttle_db() {
-        if let Err(error) = db.throttle_clear("fail", &format!("ip:{ip}")).await {
-            warn!(error = %error, "清除 SQLite IP 失敗計數失敗");
-        }
-    }
-    let mut watch = SECURITY_WATCH.lock().await;
-    watch.fails.remove(&format!("ip:{ip}"));
-    watch.last_alert.remove(&format!("fail-ip:{ip}"));
 }
 
 async fn admin_discord_recipients(state: &AdminWebState) -> Vec<String> {
@@ -812,50 +746,6 @@ async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAler
 
 async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str) {
     let (user_fails, ip_fails) = record_auth_failure(username, ip).await;
-    alert_password_failures_counted(state, username, ip, user_fails, ip_fails).await;
-}
-
-/// LOGIN_LOCKED_RETRY_NO_COUNT_V1：鎖定中（423）的重試不再計入帳號／IP 失敗計數
-/// （持有人焦急連按不會把自己的 IP 推進黑名單），但仍以冷卻方式告知管理員有人持續嘗試。
-async fn alert_locked_retry(state: &AdminWebState, username: &str, ip: &str) {
-    let key = format!("locked-retry:{}", username.trim().to_lowercase());
-    if !security_should_alert(&key).await {
-        return;
-    }
-    let target_account = resolve_login_target_account(state, username).await;
-    let owner_account_id = target_account
-        .as_ref()
-        .map(|account| account.id.clone())
-        .unwrap_or_else(|| username.trim().to_string());
-    // 只讀不寫：拿現有計數當告警內文（user/ip 取 max 與登入成功路徑同一口徑）。
-    let fails = peek_recent_auth_failures(username, ip).await;
-    let (user_fails, ip_fails) = (fails, fails);
-    notify_admins_security_alert(
-        state,
-        SecurityAlertEvent {
-            username: username.trim().to_string(),
-            ip: ip.trim().to_string(),
-            user_failures: user_fails,
-            ip_failures: ip_fails,
-            timestamp: security_now_label(),
-            ip_is_blacklisted: false,
-            account_id: owner_account_id,
-            allow_owner_unblock: false,
-            login_locked: true,
-        },
-    )
-    .await;
-}
-
-/// LOGIN_FAIL_TIERED_MSG_V1：失敗計數已由呼叫端同步取得（回應要帶「再錯 N 次會鎖定」），
-/// 這裡只做告警／鎖定／黑名單。
-async fn alert_password_failures_counted(
-    state: &AdminWebState,
-    username: &str,
-    ip: &str,
-    user_fails: u32,
-    ip_fails: u32,
-) {
     // 解析被嘗試登入的帳號（可能為 None：隨機 username）；持有人綁定由此取得。
     let target_account = resolve_login_target_account(state, username).await;
     let (target_discord, target_line) = contacts_of(target_account.as_ref());
@@ -1537,12 +1427,7 @@ impl AdminWebState {
         let state = Self {
             accounts,
             monitor_spawner: None,
-            rate_limiter: {
-                let limiter = RateLimiter::with_db(accounts_db.clone());
-                // LOGIN_UNLOCK_CLEARS_RATE_V1
-                let _ = RATE_LIMIT_MEMORY.set(Arc::clone(&limiter.attempts));
-                limiter
-            },
+            rate_limiter: RateLimiter::with_db(accounts_db.clone()),
             accounts_db,
             scanner,
             messenger,
@@ -2107,55 +1992,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/dashboard-access.css",
             get(static_assets::admin_dashboard_access_css_handler),
         )
-        // CSS_BUNDLE_V1 / INLINE_SPLIT_V1
-        .route(
-            "/admin/static/dashboard-bundle.css",
-            get(static_assets::admin_dashboard_bundle_css_handler),
-        )
-        .route(
-            "/admin/static/js/dashboard-head.js",
-            get(static_assets::admin_dashboard_head_js_handler),
-        )
-        .route(
-            "/admin/static/js/dashboard-main.js",
-            get(static_assets::admin_dashboard_main_js_handler),
-        )
-        .route(
-            "/admin/static/js/dashboard-body.js",
-            get(static_assets::admin_dashboard_body_js_handler),
-        )
-        .route(
-            "/admin/static/js/files-head.js",
-            get(static_assets::admin_files_head_js_handler),
-        )
-        .route(
-            "/admin/static/js/files-main.js",
-            get(static_assets::admin_files_main_js_handler),
-        )
-        .route(
-            "/admin/static/files-page.css",
-            get(static_assets::admin_files_page_css_handler),
-        )
-        .route(
-            "/admin/static/js/timetable-head.js",
-            get(static_assets::admin_timetable_head_js_handler),
-        )
-        .route(
-            "/admin/static/js/timetable-main.js",
-            get(static_assets::admin_timetable_main_js_handler),
-        )
-        .route(
-            "/admin/static/timetable-page.css",
-            get(static_assets::admin_timetable_page_css_handler),
-        )
-        .route(
-            "/admin/static/js/ai-page.js",
-            get(static_assets::admin_ai_page_js_handler),
-        )
-        .route(
-            "/admin/static/ai-page.css",
-            get(static_assets::admin_ai_page_css_handler),
-        )
         .route(
             "/admin/static/dashboard-runtime.js",
             get(static_assets::admin_dashboard_runtime_handler),
@@ -2337,11 +2173,9 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(files::admin_files_office_embed_handler),
         )
         // SHARE_V1: 核發免登入可預覽分享連結
-        // SEC_SIDE_EFFECT_POST_V1（審查 M-03）：有副作用（落盤分享紀錄）→ POST，
-        // 自動納入 same-origin CSRF gate 與 viewer 唯讀 gate。
         .route(
             "/admin/api/files/share-link",
-            post(files::admin_files_share_link_handler),
+            get(files::admin_files_share_link_handler),
         )
         // PREVIEW_LOG_V1: 前端預覽報錯回報（後台日誌可見）。
         .route(
@@ -2400,10 +2234,9 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // MATERIALS_IMPORT_V1: 自動從 iClass 匯入教材到教材雲端硬碟。
         // MATERIALS_IMPORT_SHARED_V1: 匯入核心改為背景 job（立即回 202，
         // 避免佔住 HTTP request 直到 proxy 逾時 → 502）；另提供進度查詢。
-        // SEC_SIDE_EFFECT_POST_V1（審查 M-03）：啟動背景匯入是副作用 → POST。
         .route(
             "/admin/api/files/import",
-            post(materials_import::admin_materials_import_handler),
+            get(materials_import::admin_materials_import_handler),
         )
         .route(
             "/admin/api/files/import/status",
@@ -2418,12 +2251,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/api/logout",
             post(auth::admin_logout_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
-        )
-        // LOGIN_LOCK_LIVE_STATUS_V1：登入頁的鎖定倒數輪詢（公開、只回 locked/剩餘秒數）。
-        .route(
-            "/admin/api/login/lock-status",
-            post(auth::admin_login_lock_status_handler)
-                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route(
             "/admin/api/password",
@@ -2473,12 +2300,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/api/homework/test-notification",
             post(homework::admin_homework_test_notification_handler),
-        )
-        // NOTIFY_TEST_ALL_V1
-        .route(
-            "/admin/api/notifications/test-all",
-            post(notifications::admin_notification_test_all_handler)
-                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route("/admin/api/status", get(status::admin_status_handler))
         .route(
@@ -2593,15 +2414,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/timetable",
             axum::routing::get(pages::admin_clean_timetable_page_handler),
         )
-        // FRIENDLY_ERROR_PAGE_V1：沒有任何路由符合時的 404。merge 進 scanner／LINE webhook
-        // router 時，因對方沒有 fallback，這個 fallback 會成為整個 server 的 404 處理。
-        .fallback(friendly_not_found_handler)
-        // STATIC_BROTLI_PRECOMPRESS_V1：在安全標頭 middleware 內側（命中預壓縮快取的回應
-        // 仍會被補上 CSP／HSTS／Cache-Control），在 CompressionLayer 內側（已帶
-        // Content-Encoding 的回應會被它略過，不會壓兩次）。
-        .layer(axum::middleware::from_fn(
-            static_assets::precompressed_static_middleware,
-        ))
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         .layer(axum::middleware::from_fn_with_state(
             blacklist_guard_state,
@@ -2626,9 +2438,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             // The dashboard HTML is ~260 KB of inline script/CSS; it compresses
             // to roughly a tenth of that. Brotli beats gzip on this kind of
             // text payload, so offer it first and keep gzip as the fallback.
-            // STATIC_BROTLI_PRECOMPRESS_V1：靜態資產第二次起由 precompressed_static_middleware
-            // 直接回 quality 11 的預壓縮位元組；這一層只負責 HTML／JSON 等動態回應的即時壓縮，
-            // 因此維持預設（較低）品質換取延遲。
             tower_http::compression::CompressionLayer::new()
                 .br(true)
                 .gzip(true)
@@ -2964,77 +2773,44 @@ async fn session_cookie_to_query_middleware(
     }
 
     let session_token = session_cookie_from_headers(&headers);
-    // SEC_TOKEN_SCRUB_DECODED_V2（審查 M-01 ＋ 2026-09-10 動態測試「立即修補建議」#1）：
-    // 不再有任何以 raw 字串判斷的快速路徑。只要 /admin 範圍的請求「帶有 query」或
-    // 「帶有 session cookie」，就一律把 query 交給 form-urlencoded 解析、移除 decoded
-    // 名稱等於 `token` 的所有參數（`token=`、`to%6ben=`、`%74oken=`、重複多個都算），
-    // 再只注入 HttpOnly cookie 的值。唯一的 pass-through 是「沒 query 也沒 cookie」——
-    // 這種請求不可能夾帶 URL token。
-    let has_query = request.uri().query().is_some_and(|q| !q.is_empty());
-    if session_token.is_none() && !has_query {
+    let has_token_param = request
+        .uri()
+        .query()
+        .is_some_and(|q| q.contains("token="));
+
+    // Fast path: no cookie and no token= in URL — pass through unchanged.
+    if session_token.is_none() && !has_token_param {
         return next.run(request).await;
     }
 
     let (mut parts, body) = request.into_parts();
-    let path = parts.uri.path().to_string();
-    let existing_query = parts.uri.query().unwrap_or("");
-    let scrubbed = scrub_token_query(existing_query, session_token.as_deref());
-    if scrubbed.foreign_token_seen {
-        // SEC_URL_TOKEN_ATTEMPT_LOG_V1：有人把「長得像真 token」的值放進 URL（不是前端的
-        // `token=cookie` 相容標記）。只記路徑，不記值；供管理者比對 proxy log 並輪替 session。
-        tracing::warn!(
-            path = %path,
-            has_cookie = session_token.is_some(),
-            "admin URL 內出現 session token 形式的 query 參數，已移除（請勿把 token 放在網址）"
-        );
-    }
-    let rewritten = if scrubbed.query.is_empty() {
-        path
-    } else {
-        format!("{path}?{}", scrubbed.query)
+    let rewritten = {
+        let path = parts.uri.path().to_string();
+        let existing_query = parts.uri.query().unwrap_or("");
+        let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+        // Always strip externally-supplied `token` parameters. Only the
+        // HttpOnly cookie value (if present) is re-injected below.
+        for (name, value) in url::form_urlencoded::parse(existing_query.as_bytes()) {
+            if name != "token" {
+                serializer.append_pair(&name, &value);
+            }
+        }
+        if let Some(ref token) = session_token {
+            serializer.append_pair("token", token);
+        }
+        let query_string = serializer.finish();
+        if query_string.is_empty() {
+            path
+        } else {
+            format!("{path}?{query_string}")
+        }
     };
     if let Ok(uri) = rewritten.parse() {
         parts.uri = uri;
-    } else {
-        // 重組失敗時寧可拿掉整個 query，也不讓原始（可能含 token 的）query 流到 handler。
-        if let Ok(uri) = parts.uri.path().parse() {
-            parts.uri = uri;
-        }
     }
 
     next.run(axum::extract::Request::from_parts(parts, body))
         .await
-}
-
-/// SEC_TOKEN_SCRUB_DECODED_V2：純函式，便於單元測試。
-/// 對 `existing_query` 做 form-urlencoded 解析，丟掉所有 decoded 名稱 == `token` 的參數，
-/// 其餘參數原序保留（重新編碼），最後若有 cookie token 則附加 `token=<cookie>`。
-/// `foreign_token_seen`：被丟掉的 token 參數中，有值「符合 session token 格式且不等於 cookie 值」。
-struct ScrubbedQuery {
-    query: String,
-    foreign_token_seen: bool,
-}
-
-fn scrub_token_query(existing_query: &str, cookie_token: Option<&str>) -> ScrubbedQuery {
-    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
-    let mut foreign_token_seen = false;
-    for (name, value) in url::form_urlencoded::parse(existing_query.as_bytes()) {
-        if name == "token" {
-            let trimmed = value.trim();
-            if is_valid_session_token_format(trimmed) && Some(trimmed) != cookie_token {
-                foreign_token_seen = true;
-            }
-            continue;
-        }
-        serializer.append_pair(&name, &value);
-    }
-    if let Some(token) = cookie_token {
-        serializer.append_pair("token", token);
-    }
-    ScrubbedQuery {
-        query: serializer.finish(),
-        foreign_token_seen,
-    }
 }
 
 fn session_token_from_uri(uri: &axum::http::Uri) -> Option<String> {
@@ -3048,7 +2824,6 @@ fn bootstrap_allowed_api_path(path: &str) -> bool {
     matches!(
         path,
         "/admin/api/login"
-            | "/admin/api/login/lock-status"
             | "/admin/api/logout"
             | "/admin/api/password"
             | "/admin/api/status"
@@ -3064,7 +2839,6 @@ fn viewer_allowed_write_path(path: &str) -> bool {
     matches!(
         path,
         "/admin/api/login"
-            | "/admin/api/login/lock-status"
             | "/admin/api/logout"
             | "/admin/api/password"
             | "/admin/api/session/refresh"
@@ -3432,38 +3206,11 @@ async fn admin_security_headers_middleware(
     // `frame-ancestors 'none'`，瀏覽器會拒絕在框內顯示這份 PDF，預覽只剩空白。
     // 這裡只放寬到 same-origin：跨站仍然無法內嵌我們的預覽回應。
     let is_framable_preview = path == "/admin/api/files/preview";
-    // STATUS_ETAG_V1：/admin/api/status 回應帶 ETag／可回 304；`no-store` 會讓瀏覽器連
-    // If-None-Match 都不送，因此這條路徑改 `private, no-cache`（仍每次驗證、不落磁碟共享）。
-    let is_status_api = path == "/admin/api/status";
     // SHARE_V1c: /pub/ 是公開分享/串流端點，需被「跨域」檢視器（Microsoft Office
     // Online、外部 <img>/<iframe>）載入。若沿用 same-origin 的 CORP 與 X-Frame-Options
     // DENY，跨域檢視器會直接拒絕載入 → Office Online 顯示 "An error occurred"。
     let is_pub = path.starts_with("/pub/");
-    // SEC_SENSITIVE_PAGE_AUTH_V1：密碼／通行密鑰頁一律 no-store（不留在 bfcache／磁碟）。
-    let is_sensitive_page = path == "/admin/password" || path == "/admin/passkey";
-    // FRIENDLY_ERROR_PAGE_V1：瀏覽器導覽（Accept: text/html）拿到沒有本文的 404／405／5xx 時，
-    // 換成說明頁；API（/admin/api/）、公開分享（/pub/）、靜態資產與非 HTML 請求維持原樣，
-    // 前端 fetch 依賴的 JSON 錯誤格式不受影響。
-    let friendly_candidate = !is_pub
-        && !cache_static
-        && !path.starts_with("/admin/api/")
-        && request_prefers_html(request.headers());
-    let friendly_path = if friendly_candidate { path.to_string() } else { String::new() };
     let mut response = next.run(request).await;
-    if friendly_candidate
-        && matches!(
-            response.status(),
-            StatusCode::NOT_FOUND
-                | StatusCode::METHOD_NOT_ALLOWED
-                | StatusCode::INTERNAL_SERVER_ERROR
-                | StatusCode::BAD_GATEWAY
-                | StatusCode::SERVICE_UNAVAILABLE
-                | StatusCode::GATEWAY_TIMEOUT
-        )
-        && !is_html_document(&response)
-    {
-        response = friendly_error_response(response.status(), &friendly_path);
-    }
 
     // This middleware covers the whole Admin Web router, including `/` and
     // other redirect/error responses. Security headers must not depend on the
@@ -3531,8 +3278,7 @@ async fn admin_security_headers_middleware(
         // requests, so every navigation re-downloaded the full ~260 KB
         // dashboard. `no-cache` still revalidates on each load while allowing
         // the ETag below to answer with an empty 304.
-        // SEC_SENSITIVE_PAGE_AUTH_V1：密碼／通行密鑰頁不走 no-cache 分支，落到下方 no-store。
-        if (html_document || is_status_api) && !is_sensitive_page {
+        if html_document {
             headers.insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("private, no-cache, must-revalidate"),
@@ -5008,8 +4754,6 @@ mod tests {
             "/admin/api/password",
             "/admin/api/logout",
             "/admin/api/session/refresh",
-            // LOGIN_LOCK_LIVE_STATUS_V1：登入頁（未登入）輪詢用，必須放行。
-            "/admin/api/login/lock-status",
         ] {
             assert!(
                 bootstrap_allowed_api_path(path),
@@ -5394,97 +5138,5 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert_eq!(location, "/admin");
-    }
-
-    // ── SEC_TOKEN_SCRUB_DECODED_V2 回歸測試（2026-09-10 動態測試「立即修補建議」#2）──
-
-    #[test]
-    fn scrub_removes_plain_and_percent_encoded_token_names() {
-        for q in [
-            "token=0123456789abcdef0123456789abcdef",
-            "to%6ben=0123456789abcdef0123456789abcdef",
-            "%74oken=0123456789abcdef0123456789abcdef",
-            "%74%6f%6b%65%6e=0123456789abcdef0123456789abcdef",
-            "a=1&token=0123456789abcdef0123456789abcdef&b=2",
-            "token=x&to%6ben=0123456789abcdef0123456789abcdef&token=y",
-        ] {
-            let out = scrub_token_query(q, None);
-            assert!(
-                !url::form_urlencoded::parse(out.query.as_bytes()).any(|(n, _)| n == "token"),
-                "token survived scrub for query `{q}` → `{}`",
-                out.query
-            );
-            assert!(out.foreign_token_seen, "foreign token not flagged for `{q}`");
-        }
-        let out = scrub_token_query("a=1&token=0123456789abcdef0123456789abcdef&b=2", None);
-        assert_eq!(out.query, "a=1&b=2");
-    }
-
-    #[test]
-    fn scrub_reinjects_only_cookie_token_and_ignores_legacy_marker() {
-        let cookie = "ffffffffffffffffffffffffffffffff";
-        let out = scrub_token_query("token=cookie&x=y", Some(cookie));
-        assert_eq!(out.query, format!("x=y&token={cookie}"));
-        assert!(!out.foreign_token_seen, "`token=cookie` marker must not be flagged");
-        let out = scrub_token_query("to%6ben=0123456789abcdef0123456789abcdef", Some(cookie));
-        assert_eq!(out.query, format!("token={cookie}"));
-        assert!(out.foreign_token_seen);
-        let out = scrub_token_query("", None);
-        assert_eq!(out.query, "");
-    }
-
-    #[tokio::test]
-    async fn encoded_query_token_without_cookie_is_not_authenticated() {
-        let file = NamedTempFile::new().unwrap();
-        let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
-        let tokens = state
-            .create_session("scrub-user".to_string(), false, false)
-            .await;
-        let access = tokens.access;
-        for q in ["token", "to%6ben", "%74oken", "%74%6f%6b%65%6e"] {
-            let app = build_admin_router(state.clone());
-            let response = app
-                .oneshot(
-                    Request::builder()
-                        .uri(format!("/admin/api/status?{q}={access}"))
-                        .header("x-forwarded-proto", "https")
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(
-                response.status(),
-                StatusCode::UNAUTHORIZED,
-                "URL token via `{q}=` must never authenticate"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn encoded_query_token_with_cookie_still_uses_cookie_session() {
-        let file = NamedTempFile::new().unwrap();
-        let db = AccountsDb::open(file.path()).await.unwrap();
-        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
-        let tokens = state
-            .create_session("cookie-owner".to_string(), false, false)
-            .await;
-        let app = build_admin_router(state);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/admin/api/status?to%6ben=0123456789abcdef0123456789abcdef")
-                    .header(
-                        header::COOKIE,
-                        format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
-                    )
-                    .header("x-forwarded-proto", "https")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
     }
 }

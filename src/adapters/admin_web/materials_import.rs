@@ -20,17 +20,6 @@ use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// SEC_IMPORT_STREAM_CAP_V1：單一教材檔的匯入上限（2 GiB；超過視為異常，避免記憶體／磁碟 DoS）。
-/// 可用環境變數 `TRONCLASS_IMPORT_MAX_FILE_MB` 覆寫。
-static IMPORT_MAX_FILE_BYTES: once_cell::sync::Lazy<u64> = once_cell::sync::Lazy::new(|| {
-    std::env::var("TRONCLASS_IMPORT_MAX_FILE_MB")
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|mb| *mb > 0)
-        .map(|mb| mb.saturating_mul(1024 * 1024))
-        .unwrap_or(2 * 1024 * 1024 * 1024)
-});
-
 // MATERIALS_IMPORT_SHARED_V1
 // 雲端硬碟是共用的，因此：
 // - 匯入寫入**共用** `materials_root()`（管理員與一般帳號共用同一棵樹，所有人可看全部資料夾）。
@@ -564,16 +553,6 @@ async fn process_upload(
         warn!(course = %course_name, file = %filename, "教材匯入：副檔名不在允許清單，跳過");
         return false;
     }
-    // SEC_IMPORT_STREAM_CAP_V1／審查 M-02(3)：建目錄前用 secure_material_path_for_create 驗證
-    // 每一層既有父目錄都是真目錄（不 follow 已存在的 symlink 目錄）。
-    let rel_dir = Path::new(&sanitize_component(group)).join(sanitize_component(course_name));
-    // root 本身可能尚未存在（首次匯入）：先建 root，resolver 才能 canonicalize。
-    let _ = tokio::fs::create_dir_all(root).await;
-    if let Err(e) = super::utils::secure_material_path_for_create(root, &rel_dir) {
-        report.failed += 1;
-        report.errors.push(format!("[{}] 目錄不安全：{e}", dir.display()));
-        return false;
-    }
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
         report.failed += 1;
         report.errors.push(format!("[{}] 建立目錄失敗：{e}", dir.display()));
@@ -593,12 +572,8 @@ async fn process_upload(
     // 直接串流寫檔：download_file 會把內容串流寫進 dest（先寫到 .part 再改名），
     // 避免把數 GB 檔案讀進記憶體；回傳的是真正寫入的 bytes 數。
     match download_file(client, &download_urls, &dest).await {
-        Ok(DownloadOutcome::Saved(size)) if size > 0 => {
+        Ok(size) if size > 0 => {
             report.files_saved += 1;
-            true
-        }
-        Ok(DownloadOutcome::AlreadyExists) => {
-            report.files_skipped += 1;
             true
         }
         Ok(_) => {
@@ -687,7 +662,7 @@ async fn download_file(
     client: &reqwest::Client,
     urls: &[String],
     dest: &Path,
-) -> Result<DownloadOutcome, String> {
+) -> Result<u64, String> {
     let read_timeout = std::time::Duration::from_secs(30 * 60);
 
     let mut last_err = String::new();
@@ -713,82 +688,29 @@ async fn download_file(
             }
         };
 
-        // SEC_IMPORT_STREAM_CAP_V1（審查 M-04）：原本 `resp.bytes()` 會把整個回應讀進記憶體
-        // （註解說串流，實作不是），數 GB 教材＝RSS 暴增／OOM。改為：
-        // 1) Content-Length 先行檢查（超過上限連下載都不開始）；
-        // 2) `bytes_stream()` 逐 chunk 寫入 .part 並累計大小，超過上限立即中止並刪 .part；
-        // 3) 成功後 rename 成最終檔（目的檔已存在則不覆寫——避免與上傳／另一個匯入互相踩到）。
-        if let Some(len) = resp.content_length() {
-            if len > *IMPORT_MAX_FILE_BYTES {
-                last_err = format!("檔案 {len} bytes 超過匯入上限 {} bytes（{url}）", *IMPORT_MAX_FILE_BYTES);
-                warn!(%url, len, "教材匯入：Content-Length 超過上限，跳過此位址");
-                continue;
-            }
-        }
-
         let tmp = dest.with_extension("part");
-        let mut file = match tokio::fs::File::create(&tmp).await {
-            Ok(f) => f,
+        let bytes = match resp.bytes().await {
+            Ok(b) => b,
             Err(e) => {
-                last_err = format!("建立暫存檔失敗：{e}");
-                warn!(url = %url, error = %last_err, "教材匯入：建立暫存檔失敗");
+                let _ = tokio::fs::remove_file(&tmp).await;
+                last_err = format!("讀取回應失敗：{e}");
+                warn!(url = %url, error = %last_err, "教材匯入：讀取回應失敗，跳過此位址");
                 continue;
             }
         };
 
-        let mut written: u64 = 0;
-        let mut stream_err: Option<String> = None;
-        {
-            use futures::StreamExt;
-            use tokio::io::AsyncWriteExt;
-            let mut stream = resp.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                let chunk = match chunk {
-                    Ok(c) => c,
-                    Err(e) => {
-                        stream_err = Some(format!("讀取回應失敗：{e}"));
-                        break;
-                    }
-                };
-                written = written.saturating_add(chunk.len() as u64);
-                if written > *IMPORT_MAX_FILE_BYTES {
-                    stream_err = Some(format!(
-                        "下載已超過匯入上限 {} bytes，已中止",
-                        *IMPORT_MAX_FILE_BYTES
-                    ));
-                    break;
-                }
-                if let Err(e) = file.write_all(&chunk).await {
-                    stream_err = Some(format!("寫入暫存檔失敗：{e}"));
-                    break;
-                }
-            }
-            if stream_err.is_none() {
-                if let Err(e) = file.flush().await {
-                    stream_err = Some(format!("寫入暫存檔失敗：{e}"));
-                }
-            }
-        }
-        drop(file);
-
-        if let Some(e) = stream_err {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            last_err = e;
-            warn!(url = %url, error = %last_err, "教材匯入：串流下載失敗，跳過此位址");
-            continue;
-        }
-        if written == 0 {
+        if bytes.is_empty() {
             let _ = tokio::fs::remove_file(&tmp).await;
             last_err = "下載到 0 bytes".to_string();
             warn!(url = %url, "教材匯入：下載到 0 bytes，跳過此位址");
             continue;
         }
 
-        // 目的檔在下載期間被別的流程建立了 → 不覆寫，視為「已存在」。
-        if tokio::fs::symlink_metadata(dest).await.is_ok() {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            info!(url = %url, "教材匯入：目的檔已存在（下載期間被建立），不覆寫");
-            return Ok(DownloadOutcome::AlreadyExists);
+        // 先寫 .part，成功再改名成最終檔，避免留下半成品。
+        if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
+            last_err = format!("寫入暫存檔失敗：{e}");
+            warn!(url = %url, error = %last_err, "教材匯入：寫入暫存檔失敗");
+            continue;
         }
         if let Err(e) = tokio::fs::rename(&tmp, dest).await {
             let _ = tokio::fs::remove_file(&tmp).await;
@@ -796,16 +718,10 @@ async fn download_file(
             warn!(url = %url, error = %last_err, "教材匯入：rename 失敗");
             continue;
         }
-        info!(url = %url, bytes = written, "教材匯入：下載成功");
-        return Ok(DownloadOutcome::Saved(written));
+        info!(url = %url, bytes = bytes.len(), "教材匯入：下載成功");
+        return Ok(bytes.len() as u64);
     }
     Err(last_err)
-}
-
-/// SEC_IMPORT_STREAM_CAP_V1：下載結果——真正寫入的 bytes，或目的檔已存在（未覆寫）。
-enum DownloadOutcome {
-    Saved(u64),
-    AlreadyExists,
 }
 
 /// 抓取 JSON(帶 session cookie 的 client 已含 cookie jar)。
@@ -837,9 +753,6 @@ async fn write_link_file(root: &Path, group: &str, course_name: &str, title: &st
     let dir = root
         .join(sanitize_component(group))
         .join(sanitize_component(course_name));
-    let rel_dir = Path::new(&sanitize_component(group)).join(sanitize_component(course_name));
-    let _ = tokio::fs::create_dir_all(root).await;
-    super::utils::secure_material_path_for_create(root, &rel_dir).map_err(|e| e.to_string())?; // SEC_IMPORT_STREAM_CAP_V1
     tokio::fs::create_dir_all(&dir).await.map_err(|e| e.to_string())?;
     let file_path = dir.join(format!("{}.url", sanitize_filename(title)));
     if file_path.exists() {
@@ -875,8 +788,7 @@ fn sanitize_component(s: &str) -> String {
         .map(|c| if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
         .collect();
     let trimmed = cleaned.trim();
-    // SEC_IMPORT_STREAM_CAP_V1：`.`／`..` 不能當資料夾名（會被 secure resolver 拒絕，這裡直接改名）。
-    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+    if trimmed.is_empty() {
         "未命名".to_string()
     } else {
         trimmed.to_string()

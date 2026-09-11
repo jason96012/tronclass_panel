@@ -137,8 +137,7 @@
     link.className = 'button secondary push-status-desktop-link';
     if (passkey.nextElementSibling !== link) passkey.insertAdjacentElement('afterend', link);
     if (!document.getElementById('pushStatusDesktopLinkStyle')) {
-      /* CSP_DYNAMIC_STYLE_NONCE_V1 */
-      var style = window.tronCreateStyle ? window.tronCreateStyle('pushStatusDesktopLinkStyle', '') : document.createElement('style');
+      var style = document.createElement('style');
       style.id = 'pushStatusDesktopLinkStyle';
       style.textContent = '#pushStatusManagementLink{display:inline-flex;align-items:center;justify-content:center;min-height:36px;height:36px;padding:0 12px;border-radius:999px;white-space:nowrap;text-decoration:none;font-size:13px;font-weight:760}@media(max-width:820px){#pushStatusManagementLink{display:none!important}}';
       document.head.appendChild(style);
@@ -161,21 +160,9 @@
     syncExisting: syncExisting,
     explicitlyBoundAccount: explicitlyBoundAccount
   };
-  // PWA_STATIC_CACHE_V3：非 iOS 瀏覽器也註冊 service worker（只快取帶 ?sv= 的靜態資產；
-  // HTML／API 不攔）。iOS 維持原本「啟用推播時才註冊」——避免 WebKit SW 暫停造成白畫面。
-  function registerStaticCacheWorker() {
-    if (isIos()) return;
-    if (!window.isSecureContext || !('serviceWorker' in navigator)) return;
-    var run = function () {
-      navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(function () {});
-    };
-    if ('requestIdleCallback' in window) window.requestIdleCallback(run, { timeout: 4000 });
-    else setTimeout(run, 1500);
-  }
   function boot() {
     syncExisting();
     ensureStatusManagementLink();
-    registerStaticCacheWorker();
     var attempts = 0;
     var timer = setInterval(function () {
       attempts += 1;

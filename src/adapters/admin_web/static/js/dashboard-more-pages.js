@@ -24,15 +24,5 @@
   }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', fix);
   else fix();
-  /* NO_POLL_ENSURE_V1：原本是「無限」500 ms 輪詢（頁面活著就一直跑 querySelectorAll）。
-     這些按鈕只會在「更多」面板／登入卡被建立或重繪時出現，改用 MutationObserver 監看
-     body 子樹的 childList；另 pageshow 補跑。 */
-  var scheduled = false;
-  function scheduleFix(){
-    if(scheduled) return;
-    scheduled = true;
-    (window.requestAnimationFrame || window.setTimeout)(function(){ scheduled = false; fix(); });
-  }
-  try{ new MutationObserver(scheduleFix).observe(document.body || document.documentElement, {childList:true, subtree:true}); }catch(_){}
-  window.addEventListener('pageshow', fix);
+  setInterval(fix, 500);
 })();

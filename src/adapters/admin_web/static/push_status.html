@@ -18,6 +18,16 @@
     @media(max-width:380px){.wrap{width:calc(100% - 16px)!important}.push-page-header{padding:10px!important}.push-page-brand{gap:8px!important}.push-page-logo{width:42px!important;height:42px!important}.push-page-heading h1{font-size:18px!important}.push-page-back{padding:8px 9px!important;font-size:13px!important}}
       .push-removed{display:block;margin:4px 0 6px;padding:8px 10px;border-radius:10px;font-size:12px;line-height:1.5;color:#92400e;background:rgba(217,119,6,.12);border:1px solid rgba(217,119,6,.35)}
     html[data-theme="dark"] .push-removed{color:#fbbf24}
+
+  /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  .span-full{grid-column:1/-1}
+  .hidden-init{display:none}
+  .sub-note{font-size:12px;color:var(--muted)}
+  .sub-bad{font-size:12px;color:var(--bad)}
+  .sub-good{font-size:12px;color:var(--good)}
+  .c-good{color:var(--good)}
+  .c-muted{color:var(--muted)}
+  .c-warn{color:var(--warn)}
 </style>
 </head>
 <body>
@@ -50,7 +60,7 @@
           <div class="row"><span class="key">上次伺服器推送</span><span id="serverHealth" class="value">—</span></div>
         </div>
       </section>
-      <section class="card" style="grid-column:1/-1">
+      <section class="card span-full">
         <h2>管理操作</h2>
         <div class="actions">
           <button id="enablePush" class="button primary" type="button">啟用／修復此手機</button>
@@ -60,7 +70,7 @@
         <div id="message" class="message" role="status"></div>
         <div class="note">背景測試安排後，請立刻把 Tronclass 從多工畫面往上滑掉。通知聲由 iPhone「設定 → 通知 → Tronclass → 聲音」控制；PWA 無法強制繞過靜音或專注模式。</div>
       </section>
-      <section class="card" id="adminOverviewCard" style="grid-column:1/-1;display:none">
+      <section class="card span-full hidden-init" id="adminOverviewCard">
         <h2>全部帳號綁定狀態</h2>
         <div id="adminOverviewBody" class="rows"><div class="row"><span class="key">載入中…</span></div></div>
         <div class="note">管理員專用：列出所有帳號的推播綁定與發送健康。「推播：尚無發送紀錄」代表該帳號最近沒有觸發過通知，不等於失效；裝置被推播服務判定失效（HTTP 410）時會自動移除。「上游輪詢」連續失敗通常是 Tronclass 登入過期，請該帳號重新登入。</div>
@@ -79,7 +89,7 @@
       return '<span class="push-removed">推播訂閱曾於 '+ts(h.removed_at)+' 被自動移除 '+n+' 台（'+esc(h.removed_reason||'推播服務拒絕')+'）'+(left>0?'，仍有 '+left+' 台有效':'，目前沒有任何有效裝置')+'；請按「啟用／修復此手機」重新啟用。</span>';
     }
     function healthLine(h,detail){
-      if(!h)return '<span style="font-size:12px;color:var(--muted)">推播：尚無發送紀錄</span>';
+      if(!h)return '<span class="sub-note">推播：尚無發送紀錄</span>';
       var removed=removedLine(h);
       if(removed&&detail)return removed+healthLineInner(h,detail);
       if(removed)return removed;
@@ -87,14 +97,14 @@
     }
     function healthLineInner(h,detail){
       if(Number(h.consecutive_fails)>0){
-        var extra=detail&&h.last_error?'<br><span style="font-size:12px;color:var(--muted)">'+esc(String(h.last_error).slice(0,90))+'</span>':'';
-        return '<span style="font-size:12px;color:var(--bad)">推播：連續 '+Number(h.consecutive_fails)+' 次失敗'+extra+'</span>';
+        var extra=detail&&h.last_error?'<br><span class="sub-note">'+esc(String(h.last_error).slice(0,90))+'</span>':'';
+        return '<span class="sub-bad">推播：連續 '+Number(h.consecutive_fails)+' 次失敗'+extra+'</span>';
       }
       if(Number(h.ok_total)>0){
-        var extra=detail?'<br><span style="font-size:12px;color:var(--muted)">上次成功：'+ts(h.last_ok_at)+'</span>':'';
-        return '<span style="font-size:12px;color:var(--good)">推播：正常'+extra+'</span>';
+        var extra=detail?'<br><span class="sub-note">上次成功：'+ts(h.last_ok_at)+'</span>':'';
+        return '<span class="sub-good">推播：正常'+extra+'</span>';
       }
-      return '<span style="font-size:12px;color:var(--muted)">推播：尚無發送紀錄</span>';
+      return '<span class="sub-note">推播：尚無發送紀錄</span>';
     }
     // PUSH_HEALTH_V1: 失效偵測（發送結果＋上游輪詢）
     // PUSH_OVERVIEW_V1 + PUSH_HEALTH_V1: 管理員載入全部帳號的綁定與健康狀態（非管理員 403 時整卡隱藏）
@@ -106,22 +116,22 @@
         var items=data.accounts||[];
         var html=items.map(function(a){
           var name=esc(a.account_id)+(a.username&&a.username!==a.account_id?'（'+esc(a.username)+'）':'');
-          var state=a.bound?'<span style="color:var(--good)">已綁定 '+Number(a.bindings)+' 台</span>':'<span style="color:var(--muted)">未綁定</span>';
+          var state=a.bound?'<span class="c-good">已綁定 '+Number(a.bindings)+' 台</span>':'<span class="c-muted">未綁定</span>';
           var mon='';
           if(a.monitor){
             var mc=Number(a.monitor.consecutive_failures)||0;
-            mon='<br><span style="font-size:12px;color:'+(a.monitor.is_running&&mc>0?'var(--bad)':'var(--muted)')+'">上游輪詢：'+(a.monitor.is_running?(mc>0?'連續 '+mc+' 次失敗（可能太久沒登入）':'正常'):'未執行')+'</span>';
+            mon='<br><span class="'+(a.monitor.is_running&&mc>0?'sub-bad':'sub-note')+'">上游輪詢：'+(a.monitor.is_running?(mc>0?'連續 '+mc+' 次失敗（可能太久沒登入）':'正常'):'未執行')+'</span>';
           }
-          return '<div class="row"><span class="key">'+name+'</span><span class="value">'+state+'<br>'+healthLine(a.health,false)+mon+'<br><span style="font-size:12px;color:var(--muted)">綁定更新：'+ts(a.last_updated)+'</span></span></div>';
+          return '<div class="row"><span class="key">'+name+'</span><span class="value">'+state+'<br>'+healthLine(a.health,false)+mon+'<br><span class="sub-note">綁定更新：'+ts(a.last_updated)+'</span></span></div>';
         }).join('');
         var orphans=data.orphans||[];
         html+=orphans.map(function(a){
-          return '<div class="row"><span class="key">'+esc(a.account_id)+'（帳號已刪除）</span><span class="value"><span style="color:var(--warn)">殘留 '+Number(a.bindings)+' 筆訂閱</span></span></div>';
+          return '<div class="row"><span class="key">'+esc(a.account_id)+'（帳號已刪除）</span><span class="value"><span class="c-warn">殘留 '+Number(a.bindings)+' 筆訂閱</span></span></div>';
         }).join('');
         body.innerHTML=html||'<div class="row"><span class="key">沒有帳號</span></div>';
-        card.style.display='';
+        card.classList.remove('hidden-init');
       }catch(e){
-        card.style.display='none';
+        card.classList.add('hidden-init');
       }
     }
     function standalone(){return navigator.standalone===true||(matchMedia&&matchMedia('(display-mode: standalone)').matches)}

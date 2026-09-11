@@ -47,6 +47,16 @@
   .swatch{width:38px;height:38px;border-radius:50%;border:2px solid transparent;background:var(--sw);cursor:pointer;padding:0;position:relative}
   .swatch:hover{transform:scale(1.06)}
   .swatch.active{outline:3px solid color-mix(in srgb,var(--sw) 45%,transparent);outline-offset:2px;border-color:var(--text)}
+  /* CSP_STYLE_ATTR_STAGED_V1：色票顏色原為 inline style="--sw:…"，
+     會觸發 Report-Only 標頭的 style-src-attr 回報；改由既有的
+     data-set-accent 屬性選擇器供給，外觀計算結果完全相同。 */
+  .swatch[data-set-accent="blue"]{--sw:#2563EB}
+  .swatch[data-set-accent="indigo"]{--sw:#6366F1}
+  .swatch[data-set-accent="green"]{--sw:#059669}
+  .swatch[data-set-accent="amber"]{--sw:#D97706}
+  .swatch[data-set-accent="purple"]{--sw:#7C3AED}
+  .swatch[data-set-accent="rose"]{--sw:#E11D48}
+  .swatch[data-set-accent="cyan"]{--sw:#0E7490}
   /* ── 字體大小分段控制 ── */
   .seg{display:inline-flex;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:2px}
   .seg button{min-width:88px;min-height:42px;border:0;background:var(--soft);color:var(--text);font:inherit;font-weight:800;font-size:14px;cursor:pointer;padding:0 16px}
@@ -99,6 +109,13 @@
   .test-row+.test-row{margin-top:10px}
   .test-row b{display:block;font-size:14px;font-weight:850}
   .test-row i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
+  /* CSP_STYLE_ATTR_STAGED_V1：以下 class 取代原本的 inline style 屬性
+     （避免 Report-Only 標頭的 style-src-attr 回報）；宣告內容逐一對應原 inline 值。 */
+  .test-row.wrap{flex-wrap:wrap;gap:8px}
+  .test-row .span-full{flex:1 1 100%}
+  .test-row .test-input{flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit}
+  .test-row .chk{width:22px;min-height:22px}
+  .test-row.end{justify-content:flex-end}
   .tbtn{flex:0 0 auto;min-height:40px;padding:0 18px;border:0;border-radius:999px;background:var(--primary);color:#fff;font:inherit;font-weight:800;font-size:13px;cursor:pointer}
   .tbtn:hover{filter:brightness(1.08)}
   .tbtn:disabled{opacity:.55;cursor:default}
@@ -150,13 +167,13 @@
     <div class="pref-col">
     <h2>強調色</h2>
     <div class="swatches">
-      <button class="swatch" data-set-accent="blue"   type="button" style="--sw:#2563EB" aria-label="藍色（預設）" title="藍色（預設）"></button>
-      <button class="swatch" data-set-accent="indigo" type="button" style="--sw:#6366F1" aria-label="靛色" title="靛色"></button>
-      <button class="swatch" data-set-accent="green"  type="button" style="--sw:#059669" aria-label="綠色" title="綠色"></button>
-      <button class="swatch" data-set-accent="amber"  type="button" style="--sw:#D97706" aria-label="琥珀色" title="琥珀色"></button>
-      <button class="swatch" data-set-accent="purple" type="button" style="--sw:#7C3AED" aria-label="紫色" title="紫色"></button>
-      <button class="swatch" data-set-accent="rose"   type="button" style="--sw:#E11D48" aria-label="玫瑰色" title="玫瑰色"></button>
-      <button class="swatch" data-set-accent="cyan"   type="button" style="--sw:#0E7490" aria-label="青色" title="青色"></button>
+      <button class="swatch" data-set-accent="blue"   type="button" aria-label="藍色（預設）" title="藍色（預設）"></button>
+      <button class="swatch" data-set-accent="indigo" type="button" aria-label="靛色" title="靛色"></button>
+      <button class="swatch" data-set-accent="green"  type="button" aria-label="綠色" title="綠色"></button>
+      <button class="swatch" data-set-accent="amber"  type="button" aria-label="琥珀色" title="琥珀色"></button>
+      <button class="swatch" data-set-accent="purple" type="button" aria-label="紫色" title="紫色"></button>
+      <button class="swatch" data-set-accent="rose"   type="button" aria-label="玫瑰色" title="玫瑰色"></button>
+      <button class="swatch" data-set-accent="cyan"   type="button" aria-label="青色" title="青色"></button>
     </div>
     </div>
     <div class="pref-col">
@@ -184,14 +201,14 @@
     <h1>學期判定</h1>
     <p class="hint">決定作業學期過濾、課程學期判定與淡江課表同步以哪個學期為準。調整即時生效；服務重啟後退回 config.toml 設定（若有的話）或依日期自動推算。</p>
     <div class="test-row"><span><b>目前生效</b><i id="semesterStatus">讀取中…</i></span></div>
-    <div class="test-row" style="flex-wrap:wrap;gap:8px" id="semesterPresets">
-      <span style="flex:1 1 100%"><b>快速選擇</b><i>點一下填入下方欄位（國曆年自動換算民國學年）</i></span>
+    <div class="test-row wrap" id="semesterPresets">
+      <span class="span-full"><b>快速選擇</b><i>點一下填入下方欄位（國曆年自動換算民國學年）</i></span>
     </div>
     <div class="test-row">
       <span><b>學期覆蓋</b><i>格式例：1151、115-2、115上、115下、2026-1、2026 Fall</i></span>
-      <input id="semesterInput" type="text" inputmode="text" placeholder="例：1151" style="flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit">
+      <input id="semesterInput" class="test-input" type="text" inputmode="text" placeholder="例：1151">
     </div>
-    <div class="test-row" style="flex-wrap:wrap;gap:8px">
+    <div class="test-row wrap">
       <button id="semesterApply" class="tbtn" type="button">套用</button>
       <button id="semesterAuto" class="ghost" type="button">恢復自動</button>
     </div>
@@ -204,14 +221,14 @@
     <p class="hint">每天定時推送一則摘要：48 小時內截止作業與最新公告（送到各帳號已訂閱推播的裝置）。週六、週日不發送；各帳號可在「通知設定」頁個別關閉。資料取自背景快取，不對學校發額外請求；設定即時生效並永久保存。</p>
     <div class="test-row">
       <span><b>啟用</b><i>關閉後完全不發送晨間摘要</i></span>
-      <input id="digestEnabled" type="checkbox" checked style="width:22px;min-height:22px">
+      <input id="digestEnabled" class="chk" type="checkbox" checked>
     </div>
     <div class="test-row">
       <span><b>通知時間</b><i>伺服器本地時間（HH:MM）。小技巧：把時間設為「下一分鐘」即可立即測試推送</i></span>
-      <input id="digestTime" type="time" value="08:00" style="flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit">
+      <input id="digestTime" class="test-input" type="time" value="08:00">
     </div>
     <!-- DIGEST_SAVE_RIGHT_V1：儲存鈕靠右；測試鈕已移至下方「測試通知」卡（DIGEST_TEST_IN_TEST_CARD_V1） -->
-    <div class="test-row" style="justify-content:flex-end">
+    <div class="test-row end">
       <button id="digestSave" class="tbtn" type="button">儲存</button>
     </div>
     <div id="digestMsg" class="tmsg"></div>

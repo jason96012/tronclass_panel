@@ -95,6 +95,9 @@
     .wrap{max-width:1080px}
     .list.cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;gap:14px}
   }
+
+  /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  .hidden-init{display:none}
 </style>
 </head>
 <body>
@@ -103,10 +106,10 @@
     <a class="back" href="/admin/dashboard" title="回控制台">←<span class="txt"> 回控制台</span></a>
     <h1>課程公告</h1>
     <span class="count" id="count"></span>
-    <button class="btn" id="publishBtn" type="button" style="display:none">＋ 發佈</button>
+    <button class="btn hidden-init" id="publishBtn" type="button">＋ 發佈</button>
     <button class="btn primary" id="refresh" type="button">重新整理</button>
   </header>
-  <div class="pubform" id="pubForm" style="display:none">
+  <div class="pubform hidden-init" id="pubForm">
     <input id="pubTitle" placeholder="公告標題" maxlength="80">
     <textarea id="pubContent" rows="4" placeholder="公告內容"></textarea>
     <div class="pubrow"><span class="spacer"></span><button class="btn" id="pubCancel" type="button">取消</button><button class="btn primary" id="pubSubmit" type="button">發佈</button></div>
@@ -542,7 +545,7 @@
       .catch(function(e){once({error:(e&&e.message)||'網路錯誤（請求未送達或被中斷）',status:st});});
   }
   function delApi(id,cb){postJson('/admin/api/bulletins/admin/delete',{id:id},cb);}
-  if(publishBtn)publishBtn.onclick=function(){pubForm.style.display=pubForm.style.display==='none'?'flex':'none';};
+  if(publishBtn)publishBtn.onclick=function(){pubForm.style.display=pubForm.style.display==='flex'?'none':'flex';};
   var pubCancel=document.getElementById('pubCancel'),pubSubmit=document.getElementById('pubSubmit');
   if(pubCancel)pubCancel.onclick=function(){pubForm.style.display='none';};
   if(pubSubmit)pubSubmit.onclick=function(){

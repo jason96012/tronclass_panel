@@ -133,8 +133,6 @@ impl TrustedProxies {
             None => (cidr, None),
         };
         let Ok(ip) = IpAddr::from_str(ip_str.trim()) else {
-            // SEC_TRUSTED_PROXY_CIDR_VALIDATE_V1：不再靜默略過——留 warn 讓管理者看得到。
-            tracing::warn!(entry = %cidr, "trusted_proxies 項目不是有效 IP／CIDR，已略過");
             return;
         };
         let (bits, value) = match ip {
@@ -145,10 +143,7 @@ impl TrustedProxies {
             Some(len) => match len.trim().parse::<u32>() {
                 Ok(0) if bits == 32 => 0,
                 Ok(len) if len <= bits => len,
-                _ => {
-                    tracing::warn!(entry = %cidr, "trusted_proxies 的 CIDR 前綴長度無效，已略過");
-                    return;
-                }
+                _ => return,
             },
             None => bits,
         };

@@ -1,7 +1,7 @@
 /* SHARE_V1: 免登入分享預覽頁樣式（外掛以符合 CSP，不用 inline <style>）。 */
 /* 與 app 內預覽視窗（files.html modal）同款外觀：深色標題列＋右上下載鈕。 */
 html,body{margin:0;padding:0;background:#242b38;color:#e2e8f0;font-family:system-ui,-apple-system,"Segoe UI","Noto Sans TC",sans-serif}
-header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:12px 16px;background:#0e1524;border-bottom:1px solid #1e293b;border-top:env(safe-area-inset-top,0px) solid transparent}
+header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:12px 16px;background:#0e1524;border-bottom:1px solid #1e293b}
 header .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:760;font-size:15px}
 header .dl{margin-left:auto;flex-shrink:0;padding:9px 20px;border-radius:12px;background:#3b82f6;color:#fff;font-weight:800;font-size:14px;text-decoration:none;box-shadow:0 6px 16px rgba(37,99,235,.28)}
 header .dl:hover{background:#2563eb}

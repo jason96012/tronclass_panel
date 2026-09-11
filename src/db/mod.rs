@@ -138,34 +138,13 @@ impl AccountsDb {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            // SQLITE_POOL_PRAGMAS_V1：busy_timeout 是「每條連線」的設定；放在 connect options
-            // 才會套到連線池裡每一條連線（下面 apply_sqlite_runtime_pragmas 只會跑在拿到的
-            // 那一條上）。15 秒足以撐過 WAL checkpoint／批次寫入的短暫鎖定，不會回 SQLITE_BUSY。
             .busy_timeout(Duration::from_secs(15))
-            .foreign_keys(true)
-            // SQLITE_POOL_PRAGMAS_V1：mmap_size／cache_size／temp_store 同樣是 per-connection；
-            // 原本只在其中一條連線生效，其餘 9 條仍是預設（2 MB cache、無 mmap）。
-            // SQLITE_POOL_MEMORY_GUARD_V1：既然現在 10 條連線都會套用，上限要以「×10」來看：
-            // 64 MB cache ×10 = 640 MB、256 MB mmap ×10，在有記憶體上限的容器會被 OOM。
-            // 改為每條 16 MB page cache（×10 = 160 MB 上限，實際只有活躍連線會用到）、
-            // mmap 64 MB（accounts.db 遠小於此，mmap 是共享檔案映射，不會重複佔用）。
-            .pragma("mmap_size", "67108864")
-            .pragma("cache_size", "-16000")
-            .pragma("temp_store", "MEMORY");
+            .foreign_keys(true);
 
-        // SQLITE_POOL_PRAGMAS_V1：連線池設定
-        // - max_connections 10：SQLite WAL 下多讀單寫；Dashboard 輪詢＋監控迴圈＋活動／教材批次
-        //   寫入者同時最多也就個位數連線，10 已足夠且不會把寫鎖競爭放大。
-        // - min_connections 1、idle_timeout 10 分鐘：離峰釋放連線（每條連線各自持有 64 MB cache
-        //   上限與 mmap 對映），尖峰再開。
-        // - acquire_timeout 15 秒：與 busy_timeout 對齊，池子被佔滿時等待而非立刻失敗。
-        // - test_before_acquire(false)：本機檔案 DB 連線不會「斷線」，省掉每次借連線的 ping。
         let pool = SqlitePoolOptions::new()
             .max_connections(10)
             .min_connections(1)
-            .idle_timeout(Some(Duration::from_secs(600)))
             .acquire_timeout(Duration::from_secs(15))
-            .test_before_acquire(false)
             .connect_with(connect_options)
             .await
             .into_diagnostic()
@@ -243,11 +222,10 @@ async fn apply_sqlite_runtime_pragmas(pool: &SqlitePool) -> Result<()> {
         .into_diagnostic()
         .wrap_err("設定 SQLite synchronous=NORMAL 失敗")?;
 
-    // SQLITE_POOL_MEMORY_GUARD_V1：與 connect options 一致（這裡只會跑在借到的那一條上）。
-    let _ = sqlx::query("PRAGMA mmap_size = 67108864")
+    let _ = sqlx::query("PRAGMA mmap_size = 268435456")
         .execute(pool)
         .await;
-    let _ = sqlx::query("PRAGMA cache_size = -16000")
+    let _ = sqlx::query("PRAGMA cache_size = -64000")
         .execute(pool)
         .await;
     let _ = sqlx::query("PRAGMA temp_store = MEMORY")

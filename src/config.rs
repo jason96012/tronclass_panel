@@ -1056,29 +1056,14 @@ fn validate_trusted_proxies(entries: &[String]) -> Result<()> {
         match trimmed.to_ascii_lowercase().as_str() {
             "cloudflare" | "loopback" | "localhost" => continue,
             _ => {
-                // SEC_TRUSTED_PROXY_CIDR_VALIDATE_V1（審查 L-03）：prefix 長度也要驗——
-                // 原本 `10.0.0.0/abc`、`10.0.0.0/99` 都能通過 --validate，但執行期
-                // `TrustedProxies::add_cidr()` 會靜默略過，變成「以為信任了 proxy 但其實沒有」。
-                let (ip_part, len_part) = match trimmed.split_once('/') {
-                    Some((ip, len)) => (ip, Some(len)),
+                let (ip_part, _len) = match trimmed.split_once('/') {
+                    Some((ip, len)) => (ip, len.parse::<u32>().ok()),
                     None => (trimmed, None),
                 };
-                let Ok(ip) = ip_part.trim().parse::<std::net::IpAddr>() else {
+                if ip_part.trim().parse::<std::net::IpAddr>().is_err() {
                     return Err(miette::miette!(
                         "adapters.admin_web.trusted_proxies[{i}] 必須是 IP、CIDR 或 cloudflare/loopback：`{entry}`"
                     ));
-                };
-                if let Some(len_str) = len_part {
-                    let max_bits: u32 = if ip.is_ipv4() { 32 } else { 128 };
-                    let ok = len_str
-                        .trim()
-                        .parse::<u32>()
-                        .is_ok_and(|bits| bits <= max_bits);
-                    if !ok {
-                        return Err(miette::miette!(
-                            "adapters.admin_web.trusted_proxies[{i}] 的 CIDR 前綴長度無效（IPv4 0–32、IPv6 0–128）：`{entry}`"
-                        ));
-                    }
                 }
             }
         }

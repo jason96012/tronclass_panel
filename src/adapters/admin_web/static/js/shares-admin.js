@@ -31,10 +31,10 @@
     var bg = document.createElement('div'); bg.id = 'share-modal'; bg.className = 'modal-bg';
     var m = document.createElement('div'); m.className = 'modal';
     setHTML(m,
-      '<div style="font-size:16px;font-weight:600;margin-bottom:6px;">分享連結</div>'
-      + '<div id="qr" style="display:flex;justify-content:center;margin:10px 0;"></div>'
+      '<div class="share-modal-title">分享連結</div>'
+      + '<div id="qr" class="share-qr-box"></div>'
       + '<div class="linkbox" id="lnk"></div>'
-      + '<div style="display:flex;gap:8px;justify-content:center;">'
+      + '<div class="share-actions">'
       + '<button id="cp" class="primary" type="button">複製連結</button>'
       + '<button id="cl" type="button">關閉</button></div>');
     bg.appendChild(m); document.body.appendChild(bg);
@@ -69,7 +69,7 @@
         + '<td class="path">' + esc(r.path) + '</td>'
         + '<td>' + fmtDate(r.exp) + '</td>'
         + '<td>' + badge + '</td>'
-        + '<td style="white-space:nowrap;">'
+        + '<td class="td-nowrap">'
         + '<button type="button" data-qr="' + i + '">QR／複製</button> '
         + (revoked ? '' : '<button type="button" class="danger" data-revoke="' + i + '">撤銷</button>')
         + '</td></tr>';

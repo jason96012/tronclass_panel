@@ -42,7 +42,7 @@
   body.animated-login-active #animatedLoginParticles{display:block}
   body.animated-login-active::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(circle at 18% 18%,rgba(37,99,235,.22),transparent 32%),radial-gradient(circle at 78% 28%,rgba(59,130,246,.16),transparent 30%),linear-gradient(135deg,#f8fafc 0%,#eef2ff 46%,#eff6ff 100%)}
   html.dark-mode body.animated-login-active::before{background:radial-gradient(circle at 18% 18%,rgba(96,165,250,.22),transparent 34%),radial-gradient(circle at 78% 28%,rgba(37,99,235,.20),transparent 30%),linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%)}
-  .animated-login-theme-toggle{position:fixed;right:calc(22px + env(safe-area-inset-right,0px));top:calc(22px + env(safe-area-inset-top,0px));z-index:15;width:44px;height:44px;border-radius:999px;border:1px solid rgba(148,163,184,.35);background:rgba(255,255,255,.78);color:#172033;display:none;align-items:center;justify-content:center;cursor:pointer;font-size:20px;box-shadow:0 14px 36px rgba(15,23,42,.14);backdrop-filter:blur(14px)}
+  .animated-login-theme-toggle{position:fixed;right:22px;top:22px;z-index:15;width:44px;height:44px;border-radius:999px;border:1px solid rgba(148,163,184,.35);background:rgba(255,255,255,.78);color:#172033;display:none;align-items:center;justify-content:center;cursor:pointer;font-size:20px;box-shadow:0 14px 36px rgba(15,23,42,.14);backdrop-filter:blur(14px)}
   body.animated-login-active .animated-login-theme-toggle{display:flex}
   html.dark-mode .animated-login-theme-toggle{background:rgba(15,23,42,.78);color:#e5eefb;border-color:rgba(148,163,184,.22)}
   .animated-login-card-inner{padding:30px 28px 26px;position:relative;z-index:2;color:#172033}
@@ -116,9 +116,9 @@
 </head>
 <body class="animated-login-active">
 <main>
-<section id="loginCard" class="login-card" data-animated-login-installed="1"><div class="animated-login-card-inner"><div class="animated-login-logo">D</div><div class="animated-login-header"><h1>歡迎回來</h1><p>登入 Tronclass Dashboard，使用與 Tronclass 帳密分離的網站憑證。</p></div><form class="animated-login-form" id="animatedLoginForm"><div class="animated-login-field"><input id="loginUsername" autocomplete="username webauthn" required><label for="loginUsername">帳號 ID / 學號</label></div><div class="animated-login-field"><input id="loginPassword" autocomplete="current-password" type="password" required><label for="loginPassword">密碼</label><button id="toggleLoginPassword" class="animated-toggle-password" type="button" aria-label="顯示密碼">👁</button></div><div class="animated-login-options"><label><input id="rememberPassword" type="checkbox" checked> 記住帳號</label><span class="animated-secure-note">Cloudflare HTTPS</span></div><button id="loginBtn" class="animated-login-submit" type="submit">登入</button><div class="animated-login-row"><button id="passkeyLoginBtn" class="animated-passkey-btn" type="button">使用通行密鑰登入</button><a id="loginUsePassword" class="animated-login-switch" href="#password">改用密碼登入</a></div><div id="loginMsg" class="animated-login-message">請先登入。</div></form><div class="animated-login-separator"><span>安全登入</span></div><div class="animated-login-help"><div class="animated-login-chip">首次登入請用 Tronclass 密碼，接著必須設定新的 Dashboard 密碼。</div><div class="animated-login-chip">Passkey：直接按「使用通行密鑰登入」即可（免輸帳號）。</div></div></div></section>
+<section id="loginCard" class="login-card" data-animated-login-installed="1"><div class="animated-login-card-inner"><div class="animated-login-logo">D</div><div class="animated-login-header"><h1>歡迎回來</h1><p>登入 Tronclass Dashboard，使用與 Tronclass 帳密分離的網站憑證。</p></div><form class="animated-login-form" id="animatedLoginForm"><div class="animated-login-field"><input id="loginUsername" autocomplete="username" required><label for="loginUsername">帳號 ID / 學號</label></div><div class="animated-login-field"><input id="loginPassword" autocomplete="current-password" type="password" required><label for="loginPassword">密碼</label><button id="toggleLoginPassword" class="animated-toggle-password" type="button" aria-label="顯示密碼">👁</button></div><div class="animated-login-options"><label><input id="rememberPassword" type="checkbox" checked> 記住帳號</label><span class="animated-secure-note">Cloudflare HTTPS</span></div><button id="loginBtn" class="animated-login-submit" type="submit">登入</button><div class="animated-login-row"><button id="passkeyLoginBtn" class="animated-passkey-btn" type="button">使用通行密鑰登入</button></div><div id="loginMsg" class="animated-login-message">請先登入。</div></form><div class="animated-login-separator"><span>安全登入</span></div><div class="animated-login-help"><div class="animated-login-chip">首次登入請用 Tronclass 密碼，接著必須設定新的 Dashboard 密碼。</div><div class="animated-login-chip">Passkey：直接按「使用通行密鑰登入」即可（免輸帳號）。</div></div></div></section>
 </main>
-<div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="toast" class="toast"></div>
 <script src="/admin/static/js/dashboard-login-card.js?v=loginpage1"></script>
 <script id="passkeyFriendlyErrorsV1">
 (function(){
@@ -262,8 +262,6 @@
     ['loginUsername','loginPassword'].forEach(function(id){ var el = q(id); if(el) el.disabled = busy; });
     if(lb){ lb.disabled = busy; lb.textContent = (busy && which === 'password') ? '登入中...' : '登入'; }
     if(pb){ pb.disabled = busy; pb.textContent = (busy && which === 'passkey') ? '驗證中...' : '使用通行密鑰登入'; }
-    // LOGIN_LOCK_LIVE_STATUS_V1：鎖定中時，密碼按鈕維持鎖定外觀（通行密鑰不受影響）。
-    if(!busy && lockState.until) renderLock();
   }
 
   // ── 導向目標：只在成功後決定一次 ────────────────────────────────────────
@@ -284,7 +282,6 @@
   // LOGIN_SINGLE_REDIRECT_V1：密碼／通行密鑰／首次登入三條路都只走這裡，只 replace 一次。
   function finishLogin(body, method){
     try{ localStorage.setItem(LS_LAST_METHOD, method); }catch(_){}
-    clearLock();
     if(typeof window.tronDashboardSessionMarker === 'function') window.tronDashboardSessionMarker();
     if(body && body.must_change_password){
       setMsg('首次登入成功，請先設定新的 Dashboard 密碼…', true);
@@ -294,28 +291,7 @@
     var dest = nextTarget() || '/admin#overview';
     setMsg('登入成功，正在進入…', true);
     var lb = q('loginBtn'); if(lb) lb.classList.add('success-pulse');
-    // LOGIN_PREFETCH_STATUS_V1：跳轉前先用新 cookie 打一次 /admin/api/status?history_limit=8
-    //（與 Dashboard 總覽首屏同一組參數）。伺服器把結果放進 2 秒短快取，首屏的第一個 status
-    // 直接命中；payload 也放進 sessionStorage，dashboard 開機腳本可先渲染再校正。
-    // 最多等 450 ms，不讓預抓拖慢導向。
-    var destPath = String(dest).split(/[?#]/)[0];
-    var destIsDashboard = (destPath === '/admin' || destPath === '/admin/');
-    var go = function(){ location.replace(forceNavigate(dest)); };
-    if(!destIsDashboard){ go(); return; }
-    var done = false;
-    var finish = function(){ if(done) return; done = true; go(); };
-    setTimeout(finish, 450);
-    try{
-      fetch('/admin/api/status?history_limit=8', { credentials: 'same-origin', cache: 'no-store' })
-        .then(function(r){ return r.ok ? r.json() : null; })
-        .then(function(st){
-          if(st && st.accounts){
-            try{ sessionStorage.setItem('tronclass_status_prefetch_v1', JSON.stringify({ at: Date.now(), status: st })); }catch(_){}
-          }
-        })
-        .catch(function(){})
-        .then(finish);
-    }catch(_){ finish(); }
+    location.replace(forceNavigate(dest));
   }
   // LOGIN_HASH_ONLY_NAV_FIX_V1：登入頁就在 /admin，目的地若只差 #hash（例如 /admin#overview），
   // location.replace 只會改 hash、不會向伺服器重新要頁面，人就卡在「登入成功，正在進入…」。
@@ -337,21 +313,13 @@
   function friendlyLoginError(err){
     var code = String((err && (err.code || err.message)) || '').toLowerCase();
     var status = err && err.status;
-    if(status === 423 || code === 'account_locked' || (err && err.body && err.body.locked)){
+    if(status === 423 || code === 'account_locked'){
       var mins = err && err.retryAfter ? Math.max(1, Math.ceil(err.retryAfter / 60)) : 10;
-      return '此帳號因連續密碼錯誤已暫時鎖定密碼登入（約 ' + mins + ' 分鐘）。若是你本人，可改用通行密鑰登入，或到 Discord 通知按「取消這次鎖定」——解除後這裡會自動恢復，不必重整。';
+      return '此帳號因連續密碼錯誤已暫時鎖定密碼登入（約 ' + mins + ' 分鐘）。若是你本人，可改用通行密鑰登入，或到 Discord 通知按「取消這次鎖定」。';
     }
     if(status === 429 || code.indexOf('too many') >= 0) return '嘗試次數過多，請稍後一分鐘再試。';
-    if(status === 403 && code.indexOf('access_denied') >= 0) return '你的來源 IP 已被封鎖，無法登入。若你剛在 Discord 取消鎖定，請再按一次「取消這次鎖定」以一併解除 IP 封鎖。';
-    if(status === 401 || code === 'unauthorized'){
-      // LOGIN_FAIL_TIERED_MSG_V1：伺服器帶回剩餘次數（帳號存在與否形狀相同，不洩漏存在性）。
-      var b = (err && err.body) || {};
-      var left = Number(b.remaining_attempts);
-      var lockMins = Math.max(1, Math.round(Number(b.lock_ttl_secs || 600) / 60));
-      if(left === 1) return '帳號或密碼錯誤。再錯 1 次，此帳號的密碼登入會暫時鎖定 ' + lockMins + ' 分鐘（通行密鑰不受影響）。';
-      if(left === 2) return '帳號或密碼錯誤。還可以再試 2 次，之後會暫時鎖定 ' + lockMins + ' 分鐘。';
-      return '帳號或密碼錯誤，或此帳號未啟用。';
-    }
+    if(status === 403 && code.indexOf('access_denied') >= 0) return '你的來源 IP 已被封鎖，無法登入。';
+    if(status === 401 || code === 'unauthorized') return '帳號或密碼錯誤，或此帳號未啟用。';
     if(status === 400 && code.indexOf('too long') >= 0) return '帳號或密碼長度超過上限。';
     if(status === 400) return '請輸入帳號與密碼。';
     if(status === 413) return '送出的內容過大。';
@@ -363,67 +331,11 @@
     var body = await res.json().catch(function(){ return {}; });
     if(!res.ok){
       var e = new Error(body.error || ('HTTP ' + res.status));
-      e.status = res.status; e.code = body.error || ''; e.retryAfter = body.retry_after_secs || 0; e.body = body;
+      e.status = res.status; e.code = body.error || ''; e.retryAfter = body.retry_after_secs || 0;
       throw e;
     }
     return body;
   }
-
-  // ── LOGIN_LOCK_LIVE_STATUS_V1：鎖定倒數 + 自動解除 ────────────────────────
-  // 423 後：按鈕顯示「已鎖定 · 剩 m:ss」，每 5 秒問一次 /admin/api/login/lock-status；
-  // Discord 按「取消這次鎖定」或到期 → 立刻恢復按鈕與訊息，不需要重整頁面。
-  var lockState = { until: 0, timer: null, poll: null, username: '', bound: false };
-  function fmtLeft(secs){ secs = Math.max(0, Math.round(secs)); var m = Math.floor(secs / 60), s2 = secs % 60; return m + ':' + (s2 < 10 ? '0' : '') + s2; }
-  function renderLock(){
-    var lb = q('loginBtn'); if(!lb) return;
-    var left = (lockState.until - Date.now()) / 1000;
-    if(left <= 0){ clearLock('鎖定已到期，可以重新登入。'); return; }
-    lb.disabled = true;
-    lb.textContent = '已鎖定 · 剩 ' + fmtLeft(left);
-    lb.classList.add('is-locked');
-  }
-  function clearLock(msg){
-    if(lockState.timer){ clearInterval(lockState.timer); lockState.timer = null; }
-    if(lockState.poll){ clearInterval(lockState.poll); lockState.poll = null; }
-    var wasLocked = lockState.until > 0;
-    lockState.until = 0;
-    var lb = q('loginBtn');
-    if(lb){ lb.classList.remove('is-locked'); if(!busy){ lb.disabled = false; lb.textContent = '登入'; } }
-    if(msg && wasLocked){ setMsg(msg, true); toast(msg, true); var p = q('loginPassword'); try{ if(p) p.focus(); }catch(_){} }
-  }
-  async function pollLock(){
-    if(!lockState.until) return;
-    try{
-      var res = await fetch('/admin/api/login/lock-status', {
-        method: 'POST', credentials: 'same-origin', cache: 'no-store',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username: lockState.username })
-      });
-      if(res.status === 403){ setMsg('你的來源 IP 已被封鎖。請在 Discord 通知再按一次「取消這次鎖定」以解除 IP 封鎖。', false); return; }
-      if(!res.ok) return;
-      var body = await res.json().catch(function(){ return null; });
-      if(!body) return;
-      if(!body.locked){ clearLock('鎖定已解除，可以重新登入。'); return; }
-      // 以伺服器時間為準修正倒數（例如另一台裝置又觸發了新鎖）。
-      lockState.until = Date.now() + Number(body.retry_after_secs || 0) * 1000;
-      renderLock();
-    }catch(_){}
-  }
-  function startLock(seconds, username){
-    lockState.username = username || '';
-    lockState.until = Date.now() + Math.max(5, Number(seconds) || 600) * 1000;
-    renderLock();
-    if(lockState.timer) clearInterval(lockState.timer);
-    lockState.timer = setInterval(renderLock, 1000);
-    if(lockState.poll) clearInterval(lockState.poll);
-    lockState.poll = setInterval(pollLock, 5000);
-    if(!lockState.bound){
-      lockState.bound = true;
-      // 分頁從背景回前景時立刻問一次（Discord 按完鈕切回來就馬上解鎖）。
-      document.addEventListener('visibilitychange', function(){ if(!document.hidden) pollLock(); });
-    }
-  }
-  function passwordLocked(){ return lockState.until > Date.now(); }
 
   // ── 密碼登入 ────────────────────────────────────────────────────────────
   async function doLogin(ev){
@@ -434,11 +346,6 @@
     // LOGIN_PASSWORD_NO_TRIM_V1：密碼是不透明字串，前端不得 trim（後端也刻意不 trim）。
     var password = String((p && p.value) || '');
     if(!username || !password){ setMsg('請輸入帳號與密碼。', false); return false; }
-    if(passwordLocked() && username.toLowerCase() === String(lockState.username || '').toLowerCase()){
-      setMsg('此帳號的密碼登入仍在鎖定中（剩 ' + fmtLeft((lockState.until - Date.now()) / 1000) + '）。可改用通行密鑰，或到 Discord 按「取消這次鎖定」。', false);
-      return false;
-    }
-    cancelConditionalPasskey();
     setBusy(true, 'password');
     setMsg('登入中...', true);
     try{
@@ -459,15 +366,7 @@
       var msg = friendlyLoginError(e);
       setMsg(msg, false);
       toast(msg, false);
-      if(p){ p.value = ''; }
-      var lockedNow = e && (e.status === 423 || (e.body && e.body.locked));
-      if(lockedNow){
-        startLock(e.retryAfter || (e.body && e.body.retry_after_secs) || 600, username);
-        // 鎖定只影響密碼；把焦點交給通行密鑰按鈕。
-        var pb2 = q('passkeyLoginBtn'); try{ if(pb2 && !pb2.disabled) pb2.focus(); }catch(_){}
-      }else if(p){ try{ p.focus(); }catch(_){} }
-      // 密碼登入失敗後重新掛上條件式通行密鑰（送出時為避免衝突 abort 掉了）。
-      setTimeout(startConditionalPasskey, 800);
+      if(p){ p.value = ''; try{ p.focus(); }catch(_){} }
     }
     return false;
   }
@@ -486,7 +385,6 @@
     if(!window.PublicKeyCredential || !navigator.credentials){ setMsg('此瀏覽器不支援通行密鑰，請改用帳號密碼登入。', false); return; }
     // PASSKEY_USERNAMELESS_V1：帳號可留空——直接以可發現通行密鑰識別身分。
     var username = String((q('loginUsername') && q('loginUsername').value) || '').trim();
-    cancelConditionalPasskey();
     setBusy(true, 'passkey');
     setMsg('請在裝置上完成通行密鑰驗證…', true);
     try{
@@ -507,8 +405,6 @@
         : (typeof window.tronPasskeyFriendlyError === 'function' ? window.tronPasskeyFriendlyError(e, '通行密鑰登入失敗') : '通行密鑰登入失敗');
       setMsg(msg, false);
       toast(msg, false);
-      // 按鈕流程結束後重新掛上條件式通行密鑰（剛才為了避免衝突 abort 掉了）。
-      setTimeout(startConditionalPasskey, 800);
     }
   }
 
@@ -521,80 +417,20 @@
     var r = q('rememberPassword'); if(r && saved) r.checked = true;
   }
   function applyLastMethod(){
-    // LOGIN_REMEMBER_METHOD_V2：上次用通行密鑰 → 通行密鑰按鈕升為主按鈕（藍底、放最上面），
-    // 密碼欄位收合成「改用密碼登入」連結；上次用密碼（或第一次）→ 維持原版面、焦點放第一個空欄位。
+    // LOGIN_REMEMBER_METHOD_V1：上次用通行密鑰 → 這次把焦點與提示放在通行密鑰按鈕；
+    // 上次用密碼（或第一次）→ 焦點放在第一個空欄位。
     var last = '';
     try{ last = localStorage.getItem(LS_LAST_METHOD) || ''; }catch(_){}
     var pb = q('passkeyLoginBtn');
-    var sw = q('loginUsePassword');
-    if(sw) sw.onclick = function(ev){
-      if(ev) ev.preventDefault();
-      document.documentElement.classList.remove('login-prefers-passkey');
-      setMsg('請輸入帳號與密碼。');
-      var u0 = q('loginUsername'); try{ if(u0) u0.focus(); }catch(_){}
-    };
     if(last === 'passkey' && pb && window.PublicKeyCredential){
-      document.documentElement.classList.add('login-prefers-passkey');
       pb.classList.add('animated-login-preferred');
-      setMsg('上次使用通行密鑰登入，按下方按鈕即可（或點「改用密碼登入」）。');
+      setMsg('上次使用通行密鑰登入，可直接按「使用通行密鑰登入」。');
       try{ pb.focus(); }catch(_){}
       return;
     }
     var u = q('loginUsername'), p = q('loginPassword');
     var target = (u && !u.value) ? u : p;
     try{ if(target) target.focus(); }catch(_){}
-  }
-
-  // ── PASSKEY_CONDITIONAL_UI_V1：條件式通行密鑰（autofill）──────────────────
-  // 支援的瀏覽器（iOS 16+／Safari 16+／Chrome 108+）在使用者點到帳號欄時，鍵盤上方／
-  // 自動填入列會直接列出這個網站的通行密鑰，選了就完成 Face ID／指紋，不必按按鈕。
-  // 流程：頁面載入即向後端拿 challenge（免輸帳號），以 mediation:'conditional' 掛著等；
-  // 使用者若改走密碼或按鈕登入，就 abort 掉這個等待中的請求（同時只能有一個 WebAuthn 請求）。
-  // challenge 於伺服器 5 分鐘到期 → 4 分鐘時主動重掛一次。
-  var conditionalAbort = null;
-  var conditionalRetries = 0;
-  var conditionalRefresh = null;
-  async function startConditionalPasskey(){
-    try{
-      if(conditionalAbort) return;
-      if(!hasSecureContext() || !window.PublicKeyCredential) return;
-      if(typeof PublicKeyCredential.isConditionalMediationAvailable !== 'function') return;
-      if(!(await PublicKeyCredential.isConditionalMediationAvailable())) return;
-      var start = await postJson('/admin/api/passkey/login/start', { username: '' });
-      var opts = start.publicKey || {};
-      opts.challenge = b64urlDecode(opts.challenge);
-      opts.allowCredentials = [];
-      var ctrl = new AbortController();
-      conditionalAbort = ctrl;
-      if(conditionalRefresh) clearTimeout(conditionalRefresh);
-      conditionalRefresh = setTimeout(function(){ if(!busy){ cancelConditionalPasskey(); startConditionalPasskey(); } }, 4 * 60 * 1000);
-      var assertion = await navigator.credentials.get({ publicKey: opts, mediation: 'conditional', signal: ctrl.signal });
-      if(conditionalAbort === ctrl) conditionalAbort = null;
-      if(conditionalRefresh){ clearTimeout(conditionalRefresh); conditionalRefresh = null; }
-      if(!assertion || busy) return;
-      setBusy(true, 'passkey');
-      setMsg('通行密鑰已選取，正在驗證…', true);
-      var body = { ceremony_id: start.ceremony_id, response: { id: assertion.id, authenticatorData: b64urlEncode(assertion.response.authenticatorData), signature: b64urlEncode(assertion.response.signature), clientDataJSON: b64urlEncode(assertion.response.clientDataJSON), userHandle: assertion.response.userHandle ? b64urlEncode(assertion.response.userHandle) : null } };
-      var done = await postJson('/admin/api/passkey/login/finish', body);
-      finishLogin(done, 'passkey');
-    }catch(e){
-      // AbortError = 我們自己取消（使用者改走別的登入方式），靜默；此時可能已重掛新的 controller，不可清掉。
-      if(e && e.name === 'AbortError') return;
-      conditionalAbort = null;
-      if(conditionalRefresh){ clearTimeout(conditionalRefresh); conditionalRefresh = null; }
-      if(busy){
-        // 使用者已選了通行密鑰但 finish 失敗：要讓他看到原因。
-        setBusy(false);
-        var msg = (typeof window.tronPasskeyFriendlyError === 'function') ? window.tronPasskeyFriendlyError(e, '通行密鑰登入失敗') : '通行密鑰登入失敗';
-        setMsg(msg, false); toast(msg, false);
-      }
-      // 其他情況（暫時錯誤／不支援）：安靜地重掛，最多 3 次。
-      if(conditionalRetries < 3){ conditionalRetries++; setTimeout(startConditionalPasskey, 1500); }
-    }
-  }
-  function cancelConditionalPasskey(){
-    if(conditionalRefresh){ clearTimeout(conditionalRefresh); conditionalRefresh = null; }
-    if(conditionalAbort){ try{ conditionalAbort.abort(); }catch(_){} conditionalAbort = null; }
   }
   function bind(){
     fillSaved();
@@ -610,9 +446,8 @@
     try{ var v = new URLSearchParams(location.search).get('v') || ''; if(v.indexOf('sessionexpired') === 0) reason = '登入狀態已過期，請重新登入。'; }catch(_){}
     if(reason) setMsg(reason, false);
     applyLastMethod();
-    startConditionalPasskey();
-    // 由 bfcache 返回（例如按上一頁）時解除忙碌狀態並重掛條件式通行密鑰。
-    window.addEventListener('pageshow', function(ev){ if(ev && ev.persisted){ setBusy(false); startConditionalPasskey(); } });
+    // 由 bfcache 返回（例如按上一頁）時解除鎖定狀態。
+    window.addEventListener('pageshow', function(ev){ if(ev && ev.persisted) setBusy(false); });
   }
   // 讓 dashboard-login-card.js 的 doLogin 代理（window.tronAuth.login）也走同一條流程。
   window.tronAuth = { login: doLogin, passkey: passkeyLogin };
@@ -621,17 +456,6 @@
 </script>
 <style id="loginPagePreferredStyleV1">
   .animated-passkey-btn.animated-login-preferred{border-color:#2563eb!important;box-shadow:0 0 0 3px rgba(37,99,235,.16)!important}
-  /* LOGIN_REMEMBER_METHOD_V2：上次用通行密鑰 → 通行密鑰升主按鈕、密碼區收合 */
-  .animated-login-switch{display:none;text-align:center;font-size:13px;font-weight:800;color:#2563eb;text-decoration:none;padding:6px}
-  html.login-prefers-passkey .animated-login-row{order:-1}
-  html.login-prefers-passkey .animated-login-field,
-  html.login-prefers-passkey .animated-login-options,
-  html.login-prefers-passkey #loginBtn{display:none}
-  html.login-prefers-passkey .animated-login-switch{display:block}
-  html.login-prefers-passkey .animated-passkey-btn{height:52px;background:linear-gradient(135deg,#2563eb,#60a5fa)!important;color:#fff!important;border:0!important;font-weight:950!important}
-  /* LOGIN_LOCK_LIVE_STATUS_V1：鎖定倒數外觀 */
-  #loginBtn.is-locked{background:linear-gradient(135deg,#94a3b8,#cbd5e1)!important;color:#1e293b!important;cursor:not-allowed;font-variant-numeric:tabular-nums}
-  html.dark-mode #loginBtn.is-locked{background:linear-gradient(135deg,#334155,#475569)!important;color:#e2e8f0!important}
 </style>
 </body>
 </html>

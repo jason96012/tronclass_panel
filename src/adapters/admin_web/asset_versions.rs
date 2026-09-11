@@ -223,54 +223,6 @@ const ASSETS: &[(&str, &str)] = &[
         "/admin/static/js/pdf.worker.min.js",
         include_str!("static/js/pdf.worker.min.js"),
     ),
-    // INLINE_SPLIT_V1／CSS_BUNDLE_V1：抽出的頁面內聯 script/style（bundle 由這些單檔組成，
-    // 任一成分變動 build id 就變，bundle URL 自然失效）。
-    (
-        "/admin/static/js/dashboard-head.js",
-        include_str!("static/js/dashboard-head.js"),
-    ),
-    (
-        "/admin/static/js/dashboard-main.js",
-        include_str!("static/js/dashboard-main.js"),
-    ),
-    (
-        "/admin/static/js/dashboard-body.js",
-        include_str!("static/js/dashboard-body.js"),
-    ),
-    (
-        "/admin/static/dashboard-inline.css",
-        include_str!("static/css/dashboard-inline.css"),
-    ),
-    (
-        "/admin/static/dashboard-inline-late.css",
-        include_str!("static/css/dashboard-inline-late.css"),
-    ),
-    (
-        "/admin/static/js/files-head.js",
-        include_str!("static/js/files-head.js"),
-    ),
-    (
-        "/admin/static/js/files-main.js",
-        include_str!("static/js/files-main.js"),
-    ),
-    (
-        "/admin/static/files-page.css",
-        include_str!("static/css/files-page.css"),
-    ),
-    (
-        "/admin/static/js/timetable-head.js",
-        include_str!("static/js/timetable-head.js"),
-    ),
-    (
-        "/admin/static/js/timetable-main.js",
-        include_str!("static/js/timetable-main.js"),
-    ),
-    (
-        "/admin/static/timetable-page.css",
-        include_str!("static/css/timetable-page.css"),
-    ),
-    ("/admin/static/js/ai-page.js", include_str!("static/js/ai-page.js")),
-    ("/admin/static/ai-page.css", include_str!("static/css/ai-page.css")),
     // 分享頁資源（參與 build id；URL 改寫與否無妨）
     ("/pub/share.css", include_str!("static/css/share.css")),
     (

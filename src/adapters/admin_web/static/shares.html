@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>分享連結管理</title>
 <script defer src="/admin/static/js/qrcode.min.js?v=qrshare1"></script>
 <script defer src="/admin/static/js/shares-admin.js?v=shares3"></script>
@@ -34,8 +34,7 @@
       radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
       linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%); }
   #sharesBgParticlesV1{ position:fixed;inset:0;width:100vw;height:100vh;z-index:0;pointer-events:none;display:block; }
-  /* IOS_SAFE_AREA_TOP_V1：主畫面 App 內容延伸到狀態列下，內距補 safe-area */
-  .wrap { position:relative; z-index:1; max-width: 960px; margin: 0 auto; padding: calc(16px + env(safe-area-inset-top,0px)) 16px calc(16px + env(safe-area-inset-bottom,0px)); }
+  .wrap { position:relative; z-index:1; max-width: 960px; margin: 0 auto; padding: 16px; }
   h1 { font-size: 20px; margin: 8px 0 4px; color:var(--text,#111); }
   .sub { color:var(--muted,#666); font-size: 13px; margin-bottom: 16px; }
   .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
@@ -66,6 +65,12 @@
     table { display:block; overflow-x:auto; max-width:100%; }
     th, td { font-size:12px; padding:8px; }
   }
+
+  /* CSP_STYLE_ATTR_STAGED_V1：供外部 JS（注入本頁 DOM）使用的 class，取代 inline style */
+  .share-modal-title{font-size:16px;font-weight:600;margin-bottom:6px}
+  .share-qr-box{display:flex;justify-content:center;margin:10px 0}
+  .share-actions{display:flex;gap:8px;justify-content:center}
+  .td-nowrap{white-space:nowrap}
 </style>
 </head>
 <body>

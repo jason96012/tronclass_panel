@@ -20,6 +20,18 @@
   html.tron-auth-pending #loginCard,
   html:not(.tron-auth-logged-out) #loginCard{display:none!important}
   html.tron-auth-logged-out #loginCard:has(.animated-login-card-inner){display:block!important}
+
+  /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  .h2-plain{margin:0;font-size:18px}
+  .w100{width:100px}
+  .w110{width:110px}
+  .w130{width:130px}
+  .w150{width:150px}
+  .w160{width:160px}
+  .td-time{white-space:nowrap;font-variant-numeric:tabular-nums}
+  .td-break-word{word-break:break-word}
+  .td-break-all{word-break:break-all}
+  .card-details-row.break-all{word-break:break-all}
 </style>
 <script id="BAN_CRUDE_LOGIN_V1">
 (function(){
@@ -653,7 +665,7 @@
   <section id="view-login" class="view active panel">
     <div class="toolbar">
       <div>
-        <h2 style="margin:0;font-size:18px">登入審計歷史</h2>
+        <h2 class="h2-plain">登入審計歷史</h2>
         <div class="small">紀錄 Web 管理頁帳號登入、密碼驗證與通行密鑰事件。</div>
       </div>
       <div class="toolbar-right">
@@ -669,11 +681,11 @@
       <table>
         <thead>
           <tr>
-            <th style="width:160px">時間</th>
-            <th style="width:110px">結果</th>
-            <th style="width:130px">人員 (操作者)</th>
-            <th style="width:130px">帳號 ID</th>
-            <th style="width:150px">IP</th>
+            <th class="w160">時間</th>
+            <th class="w110">結果</th>
+            <th class="w130">人員 (操作者)</th>
+            <th class="w130">帳號 ID</th>
+            <th class="w150">IP</th>
             <th>詳細說明</th>
           </tr>
         </thead>
@@ -689,7 +701,7 @@
   <section id="view-files" class="view panel">
     <div class="toolbar">
       <div>
-        <h2 style="margin:0;font-size:18px">教材檔案操作歷史</h2>
+        <h2 class="h2-plain">教材檔案操作歷史</h2>
         <div class="small">紀錄雲端教材的上傳、資料夾建立與檔案刪除歷程。</div>
       </div>
       <input id="fileSearch" type="search" placeholder="搜尋人員 / 動作 / 檔名 / 路徑...">
@@ -698,10 +710,10 @@
       <table>
         <thead>
           <tr>
-            <th style="width:160px">時間</th>
-            <th style="width:110px">結果</th>
-            <th style="width:130px">操作人員</th>
-            <th style="width:130px">動作類型</th>
+            <th class="w160">時間</th>
+            <th class="w110">結果</th>
+            <th class="w130">操作人員</th>
+            <th class="w130">動作類型</th>
             <th>路徑與檔案名稱</th>
           </tr>
         </thead>
@@ -717,7 +729,7 @@
   <section id="view-system" class="view panel">
     <div class="toolbar">
       <div>
-        <h2 style="margin:0;font-size:18px">系統執行 Log</h2>
+        <h2 class="h2-plain">系統執行 Log</h2>
         <div class="small">系統背景輪詢、點名排程與伺服器核心運作日誌。</div>
       </div>
       <div class="toolbar-right">
@@ -734,10 +746,10 @@
       <table>
         <thead>
           <tr>
-            <th style="width:160px">時間</th>
-            <th style="width:100px">等級</th>
-            <th style="width:130px">來源模組</th>
-            <th style="width:130px">帳號 / 目標</th>
+            <th class="w160">時間</th>
+            <th class="w100">等級</th>
+            <th class="w130">來源模組</th>
+            <th class="w130">帳號 / 目標</th>
             <th>Log 訊息</th>
           </tr>
         </thead>
@@ -750,7 +762,7 @@
   </section>
 </main>
 
-<div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="toast" class="toast"></div>
 
 <script>
 (function(){
@@ -873,12 +885,12 @@
       q('loginBody').innerHTML = arr.length ? arr.map(x => {
         const isOk = x.result === 'success' || x.action === 'login' || x.action === 'passkey_login' || x.success === true;
         return '<tr>' +
-          '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + fmtTime(x.time || x.timestamp) + '</td>' +
+          '<td class="td-time">' + fmtTime(x.time || x.timestamp) + '</td>' +
           '<td>' + pill(isOk ? 'ok' : 'bad', isOk ? '成功' : '失敗') + '</td>' +
           '<td><b>' + esc(x.actor || x.account_id || '-') + '</b></td>' +
           '<td><span class="small">' + esc(x.account_id || '-') + '</span></td>' +
-          '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + esc(x.ip || '-') + '</td>' +
-          '<td style="word-break:break-word">' + esc(x.details || x.detail || x.message || actionLabel(x.action)) + '</td>' +
+          '<td class="td-time">' + esc(x.ip || '-') + '</td>' +
+          '<td class="td-break-word">' + esc(x.details || x.detail || x.message || actionLabel(x.action)) + '</td>' +
         '</tr>';
       }).join('') : '<tr><td colspan="6" class="empty">沒有符合的登入紀錄</td></tr>';
     }
@@ -915,11 +927,11 @@
     if (q('filesBody')) {
       q('filesBody').innerHTML = arr.length ? arr.map(x => {
         return '<tr>' +
-          '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + fmtTime(x.time || x.timestamp) + '</td>' +
+          '<td class="td-time">' + fmtTime(x.time || x.timestamp) + '</td>' +
           '<td>' + pill(x.status || 'ok', '成功') + '</td>' +
           '<td><b>' + esc(x.actor || x.account_id || '-') + '</b></td>' +
           '<td>' + esc(actionLabel(x.event_type || x.action)) + '</td>' +
-          '<td style="word-break:break-all">' + esc(x.file_path || x.path || x.name || '-') + '</td>' +
+          '<td class="td-break-all">' + esc(x.file_path || x.path || x.name || '-') + '</td>' +
         '</tr>';
       }).join('') : '<tr><td colspan="5" class="empty">沒有符合的教材操作紀錄</td></tr>';
     }
@@ -935,7 +947,7 @@
             '<span class="card-actor-name">' + esc(x.actor || x.account_id || '-') + '</span>' +
             '<span class="card-account-id">' + esc(actionLabel(x.event_type || x.action)) + '</span>' +
           '</div>' +
-          '<div class="card-details-row" style="word-break:break-all">' +
+          '<div class="card-details-row break-all">' +
             '路徑：' + esc(x.file_path || x.path || x.name || '-') +
           '</div>' +
         '</div>';
@@ -960,11 +972,11 @@
       q('systemBody').innerHTML = arr.length ? arr.map(x => {
         const lvl = String(x.level || 'info').toLowerCase();
         return '<tr>' +
-          '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + fmtTime(x.time || x.timestamp) + '</td>' +
+          '<td class="td-time">' + fmtTime(x.time || x.timestamp) + '</td>' +
           '<td>' + pill(lvl === 'error' ? 'bad' : lvl === 'warn' ? 'warn' : 'info', x.level || 'INFO') + '</td>' +
           '<td><b>' + esc(x.target || x.source || x.module || '系統') + '</b></td>' +
           '<td>' + esc(x.account_id || '-') + '</td>' +
-          '<td style="word-break:break-all">' + esc(x.message || x.msg || x.text || '-') + '</td>' +
+          '<td class="td-break-all">' + esc(x.message || x.msg || x.text || '-') + '</td>' +
         '</tr>';
       }).join('') : '<tr><td colspan="5" class="empty">沒有符合的系統 Log</td></tr>';
     }
@@ -981,7 +993,7 @@
             '<span class="card-actor-name">' + esc(x.target || x.source || x.module || '系統') + '</span>' +
             '<span class="card-account-id">' + esc(x.account_id || '') + '</span>' +
           '</div>' +
-          '<div class="card-details-row" style="word-break:break-all">' +
+          '<div class="card-details-row break-all">' +
             esc(x.message || x.msg || x.text || '-') +
           '</div>' +
         '</div>';

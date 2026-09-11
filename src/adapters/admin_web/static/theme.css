@@ -584,13 +584,6 @@ button:disabled:not(.skel):not(.skeleton){
   -webkit-mask:url("data:image/svg+xml,<svg viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5'><rect x='3' y='3' width='18' height='18' rx='2'/><line x1='9' y1='9' x2='15' y2='15'/><line x1='15' y1='9' x2='9' y2='15'/></svg>") center/contain no-repeat
 }
 
-/* ── A11Y_BASICS_V1：跳到主內容連結（只有取得鍵盤焦點時顯示） ── */
-.skip-link{position:fixed;left:12px;top:-60px;z-index:100000;padding:10px 14px;border-radius:10px;
-  background:var(--primary,#2563eb);color:#fff!important;font-weight:800;text-decoration:none;
-  box-shadow:0 8px 24px rgba(15,23,42,.25);transition:top .15s}
-.skip-link:focus,.skip-link:focus-visible{top:calc(12px + env(safe-area-inset-top,0px));outline:3px solid #fff!important;outline-offset:2px!important}
-main:focus{outline:none}
-
 /* ── Focus 無障礙環 ── */
 input:focus-visible,select:focus-visible,textarea:focus-visible,
 button:focus-visible,a:focus-visible,.tab:focus-visible{
@@ -753,30 +746,3 @@ body.auth-ok main{
    （選擇器都只命中 dashboard 元素，其它頁面不受影響） */
 header.topbar .top-actions>*:not(#logoutBtn){display:none!important}
 html.tron-auth-logged-out:has(#loginCard[data-animated-login-installed]){visibility:visible!important}
-
-
-/* ─── IOS_SAFE_AREA_TOP_V1 ───
-   共用 <head>（pages.rs SHARED_ASSETS）設了 apple-mobile-web-app-status-bar-style=black-translucent
-   + viewport-fit=cover：iOS 主畫面 App 的網頁內容會延伸到狀態列／Dynamic Island 底下，
-   頂欄第一排字（Tronclass Dashboard／帳號名）會被時鐘與電量蓋住。
-   做法：把 safe-area 上緣以「透明上邊框」補在每頁最上方的元素，而不是改 padding——
-   各頁頂欄的 padding 幾乎都帶 !important（theme.css、files-page.css、dashboard-inline.css…），
-   改 padding 會互相打架；border-top 沒有任何頁面對這些元素設定，且背景／毛玻璃預設會
-   延伸到邊框區（background-clip:border-box），所以 sticky 頂欄捲動時也能把狀態列墊住。
-   桌機或非瀏海裝置 env() 為 0 → 邊框寬 0 → 完全不變。
-   對應頁面：
-     body > header        dashboard／files／activity／logs／timetable／passkey／password／
-                          notifications／settings／blacklist
-     body > div.wrap > header.top   bulletins（sticky 頂欄在 .wrap 裡；限定 div 以免命中 push_status
-                          的 main.wrap > header.top 卡片，那張卡自己有 1px 邊框）
-     body > .shell        detection_schedule／devices／rest_days／update_times／homework
-                          （頂欄是圓角卡片，不能直接加邊框，改墊外層容器）
-     body > main.wrap     push_status（同上）
-   ai.html 自己已在 ai-page.css 用 padding-top:calc(… + env()) 處理；shares／error／blocked／
-   health／login 主題鈕分別在各自檔案內修正。 */
-body > header,
-body > div.wrap > header.top,
-body > .shell,
-body > main.wrap{
-  border-top:env(safe-area-inset-top,0px) solid transparent!important;
-}

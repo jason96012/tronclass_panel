@@ -20,12 +20,12 @@
   function pct(used,total){ used=Number(used||0); total=Number(total||0); return total>0?Math.max(0,Math.min(100,used/total*100)):0; }
   function levelByPct(p){ return p>=90?'bad':(p>=75?'warn':'ok'); }
   function parseDisk(out){ var lines=String(out||'').trim().split(/\n/); if(lines.length<2)return null; var c=lines[1].trim().split(/\s+/); return {size:c[1],used:c[2],avail:c[3],use:c[4],mount:c[5]}; }
-  function card(k,v,h,cls,percent){ var cls2=cls==='bad'?'maint-final-bad':cls==='warn'?'maint-final-warn':cls==='ok'?'maint-final-ok':''; var bar=percent==null?'':'<div class="maint-final-bar"><div class="maint-final-fill '+(levelByPct(percent)==='bad'?'bad':levelByPct(percent)==='warn'?'warn':'')+'" style="width:'+Math.round(percent)+'%"></div></div>'; return '<div class="maint-final-card"><div class="maint-final-k">'+esc(k)+'</div><div class="maint-final-v '+cls2+'">'+esc(v)+'</div><div class="maint-final-h">'+esc(h||'')+'</div>'+bar+'</div>'; }
+  function card(k,v,h,cls,percent){ var cls2=cls==='bad'?'maint-final-bad':cls==='warn'?'maint-final-warn':cls==='ok'?'maint-final-ok':''; var bar=percent==null?'':'<div class="maint-final-bar"><div class="maint-final-fill '+(levelByPct(percent)==='bad'?'bad':levelByPct(percent)==='warn'?'warn':'')+'" data-w="'+Math.round(percent)+'"></div></div>'; return '<div class="maint-final-card"><div class="maint-final-k">'+esc(k)+'</div><div class="maint-final-v '+cls2+'">'+esc(v)+'</div><div class="maint-final-h">'+esc(h||'')+'</div>'+bar+'</div>'; }
   function renderShell(){
     var root=q('view-maintenance'); if(!root)return;
     if(root.dataset.maintFinalReady==='1')return;
     root.dataset.maintFinalReady='1';
-    root.innerHTML='<section id="maintFinalOverall" class="maint-final-overall"><div><div class="maint-final-title">健康狀態</div><div id="maintFinalSummary" class="maint-final-sub">尚未讀取</div></div><div class="maint-final-actions"><button id="maintRefresh" class="secondary" type="button">重新整理</button><button id="maintCheck" type="button">一鍵檢查</button><a id="maintLogs" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><a id="maintBlacklist" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a></div></section><section id="maintCards" class="maint-final-grid"></section><!-- METRICS_HISTORY_V1 --><section class="panel" style="margin-bottom:14px"><div class="toolbar"><div><h2>24 小時趨勢</h2><div id="maintTrendSub" class="small">每分鐘一筆，重啟後重新累積</div></div><div class="toolbar-right"><select id="maintTrendRange"><option value="60">最近 1 小時</option><option value="360">最近 6 小時</option><option value="1440" selected>最近 24 小時</option></select></div></div><div id="maintTrend" class="maint-trend-grid"><div class="small">讀取中…</div></div></section><section class="grid two"><div class="panel"><div class="toolbar"><h2>一鍵檢查結果</h2></div><div id="maintChecks" class="maint-final-checks"><div class="small">按「一鍵檢查」可測 SQLite、教材目錄、磁碟、RAM、Cloudflare Tunnel、最近錯誤。</div></div></div><div class="panel"><div class="toolbar"><h2>維護操作</h2></div><div class="quick"><button id="maintReloadAll" class="secondary" type="button">重新整理全部</button><button id="maintCopyDiag" class="secondary" type="button">複製診斷摘要</button><button id="maintStopAll" class="danger" type="button">全部暫停</button></div></div></section><section class="panel" style="margin-top:14px"><div class="toolbar"><h2>原始資料</h2><button id="maintToggleRaw" class="secondary" type="button">顯示/隱藏</button></div><pre id="maintRaw" class="maint-final-raw" style="display:none">{}</pre></section>';
+    root.innerHTML='<section id="maintFinalOverall" class="maint-final-overall"><div><div class="maint-final-title">健康狀態</div><div id="maintFinalSummary" class="maint-final-sub">尚未讀取</div></div><div class="maint-final-actions"><button id="maintRefresh" class="secondary" type="button">重新整理</button><button id="maintCheck" type="button">一鍵檢查</button><a id="maintLogs" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><a id="maintBlacklist" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a></div></section><section id="maintCards" class="maint-final-grid"></section><!-- METRICS_HISTORY_V1 --><section class="panel mb14"><div class="toolbar"><div><h2>24 小時趨勢</h2><div id="maintTrendSub" class="small">每分鐘一筆，重啟後重新累積</div></div><div class="toolbar-right"><select id="maintTrendRange"><option value="60">最近 1 小時</option><option value="360">最近 6 小時</option><option value="1440" selected>最近 24 小時</option></select></div></div><div id="maintTrend" class="maint-trend-grid"><div class="small">讀取中…</div></div></section><section class="grid two"><div class="panel"><div class="toolbar"><h2>一鍵檢查結果</h2></div><div id="maintChecks" class="maint-final-checks"><div class="small">按「一鍵檢查」可測 SQLite、教材目錄、磁碟、RAM、Cloudflare Tunnel、最近錯誤。</div></div></div><div class="panel"><div class="toolbar"><h2>維護操作</h2></div><div class="quick"><button id="maintReloadAll" class="secondary" type="button">重新整理全部</button><button id="maintCopyDiag" class="secondary" type="button">複製診斷摘要</button><button id="maintStopAll" class="danger" type="button">全部暫停</button></div></div></section><section class="panel mt14"><div class="toolbar"><h2>原始資料</h2><button id="maintToggleRaw" class="secondary" type="button">顯示/隱藏</button></div><pre id="maintRaw" class="maint-final-raw hidden-init">{}</pre></section>';
     // MAINTENANCE_BUTTONS_MODULE_PHASE4A3: maintenance.js owns API invocation.
     function maintenanceEvent(name){window.dispatchEvent(new CustomEvent('tronclass:maintenance:'+name));}
     q('maintRefresh').onclick=function(){maintenanceEvent('refresh')};
@@ -33,7 +33,7 @@
     q('maintReloadAll').onclick=function(){maintenanceEvent('refresh'); if(window.tronDashboardRefreshStrategy)window.tronDashboardRefreshStrategy.force(4000);};
     q('maintCopyDiag').onclick=function(){maintenanceEvent('copy')};
     q('maintStopAll').onclick=function(){maintenanceEvent('stop')};
-    q('maintToggleRaw').onclick=function(){var r=q('maintRaw');r.style.display=r.style.display==='none'?'block':'none'};
+    q('maintToggleRaw').onclick=function(){var r=q('maintRaw');r.style.display=r.style.display==='block'?'none':'block'};
     q('maintLogs').href=withToken('/admin/activity');
     q('maintBlacklist').href=withToken('/admin/blacklist');
   }
@@ -70,12 +70,15 @@
       card('Cloudflare Connector',cf.restart_loop?('一小時內重啟 '+cf.restarts_last_hour+' 次'):cf.fatal_error?'Token / Tunnel 設定錯誤':cf.recent_error?'連線中斷、重連中':(cf.pid_alive?'程序正常':'未啟動'),cf.restart_loop?('最後一次 '+(cf.last_restart||'-')+'｜請看 logs/cloudflared-watchdog.log'):cf.fatal_error?'請檢查 config/cf.token 與 Cloudflare 上的 Tunnel 是否仍存在':cf.recent_error?('log 失敗計數 '+(cf.log_failures||0)+'｜HTTP 失敗計數 '+(cf.http_failures||0)):('PID + 新增 log 檢查'+(cf.restarts_last_hour?('｜一小時內重啟 '+cf.restarts_last_hour+' 次'):'')),cfBad?'bad':cfWarn?'warn':(cf.pid_alive?'ok':'warn')),
       card('Watchdog',wd.enabled?(wdDown.length?'有服務停止':'監控中'):'未啟用','PID + HTTP 檢查｜間隔 '+(wd.interval_secs||15)+' 秒｜'+(wdServices.map(function(x){return x.label+': '+(x.alive?'正常':'停止')}).join('、')||'尚無 PID'),wd.enabled?(wdDown.length?'bad':'ok'):'warn')
     ].join('');
+    /* CSP_STYLE_ATTR_STAGED_V1：進度條寬度改由 data-w 描述，注入後以 CSSOM 套用 */
+    var fills=q('maintCards').querySelectorAll('.maint-final-fill[data-w]');
+    for(var fi=0;fi<fills.length;fi++) fills[fi].style.width=fills[fi].getAttribute('data-w')+'%';
     q('maintRaw').textContent=JSON.stringify({health:lastHealth,check:lastCheck},null,2);
   }
   function renderCheck(c){
     lastCheck=c;
     var checks=c.checks||[];
-    q('maintChecks').innerHTML=checks.length?checks.map(function(x){var level=x.level||(x.ok?'ok':'bad');return '<div class="maint-final-check"><div class="maint-final-check-top"><span>'+esc(x.name||'-')+'</span><span class="pill '+(level==='ok'?'good':level==='warn'?'warn':'bad')+'">'+(level==='ok'?'正常':level==='warn'?'注意':'異常')+'</span></div><div class="small" style="margin-top:6px">'+esc(x.message||'')+'</div></div>'}).join(''):'<div class="small">沒有檢查結果</div>';
+    q('maintChecks').innerHTML=checks.length?checks.map(function(x){var level=x.level||(x.ok?'ok':'bad');return '<div class="maint-final-check"><div class="maint-final-check-top"><span>'+esc(x.name||'-')+'</span><span class="pill '+(level==='ok'?'good':level==='warn'?'warn':'bad')+'">'+(level==='ok'?'正常':level==='warn'?'注意':'異常')+'</span></div><div class="small mt6">'+esc(x.message||'')+'</div></div>'}).join(''):'<div class="small">沒有檢查結果</div>';
     q('maintRaw').textContent=JSON.stringify({health:lastHealth,check:lastCheck},null,2);
   }
   /* METRICS_HISTORY_V1：純 SVG 折線（CSP 不允許外部圖表庫），電腦 2 欄、手機 1 欄 */
@@ -131,7 +134,7 @@
   }
   async function doAction(action){
     if(action==='stop'&&!confirm('確定要暫停全部帳號監控？'))return;
-    try{var r=await fetch('/admin/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:action})}).then(parseResponse);/* ACTION_FEEDBACK_V1 */toast((r&&r.message)||'操作完成');loadHealth(false)}catch(e){toast(e.message||'操作失敗',false)}
+    try{await fetch('/admin/api/action',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:action})}).then(parseResponse);toast('操作完成');loadHealth(false)}catch(e){toast(e.message||'操作失敗',false)}
   }
   function copyDiag(){var text=JSON.stringify({health:lastHealth,check:lastCheck,time:new Date().toISOString()},null,2); if(navigator.clipboard)navigator.clipboard.writeText(text).then(function(){toast('已複製診斷摘要')}); else prompt('請手動複製：',text)}
   function cleanupMobileNav(){
@@ -149,9 +152,7 @@
     stopAll:function(){return doAction('stop')}
   };
 
-  /* NO_POLL_ENSURE_V1：cleanupMobileNav 只在桌機寬度隱藏手機底欄；底欄由其他腳本 appendChild 到 body，
-     改用 body 直屬 childList 的 MutationObserver＋resize 取代 20 次 × 500 ms 輪詢。 */
-  function boot(){renderShell();cleanupMobileNav(); if(location.hash==='#maintenance'||(q('view-maintenance')&&q('view-maintenance').classList.contains('active')))loadHealth(false); try{new MutationObserver(function(){cleanupMobileNav()}).observe(document.body||document.documentElement,{childList:true})}catch(_){} window.addEventListener('resize',cleanupMobileNav,{passive:true})}
+  function boot(){renderShell();cleanupMobileNav(); if(location.hash==='#maintenance'||(q('view-maintenance')&&q('view-maintenance').classList.contains('active')))loadHealth(false); var n=0,t=setInterval(function(){cleanupMobileNav();n++;if(n>=20)clearInterval(t)},500)}
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot);else boot();
   document.addEventListener('click',function(ev){if(ev.target.closest&&ev.target.closest('[data-view="maintenance"],.tab'))setTimeout(function(){renderShell();loadHealth(false);cleanupMobileNav()},100)},true);
 })();

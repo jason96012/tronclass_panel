@@ -24,6 +24,13 @@
     .log-details{margin-top:4px}
     .log-details summary{cursor:pointer;font-size:12px;color:var(--muted)}
     .log-details pre{margin:4px 0 0;padding:8px;border-radius:8px;background:var(--soft,#eef3fb);font-size:11px;line-height:1.4;white-space:pre-wrap;word-break:break-all;max-height:220px;overflow:auto}
+
+  /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  .h2-plain{margin:0;font-size:18px}
+  .w100{width:100px}
+  .w130{width:130px}
+  .w160{width:160px}
+  .td-time{white-space:nowrap;font-variant-numeric:tabular-nums}
 </style>
 <script id="BAN_CRUDE_LOGIN_V1">
 (function(){
@@ -519,7 +526,7 @@
   <section class="panel">
     <div class="toolbar">
       <div>
-        <h2 style="margin:0;font-size:18px">Log 訊息清單</h2>
+        <h2 class="h2-plain">Log 訊息清單</h2>
         <div id="logSummary" class="small">載入中...</div>
       </div>
       <div class="toolbar-right">
@@ -544,10 +551,10 @@
       <table>
         <thead>
           <tr>
-            <th style="width:160px">時間</th>
-            <th style="width:100px">等級</th>
-            <th style="width:130px">來源模組</th>
-            <th style="width:130px">帳號 / 目標</th>
+            <th class="w160">時間</th>
+            <th class="w100">等級</th>
+            <th class="w130">來源模組</th>
+            <th class="w130">帳號 / 目標</th>
             <th>Log 訊息</th>
           </tr>
         </thead>
@@ -561,7 +568,7 @@
   </section>
 </main>
 
-<div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="true"></div>
+<div id="toast" class="toast"></div>
 
 <script>
 (function(){
@@ -664,7 +671,7 @@
       q('systemBody').innerHTML = arr.length ? arr.map(x => {
         const lvl = String(x.level || 'info').toLowerCase();
         return '<tr>' +
-          '<td style="white-space:nowrap;font-variant-numeric:tabular-nums">' + fmtTime(x.time || x.timestamp) + '</td>' +
+          '<td class="td-time">' + fmtTime(x.time || x.timestamp) + '</td>' +
           '<td>' + pill(lvl, (x.level || 'INFO').toUpperCase()) + '</td>' +
           '<td><b>' + esc(x.target || x.source || x.module || '系統') + '</b></td>' +
           '<td><span class="small">' + esc(x.account_id || '-') + '</span></td>' +

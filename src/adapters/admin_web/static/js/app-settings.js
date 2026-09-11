@@ -15,37 +15,6 @@
  * 對應的 CSS 覆蓋規則在 pages.rs 的 APP_SETTINGS_DYNAMIC_CSS（隨 theme.css
  * 之後注入每個頁面），兩者透過 <html data-app-settings> 屬性連動。
  */
-/* CSP_DYNAMIC_STYLE_NONCE_V1：JS 動態建立的 <style> 必須帶上本次回應的 CSP nonce，
-   否則 style-src 'self' 'nonce-…' 會把它擋掉（後台 client-log 出現
-   「style-src-elem 阻擋 inline」，手機頁底部導覽列的樣式因此失效）。
-   nonce 由 html_page_response 注入到頁面內每個 <script>/<style>；這裡從任一個
-   帶 nonce 的元素讀回（瀏覽器對 nonce 屬性做了隱藏，只能透過 .nonce 屬性讀）。 */
-(function () {
-  'use strict';
-  if (window.tronCspNonce) return;
-  var cached = null;
-  window.tronCspNonce = function () {
-    if (cached !== null) return cached;
-    var el = document.currentScript;
-    var n = (el && el.nonce) || '';
-    if (!n) {
-      var list = document.querySelectorAll('script[nonce],style[nonce],script,style');
-      for (var i = 0; i < list.length && !n; i++) n = list[i].nonce || '';
-    }
-    cached = n || '';
-    return cached;
-  };
-  /* 建立一個已帶 nonce 的 <style>，給各頁動態樣式使用。 */
-  window.tronCreateStyle = function (id, css) {
-    var s = document.createElement('style');
-    if (id) s.id = id;
-    var n = window.tronCspNonce();
-    if (n) s.nonce = n;
-    s.textContent = css || '';
-    return s;
-  };
-})();
-
 (function () {
   'use strict';
   if (window.TronclassAppSettings) return;
