@@ -85,7 +85,8 @@ fn discord_notification_key(message: &OutboundMessage) -> &'static str {
         OutboundMessage::SecurityAlert(_) => "security_alert",
         // DISCORD_NOTIFY_UNIFY_V1：新結構化事件的偏好鍵（沿用既有分類，不新增開關）。
         OutboundMessage::MonitorEvent(_) => "other",
-        OutboundMessage::AdminAlert(_) => "other",
+        // DC_CHANNEL_PREFS_V1：監控警示獨立成鍵，管理員可在通知設定頁單獨關閉。
+        OutboundMessage::AdminAlert(_) => "monitor_alert",
         OutboundMessage::ClassReminder(_) => "other",
         OutboundMessage::TimetableChanged(_) => "other",
         OutboundMessage::MonitorPaused

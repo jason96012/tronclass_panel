@@ -32,10 +32,16 @@
   select{width:100%;min-height:44px;margin-top:6px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);font:inherit;font-weight:700;padding:0 10px}
   .badge{display:inline-flex;align-items:center;min-height:27px;margin-top:10px;padding:0 10px;border-radius:999px;background:var(--soft);border:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:800}
   #notifyList{display:grid;gap:9px}
-  .pref{display:flex;align-items:flex-start;gap:11px;padding:12px 13px;border:1px solid var(--line);border-radius:15px;background:var(--card);cursor:pointer}
-  .pref input{width:19px;height:19px;margin:2px 0 0;accent-color:var(--primary);flex:0 0 auto}
+  .pref{display:flex;align-items:flex-start;gap:11px;padding:12px 13px;border:1px solid var(--line);border-radius:15px;background:var(--card)}
+  .pref-main{flex:1;min-width:0}
   .pref b{display:block;font-size:14px;font-weight:800}
   .pref i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
+  /* CHANNEL_PREFS_V1：每類通知右側的渠道開關（Discord／Web Push） */
+  .pref-chans{display:flex;flex-direction:column;gap:7px;flex:0 0 auto;align-items:stretch}
+  .chan{display:inline-flex;align-items:center;justify-content:center;gap:6px;font-size:12px;font-weight:800;color:var(--muted);cursor:pointer;background:var(--soft);border:1px solid var(--line);border-radius:999px;padding:5px 11px;user-select:none;white-space:nowrap}
+  .chan input{width:16px;height:16px;margin:0;accent-color:var(--primary);flex:0 0 auto}
+  .chan.na{opacity:.45;cursor:default}
+  .pref input{accent-color:var(--primary)}
   .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
   button.primary{min-height:44px;padding:0 18px;border:0;border-radius:13px;background:var(--primary);color:#fff;font:inherit;font-size:14px;font-weight:850;cursor:pointer}
   button.sec,.actions a.sec{min-height:44px;padding:0 16px;border:1px solid var(--line);border-radius:13px;background:var(--soft);color:var(--text);font:inherit;font-size:14px;font-weight:800;cursor:pointer;display:inline-flex;align-items:center;text-decoration:none}
@@ -79,7 +85,7 @@
     .duo{display:grid;grid-template-columns:1.3fr 1fr;gap:18px;align-items:start}
     .duo .card{margin-bottom:0}
     .grid{grid-template-columns:250px 1fr;gap:16px}
-    #notifyList{grid-template-columns:1fr 1fr}
+    #notifyList{grid-template-columns:1fr}
     .duo .grid-single{margin-bottom:0}
   }
   .duo{display:block}
@@ -121,7 +127,7 @@
 <main>
   <div class="page-head">
     <h1>通知設定</h1>
-    <p>集中管理 Discord 通知、上課前提醒、晨間摘要與即時點名提示音。電腦版與手機版皆已最佳化。</p>
+    <p>集中管理 Discord 與手機 Web Push 通知、上課前提醒、晨間摘要與即時點名提示音。每類通知可分別選擇要 Discord、Web Push 或兩者都要。電腦版與手機版皆已最佳化。</p>
   </div>
 
   <!-- BINDING_SELF_SERVICE_V1：通知管道綁定（Discord／LINE User ID） -->
@@ -155,7 +161,7 @@
 
   <section class="card">
     <div class="sec-head">
-      <div><h2>Discord 通知</h2><div class="desc">可單獨設定點名、QR Code、數字點名、完成結果等各類 Discord 通知。管理員可切換帳號；一般使用者只能設定自己。</div></div>
+      <div><h2>通知渠道設定</h2><div class="desc">每類通知可獨立選擇 Discord（DC）與手機 Web Push（推播）。標示「僅 Discord」的類別沒有手機推播。管理員可切換帳號；一般使用者只能設定自己。</div></div>
       <button id="notifyReload" class="sec" type="button">重新整理</button>
     </div>
     <div class="grid">
@@ -163,7 +169,7 @@
         <label class="small" for="notifyAccount">設定帳號</label>
         <select id="notifyAccount"></select>
         <div id="notifyInfo" class="small mt8">載入中...</div>
-        <div class="badge">Discord 通知</div>
+        <div class="badge">Discord＋Web Push</div>
       </aside>
       <div>
         <div id="notifyList"><div class="small">載入中...</div></div>
@@ -180,7 +186,7 @@
   <div class="duo">
     <section class="card grid-single">
       <div class="sec-head">
-        <div><h2>上課前 Discord 提醒</h2><div class="desc">上課前幾分鐘由 Discord DM 提醒。需要先在課表填好課程並綁定 Discord User ID。</div></div>
+        <div><h2>上課前提醒</h2><div class="desc">上課前幾分鐘提醒（預設 10 分鐘）。Discord 走 DM（需綁定 Discord User ID）；Web Push 推到手機（需在手機推播狀態頁啟用）。需要先在課表填好課程。</div></div>
         <button id="classReminderReload" class="sec" type="button">重新整理</button>
       </div>
       <div class="acct-row">
@@ -192,7 +198,11 @@
       </div>
       <label class="toggle-row">
         <input id="classReminderEnabled" type="checkbox">
-        <span><b>開啟 Discord 上課提醒</b><i>關閉後不會發送上課前提醒，但不影響點名通知。</i></span>
+        <span><b>開啟 Discord 上課提醒</b><i>上課前由 Discord DM 提醒。</i></span>
+      </label>
+      <label class="toggle-row">
+        <input id="classReminderPush" type="checkbox">
+        <span><b>開啟手機 Web Push 上課提醒</b><i>上課前推送到手機（與 Discord 各自獨立開關）。</i></span>
       </label>
       <div class="row2">
         <div>

@@ -2,7 +2,8 @@
  *
  * 由 dashboard 內嵌「通知」分頁改為獨立網頁（NOTIFICATIONS_STANDALONE_PAGE_V1）。
  * 本檔自包含，不依賴 dashboard 的 tab/view 系統：
- * 1) Discord 通知開關：GET/POST /admin/api/notifications/preferences
+ * 1) Discord／Web Push 通知開關：GET/POST /admin/api/notifications/preferences
+ *    （CHANNEL_PREFS_V1：GET 回 channels.discord / channels.push 兩組；POST 帶 channel）
  * 2) 上課前 Discord 提醒：GET/POST /admin/api/class_reminder
  * 3) 作業截止提醒階梯：GET/POST /admin/api/homework/ladder（HOMEWORK_LADDER_V1）
  * 3b) 晨間摘要每帳號開關：GET/POST /admin/api/digest/preference（DIGEST_PER_ACCOUNT_V1）
@@ -141,12 +142,19 @@
     }
   }
 
-  // ── 1. Discord 通知開關 ──────────────────────────────────────────────────
-  function renderNotifyPrefs(prefs) {
+  // ── 1. Discord／Web Push 通知開關（CHANNEL_PREFS_V1）──────────────────
+  function renderNotifyPrefs(discordPrefs, pushPrefs) {
     var list = q('notifyList');
-    list.innerHTML = prefs && prefs.length
-      ? prefs.map(function (p) {
-          return '<label class="pref"><input type="checkbox" data-notify-key="' + esc(p.key) + '"' + (p.enabled ? ' checked' : '') + '><span><b>' + esc(p.label) + '</b><i>' + esc(p.description || '') + '</i></span></label>';
+    var pushMap = {};
+    (pushPrefs || []).forEach(function (p) { pushMap[p.key] = !!p.enabled; });
+    list.innerHTML = discordPrefs && discordPrefs.length
+      ? discordPrefs.map(function (p) {
+          var hasPush = Object.prototype.hasOwnProperty.call(pushMap, p.key);
+          var chanHtml = '<label class="chan" title="Discord 通知"><input type="checkbox" data-notify-key="' + esc(p.key) + '"' + (p.enabled ? ' checked' : '') + '>DC</label>' +
+            (hasPush
+              ? '<label class="chan" title="手機 Web Push 通知"><input type="checkbox" data-notify-key-push="' + esc(p.key) + '"' + (pushMap[p.key] ? ' checked' : '') + '>推播</label>'
+              : '<span class="chan na">僅 DC</span>');
+          return '<div class="pref"><div class="pref-main"><b>' + esc(p.label) + '</b><i>' + esc(p.description || '') + '</i></div><div class="pref-chans">' + chanHtml + '</div></div>';
         }).join('')
       : '<div class="small">沒有通知項目。</div>';
   }
@@ -156,7 +164,10 @@
     try {
       var body = await api('/admin/api/notifications/preferences' + (account ? '?account_id=' + encodeURIComponent(account) : ''));
       q('notifyInfo').textContent = '目前設定帳號：' + (body.account_id || account || '-');
-      renderNotifyPrefs(body.preferences || []);
+      var channels = body.channels || {};
+      var discordPrefs = (channels.discord && channels.discord.preferences) || body.preferences || [];
+      var pushPrefs = (channels.push && channels.push.preferences) || [];
+      renderNotifyPrefs(discordPrefs, pushPrefs);
       setMsg('notifyMsg', '');
     } catch (e) {
       q('notifyList').innerHTML = '<div class="small c-bad">讀取失敗：' + esc(e.message || e) + '</div>';
@@ -165,22 +176,31 @@
   async function saveNotifyPrefs() {
     var sel = q('notifyAccount');
     var account = sel && sel.value ? sel.value : '';
-    var prefs = Array.prototype.slice.call(document.querySelectorAll('[data-notify-key]')).map(function (cb) {
+    var discordPrefs = Array.prototype.slice.call(document.querySelectorAll('[data-notify-key]')).map(function (cb) {
       return { key: cb.dataset.notifyKey, enabled: cb.checked };
+    });
+    var pushPrefs = Array.prototype.slice.call(document.querySelectorAll('[data-notify-key-push]')).map(function (cb) {
+      return { key: cb.dataset.notifyKeyPush, enabled: cb.checked };
     });
     try {
       await api('/admin/api/notifications/preferences', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ account_id: account || undefined, preferences: prefs })
+        body: JSON.stringify({ account_id: account || undefined, channel: 'discord', preferences: discordPrefs })
       });
-      setMsg('notifyMsg', 'Discord 通知設定已儲存', 'ok');
+      await api('/admin/api/notifications/preferences', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ account_id: account || undefined, channel: 'push', preferences: pushPrefs })
+      });
+      setMsg('notifyMsg', 'Discord 與 Web Push 通知設定已儲存', 'ok');
     } catch (e) {
       setMsg('notifyMsg', e.message || '儲存通知設定失敗', 'bad');
     }
   }
   function setAllNotify(v) {
     document.querySelectorAll('[data-notify-key]').forEach(function (cb) { cb.checked = v; });
+    document.querySelectorAll('[data-notify-key-push]').forEach(function (cb) { cb.checked = v; });
   }
 
   // ── 1b. 晨間摘要每帳號開關（DIGEST_PER_ACCOUNT_V1）─────────────────────
@@ -221,6 +241,7 @@
     try {
       var body = await api('/admin/api/class_reminder' + (account ? '?account_id=' + encodeURIComponent(account) : ''));
       q('classReminderEnabled').checked = !!body.discord_enabled;
+      if (q('classReminderPush')) q('classReminderPush').checked = body.push_enabled !== false;
       q('classReminderMinutes').value = Number(body.minutes_before == null ? 10 : body.minutes_before);
       q('classReminderInfo').textContent = '目前設定帳號：' + (body.account_id || account || '-');
       setMsg('classReminderMsg', '');
@@ -238,10 +259,10 @@
       await api('/admin/api/class_reminder', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ account_id: account || undefined, discord_enabled: !!q('classReminderEnabled').checked, minutes_before: minutes })
+        body: JSON.stringify({ account_id: account || undefined, discord_enabled: !!q('classReminderEnabled').checked, push_enabled: !!(q('classReminderPush') && q('classReminderPush').checked), minutes_before: minutes })
       });
       q('classReminderMinutes').value = minutes;
-      setMsg('classReminderMsg', '上課前 Discord 提醒設定已儲存', 'ok');
+      setMsg('classReminderMsg', '上課前提醒設定（Discord／Web Push）已儲存', 'ok');
     } catch (e) {
       setMsg('classReminderMsg', e.message || '儲存上課提醒設定失敗', 'bad');
     }

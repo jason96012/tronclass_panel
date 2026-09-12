@@ -85,23 +85,50 @@ async fn run_once(
 
         let minutes_until = (start_minutes - now_minutes).max(0);
         // DISCORD_NOTIFY_UNIFY_V1：結構化事件，由 Discord adapter 統一 render。
-        let message = build_event(&entry, minutes_until, minutes_before);
-        if let Err(e) = discord
-            .push(&entry.discord_user_id, &OutboundMessage::ClassReminder(message))
-            .await
-        {
-            warn!(
-                account = %entry.account_id,
-                discord_user_id = %entry.discord_user_id,
-                error = %e,
-                "上課前 Discord DM 提醒送出失敗"
+        // CLASS_REMINDER_PUSH_V1：依各渠道開關分別送 Discord DM 與手機 Web Push。
+        let event = build_event(&entry, minutes_until, minutes_before);
+        if entry.discord_enabled && !entry.discord_user_id.trim().is_empty() {
+            match discord
+                .push(
+                    &entry.discord_user_id,
+                    &OutboundMessage::ClassReminder(event.clone()),
+                )
+                .await
+            {
+                Err(e) => {
+                    warn!(
+                        account = %entry.account_id,
+                        discord_user_id = %entry.discord_user_id,
+                        error = %e,
+                        "上課前 Discord DM 提醒送出失敗"
+                    );
+                }
+                Ok(()) => {
+                    info!(
+                        account = %entry.account_id,
+                        course = %entry.course_name,
+                        minutes_before = minutes_before,
+                        "上課前 Discord DM 提醒已送出"
+                    );
+                }
+            }
+        }
+        if entry.push_enabled {
+            let body_text = format!(
+                "{}｜{}｜{}",
+                event.time_text, event.classroom, event.teacher
             );
-        } else {
+            crate::web_push_notifications::notify_class_reminder(
+                &entry.account_id,
+                &entry.course_name,
+                &event.headline(),
+                &body_text,
+            );
             info!(
                 account = %entry.account_id,
                 course = %entry.course_name,
                 minutes_before = minutes_before,
-                "上課前 Discord DM 提醒已送出"
+                "上課前 Web Push 提醒已送出"
             );
         }
     }

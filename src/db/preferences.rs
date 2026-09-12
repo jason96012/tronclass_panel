@@ -19,6 +19,8 @@ pub struct NotificationPreferenceRow {
 pub struct ClassReminderPreferenceRow {
     pub account_id: String,
     pub discord_enabled: bool,
+    /// CLASS_REMINDER_PUSH_V1：上課提醒的 Web Push 渠道開關。
+    pub push_enabled: bool,
     pub minutes_before: i64,
     pub updated_at: i64,
     pub updated_time: String,
@@ -49,6 +51,10 @@ pub struct ClassReminderDueRow {
     pub teacher: String,
     pub classroom: String,
     pub discord_user_id: String,
+    /// CLASS_REMINDER_PUSH_V1：此帳號是否要 Discord 提醒。
+    pub discord_enabled: bool,
+    /// CLASS_REMINDER_PUSH_V1：此帳號是否要手機 Web Push 提醒。
+    pub push_enabled: bool,
     pub minutes_before: i64,
 }
 
@@ -235,7 +241,7 @@ impl AccountsDb {
     ) -> Result<ClassReminderPreferenceRow> {
         let account_id = account_id.trim();
         let row = sqlx::query_as::<_, ClassReminderPreferenceRow>(
-            "SELECT account_id, discord_enabled, minutes_before, updated_at, updated_time
+            "SELECT account_id, discord_enabled, push_enabled, minutes_before, updated_at, updated_time
              FROM class_reminder_preferences
              WHERE account_id = ?",
         )
@@ -248,6 +254,7 @@ impl AccountsDb {
         Ok(row.unwrap_or_else(|| ClassReminderPreferenceRow {
             account_id: account_id.to_string(),
             discord_enabled: true,
+            push_enabled: true,
             minutes_before: 10,
             updated_at: 0,
             updated_time: String::new(),
@@ -258,6 +265,7 @@ impl AccountsDb {
         &self,
         account_id: &str,
         discord_enabled: bool,
+        push_enabled: bool,
         minutes_before: i64,
     ) -> Result<()> {
         let account_id = account_id.trim();
@@ -266,16 +274,18 @@ impl AccountsDb {
         let timestamp = now.timestamp();
         let time_label = now.format("%Y-%m-%d %H:%M:%S").to_string();
         sqlx::query(
-            "INSERT INTO class_reminder_preferences (account_id, discord_enabled, minutes_before, updated_at, updated_time)
-             VALUES (?, ?, ?, ?, ?)
+            "INSERT INTO class_reminder_preferences (account_id, discord_enabled, push_enabled, minutes_before, updated_at, updated_time)
+             VALUES (?, ?, ?, ?, ?, ?)
              ON CONFLICT(account_id) DO UPDATE SET
                 discord_enabled = excluded.discord_enabled,
+                push_enabled = excluded.push_enabled,
                 minutes_before = excluded.minutes_before,
                 updated_at = excluded.updated_at,
                 updated_time = excluded.updated_time",
         )
         .bind(account_id)
         .bind(discord_enabled)
+        .bind(push_enabled)
         .bind(minutes_before)
         .bind(timestamp)
         .bind(&time_label)
@@ -303,14 +313,18 @@ impl AccountsDb {
                 t.teacher AS teacher,
                 t.classroom AS classroom,
                 a.discord_user_id AS discord_user_id,
+                COALESCE(p.discord_enabled, 1) AS discord_enabled,
+                COALESCE(p.push_enabled, 1) AS push_enabled,
                 COALESCE(p.minutes_before, 10) AS minutes_before
              FROM timetable_entries t
              JOIN accounts a ON a.id = t.account_id
              LEFT JOIN class_reminder_preferences p ON p.account_id = t.account_id
              WHERE t.weekday = ?
                AND a.enabled = 1
-               AND TRIM(a.discord_user_id) <> ''
-               AND COALESCE(p.discord_enabled, 1) = 1
+               AND (
+                   (TRIM(a.discord_user_id) <> '' AND COALESCE(p.discord_enabled, 1) = 1)
+                   OR COALESCE(p.push_enabled, 1) = 1
+               )
                AND TRIM(t.course_name) <> ''
              ORDER BY t.account_id, t.start_time, t.period_start",
         )

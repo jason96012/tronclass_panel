@@ -165,12 +165,13 @@ async fn notify_admins(
     body: String,
 ) {
     let messenger: Option<Arc<dyn AdapterMessenger>> = spawner.messenger();
-    let mut discord_ids: Vec<String> = Vec::new();
+    // (Discord user id, 對應帳號 id)：DC_CHANNEL_PREFS_V1 逐位管理員檢查偏好。
+    let mut discord_recipients: Vec<(String, Option<String>)> = Vec::new();
     let mut admin_account_ids: Vec<String> = Vec::new();
     if let Some(messenger) = messenger.as_ref() {
         let admin = messenger.admin_user_id().trim();
         if !admin.is_empty() {
-            discord_ids.push(admin.to_string());
+            discord_recipients.push((admin.to_string(), None));
         }
     }
     match spawner.accounts_db().list().await {
@@ -181,8 +182,12 @@ async fn notify_admins(
                 }
                 admin_account_ids.push(account.id.clone());
                 let id = account.discord_user_id.trim();
-                if !id.is_empty() && !discord_ids.iter().any(|existing| existing == id) {
-                    discord_ids.push(id.to_string());
+                if !id.is_empty()
+                    && !discord_recipients
+                        .iter()
+                        .any(|(existing, _)| existing == id)
+                {
+                    discord_recipients.push((id.to_string(), Some(account.id.clone())));
                 }
             }
         }
@@ -196,7 +201,31 @@ async fn notify_admins(
             title: title.clone(),
             body: body.clone(),
         });
-        for to in &discord_ids {
+        for (to, pref_account) in &discord_recipients {
+            // DC_CHANNEL_PREFS_V1：管理員可在通知設定頁關閉監控警示的 Discord 通知。
+            if let Some(pref_account_id) = pref_account {
+                match spawner
+                    .accounts_db()
+                    .notification_preference_enabled(pref_account_id, "discord", "monitor_alert")
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        debug!(
+                            account = %pref_account_id,
+                            "看門狗通知 Discord 已由使用者關閉"
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        warn!(
+                            account = %pref_account_id,
+                            error = %error,
+                            "讀取看門狗 Discord 通知設定失敗，仍發送"
+                        );
+                    }
+                }
+            }
             if let Err(error) = messenger.push(to, &message).await {
                 warn!(to = %to, error = %error, "看門狗通知 Discord 推送失敗");
             }

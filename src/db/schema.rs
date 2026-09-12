@@ -352,6 +352,7 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS class_reminder_preferences (
             account_id TEXT PRIMARY KEY NOT NULL,
             discord_enabled INTEGER NOT NULL DEFAULT 1,
+            push_enabled INTEGER NOT NULL DEFAULT 1,
             minutes_before INTEGER NOT NULL DEFAULT 10,
             updated_at INTEGER NOT NULL DEFAULT 0,
             updated_time TEXT NOT NULL DEFAULT ''
@@ -361,6 +362,22 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .into_diagnostic()
     .wrap_err("初始化 class_reminder_preferences 資料表失敗")?;
+
+    // CLASS_REMINDER_PUSH_V1：既有資料表補上 Web Push 渠道開關欄位。
+    // SQLite 的 ADD COLUMN 對已存在的欄位會報 duplicate column，視為已完成。
+    if let Err(error) = sqlx::query(
+        "ALTER TABLE class_reminder_preferences ADD COLUMN push_enabled INTEGER NOT NULL DEFAULT 1",
+    )
+    .execute(pool)
+    .await
+    {
+        let message = error.to_string();
+        if !message.contains("duplicate column") {
+            return Err(error)
+                .into_diagnostic()
+                .wrap_err("class_reminder_preferences 新增 push_enabled 欄位失敗");
+        }
+    }
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS detection_schedule_preferences (

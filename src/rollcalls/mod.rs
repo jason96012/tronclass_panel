@@ -299,6 +299,16 @@ pub async fn process_rollcall(
             warn!(error = %e, "發送 Line 結果通知失敗");
         }
     }
+    // ROLLCALL_FINISH_PUSH_V1：點名結果同步推到手機 Web Push
+    //（偏好鍵 rollcall_finished，可在通知設定頁關閉）。
+    crate::web_push_notifications::notify_rollcall_finished(
+        account_label,
+        rollcall.rollcall_id,
+        &rollcall.course_title,
+        &attendance_type.to_string(),
+        result.is_success(),
+        &result.to_string(),
+    );
 
     let outcome = RollcallOutcome {
         rollcall,

@@ -683,12 +683,14 @@ pub async fn cancel_login_lock(keys: &[&str]) -> bool {
     removed
 }
 
-async fn admin_discord_recipients(state: &AdminWebState) -> Vec<String> {
-    let mut ids = Vec::new();
+async fn admin_discord_recipients(state: &AdminWebState) -> Vec<(String, Option<String>)> {
+    // (Discord user id, 對應帳號 id)：DC_CHANNEL_PREFS_V1 逐位管理員檢查通知偏好；
+    // messenger admin 無對應帳號時為 None（不檢查、維持送達）。
+    let mut ids: Vec<(String, Option<String>)> = Vec::new();
     if let Some(messenger) = &state.messenger {
         let admin = messenger.admin_user_id().trim();
         if !admin.is_empty() {
-            ids.push(admin.to_string());
+            ids.push((admin.to_string(), None));
         }
     }
     if let Ok(accounts) = state.accounts_db.list().await {
@@ -700,15 +702,15 @@ async fn admin_discord_recipients(state: &AdminWebState) -> Vec<String> {
             if id.is_empty() {
                 continue;
             }
-            if !ids.iter().any(|existing| existing == id) {
-                ids.push(id.to_string());
+            if !ids.iter().any(|(existing, _)| existing == id) {
+                ids.push((id.to_string(), Some(account.id.clone())));
             }
         }
     }
     ids
 }
 
-async fn notify_admins_discord(state: &AdminWebState, text: String) {
+async fn notify_admins_discord(state: &AdminWebState, text: String, pref_key: &str) {
     let Some(messenger) = state.messenger.clone() else {
         warn!("security alert skipped: no Discord/LINE messenger");
         return;
@@ -719,7 +721,32 @@ async fn notify_admins_discord(state: &AdminWebState, text: String) {
         return;
     }
     let message = OutboundMessage::Text(text);
-    for to in recipients {
+    for (to, pref_account) in recipients {
+        // DC_CHANNEL_PREFS_V1：管理員可在通知設定頁關閉對應類型的 Discord 通知。
+        if let Some(account_id) = &pref_account {
+            match state
+                .accounts_db
+                .notification_preference_enabled(account_id, "discord", pref_key)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(
+                        account = %account_id,
+                        key = pref_key,
+                        "安全類 Discord 通知已由使用者關閉"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    warn!(
+                        account = %account_id,
+                        error = %error,
+                        "讀取安全類 Discord 通知設定失敗，仍發送"
+                    );
+                }
+            }
+        }
         if let Err(e) = messenger.push(&to, &message).await {
             warn!(to = %to, error = %e, "security alert Discord 推送失敗");
         }
@@ -727,6 +754,11 @@ async fn notify_admins_discord(state: &AdminWebState, text: String) {
 }
 
 async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAlertEvent) {
+    // SECURITY_ALERT_PUSH_V1：先取出推播需要的欄位（event 稍後會 move 進 Discord 訊息）。
+    let push_username = event.username.clone();
+    let push_ip = event.ip.clone();
+    let push_user_failures = event.user_failures;
+    let push_ip_failures = event.ip_failures;
     let Some(messenger) = state.messenger.clone() else {
         warn!("security alert skipped: no Discord/LINE messenger");
         return;
@@ -737,10 +769,56 @@ async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAler
         return;
     }
     let message = OutboundMessage::SecurityAlert(event);
-    for to in recipients {
+    for (to, pref_account) in recipients {
+        // DC_CHANNEL_PREFS_V1：管理員可在通知設定頁關閉安全警示的 Discord 通知。
+        if let Some(account_id) = &pref_account {
+            match state
+                .accounts_db
+                .notification_preference_enabled(account_id, "discord", "security_alert")
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(
+                        account = %account_id,
+                        "安全警示 Discord 通知已由使用者關閉"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    warn!(
+                        account = %account_id,
+                        error = %error,
+                        "讀取安全警示 Discord 通知設定失敗，仍發送"
+                    );
+                }
+            }
+        }
         if let Err(error) = messenger.push(&to, &message).await {
             warn!(to = %to, error = %error, "security alert notification 推送失敗");
         }
+    }
+    // SECURITY_ALERT_PUSH_V1：安全警示改雙渠道——管理員的手機 Web Push 同步發送
+    //（notify_security_alert 內會依偏好鍵 security_alert 逐帳號檢查）。
+    let mut admin_account_ids = Vec::new();
+    if let Ok(accounts) = state.accounts_db.list().await {
+        for account in accounts {
+            if account.is_admin {
+                admin_account_ids.push(account.id);
+            }
+        }
+    }
+    if !admin_account_ids.is_empty() {
+        let title = "[安全] Dashboard 安全警示：連續密碼錯誤".to_string();
+        let body = format!(
+            "帳號：{push_username}\n來源 IP：{push_ip}\n帳號失敗次數：{push_user_failures}\nIP 失敗次數：{push_ip_failures}"
+        );
+        crate::web_push_notifications::notify_security_alert(
+            admin_account_ids,
+            title,
+            body,
+            format!("tronclass-security-alert-{push_ip}"),
+        );
     }
 }
 
@@ -1023,13 +1101,32 @@ async fn alert_abnormal_traffic(state: &AdminWebState, source: &str, username: &
     } else {
         username.trim().to_string()
     };
-    let text = format!(
-        // DISCORD_NOTIFY_UNIFY_V1：此通知只送 Discord，改用統一的「[安全] 標題」格式。
-        "[安全] Dashboard 安全警示：異常流量\n\n來源：{source}\n帳號：{who}\nIP：{}\n時間：{}\n\n60 秒內嘗試次數超過上限，已暫時封鎖。請到 /admin/activity 查看登入審計。",
+    let body = format!(
+        "來源：{source}\n帳號：{who}\nIP：{}\n時間：{}\n\n60 秒內嘗試次數超過上限，已暫時封鎖。請到 /admin/activity 查看登入審計。",
         ip.trim(),
         security_now_label()
     );
-    notify_admins_discord(state, text).await;
+    let text = format!(
+        // DISCORD_NOTIFY_UNIFY_V1：統一的「[安全] 標題」格式。
+        "[安全] Dashboard 安全警示：異常流量\n\n{body}"
+    );
+    // TRAFFIC_ALERT_PUSH_V1：異常流量改雙渠道（Discord＋Web Push），偏好鍵 traffic_alert。
+    notify_admins_discord(state, text, "traffic_alert").await;
+    let mut admin_account_ids = Vec::new();
+    if let Ok(accounts) = state.accounts_db.list().await {
+        for account in accounts {
+            if account.is_admin {
+                admin_account_ids.push(account.id);
+            }
+        }
+    }
+    if !admin_account_ids.is_empty() {
+        crate::web_push_notifications::notify_traffic_alert(
+            admin_account_ids,
+            "[安全] Dashboard 安全警示：異常流量".to_string(),
+            body,
+        );
+    }
 }
 
 /// LOGIN_GEO_ALERT_V1：純判斷——新 IP 是否需要告警。回 `Some(原因)` 表示要告警。
@@ -1232,7 +1329,7 @@ async fn check_unusual_login_location(
     let admin_text = format!(
         "Dashboard 安全警示\n類型：異常位置登入\n帳號：{account_id}\n登入方式：{method_label}\n位置：{location}\nIP：{ip}\n原因：{reason}\n裝置：{ua}\n時間：{when}\n此帳號過去從未從這個 IP 成功登入。若可疑，可到 /admin/activity 查看登入審計或到黑名單頁封鎖此 IP。"
     );
-    notify_admins_discord(state, admin_text).await;
+    notify_admins_discord(state, admin_text, "security_alert").await;
     let mut admin_account_ids = Vec::new();
     if let Ok(accounts) = state.accounts_db.list().await {
         for account in accounts {

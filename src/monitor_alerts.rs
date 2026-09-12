@@ -280,13 +280,18 @@ fn format_duration(duration: Duration) -> String {
 async fn admin_recipients(
     db: &AccountsDb,
     messenger: Option<&dyn AdapterMessenger>,
-) -> (Vec<String>, Vec<String>) {
-    let mut discord_ids: Vec<String> = Vec::new();
+) -> (
+    // (Discord user id, 對應的帳號 id)：DC_CHANNEL_PREFS_V1 逐位管理員檢查通知偏好用；
+    // messenger admin 無對應帳號時為 None（不檢查、維持送達）。
+    Vec<(String, Option<String>)>,
+    Vec<String>,
+) {
+    let mut discord_recipients: Vec<(String, Option<String>)> = Vec::new();
     let mut account_ids: Vec<String> = Vec::new();
     if let Some(messenger) = messenger {
         let admin = messenger.admin_user_id().trim();
         if !admin.is_empty() {
-            discord_ids.push(admin.to_string());
+            discord_recipients.push((admin.to_string(), None));
         }
     }
     match db.list().await {
@@ -297,14 +302,18 @@ async fn admin_recipients(
                 }
                 account_ids.push(account.id.clone());
                 let id = account.discord_user_id.trim();
-                if !id.is_empty() && !discord_ids.iter().any(|existing| existing == id) {
-                    discord_ids.push(id.to_string());
+                if !id.is_empty()
+                    && !discord_recipients
+                        .iter()
+                        .any(|(existing, _)| existing == id)
+                {
+                    discord_recipients.push((id.to_string(), Some(account.id.clone())));
                 }
             }
         }
         Err(error) => warn!(error = %error, "監控警示：讀取管理員清單失敗"),
     }
-    (discord_ids, account_ids)
+    (discord_recipients, account_ids)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -318,7 +327,7 @@ async fn broadcast_to_admins(
     body: String,
     tag: String,
 ) {
-    let (discord_ids, account_ids) = admin_recipients(db, messenger).await;
+    let (discord_recipients, account_ids) = admin_recipients(db, messenger).await;
     if let Some(messenger) = messenger {
         // DISCORD_NOTIFY_UNIFY_V1：結構化事件，Discord 端依等級上色。
         let message = OutboundMessage::AdminAlert(AdminAlertNotice {
@@ -328,7 +337,30 @@ async fn broadcast_to_admins(
             title: title.clone(),
             body: body.clone(),
         });
-        for to in &discord_ids {
+        for (to, pref_account) in &discord_recipients {
+            // DC_CHANNEL_PREFS_V1：管理員可在通知設定頁關閉監控警示的 Discord 通知。
+            if let Some(pref_account_id) = pref_account {
+                match db
+                    .notification_preference_enabled(pref_account_id, "discord", "monitor_alert")
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        debug!(
+                            account = %pref_account_id,
+                            "監控警示 Discord 通知已由使用者關閉"
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        warn!(
+                            account = %pref_account_id,
+                            error = %error,
+                            "讀取監控警示 Discord 通知設定失敗，仍發送"
+                        );
+                    }
+                }
+            }
             if let Err(error) = messenger.push(to, &message).await {
                 warn!(to = %to, error = %error, "監控警示 Discord 推送失敗");
             }

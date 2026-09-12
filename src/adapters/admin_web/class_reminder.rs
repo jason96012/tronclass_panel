@@ -26,11 +26,17 @@ pub(super) struct AdminClassReminderUpdateRequest {
     pub account_id: Option<String>,
     #[serde(default = "default_discord_enabled")]
     pub discord_enabled: bool,
+    /// CLASS_REMINDER_PUSH_V1：手機 Web Push 渠道開關（省略時維持預設開啟）。
+    #[serde(default = "default_push_enabled")]
+    pub push_enabled: bool,
     #[serde(default = "default_minutes_before")]
     pub minutes_before: i64,
 }
 
 fn default_discord_enabled() -> bool {
+    true
+}
+fn default_push_enabled() -> bool {
     true
 }
 fn default_minutes_before() -> i64 {
@@ -96,6 +102,7 @@ pub(super) async fn admin_class_reminder_get_handler(
             Json(json!({
                 "account_id": pref.account_id,
                 "discord_enabled": pref.discord_enabled,
+                "push_enabled": pref.push_enabled,
                 "minutes_before": pref.minutes_before,
                 "max_minutes": 180,
             })),
@@ -131,7 +138,12 @@ pub(super) async fn admin_class_reminder_update_handler(
     let minutes_before = req.minutes_before.clamp(0, 180);
     match state
         .accounts_db
-        .set_class_reminder_preference(&target, req.discord_enabled, minutes_before)
+        .set_class_reminder_preference(
+            &target,
+            req.discord_enabled,
+            req.push_enabled,
+            minutes_before,
+        )
         .await
     {
         Ok(()) => {
@@ -141,10 +153,10 @@ pub(super) async fn admin_class_reminder_update_handler(
                 "class_reminder_settings",
                 Some(&target),
                 Some(&format!(
-                    "discord_enabled={} minutes_before={}",
-                    req.discord_enabled, minutes_before
+                    "discord_enabled={} push_enabled={} minutes_before={}",
+                    req.discord_enabled, req.push_enabled, minutes_before
                 )),
-                "更新上課前 Discord 提醒設定",
+                "更新上課前提醒設定（Discord／Web Push）",
             );
             (
                 StatusCode::OK,
@@ -152,6 +164,7 @@ pub(super) async fn admin_class_reminder_update_handler(
                     "ok": true,
                     "account_id": target,
                     "discord_enabled": req.discord_enabled,
+                    "push_enabled": req.push_enabled,
                     "minutes_before": minutes_before,
                 })),
             )

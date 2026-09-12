@@ -238,6 +238,28 @@ pub async fn send_digest(account_id: &str, title: &str, body: &str) -> Result<us
 
 /// Queue one account-owner notification. Repeated monitor passes for the same
 /// rollcall are suppressed for two hours.
+/// PUSH_CHANNEL_PREFS_V1：以 channel="push" 查詢該帳號是否啟用此類推播。
+/// 查無設定或資料庫錯誤時預設允許（與 Discord 端 `discord_notification_enabled` 一致），
+/// 讓使用者能在通知設定頁逐類關閉手機推播。
+async fn push_preference_enabled(service: &WebPushService, account_id: &str, key: &str) -> bool {
+    match service
+        .db
+        .notification_preference_enabled(account_id, "push", key)
+        .await
+    {
+        Ok(enabled) => enabled,
+        Err(error) => {
+            warn!(
+                account = %account_id,
+                key = key,
+                error = %error,
+                "讀取 Web Push 通知設定失敗，預設允許通知"
+            );
+            true
+        }
+    }
+}
+
 pub fn notify_rollcall(
     account_id: &str,
     rollcall_id: u64,
@@ -277,6 +299,10 @@ pub fn notify_rollcall_with_url(
         .filter(|url| !url.is_empty())
         .map(str::to_string);
     tokio::spawn(async move {
+        // PUSH_CHANNEL_PREFS_V1：點名偵測推播可在通知設定頁關閉。
+        if !push_preference_enabled(&service, &account_id, "rollcall_detected").await {
+            return;
+        }
         if let Err(error) = service
             .send_rollcall(
                 &account_id,
@@ -321,6 +347,15 @@ pub fn notify_rollcall_reminder(
         .filter(|url| url.starts_with("https://") || url.starts_with('/'))
         .map(str::to_string);
     tokio::spawn(async move {
+        // PUSH_CHANNEL_PREFS_V1：催促跟著數字／QR 點名的開關走（與 Discord 端一致）。
+        let reminder_key = if attendance_type.contains("數字") {
+            "number_code"
+        } else {
+            "qr_code"
+        };
+        if !push_preference_enabled(&service, &account_id, reminder_key).await {
+            return;
+        }
         let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
             Ok(rows) => rows,
             Err(error) => {
@@ -354,6 +389,98 @@ pub fn notify_rollcall_reminder(
     });
 }
 
+/// ROLLCALL_FINISH_PUSH_V1：點名嘗試結束後的結果推播（成功／失敗），
+/// 與 Discord 的 RollcallFinished 對應；偏好鍵 `rollcall_finished` 可在通知設定頁關閉。
+pub fn notify_rollcall_finished(
+    account_id: &str,
+    rollcall_id: u64,
+    course_name: &str,
+    attendance_type: &str,
+    success: bool,
+    result_text: &str,
+) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    let account_id = account_id.to_string();
+    let course_name = course_name.to_string();
+    let attendance_type = attendance_type.to_string();
+    let result_text = result_text.to_string();
+    tokio::spawn(async move {
+        // PUSH_CHANNEL_PREFS_V1：點名完成結果推播可在通知設定頁關閉。
+        if !push_preference_enabled(&service, &account_id, "rollcall_finished").await {
+            return;
+        }
+        let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                warn!(account = %account_id, error = %error, "Web Push 點名結果讀取訂閱失敗");
+                return;
+            }
+        };
+        if subscriptions.is_empty() {
+            return;
+        }
+        let headline = if success { "點名完成" } else { "點名未完成" };
+        let payload = match serde_json::to_vec(&json!({
+            "title": format!("{headline}：{course_name}"),
+            "body": format!("{attendance_type}｜帳號 {account_id}｜{result_text}"),
+            "url": "/admin/dashboard#rollcall",
+            "tag": format!("tronclass-rollcall-finished-{account_id}-{rollcall_id}"),
+            "rollcall_id": rollcall_id,
+        })) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(error = %error, "序列化 Web Push 點名結果 payload 失敗");
+                return;
+            }
+        };
+        service.send_to_many(subscriptions, &payload).await;
+    });
+}
+
+/// CLASS_REMINDER_PUSH_V1：上課前提醒的手機推播（與 Discord DM 對應）。
+/// 偏好走 class_reminder_preferences.push_enabled（上課提醒卡開關），不走 notification_preferences。
+pub fn notify_class_reminder(
+    account_id: &str,
+    course_name: &str,
+    headline: &str,
+    body_text: &str,
+) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    let account_id = account_id.to_string();
+    let course_name = course_name.to_string();
+    let headline = headline.to_string();
+    let body_text = body_text.to_string();
+    tokio::spawn(async move {
+        let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                warn!(account = %account_id, error = %error, "Web Push 上課提醒讀取訂閱失敗");
+                return;
+            }
+        };
+        if subscriptions.is_empty() {
+            return;
+        }
+        let payload = match serde_json::to_vec(&json!({
+            "title": format!("上課提醒｜{course_name}"),
+            "body": format!("{headline}｜{body_text}"),
+            "url": "/admin/dashboard#timetable",
+            "tag": format!("tronclass-class-reminder-{account_id}"),
+        })) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(error = %error, "序列化 Web Push 上課提醒 payload 失敗");
+                return;
+            }
+        };
+        service.send_to_many(subscriptions, &payload).await;
+    });
+}
+
 /// MONITOR_ALERT_GRADING_V1：把監控警示／恢復訊息推到所有管理員帳號的裝置。
 /// tag 以帳號為後綴，同一帳號的警示→恢復會覆蓋同一則通知，不會洗版。
 /// 呼叫端已做節流，這裡不再去重。
@@ -375,6 +502,10 @@ pub fn notify_admin_alert(admin_account_ids: Vec<String>, title: String, body: S
             }
         };
         for account_id in admin_account_ids {
+            // PUSH_CHANNEL_PREFS_V1：監控警示推播可在通知設定頁關閉（管理員各自設定）。
+            if !push_preference_enabled(&service, &account_id, "monitor_alert").await {
+                continue;
+            }
             let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
                 Ok(rows) => rows,
                 Err(error) => {
@@ -410,6 +541,10 @@ pub fn notify_security_alert(account_ids: Vec<String>, title: String, body: Stri
             }
         };
         for account_id in account_ids {
+            // PUSH_CHANNEL_PREFS_V1：安全警示推播可在通知設定頁關閉。
+            if !push_preference_enabled(&service, &account_id, "security_alert").await {
+                continue;
+            }
             let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
                 Ok(rows) => rows,
                 Err(error) => {
@@ -420,6 +555,45 @@ pub fn notify_security_alert(account_ids: Vec<String>, title: String, body: Stri
             if subscriptions.is_empty() {
                 continue;
             }
+            service.send_to_many(subscriptions, &payload).await;
+        }
+    });
+}
+
+/// TRAFFIC_ALERT_PUSH_V1：異常流量警示推播（60 秒內嘗試超過上限、已暫時封鎖）。
+/// 落地頁是登入審計（/admin/activity）；偏好鍵 `traffic_alert` 可在通知設定頁關閉。
+pub fn notify_traffic_alert(admin_account_ids: Vec<String>, title: String, body: String) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    tokio::spawn(async move {
+        for account_id in admin_account_ids {
+            // PUSH_CHANNEL_PREFS_V1：異常流量推播可在通知設定頁關閉（管理員各自設定）。
+            if !push_preference_enabled(&service, &account_id, "traffic_alert").await {
+                continue;
+            }
+            let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    warn!(account = %account_id, error = %error, "異常流量警示讀取推播訂閱失敗");
+                    continue;
+                }
+            };
+            if subscriptions.is_empty() {
+                continue;
+            }
+            let payload = match serde_json::to_vec(&json!({
+                "title": title,
+                "body": body,
+                "url": "/admin/activity",
+                "tag": "tronclass-traffic-alert",
+            })) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    warn!(error = %error, "序列化異常流量 payload 失敗");
+                    return;
+                }
+            };
             service.send_to_many(subscriptions, &payload).await;
         }
     });
@@ -449,6 +623,10 @@ pub fn notify_homework(
     let title = title.to_string();
     let stage_badge = stage_badge.to_string();
     tokio::spawn(async move {
+        // PUSH_CHANNEL_PREFS_V1：作業截止推播可在通知設定頁關閉。
+        if !push_preference_enabled(&service, &account_id, "homework_deadline").await {
+            return;
+        }
         if let Err(error) = service
             .send_homework(&account_id, &course_name, &title, &stage_badge)
             .await
@@ -482,6 +660,10 @@ pub fn notify_bulletin(
     let title = title.to_string();
     let summary = summary.to_string();
     tokio::spawn(async move {
+        // PUSH_CHANNEL_PREFS_V1：公告推播（課程＋管理員）可在通知設定頁關閉。
+        if !push_preference_enabled(&service, &account_id, "bulletin").await {
+            return;
+        }
         if let Err(error) = service
             .send_bulletin(&account_id, &course_name, &title, &summary)
             .await
