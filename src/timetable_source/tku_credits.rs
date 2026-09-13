@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use miette::{IntoDiagnostic, Result, WrapErr};
 use reqwest::{cookie::Jar, header, Client, Url};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
 use crate::account::AccountConfig;
@@ -45,7 +45,7 @@ const TRANSCRIPT_PAGE: &str = "TMWS100.aspx";
 // ─── 資料結構（直接序列化成 API 回應）───────────────────────────────────────
 
 /// 一份完整的學分／成績報告。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreditReport {
     pub student: CreditStudent,
     #[serde(default)]
@@ -65,7 +65,7 @@ pub struct CreditReport {
 }
 
 /// 學生基本資料。
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CreditStudent {
     pub dept: String,
     pub student_no: String,
@@ -73,7 +73,7 @@ pub struct CreditStudent {
 }
 
 /// 畢業門檻（TMWS080/TMWC120）。
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GraduationInfo {
     /// 畢業審核學年度（例如 "114"）。
     #[serde(default)]
@@ -99,7 +99,7 @@ pub struct GraduationInfo {
 }
 
 /// 歷年成績中的一科。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreditCourseRow {
     /// 學年（民國，例如 "114"）。
     pub yr: String,
@@ -129,7 +129,7 @@ pub struct CreditCourseRow {
 }
 
 /// 必修科目清單中的一科（TMWC120）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequiredCourseRow {
     /// 年級（"一"～"四"）。
     pub grade_level: String,
@@ -143,7 +143,7 @@ pub struct RequiredCourseRow {
 }
 
 /// 通識學門（TMWC120 群別）。
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GeDomainRow {
     /// 群別代碼（"L"、"M"、…）。
     pub code: String,

@@ -83,7 +83,7 @@ pub fn start_timetable_sync_scheduler(
 ///
 /// - 每週一 08:00–10:00 是 emis 的維護窗口。
 /// - 課程查詢系統每日 04:00–04:30、10:00–10:30、12:00–12:30、17:00–17:30 會刷新資料。
-fn in_blackout_window(now: chrono::DateTime<Local>) -> bool {
+pub(crate) fn in_blackout_window(now: chrono::DateTime<Local>) -> bool {
     use chrono::Datelike;
     let (hour, minute) = (now.hour(), now.minute());
 

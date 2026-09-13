@@ -70,6 +70,18 @@
   .bad-text{color:var(--bad)}
   .code-inline{color:var(--muted);font-size:11.5px;font-weight:700}
   .mb6{margin-bottom:6px}
+  /* 「還缺什麼」缺口卡。 */
+  .gap-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:13px;background:var(--soft);margin-bottom:8px}
+  .gap-item.ok{opacity:.72}
+  .gap-item .g-name{flex:1;min-width:0;font-size:13.5px;font-weight:800}
+  .gap-item .g-name .small{display:block;margin-top:2px;font-weight:650}
+  .gap-item .g-need{font-size:13px;font-weight:800;color:var(--warn);white-space:nowrap}
+  .gap-item.ok .g-need{color:var(--ok)}
+  .gap-total{font-size:13.5px;font-weight:750;color:var(--muted);margin-top:6px;line-height:1.6}
+  .gap-total b{font-size:16px;color:var(--text)}
+  details.gap-more{margin:4px 0 8px}
+  details.gap-more summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:750;padding:4px 2px}
+  details.gap-more .req-row{margin-top:6px}
   .badge.todo{color:var(--primary);border-color:transparent;background:rgba(37,99,235,.12)}
   .badge.doing{color:var(--primary);border-color:transparent;background:rgba(37,99,235,.12)}
   /* 學期卡 */
@@ -169,6 +181,13 @@
 
     <section class="card">
       <div class="sec-head">
+        <div><h2>還缺什麼</h2><div class="desc" id="gapDesc">各項畢業缺口與達標預估。</div></div>
+      </div>
+      <div id="gapBody"></div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
         <div><h2>通識學門</h2><div class="desc">淡江通識（114 學年度起）分「領域」與「學門」：人文（L文學經典 P歷史與文化 V哲學與宗教 M藝術欣賞）、社會（T全球視野 R未來學 W社會分析 S公民社會）、科學（O資訊教育 Z全球科技革命 U自然科學）三大領域各至少修 2 學分，每學門至多 2 科 4 學分；基本知能（Q外語、N學習與發展、K課外活動）多為固定必修或代選。全英語學士班限選「全英語授課」（◎）之通識核心科目，中文授課者不列入畢業學分；體育 4 學分與全民國防 1 學分為校定必修但不列入 128 學分門檻。學門清單來自貴系必修科目表。</div></div>
       </div>
       <div class="small mb6">還可以選的學門</div>
@@ -204,7 +223,7 @@
     </section>
   </div>
 </main>
-<script src="/admin/static/credits.js?v=20260912credits1"></script>
+<script src="/admin/static/credits.js?v=20260913credits10"></script>
 <script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
 </body>
 </html>

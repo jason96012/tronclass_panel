@@ -33,6 +33,7 @@ mod api;
 mod atomic_write;
 mod auth;
 mod class_reminders;
+mod credits_sync;
 mod config;
 mod dashboard_auth;
 // LOGIN_GEO_ALERT_V1：登入 IP 國家判定（新位置登入告警只在境外／異常時發）。
@@ -1206,6 +1207,10 @@ async fn main() -> Result<()> {
         Arc::clone(&config),
         adapter_hub.as_ref().map(Arc::clone),
     );
+
+    // CREDITS_AUTO_SYNC_V1：學分／成績自動同步（每帳號每月隨機一天；跟隨課表同步啟用清單）。
+    // 同步差異觸發成績公布推播；同步日連續失敗觸發學校改版告警。
+    credits_sync::start_credits_sync_scheduler(accounts_db.clone(), Arc::clone(&config));
 
     let interactive_adapter = adapter_hub.is_some() || config.adapters.admin_web.enabled;
     let scanner_registry = if interactive_adapter {

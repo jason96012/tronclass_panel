@@ -94,6 +94,13 @@
     var code = (c.course_code || '').toUpperCase();
     return NON_DEGREE_PREFIXES.some(function (p) { return code.indexOf(p) === 0; });
   }
+  /* 必修列學期排序：全年（上下）→ 上 → 下 → 其他；必修清單與缺口卡共用。 */
+  var TERM_W = { '上下': 0, '上': 1, '下': 2 };
+  function termSort(a, b) {
+    var wa = TERM_W[a.term]; if (wa === undefined) wa = 3;
+    var wb = TERM_W[b.term]; if (wb === undefined) wb = 3;
+    return wa - wb;
+  }
   var currentGeProfile = null;
   function setGeProfile(report) {
     var dept = ((report && report.student && report.student.dept) || '').trim();
@@ -198,7 +205,15 @@
     });
     var requiredDoneCodes = {};
     passed.forEach(function (c) { if (c.course_code) requiredDoneCodes[c.course_code.toUpperCase()] = true; });
-    var requiredDoingCredits = sumCredits(requiredDoing.filter(function (r) { return !requiredDoneCodes[(r.course_code || '').toUpperCase()]; }));
+    // 修課中必修（畢業口徑）：排除已及格與體育/國防（後者不列入 128）。
+    var requiredDoingList = requiredDoing.filter(function (r) {
+      return !requiredDoneCodes[(r.course_code || '').trim().toUpperCase()] && !isNonDegreeCourse(r);
+    });
+    var requiredDoingCredits = sumCredits(requiredDoingList);
+    // 已完成學期數（有及格課的學年-學期去重）：達標速度估算用。
+    var semSeen = {};
+    passed.forEach(function (c) { if (c.yr && c.sem) semSeen[c.yr + '-' + c.sem] = true; });
+    var semCount = Object.keys(semSeen).length;
 
     // 已修通識學門（有學門碼的及格課＋手冊承認學門的核心/代選課）。
     var geDoneGroups = [];
@@ -221,6 +236,9 @@
       requiredPassed: sumCredits(requiredPassed),
       requiredNeed: requiredNeed,
       requiredDoingCredits: requiredDoingCredits,
+      requiredDoingList: requiredDoingList,
+      requiredDoneCodes: requiredDoneCodes,
+      semCount: semCount,
       gePassed: sumCredits(gePassedList),
       geNeed: currentGeProfile ? currentGeProfile.geTotal : null,
       geDoneGroups: geDoneGroups,
@@ -268,6 +286,52 @@
     };
   }
 
+  /* 「還缺什麼」的數字計算（純邏輯、無 DOM）。 */
+  function computeGap(report, s) {
+    var degGot = s.degreeEarned;
+    var reqGot = s.requiredPassed;
+    var geGot = s.gePassed;
+    var reqGap = s.requiredNeed ? Math.max(0, s.requiredNeed - reqGot) : null;
+    var elGap = s.electiveNeed ? Math.max(0, s.electiveNeed - s.deptElectivePassed) : null;
+    var oGap = s.otherNeed ? Math.max(0, s.otherNeed - s.freeElectivePassed) : null;
+    var geGap = s.geNeed != null ? Math.max(0, s.geNeed - geGot) : null;
+    var totalGap = s.total ? Math.max(0, s.total - degGot) : null;
+    var areas = s.geAreas;
+    var areaGaps = null;
+    if (s.geNeed != null && geUseAreas(report)) {
+      areaGaps = {};
+      ['人文', '社會', '科學'].forEach(function (a) {
+        areaGaps[a] = Math.max(0, (GE_AREA_MIN[a] || 0) - (areas[a] || 0));
+      });
+    }
+    // 未完成必修（畢業口徑：排除體育/國防與已及格；預估視角再排除修課中）。
+    var pend = (report.required_courses || []).filter(function (r) {
+      var code = (r.course_code || '').trim().toUpperCase();
+      if (!code || isNonDegreeCourse(r)) return false;
+      if (s.requiredDoneCodes[code]) return false;
+      return true;
+    });
+    var groups = {}, order = [];
+    pend.forEach(function (r) {
+      var k = r.grade_level || '其他';
+      if (!groups[k]) { groups[k] = []; order.push(k); }
+      groups[k].push(r);
+    });
+    order.forEach(function (k) { groups[k].sort(termSort); });
+    var pendCredits = pend.reduce(function (acc, r) { return acc + (r.credits || 0); }, 0);
+    // 達標速度：已得學分 ÷ 已完成學期數。
+    var pace = s.semCount > 0 ? degGot / s.semCount : 0;
+    return {
+      degGot: degGot, reqGot: reqGot, geGot: geGot,
+      reqGap: reqGap, elGap: elGap, oGap: oGap, geGap: geGap, totalGap: totalGap,
+      areaGaps: areaGaps,
+      groups: groups, order: order, pendCount: pend.length, pendCredits: pendCredits,
+      doingCount: s.requiredDoingList.length, doingCredits: s.requiredDoingCredits,
+      semCount: s.semCount, pace: pace,
+      needSems: totalGap && pace > 0 ? Math.ceil(totalGap / pace) : 0
+    };
+  }
+
   // ── 渲染 ────────────────────────────────────────────────────────────────
   var currentReport = null;
   var currentEntries = null;
@@ -297,7 +361,7 @@
       ? '；校方累計實得 ' + s.earnedReported + ' 學分與全部及格加總 ' + s.earnedSum + ' 不同，請以校方為準'
       : '；校方累計實得 ' + s.earnedSum + ' 學分＝全部及格加總（含不計門檻課程）';
     q('earnedNote').textContent = note;
-    q('earnedBar').style.width = s.total ? Math.min(100, Math.round(earned * 100 / s.total)) + '%' : '0%';
+    q('earnedBar').style.width = s.total ? Math.min(100, Math.round(s.degreeEarned * 100 / s.total)) + '%' : '0%';
 
     var statGrid = q('statGrid');
     statGrid.innerHTML = '';
@@ -329,10 +393,12 @@
       '其他選修（外系／共同科目等）');
     stat('', '修業學期', frac(g.completed_semesters || 0, g.min_semesters || 0), g.max_semesters ? '上限 ' + g.max_semesters + ' 學期' : '');
 
+    renderGap(report, s);
+
     renderGe(report, s);
     renderSemesters(report);
     renderRequired(report, s);
-    renderCourses(report);
+    renderCourses(report, s);
   }
 
   function renderGe(report, s) {
@@ -499,15 +565,8 @@
       groups[k].push(r);
     });
     // 學門（無科號）不改為逐科教學，只在說明提示。
-    // 同年級內依開課學期排序：全年（上下）→ 上 → 下，避免 emis 原始列序上下交替。
-    var TERM_W = { '上下': 0, '上': 1, '下': 2 };
-    order.forEach(function (k) {
-      groups[k].sort(function (a, b) {
-        var wa = TERM_W[a.term]; if (wa === undefined) wa = 3;
-        var wb = TERM_W[b.term]; if (wb === undefined) wb = 3;
-        return wa - wb;
-      });
-    });
+    // 同年級內依開課學期排序（termSort），避免 emis 原始列序上下交替。
+    order.forEach(function (k) { groups[k].sort(termSort); });
     var html = '';
     order.forEach(function (k) {
       html += '<div class="req-group"><h3>' + esc(k) + '年級</h3><div class="req-rows">';
@@ -535,7 +594,59 @@
     list.innerHTML = html;
   }
 
-  function renderCourses(report) {
+  /* 「還缺什麼」卡：computeGap 算數字（純邏輯，可離線驗證），這裡只組 HTML。 */
+  function renderGap(report, s) {
+    if (!s.total) {
+      q('gapBody').innerHTML = '<div class="small">畢業門檻資料未同步，無法計算缺口。</div>';
+      q('gapDesc').textContent = '各項畢業缺口與達標預估。';
+      return;
+    }
+    var c = computeGap(report, s);
+    function right(gap) {
+      return gap == null ? '—' : (gap === 0 ? '✓ 完成' : '缺 ' + gap + ' 學分');
+    }
+    function item(ok, name, sub, need) {
+      return '<div class="gap-item' + (ok ? ' ok' : '') + '"><div class="g-name">' + esc(name) +
+        (sub ? '<span class="small">' + esc(sub) + '</span>' : '') + '</div>' +
+        '<div class="g-need">' + esc(need) + '</div></div>';
+    }
+    var h = '';
+    var reqSub = '已修 ' + c.reqGot + ' / ' + (s.requiredNeed || '—');
+    if (c.doingCount) reqSub += '；修課中 ' + c.doingCount + ' 門 ' + c.doingCredits + ' 學分';
+    if (c.pendCount) reqSub += '；未修 ' + c.pendCount + ' 門 ' + c.pendCredits + ' 學分';
+    h += item(c.reqGap === 0, '必修學分', reqSub, right(c.reqGap));
+    h += item(c.elGap === 0, '本系選修', '已修 ' + s.deptElectivePassed + ' / ' + (s.electiveNeed || '—') + '；修課中選修之學分待成績公布後計入', right(c.elGap));
+    h += item(c.oGap === 0, '自由選修', '已修 ' + s.freeElectivePassed + ' / ' + (s.otherNeed || '—'), right(c.oGap));
+    if (s.geNeed != null) {
+      var geSub = '已修 ' + c.geGot + ' / ' + s.geNeed + '；含於必修';
+      if (c.areaGaps) {
+        geSub += '；' + ['人文', '社會', '科學'].map(function (a) {
+          return a + (c.areaGaps[a] > 0 ? '缺 ' + c.areaGaps[a] : '✓');
+        }).join('　') + '（各至少 2 學分）';
+      }
+      h += item(c.geGap === 0, '通識教育', geSub, right(c.geGap));
+    }
+    if (c.pendCount) {
+      h += '<details class="gap-more"><summary>未完成必修清單（' + c.pendCount + ' 門 ' + c.pendCredits + ' 學分）</summary>';
+      c.order.forEach(function (k) {
+        h += '<div class="small mb6">' + esc(k) + '年級</div><div class="req-rows">';
+        c.groups[k].forEach(function (r) {
+          h += '<div class="req-row"><span class="mark">⬜</span><span class="name">' + esc(r.name) +
+            ' <span class="meta">' + esc(r.course_code) + '</span></span><span class="meta">' +
+            esc(r.term || '') + (r.credits ? '　' + r.credits + ' 學分' : '') + '</span></div>';
+        });
+        h += '</div>';
+      });
+      h += '</details>';
+    }
+    h += '<div class="gap-total">總缺口 <b>' + c.totalGap + '</b> 學分（畢業 ' + s.total + ' − 已得 ' + c.degGot + '）';
+    if (c.needSems) h += '；目前速度 ' + (Math.round(c.pace * 10) / 10) + ' 學分/學期（' + c.semCount + ' 學期），約需 <b>' + c.needSems + '</b> 個學期';
+    h += '。</div>';
+    q('gapBody').innerHTML = h;
+    q('gapDesc').textContent = '以畢業學分 ' + s.total + ' 口徑列出各項缺口與達標預估。';
+  }
+
+  function renderCourses(report, s) {
     var courses = report.courses || [];
     var tbody = q('courseTbody');
     tbody.innerHTML = '';

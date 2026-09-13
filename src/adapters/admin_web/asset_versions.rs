@@ -97,6 +97,12 @@ const ASSETS: &[(&str, &str)] = &[
         "/admin/static/client-log.js",
         include_str!("static/js/client-log.js"),
     ),
+    // CREDITS_ASSET_VERSION_FIX（2026-09-13）：credits.js 原先漏在 ASSETS 清單外，
+    // 導致改版後 build id 不變、瀏覽器持續使用 immutable 快取的舊 JS。
+    (
+        "/admin/static/credits.js",
+        include_str!("static/js/credits.js"),
+    ),
     (
         "/admin/static/accounts.js",
         include_str!("static/js/accounts.js"),
