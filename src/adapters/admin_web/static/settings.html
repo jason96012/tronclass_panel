@@ -139,6 +139,11 @@
   .swatch:not(.active){opacity:.8}
   .swatch.active{border-color:var(--text)!important;box-shadow:0 0 0 3px rgba(120,120,128,.32)!important}
 </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區（無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:env(safe-area-inset-top,0px)}
+</style>
 </head>
 <body>
 <header class="top"><div class="brand"><div class="logo">D</div><div><b>Tronclass</b><div class="meta">Settings</div></div></div><a href="/admin#overview" aria-label="返回 Dashboard 總覽">返回 Dashboard</a></header>

@@ -450,6 +450,24 @@ pub(super) async fn admin_clean_timetable_page_handler(
     attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_CLEAN_TIMETABLE_HTML), &page.session)), &page, &headers)
 }
 
+// CREDITS_EMIS_V1：學分狀態獨立頁（/admin/credits）。
+const CREDITS_PAGE_HTML: &str = include_str!("static/credits.html");
+pub(super) const CREDITS_PAGE_JS: &str = include_str!("static/js/credits.js");
+
+pub(super) async fn admin_credits_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        return admin_login_redirect("/admin/credits");
+    };
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
+    }
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(CREDITS_PAGE_HTML), &page.session)), &page, &headers)
+}
+
 pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
     // TOKEN_QUERY_STRIP_ALL_ADMIN_V1 (H-2): `/` is outside the scrubbing
     // middleware's `/admin` scope, so forwarding the query verbatim would

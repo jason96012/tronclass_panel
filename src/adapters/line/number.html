@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Tronclass Number Rollcall</title>
   <style>
     :root { color-scheme: light dark; --bg:#f7f8fb; --text:#172033; --muted:#667085; --panel:#fff; --border:#d7dce5; --accent:#2563eb; --ok:#15803d; --error:#b91c1c; }
@@ -75,6 +75,12 @@
     .list li.you::after { content:"（這個帳號）"; font-weight:500; color:var(--muted); font-size:12px; }
     @media (prefers-reduced-motion: reduce) { .code-boxes .box.bad { animation:none; } .spinner { animation-duration:1.5s; } }
   </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區，標題與倒數列不再被鏡頭蓋住
+     （無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:env(safe-area-inset-top,0px)}
+</style>
 </head>
 <body>
   <main>

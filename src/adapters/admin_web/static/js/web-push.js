@@ -139,6 +139,14 @@
     if (!document.getElementById('pushStatusDesktopLinkStyle')) {
       var style = document.createElement('style');
       style.id = 'pushStatusDesktopLinkStyle';
+      // TT_DYNAMIC_STYLE_NONCE_V1：複製頁面上既有 script 的 nonce，避免被
+      // CSP style-src（'self' + nonce）擋掉（與 mobile-nav.js 同一做法）。
+      try {
+        var scripts = document.scripts;
+        for (var si = 0; si < scripts.length; si++) {
+          if (scripts[si].nonce) { style.nonce = scripts[si].nonce; break; }
+        }
+      } catch (e) { /* 舊瀏覽器沒有 .nonce，維持原行為 */ }
       style.textContent = '#pushStatusManagementLink{display:inline-flex;align-items:center;justify-content:center;min-height:36px;height:36px;padding:0 12px;border-radius:999px;white-space:nowrap;text-decoration:none;font-size:13px;font-weight:760}@media(max-width:820px){#pushStatusManagementLink{display:none!important}}';
       document.head.appendChild(style);
     }

@@ -26,6 +26,9 @@ use crate::account::AccountConfig;
 use crate::config::ProviderKind;
 
 pub mod tku;
+// CREDITS_EMIS_V1：淡江學分／成績報告抓取（獨立於 TimetableSource trait，
+// 因為它回傳的是一份報告而非課表列；流程與 tku 共用 SSO 與情境步驟）。
+pub mod tku_credits;
 
 /// 從學校系統爬回來的單筆「課程 × 節次」原始資料。
 ///

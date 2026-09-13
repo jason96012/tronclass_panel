@@ -238,6 +238,12 @@ html{visibility:hidden!important}
   }
 }
 </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區；原 body padding-top 為 18px，用 calc 疊加
+     （無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:calc(18px + env(safe-area-inset-top,0px))}
+</style>
 </head>
 <body>
   <main class="card">

@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>IP 黑名單｜Tronclass Dashboard</title>
   <style>
     :root{
@@ -74,6 +74,15 @@
       .recent-table .account,.recent-table .ip{font-size:14px}
     }
   </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     用透明邊框把頂欄內容推回安全區（無劉海裝置 env()=0，外觀完全不變）。 */
+  .top{
+    border-top:env(safe-area-inset-top,0px) solid transparent;
+    border-left:env(safe-area-inset-left,0px) solid transparent;
+    border-right:env(safe-area-inset-right,0px) solid transparent;
+  }
+</style>
 </head>
 <body>
   <header class="top">

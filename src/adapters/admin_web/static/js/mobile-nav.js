@@ -19,7 +19,18 @@
   }
   // 各頁舊底欄（課表頁 ttMobileNavV2 等）讓位給共用導覽列；body 預留空間。
   // 更多面板內 a/button 字級統一（避免某些頁的 button 預設字級較小）。
+  // TT_DYNAMIC_STYLE_NONCE_V1：CSP 的 style-src 只允許 'self' + nonce，
+  // JS 動態建立的 <style> 沒有 nonce 會被整段擋掉（底部避讓 150px、舊底欄
+  // 隱藏、更多面板樣式全部失效）。這裡從頁面上既有的 script（伺服器已加
+  // nonce）讀出 nonce（.nonce IDL 不受瀏覽器 nonce 隱藏影響）套用到新建
+  // 的 <style>，讓這些規則真正生效。無 nonce 環境退回原狀（不加屬性）。
   var st = document.createElement('style');
+  try {
+    var scripts = document.scripts;
+    for (var si = 0; si < scripts.length; si++) {
+      if (scripts[si].nonce) { st.nonce = scripts[si].nonce; break; }
+    }
+  } catch (e) { /* 舊瀏覽器沒有 .nonce，維持原行為 */ }
   st.textContent = '#ttMobileNavV2{display:none!important}' +
     /* 手機：底部導覽列不遮內容（雲端硬碟未載入此腳本，不受影響）。
        NAV_BOTTOM_CLEARANCE_V2：內容避讓 150px＋safe-area——與雲端硬碟
@@ -107,6 +118,7 @@
       '<a id="moreSettingsFinalV2" class="button secondary" href="/admin/settings">設定</a>' +
       '<a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a>' +
       '<a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a>' +
+      '<a id="moreCreditsFinalV2" class="button secondary" href="/admin/credits">學分狀態</a>' +
       '<a id="moreBulletinsFinalV2" class="button secondary" href="/admin/bulletins">學校公告</a>' +
       '<a id="moreAiFinalV2" class="button secondary" href="/admin/ai">AI 對話</a>' +
       (isAdmin ? '<a id="moreActivityFinalV2" class="button secondary" href="/admin/activity">登入/檔案紀錄</a>' : '') +

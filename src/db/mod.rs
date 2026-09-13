@@ -23,6 +23,8 @@ mod accounts;
 mod activity;
 mod auth_throttle;
 mod blacklist;
+// CREDITS_EMIS_V1：學分報告快照（impl AccountsDb 的分散實作）。
+mod credit_reports;
 mod homework;
 mod materials;
 mod passkeys;

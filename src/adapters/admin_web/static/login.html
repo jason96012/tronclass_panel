@@ -113,6 +113,23 @@
   .animated-login-submit:disabled,.animated-passkey-btn:disabled{opacity:.7;cursor:progress}
   .animated-login-message.small{font-size:13px}
 </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下。
+     1) body 頂部墊高到安全區，登入卡不再被鏡頭蓋住。
+     2) 右上角固定的深淺主題按鈕同步避開鏡頭角落（桌機版 22px／手機版 14px 原值疊加）。
+     無劉海裝置 env()=0，外觀完全不變。 */
+  body{padding-top:env(safe-area-inset-top,0px)}
+  .animated-login-theme-toggle{
+    top:calc(22px + env(safe-area-inset-top,0px));
+    right:calc(22px + env(safe-area-inset-right,0px));
+  }
+  @media(max-width:760px){
+    .animated-login-theme-toggle{
+      top:calc(14px + env(safe-area-inset-top,0px));
+      right:calc(14px + env(safe-area-inset-right,0px));
+    }
+  }
+</style>
 </head>
 <body class="animated-login-active">
 <main>

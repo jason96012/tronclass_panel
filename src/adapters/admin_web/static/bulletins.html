@@ -99,6 +99,15 @@
   /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
   .hidden-init{display:none}
 </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     用透明邊框把頂欄內容推回安全區（無劉海裝置 env()=0，外觀完全不變）。 */
+  header.top{
+    border-top:env(safe-area-inset-top,0px) solid transparent;
+    border-left:env(safe-area-inset-left,0px) solid transparent;
+    border-right:env(safe-area-inset-right,0px) solid transparent;
+  }
+</style>
 </head>
 <body>
 <div class="wrap">

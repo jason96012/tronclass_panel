@@ -823,6 +823,16 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
   }
 </style>
 <!-- TT_FULL_WIDTH_HEADER_V1_END -->
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     用透明邊框把頂欄內容推回安全區（無劉海裝置 env()=0，外觀完全不變）。
+     課表頁 sticky 的全寬元素是 header（背景在 header 上），邊框加在 header。 */
+  header{
+    border-top:env(safe-area-inset-top,0px) solid transparent;
+    border-left:env(safe-area-inset-left,0px) solid transparent;
+    border-right:env(safe-area-inset-right,0px) solid transparent;
+  }
+</style>
 </head>
 <body>
 <header><div class="top"><div class="brand"><div class="logo">D</div><div><div class="brand-title">Tronclass<br>課表管理</div><div id="brandSub" class="brand-sub">載入中</div></div></div><div class="top-actions"><a id="backDashboard" class="button primary" href="/admin">回控制台</a><a id="meLink" class="button" href="/admin/me">我的頁面</a><button id="logoutBtn" class="danger" type="button">登出</button></div></div></header>

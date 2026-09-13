@@ -658,5 +658,20 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 login_locks 資料表失敗")?;
 
+    // CREDITS_EMIS_V1：學分／成績報告快照（手動同步）。
+    // 報告是一份整體 JSON（含畢業門檻、歷年成績、必修清單、通識學門），
+    // 沒有需要單列查詢的欄位，因此直接存 JSON 文字即可。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS credit_reports (
+            account_id TEXT PRIMARY KEY NOT NULL,
+            report_json TEXT NOT NULL,
+            fetched_at INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 credit_reports 資料表失敗")?;
+
     Ok(())
 }

@@ -126,6 +126,11 @@ pub(super) async fn admin_timetable_ui_module_js_handler() -> Response {
     )
 }
 
+// CREDITS_EMIS_V1：學分狀態頁模組。
+pub(super) async fn admin_credits_page_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::CREDITS_PAGE_JS)
+}
+
 pub(super) async fn admin_mock_rollcall_module_js_handler() -> Response {
     admin_static_asset(
         "application/javascript; charset=utf-8",

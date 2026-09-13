@@ -85,6 +85,7 @@ mod pages;
 mod passkey;
 mod static_assets;
 mod status;
+mod credits;
 mod timetable;
 mod web_push;
 pub mod materials_webdav;
@@ -2045,6 +2046,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(static_assets::admin_timetable_ui_module_js_handler),
         )
         .route(
+            "/admin/static/credits.js",
+            get(static_assets::admin_credits_page_js_handler),
+        )
+        .route(
             "/admin/static/maintenance-implementation.js",
             get(static_assets::admin_maintenance_implementation_js_handler),
         )
@@ -2441,6 +2446,15 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             get(timetable::admin_timetable_list_handler),
         )
         .route(
+            "/admin/api/credits",
+            get(credits::admin_credits_report_handler),
+        )
+        .route(
+            "/admin/api/credits/sync/run",
+            post(credits::admin_credits_sync_run_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
             "/admin/api/timetable/import",
             post(timetable::admin_timetable_import_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
@@ -2510,6 +2524,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/timetable",
             axum::routing::get(pages::admin_clean_timetable_page_handler),
+        )
+        .route(
+            "/admin/credits",
+            axum::routing::get(pages::admin_credits_page_handler),
         )
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         .layer(axum::middleware::from_fn_with_state(

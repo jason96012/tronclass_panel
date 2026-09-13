@@ -37,12 +37,18 @@ use crate::account::AccountConfig;
 
 use super::{RawTimetableRow, TimetableSource};
 
-const EMIS_BASE_URL: &str = "https://sso.tku.edu.tw/aissinfo/emis/";
+pub(super) const EMIS_BASE_URL: &str = "https://sso.tku.edu.tw/aissinfo/emis/";
 const RESULT_PAGE: &str = "TMWC090_result.aspx";
 /// 查詢頁（選學年期 → 開始查詢）。必須先造訪這頁，結果頁才會被接受。
 const QUERY_PAGE: &str = "TMWC090.aspx";
-const HTML_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
-const ACCEPT_LANGUAGE: &str = "zh-TW,zh;q=0.9,en;q=0.8";
+/// 學生查詢子選單的入口（2026-09 學校新增的中介步驟）。
+///
+/// 主選單上「選課資料(依上課星期、節次列表)」現在連到 `tmw0012.aspx`，
+/// 它會 302 到 `TMW0040.aspx`（學生查詢子選單：學生基本/修業/成績/選課…）。
+/// 走過這一頁之後，TMWC090 / TMWC090_result 才會被伺服器接受。
+pub(super) const STUDENT_MENU_PAGE: &str = "tmw0012.aspx";
+pub(super) const HTML_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+pub(super) const ACCEPT_LANGUAGE: &str = "zh-TW,zh;q=0.9,en;q=0.8";
 
 /// 一份課表最多接受的「課程 × 節次」格數，避免異常頁面撐爆記憶體。
 const MAX_GRID_CELLS: usize = 5000;
@@ -127,8 +133,58 @@ impl TimetableSource for TkuTimetableSource {
             }
         }
 
+        // EMIS_STUDENT_QUERY_CONTEXT_V1
+        // 2026-09-13 實測（root cause：當時同步失敗）：emis 在主選單與查詢頁之間
+        // 新增了「學生查詢」中介頁。只走「入口 → TMWC090 → result」已不夠——
+        // 跳過這一步時，TMWC090_result.aspx 會被伺服器 rewrite 回 TMW0040.aspx
+        // （約 6KB 的學生查詢子選單，日誌中 html_bytes≈5983 即此頁），
+        // 解析 0 筆 → 觸發安全閥保留原課表。
+        //
+        // 正確流程（與瀏覽器同步實測）：
+        //   emis/ → tmw0012.aspx →(302) TMW0040.aspx → TMWC090.aspx → TMWC090_result.aspx
+        //
+        // 因此在查詢頁之前先 GET tmw0012.aspx（跟隨轉址到 TMW0040.aspx），
+        // 建立這次 session 的「學生查詢」情境；同時收集子選單頁上的連結，
+        // 之後作為候選網址的後備（TMWC090.aspx 就在這個子選單上）。
+        let mut sub_menu_links: Vec<(String, String)> = Vec::new();
+        let student_menu_url = entry_url
+            .join(STUDENT_MENU_PAGE)
+            .into_diagnostic()
+            .wrap_err("TKU 課表同步：無法組出 emis 學生查詢選單網址")?;
+        debug!(url = %redact_url(&student_menu_url), "TKU 課表同步：先進入學生查詢選單建立情境");
+        match client
+            .get(student_menu_url.clone())
+            .header(header::ACCEPT, HTML_ACCEPT)
+            .header(header::ACCEPT_LANGUAGE, ACCEPT_LANGUAGE)
+            .header(header::REFERER, entry_url.as_str())
+            .send()
+            .await
+        {
+            Ok(r) => {
+                debug!(
+                    status = %r.status(),
+                    final_url = %redact_url(r.url()),
+                    "TKU 課表同步：學生查詢選單回應"
+                );
+                let ct = r
+                    .headers()
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                let base = r.url().clone();
+                if let Ok(b) = r.bytes().await {
+                    sub_menu_links = extract_page_links(&decode_html_bytes(&b, &ct), &base);
+                }
+            }
+            Err(e) => {
+                // 與入口頁同策略：情境步驟失敗不直接放棄，仍嘗試查詢頁與結果頁。
+                warn!(error = %e, "TKU 課表同步：學生查詢選單讀取失敗，仍繼續查詢頁流程");
+            }
+        }
+
         // EMIS_QUERY_PAGE_FIRST_V1
-        // 使用者實測回報的正確流程（截圖佐證）：
+        // 使用者實測回報的正確流程（截圖佐證，2026-09 起前面還多一步學生查詢選單）：
         //   1. 進 TMWC090.aspx（選學期頁：顯示學號姓名 + 學年期下拉 + 開始查詢）
         //   2. 再送出查詢，才會到 TMWC090_result.aspx?YrSem=..&stu_no=..
         //
@@ -165,11 +221,25 @@ impl TimetableSource for TkuTimetableSource {
         }
 
         // 候選網址：以「查詢頁 → 結果頁」為主要路徑，選單探索為後備。
+        // 順位：結果頁直達 → 學生查詢子選單（TMW0040）上找到的課表連結
+        //       → 主選單上找到的課表連結。
+        // 子選單的探索放在主選單之前：主選單的「選課資料」連結現指到
+        // tmw0012.aspx（情境頁，被導回時 is_entry_page 會換下一個候選），
+        // 而 TMW0040 上的連結直接指到 TMWC090.aspx 這種真正的查詢頁。
         let mut candidates: Vec<Url> = vec![target.clone()];
-        if let Some((html, base)) = &entry_html {
-            let links = extract_page_links(html, base);
+        for (links, label) in [
+            (sub_menu_links, "學生查詢子選單"),
+            entry_html
+                .as_ref()
+                .map(|(html, base)| (extract_page_links(html, base), "主選單"))
+                .unwrap_or_default(),
+        ] {
+            if links.is_empty() {
+                continue;
+            }
+            // links 是 by-value（自陣列迭代而來），需明確借用成 slice。
             if let Some(found) = find_timetable_link(&links) {
-                debug!(url = %redact_url(&found), "TKU 課表同步：從選單找到課表連結");
+                debug!(source = label, url = %redact_url(&found), "TKU 課表同步：從選單找到課表連結");
                 let mut with_params = found.clone();
                 with_params
                     .query_pairs_mut()
@@ -181,7 +251,7 @@ impl TimetableSource for TkuTimetableSource {
                 if !candidates.contains(&found) {
                     candidates.push(found);
                 }
-            } else {
+            } else if label == "主選單" {
                 let all: Vec<String> = links
                     .iter()
                     .filter(|(href, _)| href.to_ascii_lowercase().contains(".aspx"))
@@ -349,7 +419,7 @@ fn build_result_url(yr_sem: &str, student_no: &str) -> Result<Url> {
 /// 1. HTTP `Content-Type` 的 `charset=`
 /// 2. HTML 前 2 KB 內的 `<meta charset>` / `<meta http-equiv>`
 /// 3. 若內容不是合法 UTF-8，退回 Big5（台灣校務系統的常見預設）
-fn decode_html_bytes(bytes: &[u8], content_type: &str) -> String {
+pub(super) fn decode_html_bytes(bytes: &[u8], content_type: &str) -> String {
     // 1) HTTP 標頭（charset 可能大小寫混用，逐段轉小寫比對）
     let mut label: Option<String> = None;
     for part in content_type.split(';') {
@@ -409,7 +479,7 @@ fn decode_html_bytes(bytes: &[u8], content_type: &str) -> String {
 ///
 /// emis 的課表網址帶有 `stu_no=<學號>`，SSO 轉址網址則可能帶 `myurl=`／票證參數。
 /// 日誌可能被轉貼求助，因此一律遮蔽。
-fn redact_url(url: &Url) -> String {
+pub(super) fn redact_url(url: &Url) -> String {
     const SENSITIVE: [&str; 6] = ["stu_no", "account", "id", "user", "ticket", "token"];
     let mut out = url.clone();
     let pairs: Vec<(String, String)> = url
@@ -443,9 +513,12 @@ fn redact_url(url: &Url) -> String {
 /// 判斷是否為 emis 的入口／選單頁（例如 `TMW0000.aspx`）。
 ///
 /// 實測直接 GET 猜測的查詢網址會被導回這裡，代表該網址不被接受。
-fn is_entry_page(url_path: &str) -> bool {
+pub(super) fn is_entry_page(url_path: &str) -> bool {
     let lower = url_path.to_ascii_lowercase();
-    lower.ends_with("/emis/")
+    // TMW0040：2026-09 新增的「學生查詢」子選單。學生查詢情境（tmw0012 → TMW0040）
+    // 未建立時，TMWC090_result 會被 rewrite 回這頁；候選嘗試時視同「不被接受」。
+    lower.contains("tmw0040")
+        || lower.ends_with("/emis/")
         || lower.ends_with("/emis")
         || lower.contains("tmw0000")
         || lower.ends_with("/default.aspx")
@@ -564,7 +637,7 @@ fn looks_like_overtime_page(html: &str, url_path: &str) -> bool {
         >= 2
 }
 
-fn looks_like_login_page(html: &str) -> bool {
+pub(super) fn looks_like_login_page(html: &str) -> bool {
     html.contains("/NEAI/logineb.jsp")
         || html.contains("/NEAI/loginrwd.jsp")
         || html.contains("Tamkang University Single Sign On")
@@ -574,10 +647,17 @@ fn looks_like_login_page(html: &str) -> bool {
 
 /// 表格中的一格。保留 rowspan/colspan 才能正確還原「一堂課橫跨多節」的版面。
 #[derive(Debug, Clone)]
-struct Cell {
-    text: String,
-    rowspan: usize,
-    colspan: usize,
+pub(super) struct Cell {
+    pub(super) text: String,
+    pub(super) rowspan: usize,
+    pub(super) colspan: usize,
+    /// 格內超連結（`<a>`）的文字。
+    ///
+    /// emis 課表格的版面是固定多行（班級/學門、課名、教師_教室），
+    /// 其中**課名那一行是格內唯一的超連結**（課名會連到課程大綱 PDF）。
+    /// 以超連結文字為課名，可避免「共同科」「文學經典學門」這類
+    /// 開課單位/學門被誤當成課名（真課名分別是「國際學習」「文學名篇選讀」）。
+    link_text: String,
 }
 
 /// 從整份 HTML 解析出課表。
@@ -766,7 +846,7 @@ fn log_parse_diagnostics(html: &str, tables: &[String]) {
 //
 // 改用 `OnceLock` 惰性編譯一次並重複使用；編譯失敗時回傳 `None`，
 // 由呼叫端優雅降級成「解析不到課程」，而不是讓行程崩潰。
-fn cached_regex(slot: &'static OnceLock<Option<Regex>>, pattern: &str) -> Option<&'static Regex> {
+pub(super) fn cached_regex(slot: &'static OnceLock<Option<Regex>>, pattern: &str) -> Option<&'static Regex> {
     slot.get_or_init(|| match Regex::new(pattern) {
         Ok(re) => Some(re),
         Err(e) => {
@@ -781,7 +861,7 @@ fn cached_regex(slot: &'static OnceLock<Option<Regex>>, pattern: &str) -> Option
 
 /// 取出所有 `<table>` 區塊的內容，並且正確處理巢狀表格
 /// （ASP.NET GridView 常見）。回傳每個表格的 innerHTML。
-fn extract_tables(html: &str) -> Vec<String> {
+pub(super) fn extract_tables(html: &str) -> Vec<String> {
     static TAG_RE: OnceLock<Option<Regex>> = OnceLock::new();
     let Some(tag_re) = cached_regex(&TAG_RE, r#"(?is)<\s*(/?)\s*table\b[^>]*>"#) else {
         return Vec::new();
@@ -812,60 +892,139 @@ fn extract_tables(html: &str) -> Vec<String> {
 ///
 /// 只取「直接屬於本表格」的儲存格：巢狀表格的內容會被當成該格的文字，
 /// 而不會被誤判成本表格的列。
-fn parse_table_cells(table_html: &str) -> Vec<Vec<Cell>> {
-    static ROW_RE: OnceLock<Option<Regex>> = OnceLock::new();
-    static CELL_RE: OnceLock<Option<Regex>> = OnceLock::new();
-
-    let Some(row_re) = cached_regex(&ROW_RE, r#"(?is)<\s*tr\b[^>]*>(.*?)<\s*/\s*tr\s*>"#) else {
+///
+/// NESTED_TABLE_DEPTH_SCAN_V1
+/// 舊版用 `<tr...>(.*?)</tr>` 與 `<td...>(.*?)</td>` 兩個非貪婪 regex。
+/// 2026-09 實測的課表頁在**標頭列的左上角格**內有一個巢狀小表
+/// （對角線標籤「星期／節次」）：
+///
+/// ```text
+/// <tr><td><table><tr><td></td><td>星期</td></tr><tr><td>節次</td></tr></table></td>
+///     <td>一</td><td>二</td>…<td>日</td></tr>
+/// ```
+///
+/// 非貪婪的 `<tr>(.*?)</tr>` 會在**巢小表的第一個 `</tr>`** 就結束匹配，
+/// 導致同一列後半的星期格（一、二、三…日）落在所有匹配之外——
+/// 星期標頭整列消失、`find_weekday_header` 找不到、整張課表解析 0 筆。
+///
+/// 改為單一 token 掃描，以 `<table>`/`</table>` 計深度，只在深度 0 處理
+/// `<tr>`/`<td>`；深度 > 0 的標籤屬於巢狀表格，其內容由外層格的
+/// `cell_text` 一併吸收為文字（左上角格因此成為「星期 節次」）。
+/// 這同時保留了舊行為：巢狀表格的儲存格不會被誤判成本表格的列。
+pub(super) fn parse_table_cells(table_html: &str) -> Vec<Vec<Cell>> {
+    static TAG_RE: OnceLock<Option<Regex>> = OnceLock::new();
+    // 群組 1 = "/"（閉合標記）、群組 2 = 標籤名（table / tr / td / th）。
+    let Some(tag_re) = cached_regex(&TAG_RE, r#"(?is)<\s*(/?)\s*(table|tr|t[dh])\b[^>]*>"#)
+    else {
         return Vec::new();
     };
-    // NO_BACKREFERENCE_REGEX_V1
-    // 這裡原本用 `<(t[dh])...>(.*?)</\1>` 以反向參照確保開始／結束標籤相同，
-    // 但 Rust 的 `regex` crate **不支援反向參照**，會在執行期 panic
-    // （error: backreferences are not supported）。
-    //
-    // 改成結束標籤接受 `</td>` 或 `</th>`：`.*?` 是非貪婪的，一定會停在最近
-    // 的結束標籤，而合法 HTML 不會用 `</th>` 收掉 `<td>`，因此結果等價。
-    let Some(cell_re) = cached_regex(
-        &CELL_RE,
-        r#"(?is)<\s*t[dh]\b([^>]*)>(.*?)<\s*/\s*t[dh]\s*>"#,
-    ) else {
-        return Vec::new();
-    };
 
-    let mut rows = Vec::new();
+    let mut rows: Vec<Vec<Cell>> = Vec::new();
+    let mut cells: Vec<Cell> = Vec::new();
     let mut cell_budget = MAX_GRID_CELLS;
+    // 巢狀表格深度：> 0 時的 tr/td 屬於巢狀表格，不屬於本表。
+    let mut depth: usize = 0;
+    // 尚未閉合的儲存格：(屬性字串, 內容起點)。
+    let mut pending: Option<(String, usize)> = None;
 
-    for row_caps in row_re.captures_iter(table_html) {
-        let row_html = row_caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-        // 巢狀表格的 <tr> 也會被上面的 regex 抓到；跳過那些不含 td/th 的殼。
-        let mut cells = Vec::new();
-
-        for cell_caps in cell_re.captures_iter(row_html) {
-            if cell_budget == 0 {
-                break;
+    // 收掉未閉合的儲存格；`$end` 為內容結尾（通常是 `</td>` 的起點）。
+    // cell_budget 用盡時僅丟棄該格，不再計數。
+    macro_rules! close_cell {
+        ($end:expr) => {{
+            if let Some((attrs, start)) = pending.take() {
+                if cell_budget > 0 {
+                    cell_budget -= 1;
+                    let inner = &table_html[start..$end];
+                    cells.push(Cell {
+                        text: cell_text(inner),
+                        link_text: extract_link_text(inner),
+                        rowspan: parse_span(&attrs, "rowspan"),
+                        colspan: parse_span(&attrs, "colspan"),
+                    });
+                }
             }
-            cell_budget -= 1;
+        }};
+    }
 
-            // 群組編號：移除 `(t[dh])` 擷取群組後，attrs 由 2 變 1、inner 由 3 變 2。
-            let attrs = cell_caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-            let inner = cell_caps.get(2).map(|m| m.as_str()).unwrap_or_default();
-            cells.push(Cell {
-                text: cell_text(inner),
-                rowspan: parse_span(attrs, "rowspan"),
-                colspan: parse_span(attrs, "colspan"),
-            });
-        }
+    for caps in tag_re.captures_iter(table_html) {
+        let is_close = caps.get(1).map(|m| m.as_str()).unwrap_or("") == "/";
+        let name = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let tag_start = caps.get(0).map(|m| m.start()).unwrap_or(0);
+        let tag_end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+        let name_end = caps.get(2).map(|m| m.end()).unwrap_or(tag_end);
 
-        if !cells.is_empty() {
-            rows.push(cells);
+        match name {
+            "table" => {
+                if is_close {
+                    depth = depth.saturating_sub(1);
+                } else {
+                    depth += 1;
+                }
+            }
+            _ if depth > 0 => {}
+            "tr" => {
+                // <tr> 或 </tr> 都代表上一列結束（含未閉合格的寬容處理）。
+                close_cell!(tag_start);
+                if !cells.is_empty() {
+                    rows.push(std::mem::take(&mut cells));
+                }
+            }
+            "td" | "th" => {
+                if is_close {
+                    close_cell!(tag_start);
+                } else {
+                    // 上一格未閉合就直接開新格（畸形 HTML 寬容處理）。
+                    close_cell!(tag_start);
+                    // 屬性 = 標籤名之後、`>` 之前的字串（與舊版格式一致）。
+                    let attrs = table_html[name_end..tag_end.saturating_sub(1)]
+                        .trim()
+                        .to_string();
+                    pending = Some((attrs, tag_end));
+                }
+            }
+            _ => {}
         }
+        if cell_budget == 0 {
+            break;
+        }
+    }
+
+    // 檔尾沖刷：最後一格與最後一列可能沒有閉合標籤。
+    close_cell!(table_html.len());
+    // 上面是最後一次 close_cell，扣減的 cell_budget 之後沒人再讀；
+    // 顯式讀一次以避免 unused_assignments 警告（語義不變）。
+    let _ = cell_budget;
+    if !cells.is_empty() {
+        rows.push(cells);
     }
 
     rows
 }
 
-fn parse_span(attrs: &str, name: &str) -> usize {
+/// 取出一段 HTML 內**最長**的超連結文字。
+///
+/// 課表格中課名行是唯一的 `<a>`（連到課程大綱），取最長可避免
+/// 導覽用短連結（如「詳細」）干擾；沒有任何連結時回傳空字串。
+pub(super) fn extract_link_text(html: &str) -> String {
+    static A_RE: OnceLock<Option<Regex>> = OnceLock::new();
+    let Some(a_re) = cached_regex(
+        &A_RE,
+        r#"(?is)<\s*a\b[^>]*>(.*?)<\s*/\s*a\s*>"#,
+    ) else {
+        return String::new();
+    };
+    let mut best = String::new();
+    for caps in a_re.captures_iter(html) {
+        let inner = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+        let text = cell_text(inner).trim().to_string();
+        if text.chars().count() > best.chars().count() {
+            best = text;
+        }
+    }
+    best
+}
+
+pub(super) fn parse_span(attrs: &str, name: &str) -> usize {
     // 只會用 "rowspan" / "colspan" 兩種，各自快取一份，避免每格重編譯。
     static ROWSPAN_RE: OnceLock<Option<Regex>> = OnceLock::new();
     static COLSPAN_RE: OnceLock<Option<Regex>> = OnceLock::new();
@@ -891,7 +1050,7 @@ fn parse_span(attrs: &str, name: &str) -> usize {
 }
 
 /// 把儲存格的 HTML 轉成純文字，保留 `<br>` 造成的換行。
-fn cell_text(html: &str) -> String {
+pub(super) fn cell_text(html: &str) -> String {
     static BR_RE: OnceLock<Option<Regex>> = OnceLock::new();
     static TAG_RE: OnceLock<Option<Regex>> = OnceLock::new();
 
@@ -941,24 +1100,24 @@ fn parse_as_grid(rows: &[Vec<Cell>]) -> Option<Vec<RawTimetableRow>> {
     let mut collected: BTreeMap<(String, String, String, String, String), Vec<i64>> =
         BTreeMap::new();
 
-    // rowspan 追蹤：col_index → (剩餘列數, 內容)
-    let mut pending: BTreeMap<usize, (usize, String)> = BTreeMap::new();
+    // rowspan 追蹤：col_index → (剩餘列數, 內容, 超連結文字)
+    let mut pending: BTreeMap<usize, (usize, String, String)> = BTreeMap::new();
 
     for row in rows.iter().skip(header_idx + 1) {
         let mut col = 0usize;
         let mut cursor = 0usize;
         let mut period: Option<i64> = None;
-        // 本列每個欄位最終的文字內容
-        let mut row_cells: BTreeMap<usize, String> = BTreeMap::new();
+        // 本列每個欄位最終的文字內容（含超連結文字，用於課名）
+        let mut row_cells: BTreeMap<usize, (String, String)> = BTreeMap::new();
 
         // 防呆上限：欄數不可能超過這個數字，避免任何意外的無限迴圈。
         const MAX_COLUMNS: usize = 64;
 
         while col < MAX_COLUMNS {
             // 先讓上一列 rowspan 延伸下來的內容佔位。
-            if let Some((remaining, text)) = pending.get_mut(&col) {
+            if let Some((remaining, text, link)) = pending.get_mut(&col) {
                 if *remaining > 0 {
-                    row_cells.insert(col, text.clone());
+                    row_cells.insert(col, (text.clone(), link.clone()));
                     *remaining -= 1;
                     col += 1;
                     continue;
@@ -972,7 +1131,7 @@ fn parse_as_grid(rows: &[Vec<Cell>]) -> Option<Vec<RawTimetableRow>> {
                 // 而且殘留的 pending 會讓後續每一列的欄位對位全部偏移。
                 if pending
                     .iter()
-                    .any(|(idx, (remaining, _))| *idx > col && *remaining > 0)
+                    .any(|(idx, (remaining, _, _))| *idx > col && *remaining > 0)
                 {
                     col += 1;
                     continue;
@@ -983,18 +1142,21 @@ fn parse_as_grid(rows: &[Vec<Cell>]) -> Option<Vec<RawTimetableRow>> {
 
             for offset in 0..cell.colspan {
                 let target = col + offset;
-                row_cells.insert(target, cell.text.clone());
+                row_cells.insert(target, (cell.text.clone(), cell.link_text.clone()));
                 if cell.rowspan > 1 {
-                    pending.insert(target, (cell.rowspan - 1, cell.text.clone()));
+                    pending.insert(
+                        target,
+                        (cell.rowspan - 1, cell.text.clone(), cell.link_text.clone()),
+                    );
                 }
             }
             col += cell.colspan;
         }
 
-        pending.retain(|_, (remaining, _)| *remaining > 0);
+        pending.retain(|_, (remaining, _, _)| *remaining > 0);
 
         // 節次：取第一個不是星期欄的欄位裡的數字。
-        for (idx, text) in &row_cells {
+        for (idx, (text, _link)) in &row_cells {
             if weekday_by_col.contains_key(idx) {
                 continue;
             }
@@ -1008,10 +1170,10 @@ fn parse_as_grid(rows: &[Vec<Cell>]) -> Option<Vec<RawTimetableRow>> {
         };
 
         for (idx, weekday) in &weekday_by_col {
-            let Some(text) = row_cells.get(idx) else {
+            let Some((text, link)) = row_cells.get(idx) else {
                 continue;
             };
-            let Some(course) = parse_course_cell(text) else {
+            let Some(course) = parse_course_cell(text, link) else {
                 continue;
             };
             collected
@@ -1179,7 +1341,21 @@ struct ParsedCourse {
 /// Q409
 /// ```
 /// 行數與順序不保證，因此用特徵判斷而非固定索引。
-fn parse_course_cell(text: &str) -> Option<ParsedCourse> {
+///
+/// `link_text` 是格內超連結的文字（見 `Cell::link_text`）。emis 課表格中
+/// 課名行是唯一的超連結，因此**有超連結時以它為課名**，其餘行仍照舊
+/// 邏輯解析出教師/教室/課號。沒有超連結時（其他學校或舊版面）行為不變。
+fn parse_course_cell(text: &str, link_text: &str) -> Option<ParsedCourse> {
+    let mut base = parse_course_cell_lines(text)?;
+    let link = link_text.trim();
+    if !link.is_empty() {
+        base.course_name = link.to_string();
+    }
+    Some(base)
+}
+
+/// 舊版 `parse_course_cell` 主體：從多行文字以特徵辨識各欄位。
+fn parse_course_cell_lines(text: &str) -> Option<ParsedCourse> {
     let lines: Vec<&str> = text
         .lines()
         .map(str::trim)
@@ -1646,29 +1822,61 @@ mod tests {
         // TKU_CELL_LAYOUT_V1 迴歸測試：使用者截圖中的真實儲存格格式
         //   班級 / 課程名稱 / 教師_教室
         // 修正前會把「班級」當課名、「課名」當教師，且教師教室黏在一起。
-        let c = parse_course_cell("資工英語二\n電子商務\n王大明_E 410").unwrap();
+        // （link 傳空字串＝沒有超連結時的舊行為。）
+        let c = parse_course_cell("資工英語二\n電子商務\n王大明_E 410", "").unwrap();
         assert_eq!(c.course_name, "電子商務", "課名不可取到班級");
         assert_eq!(c.teacher, "王大明");
         assert_eq!(c.classroom, "E 410");
 
         // 教師姓名含全形空白
-        let c = parse_course_cell("資工英語二\n線性代數\n陳　安_E 309").unwrap();
+        let c = parse_course_cell("資工英語二\n線性代數\n陳　安_E 309", "").unwrap();
         assert_eq!(c.course_name, "線性代數");
         assert_eq!(c.teacher, "朱留");
         assert_eq!(c.classroom, "E 309");
 
         // 課名含全形括號
-        let c = parse_course_cell("資工英語二\n英文（二）\n林美玲_E 304").unwrap();
+        let c = parse_course_cell("資工英語二\n英文（二）\n林美玲_E 304", "").unwrap();
         assert_eq!(c.course_name, "英文（二）");
         assert_eq!(c.classroom, "E 304");
 
         // 只有一行時不可整堂課遺失
-        let c = parse_course_cell("資料結構").unwrap();
+        let c = parse_course_cell("資料結構", "").unwrap();
         assert_eq!(c.course_name, "資料結構");
 
         // 空白格不應產生課程
-        assert!(parse_course_cell("").is_none());
-        assert!(parse_course_cell("－").is_none());
+        assert!(parse_course_cell("", "").is_none());
+        assert!(parse_course_cell("－", "").is_none());
+    }
+
+    #[test]
+    fn course_cell_prefers_link_text_as_course_name() {
+        // LINK_TEXT_COURSE_NAME_V1 迴歸測試（2026-09 實測版面）：
+        // 格內第一行是「開課單位／學門」（如「共同科」「文學經典學門」），
+        // 舊邏輯會把它當成課名；真課名在超連結那一行。
+        //   共同科 / <a>國際學習</a> / 莊琇惠_T 212
+        let c = parse_course_cell("共同科\n國際學習\n莊琇惠_T  212", "國際學習").unwrap();
+        assert_eq!(c.course_name, "國際學習", "有超連結時課名應取連結文字");
+        assert_eq!(c.teacher, "莊琇惠");
+        assert_eq!(c.classroom, "T  212");
+
+        let c = parse_course_cell(
+            "文學經典學門\n文學名篇選讀：愛戀與生活\n陳大道_L  205",
+            "文學名篇選讀：愛戀與生活",
+        )
+        .unwrap();
+        assert_eq!(c.course_name, "文學名篇選讀：愛戀與生活");
+        assert_eq!(c.teacher, "陳大道");
+        assert_eq!(c.classroom, "L  205");
+
+        // 班級行 + 超連結課名：連結文字與第二行相同，結果不變
+        let c = parse_course_cell("資工英語二\n英文（二）\n馬天樂_E  304", "英文（二）").unwrap();
+        assert_eq!(c.course_name, "英文（二）");
+        assert_eq!(c.teacher, "馬天樂");
+
+        // 空白連結視為沒有連結：退回舊的逐行解析（此例會誤取「共同科」，
+        // 與無連結時行為一致——連結只有在非空時才覆蓋）。
+        let c = parse_course_cell("共同科\n國際學習\n莊琇惠_T  212", "  ").unwrap();
+        assert_eq!(c.course_name, "共同科", "空白連結不覆蓋，退回逐行解析");
     }
 
     #[test]
@@ -1746,10 +1954,87 @@ mod tests {
     }
 
     #[test]
+    fn parses_nested_table_header_layout() {
+        // NESTED_TABLE_DEPTH_SCAN_V1 迴歸測試（2026-09 實測的 TMWC090_result 版面）。
+        // 舊版 `<tr>(.*?)</tr>` 非貪婪匹配會在巢狀小表（星期/節次對角標籤）的
+        // 第一個 `</tr>` 提前結束，導致同一列後半的星期格全部消失、整表 0 筆。
+        let html = r#"<table id="Table1" cellspacing="0" rules="all" border="4">
+        <tr style="width:100px;">
+            <td class="line-right line-top btd-bblue" style="width:5.5%;"><table width=100%><tr><td></td><td align=right><font size=2>星<br>期</font></td></tr><tr><td colspan=2 align=left><font size=2>節次</font></td></tr></table></td>
+            <td class="line-right line-top btd-mblue"><center>一</td>
+            <td class="line-right line-top btd-mblue"><center>二</td>
+            <td class="line-right line-top btd-mblue"><center>三</td>
+            <td class="line-right line-top btd-mblue"><center>四</td>
+            <td class="line-right line-top btd-mblue"><center>五</td>
+            <td class="line-right line-top btd-mblue"><center>六</td>
+            <td class="line-right line-top btd-mblue"><center>日</td>
+        </tr>
+        <tr>
+            <td class="line-right line-top btd-bblue"><center>一        </td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue">資工英語二<br><A href="http://ap09.emis.tku.edu.tw/115_1/115_1_0614.PDF" target="blank" class="a-blue">英文（二）</A><br>馬天樂_E  304 <br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+        </tr>
+        <tr>
+            <td class="line-right line-top btd-bblue"><center>三        </td>
+            <td class="line-right line-top btd-blue">資工英語二<br><A href="http://x/" class="a-blue">電子商務</A><br>陳惇凱_E  410 <br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+            <td class="line-right line-top btd-blue"><br></td>
+        </tr>
+        </table>"#;
+
+        // 單元層：標頭列應含左上角格 + 一～日共 8 格，星期欄位對齊不偏移。
+        let tables = extract_tables(html);
+        let grid = tables
+            .iter()
+            .map(|t| parse_table_cells(t))
+            .max_by_key(|rows| rows.len())
+            .expect("應有表格");
+        let (header_idx, weekday_by_col) =
+            find_weekday_header(&grid).expect("應在標頭列找到星期");
+        assert_eq!(header_idx, 0, "星期標頭應在第一列");
+        assert_eq!(weekday_by_col.len(), 7, "應辨識出星期一～日：{weekday_by_col:?}");
+        assert_eq!(grid[0].len(), 8, "標頭列應有 8 格（左上角＋星期）：{}", grid[0].len());
+        // 巢狀小表的內容是外層第一格的文字（`<br>` 與巢狀 `</tr>` 都產生換行），
+        // 不是獨立的列。
+        assert_eq!(grid[0][0].text, "星\n期\n節次");
+
+        // 端對端：課程照常解析，課名取超連結文字。
+        let rows = parse_timetable_html(html).unwrap();
+        let eng = rows
+            .iter()
+            .find(|r| r.course_name == "英文（二）")
+            .expect("應解析到英文（二）");
+        assert_eq!(eng.weekday, "fri");
+        assert_eq!(eng.periods, vec![1]);
+        assert_eq!(eng.teacher, "馬天樂");
+
+        let ec = rows
+            .iter()
+            .find(|r| r.course_name == "電子商務")
+            .expect("應解析到電子商務");
+        assert_eq!(ec.weekday, "mon");
+        assert_eq!(ec.periods, vec![3]);
+        // cell_text 會把行內連續空白壓縮為單一空格（`E  410` → `E 410`）。
+        assert_eq!(ec.classroom, "E 410");
+    }
+
+    #[test]
     fn entry_page_is_detected() {
         assert!(is_entry_page("/aissinfo/emis/TMW0000.aspx"));
         assert!(is_entry_page("/aissinfo/emis/"));
+        // 2026-09 新增的學生查詢子選單：情境未建立時 result 會被導回這頁。
+        assert!(is_entry_page("/aissinfo/emis/TMW0040.aspx"));
         assert!(!is_entry_page("/aissinfo/emis/TMWC090.aspx"));
+        assert!(!is_entry_page("/aissinfo/emis/TMWC090_result.aspx"));
     }
 
     #[test]
