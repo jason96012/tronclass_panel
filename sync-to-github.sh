@@ -49,15 +49,28 @@ do_push() {
   local remote_ref="github-sync/${BRANCH}"
   if ! git merge-base --is-ancestor "$remote_ref" HEAD; then
     echo "遠端已有新 commit，以本機主機版本優先 rebase"
+
+    # [修復] 防護機制：Rebase 前若有任何未暫存變更，先 stash 避免 rebase 失敗
+    local stashed=0
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      echo "工作區存在未提交變更，暫存（stash）以利 rebase..."
+      git stash push -u -m "ptero-pre-rebase-$(date +%s)" >/dev/null 2>&1 || true
+      stashed=1
+    fi
+
     # During rebase, "theirs" means the local commit currently being replayed.
     # Prefer it for overlapping hunks, while retaining unrelated remote commits.
-    # This is deliberately not a force-push: the resulting history still
-    # contains the remote branch before a normal fast-forward push.
     if ! git rebase -X theirs "$remote_ref"; then
       echo "即使採用本機版本優先仍無法自動整合；已中止，不會覆蓋遠端或遺失本機 commit"
       git rebase --abort 2>/dev/null || true
+      [[ "$stashed" -eq 1 ]] && git stash pop >/dev/null 2>&1 || true
       git remote remove github-sync 2>/dev/null || true
       return 1
+    fi
+
+    # Rebase 成功後還原 stash
+    if [[ "$stashed" -eq 1 ]]; then
+      git stash pop >/dev/null 2>&1 || true
     fi
   fi
 
@@ -91,25 +104,32 @@ do_push() {
   git config user.email "ptero-sync@local"
   git config user.name "ptero-sync"
 
+  # 1. 依照白名單加入新增或修改的檔案/資料夾
   git add -- .gitignore Cargo.toml Cargo.lock src 2>/dev/null || true
-  [[ -d tools ]] && git add -- tools || true
+  [[ -d tools ]] && git add -A -- tools || true
   # FILEBROWSER_GITHUB_SYNC_V1: File Browser 自訂品牌（CSS/logo 等，不含憑證）隨同步備份
-  [[ -d filebrowser-branding ]] && git add -- filebrowser-branding || true
+  [[ -d filebrowser-branding ]] && git add -A -- filebrowser-branding || true
   [[ -f config/config.toml.example ]] && git add -- config/config.toml.example || true
   shopt -s nullglob
   extra=( *.sh *.py *.md )
   ((${#extra[@]})) && git add -- "${extra[@]}"
   shopt -u nullglob
 
+  # 2. 強制從暫存區剔除機敏資料
   git rm -r --cached --ignore-unmatch -- .cargo .cache target logs tailscale-state materials \
     config/config.toml config/accounts.db config/cf.token config/tailscale.authkey \
     config/github.env config/github.token .env >/dev/null 2>&1 || true
 
-  # FILEBROWSER_GITHUB_SYNC_V1: fb-data/ 內含 File Browser 帳號密碼資料庫
-  # （auth.db/admin.db/open.db：帳號、bcrypt 密碼雜湊、session 權杖），預設「絕不」上傳。
-  # 只有在同時滿足以下兩條件才會備份：
-  #   1. 你明確建立開關檔 config/github-fbdata.allow
-  #   2. 目標 repo 經 GitHub API 驗證為「私有」（無法驗證即拒絕）
+  # 3. [關鍵修復] 同步已追蹤檔案的刪除與修改（Stage deletions/modifications）
+  # -u 只會更新已在版本控制中的檔案狀態，絕不會將未追蹤的敏感檔加進暫存區
+  git add -u
+
+  # 4. 再次確保已剔除機敏檔案（雙重保險）
+  git rm -r --cached --ignore-unmatch -- .cargo .cache target logs tailscale-state materials \
+    config/config.toml config/accounts.db config/cf.token config/tailscale.authkey \
+    config/github.env config/github.token .env >/dev/null 2>&1 || true
+
+  # FILEBROWSER_GITHUB_SYNC_V1: fb-data/ 備份判斷
   FBDATA_ALLOW=0
   if [[ -f config/github-fbdata.allow ]]; then
     if command -v curl >/dev/null 2>&1; then
