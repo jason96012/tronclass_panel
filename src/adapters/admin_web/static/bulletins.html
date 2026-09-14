@@ -419,6 +419,11 @@
       }
     };
     foot.appendChild(sm);
+    // TRONCLASS_PROXY_JUMP_V1：免登入跳到 iClass 課程公告列表（面板代理）。
+    // iClass 對課程公告無單則深連結（org 公告才有），故統一到列表頁。
+    var ic=document.createElement('button');ic.type='button';ic.className='smbtn';ic.textContent='↗ iClass';
+    ic.onclick=function(){window.open('/admin/tc-go?kind=bulletin','_blank');};
+    foot.appendChild(ic);
     // BULLETIN_TRANSLATE_V1
     var tr=document.createElement('button');tr.type='button';tr.className='trbtn';tr.textContent='翻譯';
     tr.onclick=function(){

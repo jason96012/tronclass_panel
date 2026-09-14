@@ -33,8 +33,8 @@ pub struct RollcallsResponse {
     pub rollcalls: Vec<Rollcall>,
 }
 
-/// 單一簽到項目
-#[derive(Debug, Clone, Deserialize, Serialize)]
+/// 單一簽到項目（Default 僅供測試與建構便利；serde 行為不變）
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Rollcall {
     /// 簽到 ID
     pub rollcall_id: u64,
@@ -460,6 +460,7 @@ fn classify_number_rollcall_response(
 
         if number_json_bool_marker(&json, true)
             || find_number_response_text(&json, is_number_success_text).is_some()
+            || number_ack_record_marker(&json)
         {
             return AttendanceResult::Success;
         }
@@ -487,6 +488,26 @@ fn unverified_number_rollcall_response(status: StatusCode, body: &str) -> Attend
             response_body_preview(body)
         ),
     }
+}
+
+/// NUMBER_ID_ACK_V1（fix28）：`answer_number_rollcall` 送出正確數字時，iClass 實測
+/// （2026-09-14，rollcall_id=1172118）只回 200 與新建的 student_rollcall 記錄
+/// `{"id":68019054,"status":"on_call"}`——沒有 success 布林、沒有成功文字，舊邏輯
+/// 落入「無法確認成功」而誤報失敗。頂層物件含「正整數（或數字字串）id」欄位、
+/// 且前面的失敗特徵檢查皆未命中時，視為伺服器已立案（Success）；真偽由
+/// ROLLCALL_REVERIFY_V1 二次確認把關——重查仍 absent 會降級 Failed 並重試，
+/// 因此此判定偏樂觀是安全的。只認頂層，不遞迴，避免巢狀 id 誤判。
+fn number_ack_record_marker(value: &serde_json::Value) -> bool {
+    let serde_json::Value::Object(map) = value else {
+        return false;
+    };
+    map.iter().any(|(key, value)| {
+        key == "id"
+            && (value.as_u64().is_some()
+                || value
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit())))
+    })
 }
 
 fn number_json_bool_marker(value: &serde_json::Value, expected: bool) -> bool {
@@ -583,6 +604,7 @@ fn is_number_success_text(text: &str) -> bool {
             | "succeeded"
             | "ok"
             | "attended"
+            | "on_call"
             | "on_call_fine"
             | "checked_in"
             | "checked-in"
@@ -1111,6 +1133,56 @@ mod tests {
         assert_number_transient(result);
 
         let result = classify_number_rollcall_response(StatusCode::OK, "", "0042");
+        assert_number_transient(result);
+    }
+
+    #[test]
+    fn test_number_rollcall_response_ack_record_is_success() {
+        // NUMBER_ID_ACK_V1（fix28）：實測正確數字回 200 + 新建 student_rollcall
+        // 記錄 {"id":68019054,"status":"on_call"}，無 success 布林／成功文字。
+        // 舊邏輯誤報「數字簽到回應無法確認成功」。
+        let result = classify_number_rollcall_response(
+            StatusCode::OK,
+            r#"{"id":68019054,"status":"on_call"}"#,
+            "0042",
+        );
+        assert!(result.is_success());
+
+        // 純 status:"on_call"（無 id）也算成功（全字匹配；reverify 把關）。
+        let result =
+            classify_number_rollcall_response(StatusCode::OK, r#"{"status":"on_call"}"#, "0042");
+        assert!(result.is_success());
+
+        // 字串形式的數字 id 同樣是立案 ack。
+        let result = classify_number_rollcall_response(
+            StatusCode::OK,
+            r#"{"id":"68019054","status":"on_call"}"#,
+            "0042",
+        );
+        assert!(result.is_success());
+
+        // 失敗特徵仍然優先：帶錯誤訊息的回應不得因含 id 而誤判成功。
+        let result = classify_number_rollcall_response(
+            StatusCode::OK,
+            r#"{"id":1,"error":"number code incorrect"}"#,
+            "0042",
+        );
+        assert_number_failed(result);
+
+        // 巢狀 id（非頂層）不構成 ack，維持保守的 TransientFailure。
+        let result = classify_number_rollcall_response(
+            StatusCode::OK,
+            r#"{"message":"request accepted","rollcall":{"id":1172118}}"#,
+            "0042",
+        );
+        assert_number_transient(result);
+
+        // 非數字 id 不構成 ack。
+        let result = classify_number_rollcall_response(
+            StatusCode::OK,
+            r#"{"id":"abc"}"#,
+            "0042",
+        );
         assert_number_transient(result);
     }
 

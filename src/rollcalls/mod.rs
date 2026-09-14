@@ -281,6 +281,38 @@ pub async fn process_rollcall(
         }
     };
 
+    // ROLLCALL_SUBMITTED_NOTICE_V1（fix32）：送出成功≠立即有結論——二次確認
+    // 最多約 9 秒。先推一則「已送出、確認中」的即時通知，讓使用者知道點名
+    // 已經送出、不是卡住；Web Push 與最終結果同 tag，結果會直接替換這則。
+    if result.is_success() {
+        if let Some(bot) = messenger {
+            let target = adapter_target.lock().await.clone();
+            let msg = OutboundMessage::Text(format!(
+                "📨 {course}（{kind}）點名已送出，正在二次確認…",
+                course = rollcall.course_title,
+                kind = attendance_type
+            ));
+            if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
+                warn!(error = %e, "發送「點名已送出」即時通知失敗");
+            }
+        }
+        crate::web_push_notifications::notify_rollcall_submitted(
+            account_label,
+            rollcall.rollcall_id,
+            &rollcall.course_title,
+            &attendance_type.to_string(),
+        );
+    }
+
+    // ROLLCALL_REVERIFY_V1：簽到 API 回應成功≠真的簽到了。向 Tronclass 重查，
+    // 確認該點名狀態真的脫離 absent 才標記為成功；明確仍 absent 則降級為
+    // 失敗（狀態未變，monitor 下輪會自然重試）。
+    let result = if result.is_success() {
+        reverify_rollcall(&api, &rollcall, result).await
+    } else {
+        result
+    };
+
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
     // ── 發送結果通知 ──────────────────────────────────────────────────────────
@@ -324,6 +356,79 @@ pub async fn process_rollcall(
     }
 
     outcome
+}
+
+// ─── 簽到二次確認（ROLLCALL_REVERIFY_V1）────────────────────────────────────
+
+/// 重查間隔：Tronclass 寫入狀態有延遲，太快查會誤判。
+const REVERIFY_DELAY_SECS: u64 = 3;
+/// 重查次數上限（共 3 次 × 3 秒 ≈ 9 秒內完成確認）。
+const REVERIFY_ATTEMPTS: u32 = 3;
+
+/// 單次重查的判定結果（純邏輯，可單元測試）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReverifyVerdict {
+    /// 狀態已脫離 absent（on_call_fine、late 等）：真的簽到了。
+    Confirmed { status: String },
+    /// 仍在清單上且狀態仍為 absent：簽到沒有生效（過期與否都算沒點到）。
+    StillAbsent { status: String },
+    /// 清單已查無此點名：無法證實也無法否定，保守保留原判。
+    Missing,
+}
+
+fn reverify_verdict(list: &[Rollcall], rollcall_id: u64) -> ReverifyVerdict {
+    match list.iter().find(|r| r.rollcall_id == rollcall_id) {
+        Some(current) => {
+            if current.status == "absent" {
+                ReverifyVerdict::StillAbsent { status: current.status.clone() }
+            } else {
+                ReverifyVerdict::Confirmed { status: current.status.clone() }
+            }
+        }
+        None => ReverifyVerdict::Missing,
+    }
+}
+
+/// 送出成功後的二次確認：重查 rollcall 清單直到狀態脫離 absent 或嘗試用盡。
+/// - 確認通過 → Success（detail 加註「已二次確認」）
+/// - 明確仍 absent → 降級為 Failed（monitor 下輪重試）
+/// - 查無此點名／查詢連續失敗 → 保留原判（不誤降級）
+async fn reverify_rollcall(
+    api: &crate::api::ApiClient,
+    rollcall: &Rollcall,
+    result: RollcallResult,
+) -> RollcallResult {
+    for attempt in 1..=REVERIFY_ATTEMPTS {
+        tokio::time::sleep(Duration::from_secs(REVERIFY_DELAY_SECS)).await;
+        let fetched = api.get_rollcalls().await;
+        match fetched {
+            Ok(list) => match reverify_verdict(&list, rollcall.rollcall_id) {
+                ReverifyVerdict::Confirmed { status } => {
+                    info!(attempt, status = %status, "簽到二次確認通過");
+                    if let RollcallResult::Success { detail } = result {
+                        return RollcallResult::Success {
+                            detail: format!("{detail}（已二次確認）"),
+                        };
+                    }
+                    return result;
+                }
+                ReverifyVerdict::StillAbsent { status } => {
+                    debug!(attempt, status = %status, "二次確認：狀態仍為 absent，稍後重查");
+                }
+                ReverifyVerdict::Missing => {
+                    warn!(attempt, "二次確認：點名已不在清單中，保留原結果");
+                    return result;
+                }
+            },
+            Err(e) => {
+                warn!(attempt, error = %e, "二次確認：查詢失敗，重試");
+            }
+        }
+    }
+    warn!("簽到二次確認未通過：送出後 Tronclass 狀態仍為未簽到，降級為失敗");
+    RollcallResult::Failed {
+        reason: format!("二次確認未通過：送出後狀態仍為未簽到（原始回應：{result}）"),
+    }
 }
 
 // ─── 各類型處理函式 ───────────────────────────────────────────────────────────
@@ -1224,6 +1329,65 @@ impl std::fmt::Display for BatchSummary {
 mod tests {
     use super::*;
     use crate::api::rollcall::Rollcall;
+
+    // ── 二次確認判定（ROLLCALL_REVERIFY_V1）──────────────────────────────────
+
+    fn rc(id: u64, status: &str) -> Rollcall {
+        Rollcall {
+            rollcall_id: id,
+            status: status.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn reverify_verdict_confirmed_on_non_absent() {
+        let list = vec![rc(42, "on_call_fine"), rc(43, "late")];
+        assert_eq!(
+            reverify_verdict(&list, 42),
+            ReverifyVerdict::Confirmed { status: "on_call_fine".into() }
+        );
+        assert_eq!(
+            reverify_verdict(&list, 43),
+            ReverifyVerdict::Confirmed { status: "late".into() }
+        );
+    }
+
+    #[test]
+    fn reverify_verdict_still_absent_even_if_expired() {
+        // 過期且仍 absent＝來不及簽到，同樣算「沒點到」。
+        let mut item = rc(42, "absent");
+        item.is_expired = true;
+        assert_eq!(
+            reverify_verdict(&[item], 42),
+            ReverifyVerdict::StillAbsent { status: "absent".into() }
+        );
+    }
+
+    #[test]
+    fn reverify_verdict_missing_when_not_in_list() {
+        assert_eq!(reverify_verdict(&[], 42), ReverifyVerdict::Missing);
+        assert_eq!(
+            reverify_verdict(&[rc(99, "on_call_fine")], 42),
+            ReverifyVerdict::Missing
+        );
+    }
+
+    #[test]
+    fn reverify_success_detail_gets_annotation() {
+        // 確認通過時 detail 會加上「（已二次確認）」標記。
+        let r = RollcallResult::Success { detail: "QR data 簽到成功".into() };
+        let annotated = match r {
+            RollcallResult::Success { detail } => RollcallResult::Success {
+                detail: format!("{detail}（已二次確認）"),
+            },
+            other => other,
+        };
+        assert_eq!(
+            annotated.to_string(),
+            "✅ 成功：QR data 簽到成功（已二次確認）"
+        );
+    }
 
     // ── RollcallResult ────────────────────────────────────────────────────────
 

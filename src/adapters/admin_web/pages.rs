@@ -206,6 +206,15 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
         r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
+        // TT_INLINE_GUARD_V1（fix29）：2026-09-14 實測 /admin/homework 回報
+        // 「Failed to set innerHTML … requires 'TrustedHTML' assignment」——
+        // 外部 trusted-types-init.js 因任何原因未執行（快取損毀、網路中斷、
+        // 瀏覽器擴充攔截…）時頁面沒有 default policy，所有 innerHTML 整頁掛掉。
+        // 這段 inline（隨 HTML 本體到達、經 html_page_response 補 nonce）在
+        // 外部腳本缺席時建立 pass-through policy（與 files.html、
+        // shares-admin.js 的 identity policy 先例一致；createScriptURL 保留
+        // same-origin 檢查）。外部腳本正常時 defaultPolicy 已存在，本段不動作。
+        r#"<script id="TT_INLINE_GUARD_V1">(function(){try{if(window.trustedTypes&&!window.trustedTypes.defaultPolicy){trustedTypes.createPolicy('default',{createHTML:function(s){return String(s)},createScriptURL:function(s){var u=new URL(String(s),location.origin);if(u.origin!==location.origin)throw new TypeError('Untrusted script URL blocked');return u.href}})}}catch(_){}})();</script>"#,
         r#"<link rel="preload" href="/admin/static/session-security.js?v=20260829nopwbtn" as="script">"#,
         r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260829nopwbtn"></script>"#,
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
@@ -745,6 +754,20 @@ pub(super) async fn admin_page_handler(
     Query(query): Query<AdminQuery>,
 ) -> Response {
     let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        // SESSION_DIAG_V1（fix33）：帶著（無效）cookie 卻被送到登入頁＝登入循環
+        // 的特徵——記錄 cookie 存在性幫助定位（完全沒 cookie 的自然訪客保持
+        // 安靜，避免 log 噪音）。has_access/has_refresh 皆 true 仍失敗＝兩個
+        // token 都被撤銷（rotate 競態或重啟清空）；只有其一＝cookie 不對稱。
+        let has_access = session_cookie_from_headers(&headers).is_some();
+        let has_refresh = refresh_cookie_from_headers(&headers).is_some();
+        if has_access || has_refresh {
+            tracing::warn!(
+                has_access_cookie = has_access,
+                has_refresh_cookie = has_refresh,
+                has_next_param = query.next.is_some(),
+                "login page served with invalid cookies (possible login loop)"
+            );
+        }
         // 第 1 態：沒有任何有效 session → 登入頁。
         return login_page_response(&headers);
     };

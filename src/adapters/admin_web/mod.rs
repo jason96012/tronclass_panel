@@ -80,6 +80,7 @@ mod files;
 mod materials_import;
 mod homework;
 mod morning_digest;
+mod tc_proxy;
 mod notifications;
 mod pages;
 mod passkey;
@@ -128,6 +129,14 @@ pub(super) const ADMIN_MAX_NOTIFICATION_PREFERENCES: usize = 32;
 // 請求會先收到 401 才觸發 refresh（前端顯示「Unauth」，再點一次才成功）。
 // 延長到 12 小時：白天工作期間不易過期，仍保留 7 天的 refresh token 作長效保障。
 // 純延長時間，不設定 cookie 資料、不改安全性質（仍 HttpOnly / SameSite=Lax）。
+/// TC_NAV_TOKEN_V1（fix34）：轉址 URL 一次性 token 的效期。
+const TC_NAV_TOKEN_TTL_SECS: u64 = 90;
+/// TC_NAV_TOKEN_V1：tc_proxy_ticket cookie（子資源短效票券）的效期。
+const TC_NAV_TICKET_TTL_SECS: u64 = 120;
+/// TC_REFERER_GRANT_V1（fix35）：URL 消費後的「頁面授權」效期——滑動式
+///（頁面持續發請求就不過期）；閒置 15 分鐘後失效，需回面板重按按鈕。
+const TC_PAGE_GRANT_TTL_SECS: u64 = 15 * 60;
+
 const ACCESS_TOKEN_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 /// Long-lived refresh token lifetime (7 days). Each refresh rotates it.
 const REFRESH_TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
@@ -1360,8 +1369,26 @@ pub struct AdminWebState {
     scanner: Option<Arc<QrScannerRegistry>>,
     messenger: Option<Arc<dyn AdapterMessenger>>,
     sessions: Arc<RwLock<HashMap<String, AdminSession>>>,
+    /// TC_NAV_TOKEN_V1（fix34）：/admin/tc-go 簽發的一次性／短效導航 token。
+    /// 背景：實測（2026-09-14 log）使用者的瀏覽器對 /tc/ 頂層導航不帶任何
+    /// cookie（has_access_cookie=false has_refresh_cookie=false），但同源
+    /// XHR 正常——/tc/ 導航改用 URL token 鑑權，不再依賴 cookie。
+    tc_nav_tokens: Arc<std::sync::Mutex<HashMap<String, TcNavTokenEntry>>>,
     rate_limiter: RateLimiter,
     default_poll_interval_secs: u64,
+}
+
+/// TC_NAV_TOKEN_V1：token 內容。single_use=true 給轉址 URL（用一次即焚）；
+/// false 給 tc_proxy_ticket cookie（120 秒內的子資源請求可重複用）。
+struct TcNavTokenEntry {
+    account_id: String,
+    is_admin: bool,
+    expires_at: Instant,
+    single_use: bool,
+    /// TC_REFERER_GRANT_V1（fix35）：URL 消費後轉為「頁面授權」——同一頁面的
+    /// 子資源／XHR／站內導航以 Referer（=頁面完整 URL，含 tc_token）鑑權；
+    /// URL 本身不得重放（via_url 拒絕），效期滑動 15 分鐘。
+    referer_grant: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1467,6 +1494,9 @@ impl AdminWebState {
         let _legacy_access_token = legacy_access_token.into();
         let sessions: Arc<RwLock<HashMap<String, AdminSession>>> =
             Arc::new(RwLock::new(HashMap::new()));
+        // TC_NAV_TOKEN_V1（fix34）：一次性導航 token 儲存（並在每次簽發時順手清理過期項）。
+        let tc_nav_tokens: Arc<std::sync::Mutex<HashMap<String, TcNavTokenEntry>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
         // PERFORMANCE_ACCOUNT_LOOKUP_V1 / ACCOUNT_HOT_ADD_V1:
         // account_id -> index 查表現在由 AccountRegistry 內部維護。
         let accounts: AccountRegistry = accounts.into();
@@ -1530,6 +1560,7 @@ impl AdminWebState {
             scanner,
             messenger,
             sessions,
+            tc_nav_tokens,
             default_poll_interval_secs: default_poll_interval_secs.max(1),
         };
         load_runtime_theme();
@@ -1558,6 +1589,109 @@ impl AdminWebState {
         } else {
             Some(user_name)
         }
+    }
+
+    /// TC_NAV_TOKEN_V1（fix34）：簽發 /tc/ 導航 token。single_use=true 供轉址
+    /// URL（一次性）；false 供 tc_proxy_ticket cookie（短效可重複）。每次簽發
+    /// 順手清理過期條目，map 體積有界。
+    fn mint_tc_nav_token(&self, account_id: &str, is_admin: bool, single_use: bool) -> String {
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let mut guard = self
+            .tc_nav_tokens
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        guard.retain(|_, entry| entry.expires_at > Instant::now());
+        guard.insert(
+            token.clone(),
+            TcNavTokenEntry {
+                account_id: account_id.to_string(),
+                is_admin,
+                expires_at: Instant::now()
+                    + Duration::from_secs(if single_use {
+                        TC_NAV_TOKEN_TTL_SECS
+                    } else {
+                        TC_NAV_TICKET_TTL_SECS
+                    }),
+                single_use,
+                referer_grant: false,
+            },
+        );
+        token
+    }
+
+    /// TC_NAV_TOKEN_V1：消費 token。single_use 條目即取即刪；ticket 條目在
+    /// TTL 內可重複消費。回傳 (account_id, is_admin)。
+    fn consume_tc_nav_token(&self, token: &str) -> Option<(String, bool)> {
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        let mut guard = self
+            .tc_nav_tokens
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let entry = guard.get(token)?;
+        if entry.expires_at <= Instant::now() {
+            guard.remove(token);
+            return None;
+        }
+        let result = Some((entry.account_id.clone(), entry.is_admin));
+        if entry.single_use {
+            guard.remove(token);
+        }
+        result
+    }
+
+    /// TC_REFERER_GRANT_V1（fix35）：以「URL query」身分消費 token（導航請求）。
+    /// single_use 條目消費後不刪除——原地轉為頁面授權（referer_grant=true、
+    /// 效期延長為滑動 15 分鐘），讓同一頁面的後續請求改走 Referer 鑑權；
+    /// 已是 referer_grant 的條目拒絕 URL 重放（重載頁面時 Referer 仍帶原
+    /// token，可繼續用 via_referer）。
+    fn consume_tc_nav_token_via_url(&self, token: &str) -> Option<(String, bool)> {
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        let mut guard = self
+            .tc_nav_tokens
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let entry = guard.get_mut(token)?;
+        if entry.expires_at <= Instant::now() {
+            guard.remove(token);
+            return None;
+        }
+        if entry.referer_grant {
+            return None;
+        }
+        let result = (entry.account_id.clone(), entry.is_admin);
+        if entry.single_use {
+            entry.single_use = false;
+            entry.referer_grant = true;
+            entry.expires_at = Instant::now() + Duration::from_secs(TC_PAGE_GRANT_TTL_SECS);
+        }
+        Some(result)
+    }
+
+    /// TC_REFERER_GRANT_V1（fix35）：以「Referer」身分消費 token（頁面的子資源／
+    /// XHR／站內導航；Referer=頁面完整 URL，query 內含 tc_token）。任何有效
+    /// 條目皆可用；每次使用滑動延長效期（頁面持續活動就不過期）。
+    fn consume_tc_nav_token_via_referer(&self, token: &str) -> Option<(String, bool)> {
+        let token = token.trim();
+        if token.is_empty() {
+            return None;
+        }
+        let mut guard = self
+            .tc_nav_tokens
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let entry = guard.get_mut(token)?;
+        if entry.expires_at <= Instant::now() {
+            guard.remove(token);
+            return None;
+        }
+        entry.expires_at = Instant::now() + Duration::from_secs(TC_PAGE_GRANT_TTL_SECS);
+        Some((entry.account_id.clone(), entry.is_admin))
     }
 
     async fn authorize(&self, token: &str) -> Option<AdminSession> {
@@ -1892,6 +2026,35 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
     Router::new()
         .route("/", get(pages::admin_root_redirect_handler))
         .route("/healthz", get(health::healthz_handler))
+        // TRONCLASS_PROXY_JUMP_V1：iClass 反向代理。SPA 資源是根絕對路徑
+        //（/static/...），因此頂層 /static、/api、/course、/uploads 也掛代理；
+        // 面板自己不用這些頂層路徑（面板資源在 /admin/static、API 在 /admin/api）。
+        // 代理需要大 body 上限（axum 預設 2MB 會擋作業附件上傳）。
+        .route(
+            "/tc/{*path}",
+            axum::routing::any(tc_proxy::tc_proxy_handler)
+                .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
+        )
+        .route(
+            "/static/{*path}",
+            axum::routing::any(tc_proxy::tc_proxy_handler)
+                .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
+        )
+        .route(
+            "/api/{*path}",
+            axum::routing::any(tc_proxy::tc_proxy_handler)
+                .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
+        )
+        .route(
+            "/course/{*path}",
+            axum::routing::any(tc_proxy::tc_proxy_handler)
+                .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
+        )
+        .route(
+            "/uploads/{*path}",
+            axum::routing::any(tc_proxy::tc_proxy_handler)
+                .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
+        )
         .route("/manifest.webmanifest", get(pwa::manifest_handler))
         .route("/service-worker.js", get(pwa::service_worker_handler))
         .route("/admin/pwa/icon.svg", get(pwa::icon_handler))
@@ -2512,6 +2675,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/homework",
             get(homework::admin_homework_list_handler),
         )
+        // TRONCLASS_PROXY_JUMP_V1：免登入直達 iClass 的入口（設代理帳號 cookie 後 302）。
+        .route(
+            "/admin/tc-go",
+            get(tc_proxy::tc_go_handler),
+        )
         .route(
             "/admin/api/homework/complete",
             post(homework::admin_homework_complete_handler)
@@ -2733,6 +2901,22 @@ fn session_cookie_name(headers: &HeaderMap) -> &'static str {
 }
 
 fn session_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
+    // SESSION_COOKIE_PRIORITY_V1（fix27）：兩輪掃描，先 __Host-（https）版再 local 版。
+    // 舊版「先掃到誰算誰」的問題：兩顆並存（歷史 local cookie＋新的 __Host-）時，
+    // 瀏覽器送 Cookie 的順序不保證新的在前——掃到過期的舊 token 就 401，
+    // 造成「登入成功→立刻又被導回登入頁」的無限循環（部署重啟清空記憶體
+    // sessions 後觸發，2026-09-14 使用者實測回報）。
+    for name in [SECURE_SESSION_COOKIE, LOCAL_SESSION_COOKIE] {
+        if let Some(value) = session_cookie_value_named(headers, name) {
+            return Some(value);
+        }
+    }
+    None
+}
+
+/// 掃 Cookie header 中「指定名稱」的 session cookie；格式檢查與
+/// REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2) 共用同一定義。
+fn session_cookie_value_named(headers: &HeaderMap, want: &str) -> Option<String> {
     let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
     for pair in cookies.split(';') {
         // NOTE: `?` here used to abort the whole scan as soon as any cookie in
@@ -2742,12 +2926,10 @@ fn session_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
             continue;
         };
         let name = name.trim();
-        if name != SECURE_SESSION_COOKIE && name != LOCAL_SESSION_COOKIE {
+        if name != want {
             continue;
         }
         let value = value.trim();
-        // REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): shares one definition with the
-        // refresh-cookie reader so the two cannot drift apart.
         if is_valid_session_token_format(value) {
             return Some(value.to_string());
         }
@@ -2770,6 +2952,15 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
     match cookie.parse::<HeaderValue>() {
         Ok(value) => {
             response.headers_mut().append(header::SET_COOKIE, value);
+            // SESSION_COOKIE_PRIORITY_V1：種 __Host- 版時，順手把 local 名的
+            // 舊 cookie 過期清掉，避免瀏覽器兩顆並存、下次請求又送舊 token。
+            if name == SECURE_SESSION_COOKIE {
+                if let Ok(expire) = HeaderValue::from_str(&format!(
+                    "{LOCAL_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+                )) {
+                    response.headers_mut().append(header::SET_COOKIE, expire);
+                }
+            }
         }
         Err(e) => {
             tracing::error!(error = %e, "session cookie 無法建立");
@@ -2814,18 +3005,11 @@ fn append_refresh_cookie(
 /// lookup in `rotate_session` and to any log line that records the token.
 /// Validating the exact format here keeps that entire input surface closed.
 fn refresh_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
-    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
-    for pair in cookies.split(';') {
-        let Some((name, value)) = pair.trim().split_once('=') else {
-            continue;
-        };
-        let name = name.trim();
-        if name != SECURE_REFRESH_COOKIE && name != LOCAL_REFRESH_COOKIE {
-            continue;
-        }
-        let value = value.trim();
-        if is_valid_session_token_format(value) {
-            return Some(value.to_string());
+    // SESSION_COOKIE_PRIORITY_V1（fix27）：與 session cookie 相同的優先序問題，
+    // 兩輪掃描先 __Host- 版，避免並存的舊 local cookie 搶先被採用。
+    for name in [SECURE_REFRESH_COOKIE, LOCAL_REFRESH_COOKIE] {
+        if let Some(value) = session_cookie_value_named(headers, name) {
+            return Some(value);
         }
     }
     None
@@ -3304,6 +3488,21 @@ fn add_csp_nonce_to_inline_tags(html: &str, nonce: &str) -> String {
 /// Security headers for the externally reachable Admin Web. Inline elements
 /// receive a fresh nonce in `html_page_response`; inline event/style
 /// attributes are blocked instead of enabling the global inline bypass.
+/// TRONCLASS_PROXY_PASSTHROUGH_V1（fix29）：頂層代理路由的路徑判定。
+/// 這些前綴由 tc_proxy 轉發 iClass，回應不得套用面板的安全標頭/CSP。
+fn is_tc_proxy_path(path: &str) -> bool {
+    path == "/tc"
+        || path.starts_with("/tc/")
+        || path == "/static"
+        || path.starts_with("/static/")
+        || path == "/api"
+        || path.starts_with("/api/")
+        || path == "/course"
+        || path.starts_with("/course/")
+        || path == "/uploads"
+        || path.starts_with("/uploads/")
+}
+
 async fn admin_security_headers_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -3312,6 +3511,16 @@ async fn admin_security_headers_middleware(
     // /admin/static assets can keep their Cache-Control instead of no-store.
     // PERFORMANCE_PATH_CHECK_V1: use &str directly, no allocation needed.
     let path = request.uri().path();
+    // TRONCLASS_PROXY_PASSTHROUGH_V1（fix29）：頂層代理路由（/tc、/static、/api、
+    // /course、/uploads）回傳的是 iClass 的原始頁面與資源。iClass 自己的 JS 沒有
+    // Trusted Types policy，若上游回應沒帶 CSP，下面的 fallback 會給 iClass 的
+    // HTML 裝上面板專用的 require-trusted-types-for —— iClass 頁面內所有
+    // innerHTML 會整頁拋 TypeError（與 2026-09-14 /admin/homework 回報的
+    // TrustedHTML 錯誤同型）。代理回應在 tc_proxy 內已做上游 header 白名單，
+    // 這裡直接原樣放行，不加任何面板安全標頭。
+    if is_tc_proxy_path(path) {
+        return next.run(request).await;
+    }
     let is_admin_path = path.starts_with("/admin")
         || path == "/manifest.webmanifest"
         || path == "/service-worker.js";
@@ -3681,6 +3890,211 @@ fn unauthorized_response() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn tc_go_with_only_refresh_cookie_rotates_instead_of_401() {
+        // TC_REFRESH_FALLBACK_V1（fix30）：/admin/tc-go 帶著「access 已失效、
+        // refresh 仍有效」的 cookie 時，必須像 /admin 頁面一樣在伺服器端輪換，
+        // 而不是回 401。此測試的 state 沒有為帳號建 accounts_db 記錄，因此
+        // 輪換成功後會走到「找不到指定帳號」的 404——404（而非 401）就是
+        // 「鑑權已通過」的證明；再驗證舊 refresh token 已被單用消耗。
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("tc-refresh-user".to_string(), false, false)
+            .await;
+        let app = build_admin_router(state.clone());
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/tc-go?course_id=1&item_id=2")
+                    .header(
+                        header::COOKIE,
+                        format!("{SECURE_REFRESH_COOKIE}={}", tokens.refresh),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "refresh-only cookie must pass auth (404=no account record), not 401"
+        );
+        assert!(
+            state.rotate_session(&tokens.refresh, None).await.is_none(),
+            "old refresh token must have been consumed by the tc-go rotation"
+        );
+    }
+
+    /// TC_NAV_TOKEN_V1（fix34）：nav token 一次性語義——消費一次成功、
+    /// 第二次 None；ticket 可重複消費；過期即刪；空值／未知 token 回 None。
+    #[tokio::test]
+    async fn tc_nav_token_single_use_and_ticket_semantics() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+
+        // 一次性 nav token：第一次消費回 (account, is_admin)，第二次 None。
+        let nav = state.mint_tc_nav_token("nav-user", true, true);
+        assert_eq!(
+            state.consume_tc_nav_token(&nav),
+            Some(("nav-user".to_string(), true))
+        );
+        assert_eq!(state.consume_tc_nav_token(&nav), None, "single_use 即取即焚");
+
+        // ticket：TTL 內可重複消費。
+        let ticket = state.mint_tc_nav_token("ticket-user", false, false);
+        for _ in 0..3 {
+            assert_eq!(
+                state.consume_tc_nav_token(&ticket),
+                Some(("ticket-user".to_string(), false)),
+                "ticket 在效期內可重複消費"
+            );
+        }
+
+        // 過期條目：消費時刪除並回 None。
+        let stale = state.mint_tc_nav_token("stale-user", false, true);
+        {
+            let mut guard = state
+                .tc_nav_tokens
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            guard.get_mut(&stale).unwrap().expires_at = Instant::now() - Duration::from_secs(1);
+        }
+        assert_eq!(state.consume_tc_nav_token(&stale), None, "過期 token 無效");
+        assert!(
+            !state
+                .tc_nav_tokens
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .contains_key(&stale),
+            "過期條目必須被刪除"
+        );
+
+        // 空值／純空白／未知 token：一律 None。
+        assert_eq!(state.consume_tc_nav_token(""), None);
+        assert_eq!(state.consume_tc_nav_token("   "), None);
+        assert_eq!(state.consume_tc_nav_token("no-such-token"), None);
+
+        // 前後空白會被 trim——簽發方不會塞空白，但消費端要容忍。
+        let padded = state.mint_tc_nav_token("pad-user", false, true);
+        assert_eq!(
+            state.consume_tc_nav_token(&format!("  {padded}  ")),
+            Some(("pad-user".to_string(), false))
+        );
+    }
+
+    /// TC_REFERER_GRANT_V1（fix35）：URL 消費 single_use 後轉為頁面授權——
+    /// URL 不得重放、Referer 可重複使用且效期滑動；過期即刪。
+    #[tokio::test]
+    async fn tc_nav_token_referer_grant_semantics() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+
+        // URL 消費 → 轉 grant：第二次 via_url 拒絕，via_referer 可用。
+        let nav = state.mint_tc_nav_token("grant-user", true, true);
+        assert_eq!(
+            state.consume_tc_nav_token_via_url(&nav),
+            Some(("grant-user".to_string(), true))
+        );
+        assert_eq!(
+            state.consume_tc_nav_token_via_url(&nav),
+            None,
+            "referer_grant 條目不得再用 URL 重放"
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                state.consume_tc_nav_token_via_referer(&nav),
+                Some(("grant-user".to_string(), true)),
+                "頁面授權在效期內可重複以 Referer 消費"
+            );
+        }
+
+        // 滑動效期：via_referer 後 entry 的過期時間被推到 now+GRANT 之後。
+        {
+            let guard = state
+                .tc_nav_tokens
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let entry = guard.get(&nav).unwrap();
+            assert!(
+                entry.expires_at
+                    > Instant::now() + Duration::from_secs(TC_PAGE_GRANT_TTL_SECS - 5),
+                "via_referer 必須滑動延長效期"
+            );
+        }
+
+        // 過期 grant：via_referer 回 None 且刪除。
+        {
+            let mut guard = state
+                .tc_nav_tokens
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            guard.get_mut(&nav).unwrap().expires_at = Instant::now() - Duration::from_secs(1);
+        }
+        assert_eq!(state.consume_tc_nav_token_via_referer(&nav), None);
+        assert!(
+            !state
+                .tc_nav_tokens
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .contains_key(&nav),
+            "過期條目必須被刪除"
+        );
+
+        // 未經 URL 消費的新鮮 token 也能 via_referer（正常瀏覽器：導航走 cookie，
+        // token 閒置——頁面子資源的 Referer 仍帶它）。
+        let fresh = state.mint_tc_nav_token("fresh-user", false, true);
+        assert_eq!(
+            state.consume_tc_nav_token_via_referer(&fresh),
+            Some(("fresh-user".to_string(), false))
+        );
+
+        // 空值／純空白／未知 token：兩條路徑一律 None。
+        assert_eq!(state.consume_tc_nav_token_via_url(""), None);
+        assert_eq!(state.consume_tc_nav_token_via_url("  "), None);
+        assert_eq!(state.consume_tc_nav_token_via_referer(""), None);
+        assert_eq!(state.consume_tc_nav_token_via_referer("no-such-token"), None);
+    }
+
+    #[test]
+    fn tc_proxy_paths_bypass_security_headers() {
+        // TRONCLASS_PROXY_PASSTHROUGH_V1（fix29）：代理前綴不得被加上面板
+        // CSP（require-trusted-types-for 會毒殺 iClass 頁面的 innerHTML）。
+        for path in [
+            "/tc",
+            "/tc/course/1/learning-activity/full-screen",
+            "/static/app.css",
+            "/api/org-bulletin/bulletins",
+            "/course/123",
+            "/uploads/file.png",
+        ] {
+            assert!(is_tc_proxy_path(path), "proxy path must bypass: {path}");
+        }
+        // 面板自己的路徑必須照常套用安全標頭。
+        for path in [
+            "/",
+            "/admin",
+            "/admin/homework",
+            "/admin/static/js/app.js",
+            "/admin/api/client-log",
+            "/manifest.webmanifest",
+            "/service-worker.js",
+            "/pub/shared-file",
+        ] {
+            assert!(!is_tc_proxy_path(path), "admin path must not bypass: {path}");
+        }
+        // 相似但不同的前綴不得誤判。
+        assert!(!is_tc_proxy_path("/tcexam"));
+        assert!(!is_tc_proxy_path("/statics"));
+        assert!(!is_tc_proxy_path("/courseware"));
+    }
+
+    #[test]
     use axum::{body::Body, http::Request};
     use tempfile::NamedTempFile;
     use tower::ServiceExt;
@@ -3836,6 +4250,49 @@ mod tests {
             );
         }
         headers
+    }
+
+    #[test]
+    fn session_cookie_reader_prefers_secure_variant_when_both_present() {
+        // SESSION_COOKIE_PRIORITY_V1（fix27）：部署重啟清空記憶體 sessions 後，
+        // 瀏覽器可能同時留著過期的 local 名 cookie 與新的 __Host- cookie。
+        // 舊實作「先掃到誰算誰」在 local 排前面時會拿到過期 token，
+        // 造成「登入成功→又被導回登入頁」的無限循環。新版必須優先 __Host-。
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static(
+                "cf_clearance=x; tronclass_admin_session=00000000000000000000000000000001; __Host-tronclass_admin_session=ffffffffffffffffffffffffffffffff",
+            ),
+        );
+        assert_eq!(
+            session_cookie_from_headers(&headers).as_deref(),
+            Some("ffffffffffffffffffffffffffffffff"),
+            "secure (__Host-) variant must win over an older local-name cookie"
+        );
+        // 只有 local 版時仍要讀得到（本機 http 開發情境）。
+        let mut local_only = HeaderMap::new();
+        local_only.insert(
+            header::COOKIE,
+            HeaderValue::from_static("tronclass_admin_session=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+        );
+        assert_eq!(
+            session_cookie_from_headers(&local_only).as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        // refresh cookie 同樣優先序。
+        let mut refresh = HeaderMap::new();
+        refresh.insert(
+            header::COOKIE,
+            HeaderValue::from_static(
+                "tronclass_admin_refresh=00000000000000000000000000000002; __Host-tronclass_admin_refresh=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            ),
+        );
+        assert_eq!(
+            refresh_cookie_from_headers(&refresh).as_deref(),
+            Some("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
+            "secure refresh cookie must win over an older local-name refresh cookie"
+        );
     }
 
     #[test]

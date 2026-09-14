@@ -439,6 +439,54 @@ pub fn notify_rollcall_finished(
     });
 }
 
+/// ROLLCALL_SUBMITTED_NOTICE_V1（fix32）：點名送出成功後、二次確認完成前的
+/// 即時推播。確認最多需要約 9 秒（3 次×3 秒），這段空窗讓使用者知道點名
+/// 「已送出、正在確認」而不是卡住。偏好鍵沿用 rollcall_finished（設定頁
+/// 不變）；tag 與最終結果通知相同——瀏覽器會用最終結果直接「替換」這則
+/// 通知，不會堆兩則。
+pub fn notify_rollcall_submitted(
+    account_id: &str,
+    rollcall_id: u64,
+    course_name: &str,
+    attendance_type: &str,
+) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    let account_id = account_id.to_string();
+    let course_name = course_name.to_string();
+    let attendance_type = attendance_type.to_string();
+    tokio::spawn(async move {
+        if !push_preference_enabled(&service, &account_id, "rollcall_finished").await {
+            return;
+        }
+        let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+            Ok(rows) => rows,
+            Err(error) => {
+                warn!(account = %account_id, error = %error, "Web Push 點名已送出通知讀取訂閱失敗");
+                return;
+            }
+        };
+        if subscriptions.is_empty() {
+            return;
+        }
+        let payload = match serde_json::to_vec(&json!({
+            "title": format!("點名已送出：{course_name}"),
+            "body": format!("{attendance_type}｜帳號 {account_id}｜已送出 iClass，正在二次確認…"),
+            "url": "/admin/dashboard#rollcall",
+            "tag": format!("tronclass-rollcall-finished-{account_id}-{rollcall_id}"),
+            "rollcall_id": rollcall_id,
+        })) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(error = %error, "序列化 Web Push 點名已送出 payload 失敗");
+                return;
+            }
+        };
+        service.send_to_many(subscriptions, &payload).await;
+    });
+}
+
 /// CLASS_REMINDER_PUSH_V1：上課前提醒的手機推播（與 Discord DM 對應）。
 /// 偏好走 class_reminder_preferences.push_enabled（上課提醒卡開關），不走 notification_preferences。
 pub fn notify_class_reminder(

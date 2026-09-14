@@ -223,6 +223,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .hw-complete-btn{margin-left:auto;padding:6px 12px;border:1px solid var(--ds-line-soft);border-radius:999px;background:transparent;color:var(--ds-muted);font-size:12px;cursor:pointer;transition:all .15s ease;white-space:nowrap}
 .hw-complete-btn:hover{border-color:#10b981;color:#10b981}
 .hw-complete-btn.done{border-color:#10b981;background:rgba(16,185,129,.12);color:#10b981}
+/* TRONCLASS_PROXY_JUMP_V1：在 iClass 開啟（面板反向代理，免學校登入） */
+.tc-open-btn{margin-left:8px;padding:6px 12px;border:1px solid var(--ds-line-soft);border-radius:999px;background:transparent;color:var(--ds-muted);font-size:12px;cursor:pointer;transition:all .15s ease;white-space:nowrap}
+.tc-open-btn:hover{border-color:#2563eb;color:#2563eb}
 .status-pill{display:inline-flex;align-items:center;gap:5px;font-weight:800;font-size:12px}
 .status-pill.good{color:#10b981}.status-pill.bad{color:#ef4444}.status-pill.warn{color:#f59e0b}
 .empty-box{grid-column:1/-1;padding:48px 24px;text-align:center;border:2px dashed var(--ds-line);border-radius:22px;background:var(--ds-card);color:var(--ds-muted)}
@@ -843,6 +846,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
               title="${userDone ? '取消標記完成' : '標記為已完成，停止截止提醒'}">
               ${userDone ? '↩️ 取消完成' : '✅ 標記完成'}
             </button>
+            ${item.course_id ? `<button class="tc-open-btn" type="button" data-tc-open="1"
+              data-course-id="${esc(item.course_id)}" data-item-id="${esc(item.id)}"
+              title="在新分頁開啟 iClass 的這個作業（由面板代理，免學校登入）">↗ iClass</button>` : ''}
           </div>
         </article>
       `;
@@ -984,6 +990,16 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     // HOMEWORK_USER_COMPLETED_V1
     // 委派處理「標記完成／取消」按鈕（卡片會重新 render，用容器委派避免重綁）。
     q('homeworkContainer').addEventListener('click', async function(ev) {
+      // TRONCLASS_PROXY_JUMP_V1：在 iClass 開啟（面板代理，免學校登入）。
+      const tcBtn = ev.target.closest('[data-tc-open]');
+      if (tcBtn) {
+        const cid = tcBtn.getAttribute('data-course-id');
+        const iid = tcBtn.getAttribute('data-item-id');
+        if (!cid || !iid) return;
+        const acct = loadedAccountId ? ('&account_id=' + encodeURIComponent(loadedAccountId)) : '';
+        window.open('/admin/tc-go?course_id=' + encodeURIComponent(cid) + '&item_id=' + encodeURIComponent(iid) + acct, '_blank');
+        return;
+      }
       const btn = ev.target.closest('.hw-complete-btn');
       if (!btn) return;
       const homeworkId = btn.getAttribute('data-hw-id');

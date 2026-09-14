@@ -1,6 +1,7 @@
 //! Mock rollcall page/API handlers for Admin Web.
 
 use super::*;
+use crate::adapters::events::RollcallResultEvent;
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AdminMockStartRequest {
@@ -204,6 +205,7 @@ pub(super) async fn admin_mock_start_handler(
                 number_receivers.push((
                     account.account_id.clone(),
                     Arc::clone(&account.monitor_status),
+                    account.target.lock().await.clone(),
                     rx,
                 ));
             }
@@ -228,7 +230,8 @@ pub(super) async fn admin_mock_start_handler(
                 }
             }
 
-            for (account_id_task, status_task, mut rx) in number_receivers {
+            for (account_id_task, status_task, target_task, mut rx) in number_receivers {
+                let messenger_task = state.messenger.clone();
                 let scanner_task = Arc::clone(&scanner);
                 let expected_code = code.clone();
                 tokio::spawn(async move {
@@ -236,6 +239,43 @@ pub(super) async fn admin_mock_start_handler(
                     loop {
                         let now = tokio::time::Instant::now();
                         if now >= deadline {
+                                                        // MOCK_FIDELITY_V1：與真實流程一致——逾時視為失敗，記錄並推播。
+                            scanner_task
+                                .mark_number_failed("mock", rollcall_id, &account_id_task, "等待輸入逾時")
+                                .await;
+                            push_mock_history(
+                                &status_task,
+                                rollcall_id,
+                                "Mock 數字點名",
+                                "數字簽到",
+                                false,
+                                "等待輸入逾時".to_string(),
+                            )
+                            .await;
+                            crate::web_push_notifications::notify_rollcall_finished(
+                                &account_id_task,
+                                rollcall_id,
+                                "Mock 數字點名",
+                                "數字簽到",
+                                false,
+                                "❌ 失敗：等待輸入逾時",
+                            );
+                            if let Some(messenger) = messenger_task.as_ref() {
+                                let _ = messenger
+                                    .push_to_account_or_admin(
+                                        &target_task,
+                                        &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                            rollcall_id,
+                                            account: account_id_task.clone(),
+                                            course_name: "Mock 數字點名".to_string(),
+                                            attendance_type: "數字簽到".to_string(),
+                                            success: false,
+                                            result: "❌ 失敗：等待輸入逾時".to_string(),
+                                            elapsed_ms: 0,
+                                        }),
+                                    )
+                                    .await;
+                            }
                             break;
                         }
                         let remaining = deadline.saturating_duration_since(now);
@@ -255,6 +295,31 @@ pub(super) async fn admin_mock_start_handler(
                                     format!("Mock 數字碼 `{input_code}` 正確"),
                                 )
                                 .await;
+                                // MOCK_FINISH_NOTIFY_V1：與真實流程一致，成功結果推播。
+                                crate::web_push_notifications::notify_rollcall_finished(
+                                    &account_id_task,
+                                    rollcall_id,
+                                    "Mock 數字點名",
+                                    "數字簽到",
+                                    true,
+                                    &format!("✅ 成功：Mock 數字碼 `{input_code}` 正確"),
+                                );
+                                if let Some(messenger) = messenger_task.as_ref() {
+                                    let _ = messenger
+                                        .push_to_account_or_admin(
+                                            &target_task,
+                                            &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                                rollcall_id,
+                                                account: account_id_task.clone(),
+                                                course_name: "Mock 數字點名".to_string(),
+                                                attendance_type: "數字簽到".to_string(),
+                                                success: true,
+                                                result: format!("✅ 成功：Mock 數字碼 `{input_code}` 正確").to_string(),
+                                                elapsed_ms: 0,
+                                            }),
+                                        )
+                                        .await;
+                                }
                                 break;
                             }
                             Ok(Some(NumberCodeInput::Code(input_code))) => {
@@ -292,9 +357,72 @@ pub(super) async fn admin_mock_start_handler(
                                     format!("Mock 自動讀取代碼 `{expected_code}` 成功"),
                                 )
                                 .await;
+                                // MOCK_FINISH_NOTIFY_V1：與真實流程一致，成功結果推播。
+                                crate::web_push_notifications::notify_rollcall_finished(
+                                    &account_id_task,
+                                    rollcall_id,
+                                    "Mock 數字點名",
+                                    "數字簽到",
+                                    true,
+                                    &format!("✅ 成功：Mock 自動讀取代碼 `{expected_code}`"),
+                                );
+                                if let Some(messenger) = messenger_task.as_ref() {
+                                    let _ = messenger
+                                        .push_to_account_or_admin(
+                                            &target_task,
+                                            &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                                rollcall_id,
+                                                account: account_id_task.clone(),
+                                                course_name: "Mock 數字點名".to_string(),
+                                                attendance_type: "數字簽到".to_string(),
+                                                success: true,
+                                                result: format!("✅ 成功：Mock 自動讀取代碼 `{expected_code}`").to_string(),
+                                                elapsed_ms: 0,
+                                            }),
+                                        )
+                                        .await;
+                                }
                                 break;
                             }
-                            Ok(None) | Err(_) => break,
+                            Ok(None) | Err(_) => {                            // MOCK_FIDELITY_V1：與真實流程一致——逾時視為失敗，記錄並推播。
+                            scanner_task
+                                .mark_number_failed("mock", rollcall_id, &account_id_task, "等待輸入逾時")
+                                .await;
+                            push_mock_history(
+                                &status_task,
+                                rollcall_id,
+                                "Mock 數字點名",
+                                "數字簽到",
+                                false,
+                                "等待輸入逾時".to_string(),
+                            )
+                            .await;
+                            crate::web_push_notifications::notify_rollcall_finished(
+                                &account_id_task,
+                                rollcall_id,
+                                "Mock 數字點名",
+                                "數字簽到",
+                                false,
+                                "❌ 失敗：等待輸入逾時",
+                            );
+                            if let Some(messenger) = messenger_task.as_ref() {
+                                let _ = messenger
+                                    .push_to_account_or_admin(
+                                        &target_task,
+                                        &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                            rollcall_id,
+                                            account: account_id_task.clone(),
+                                            course_name: "Mock 數字點名".to_string(),
+                                            attendance_type: "數字簽到".to_string(),
+                                            success: false,
+                                            result: "❌ 失敗：等待輸入逾時".to_string(),
+                                            elapsed_ms: 0,
+                                        }),
+                                    )
+                                    .await;
+                            }
+                            break;
+                            }
                         }
                     }
                 });
@@ -357,6 +485,7 @@ pub(super) async fn admin_mock_start_handler(
                 qr_receivers.push((
                     account.account_id.clone(),
                     Arc::clone(&account.monitor_status),
+                    account.target.lock().await.clone(),
                     rx,
                 ));
             }
@@ -381,7 +510,8 @@ pub(super) async fn admin_mock_start_handler(
                 }
             }
 
-            for (account_id_task, status_task, mut rx) in qr_receivers {
+            for (account_id_task, status_task, target_task, mut rx) in qr_receivers {
+                let messenger_task = state.messenger.clone();
                 let scanner_task = Arc::clone(&scanner);
                 tokio::spawn(async move {
                     if let Ok(Some(qr_data)) = tokio::time::timeout(timeout, rx.recv()).await {
@@ -397,6 +527,67 @@ pub(super) async fn admin_mock_start_handler(
                             format!("Mock QR payload 已收到（長度：{}）", qr_data.len()),
                         )
                         .await;
+                        // MOCK_FINISH_NOTIFY_V1：與真實流程一致，成功結果推播。
+                        crate::web_push_notifications::notify_rollcall_finished(
+                            &account_id_task,
+                            rollcall_id,
+                            "Mock QR Code 點名",
+                            "QR Code 簽到",
+                            true,
+                            &format!("✅ 成功：Mock QR payload 已收到（長度：{}）", qr_data.len()),
+                        );
+                        if let Some(messenger) = messenger_task.as_ref() {
+                            let _ = messenger
+                                .push_to_account_or_admin(
+                                    &target_task,
+                                    &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                        rollcall_id,
+                                        account: account_id_task.clone(),
+                                        course_name: "Mock QR Code 點名".to_string(),
+                                        attendance_type: "QR Code 簽到".to_string(),
+                                        success: true,
+                                        result: format!("✅ 成功：Mock QR payload 已收到（長度：{}）", qr_data.len()).to_string(),
+                                        elapsed_ms: 0,
+                                    }),
+                                )
+                                .await;
+                        }
+                    } else {
+                        // MOCK_FIDELITY_V1：與真實流程一致——逾時視為失敗，記錄並推播。
+                        push_mock_history(
+                            &status_task,
+                            rollcall_id,
+                            "Mock QR Code 點名",
+                            "QR Code 簽到",
+                            false,
+                            "等待掃碼逾時".to_string(),
+                        )
+                        .await;
+                        crate::web_push_notifications::notify_rollcall_finished(
+                            &account_id_task,
+                            rollcall_id,
+                            "Mock QR Code 點名",
+                            "QR Code 簽到",
+                            false,
+                            "❌ 失敗：等待掃碼逾時",
+                        );
+                        if let Some(messenger) = messenger_task.as_ref() {
+                            let _ = messenger
+                                .push_to_account_or_admin(
+                                    &target_task,
+                                    &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                        rollcall_id,
+                                        account: account_id_task.clone(),
+                                        course_name: "Mock QR Code 點名".to_string(),
+                                        attendance_type: "QR Code 簽到".to_string(),
+                                        success: false,
+                                        result: "❌ 失敗：等待掃碼逾時".to_string(),
+                                        elapsed_ms: 0,
+                                    }),
+                                )
+                                .await;
+                        }
+
                     }
                 });
             }
@@ -562,12 +753,51 @@ pub(super) async fn handle_mock_rollcall_action(
             let scanner_task = Arc::clone(&scanner);
             let status_task = Arc::clone(&status);
             let account_id_task = account.account_id.clone();
+            let messenger_task = state.messenger.clone();
+            let target_task = target.clone();
             let expected_code = code.clone();
             tokio::spawn(async move {
                 let deadline = tokio::time::Instant::now() + timeout;
                 loop {
                     let now = tokio::time::Instant::now();
                     if now >= deadline {
+                                                // MOCK_FIDELITY_V1：與真實流程一致——逾時視為失敗，記錄並推播。
+                        scanner_task
+                            .mark_number_failed("mock", rollcall_id, &account_id_task, "等待輸入逾時")
+                            .await;
+                        push_mock_history(
+                            &status_task,
+                            rollcall_id,
+                            "Mock 數字點名",
+                            "數字簽到",
+                            false,
+                            "等待輸入逾時".to_string(),
+                        )
+                        .await;
+                        crate::web_push_notifications::notify_rollcall_finished(
+                            &account_id_task,
+                            rollcall_id,
+                            "Mock 數字點名",
+                            "數字簽到",
+                            false,
+                            "❌ 失敗：等待輸入逾時",
+                        );
+                        if let Some(messenger) = messenger_task.as_ref() {
+                            let _ = messenger
+                                .push_to_account_or_admin(
+                                    &target_task,
+                                    &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                        rollcall_id,
+                                        account: account_id_task.clone(),
+                                        course_name: "Mock 數字點名".to_string(),
+                                        attendance_type: "數字簽到".to_string(),
+                                        success: false,
+                                        result: "❌ 失敗：等待輸入逾時".to_string(),
+                                        elapsed_ms: 0,
+                                    }),
+                                )
+                                .await;
+                        }
                         break;
                     }
                     let remaining = deadline.saturating_duration_since(now);
@@ -587,6 +817,31 @@ pub(super) async fn handle_mock_rollcall_action(
                                 format!("Mock 數字碼 `{input_code}` 正確"),
                             )
                             .await;
+                            // MOCK_FINISH_NOTIFY_V1：與真實流程一致，成功結果推播。
+                            crate::web_push_notifications::notify_rollcall_finished(
+                                &account_id_task,
+                                rollcall_id,
+                                "Mock 數字點名",
+                                "數字簽到",
+                                true,
+                                &format!("✅ 成功：Mock 數字碼 `{input_code}` 正確"),
+                            );
+                            if let Some(messenger) = messenger_task.as_ref() {
+                                let _ = messenger
+                                    .push_to_account_or_admin(
+                                        &target_task,
+                                        &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                            rollcall_id,
+                                            account: account_id_task.clone(),
+                                            course_name: "Mock 數字點名".to_string(),
+                                            attendance_type: "數字簽到".to_string(),
+                                            success: true,
+                                            result: format!("✅ 成功：Mock 數字碼 `{input_code}` 正確").to_string(),
+                                            elapsed_ms: 0,
+                                        }),
+                                    )
+                                    .await;
+                            }
                             break;
                         }
                         Ok(Some(NumberCodeInput::Code(input_code))) => {
@@ -619,9 +874,72 @@ pub(super) async fn handle_mock_rollcall_action(
                                 format!("Mock 自動讀取代碼 `{expected_code}` 成功"),
                             )
                             .await;
+                            // MOCK_FINISH_NOTIFY_V1：與真實流程一致，成功結果推播。
+                            crate::web_push_notifications::notify_rollcall_finished(
+                                &account_id_task,
+                                rollcall_id,
+                                "Mock 數字點名",
+                                "數字簽到",
+                                true,
+                                &format!("✅ 成功：Mock 自動讀取代碼 `{expected_code}`"),
+                            );
+                            if let Some(messenger) = messenger_task.as_ref() {
+                                let _ = messenger
+                                    .push_to_account_or_admin(
+                                        &target_task,
+                                        &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                            rollcall_id,
+                                            account: account_id_task.clone(),
+                                            course_name: "Mock 數字點名".to_string(),
+                                            attendance_type: "數字簽到".to_string(),
+                                            success: true,
+                                            result: format!("✅ 成功：Mock 自動讀取代碼 `{expected_code}`").to_string(),
+                                            elapsed_ms: 0,
+                                        }),
+                                    )
+                                    .await;
+                            }
                             break;
                         }
-                        Ok(None) | Err(_) => break,
+                        Ok(None) | Err(_) => {                        // MOCK_FIDELITY_V1：與真實流程一致——逾時視為失敗，記錄並推播。
+                        scanner_task
+                            .mark_number_failed("mock", rollcall_id, &account_id_task, "等待輸入逾時")
+                            .await;
+                        push_mock_history(
+                            &status_task,
+                            rollcall_id,
+                            "Mock 數字點名",
+                            "數字簽到",
+                            false,
+                            "等待輸入逾時".to_string(),
+                        )
+                        .await;
+                        crate::web_push_notifications::notify_rollcall_finished(
+                            &account_id_task,
+                            rollcall_id,
+                            "Mock 數字點名",
+                            "數字簽到",
+                            false,
+                            "❌ 失敗：等待輸入逾時",
+                        );
+                        if let Some(messenger) = messenger_task.as_ref() {
+                            let _ = messenger
+                                .push_to_account_or_admin(
+                                    &target_task,
+                                    &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                        rollcall_id,
+                                        account: account_id_task.clone(),
+                                        course_name: "Mock 數字點名".to_string(),
+                                        attendance_type: "數字簽到".to_string(),
+                                        success: false,
+                                        result: "❌ 失敗：等待輸入逾時".to_string(),
+                                        elapsed_ms: 0,
+                                    }),
+                                )
+                                .await;
+                        }
+                        break;
+                        }
                     }
                 }
             });
@@ -682,6 +1000,8 @@ pub(super) async fn handle_mock_rollcall_action(
             let scanner_task = Arc::clone(&scanner);
             let status_task = Arc::clone(&status);
             let account_id_task = account.account_id.clone();
+            let messenger_task = state.messenger.clone();
+            let target_task = target.clone();
             tokio::spawn(async move {
                 if let Ok(Some(qr_data)) = tokio::time::timeout(timeout, rx.recv()).await {
                     scanner_task
@@ -696,6 +1016,67 @@ pub(super) async fn handle_mock_rollcall_action(
                         format!("Mock QR payload 已收到（長度：{}）", qr_data.len()),
                     )
                     .await;
+                    // MOCK_FINISH_NOTIFY_V1：與真實流程一致，成功結果推播。
+                    crate::web_push_notifications::notify_rollcall_finished(
+                        &account_id_task,
+                        rollcall_id,
+                        "Mock QR Code 點名",
+                        "QR Code 簽到",
+                        true,
+                        &format!("✅ 成功：Mock QR payload 已收到（長度：{}）", qr_data.len()),
+                    );
+                    if let Some(messenger) = messenger_task.as_ref() {
+                        let _ = messenger
+                            .push_to_account_or_admin(
+                                &target_task,
+                                &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                    rollcall_id,
+                                    account: account_id_task.clone(),
+                                    course_name: "Mock QR Code 點名".to_string(),
+                                    attendance_type: "QR Code 簽到".to_string(),
+                                    success: true,
+                                    result: format!("✅ 成功：Mock QR payload 已收到（長度：{}）", qr_data.len()).to_string(),
+                                    elapsed_ms: 0,
+                                }),
+                            )
+                            .await;
+                    }
+                } else {
+                    // MOCK_FIDELITY_V1：與真實流程一致——逾時視為失敗，記錄並推播。
+                    push_mock_history(
+                        &status_task,
+                        rollcall_id,
+                        "Mock QR Code 點名",
+                        "QR Code 簽到",
+                        false,
+                        "等待掃碼逾時".to_string(),
+                    )
+                    .await;
+                    crate::web_push_notifications::notify_rollcall_finished(
+                        &account_id_task,
+                        rollcall_id,
+                        "Mock QR Code 點名",
+                        "QR Code 簽到",
+                        false,
+                        "❌ 失敗：等待掃碼逾時",
+                    );
+                    if let Some(messenger) = messenger_task.as_ref() {
+                        let _ = messenger
+                            .push_to_account_or_admin(
+                                &target_task,
+                                &OutboundMessage::RollcallFinished(RollcallResultEvent {
+                                    rollcall_id,
+                                    account: account_id_task.clone(),
+                                    course_name: "Mock QR Code 點名".to_string(),
+                                    attendance_type: "QR Code 簽到".to_string(),
+                                    success: false,
+                                    result: "❌ 失敗：等待掃碼逾時".to_string(),
+                                    elapsed_ms: 0,
+                                }),
+                            )
+                            .await;
+                    }
+
                 }
             });
 

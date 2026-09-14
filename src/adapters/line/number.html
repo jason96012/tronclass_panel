@@ -271,9 +271,14 @@
       }
       if (body.last_error && lastSubmitted) {
         const firstTime = phase !== "fail";
-        setResult("fail", "簽到失敗：" + body.last_error, "請確認代碼後重新輸入，或改用「自動讀取」。");
+        setResult("fail", "簽到失敗：" + body.last_error, "直接輸入新的 4 位數字即可（不用刪除），或改用「自動讀取」。");
         lockInput(false);
-        if (firstTime) { paintBoxes("bad"); vibrate([40, 60, 40]); }
+        if (firstTime) {
+          // NUMBER_INPUT_RETRY_V1：清空舊碼並聚焦，輸錯後可直接打新數字。
+          setCode("", { noAuto: true });
+          try { codeInput.focus({ preventScroll: true }); } catch (_) { codeInput.focus(); }
+          paintBoxes("bad"); vibrate([40, 60, 40]);
+        }
         return;
       }
       if (total > 0 && pending === 0) {
@@ -341,9 +346,15 @@
         refreshStatus();
       } catch (err) {
         const msg = (err && err.message) || "送出失敗";
+        const expired = /expired|逾時|過期|到期/i.test(msg);
         setStatus(msg, "error");
-        setResult("fail", msg, /expired|逾時|過期|到期/i.test(msg) ? "" : "可以重新輸入再送一次。");
-        lockInput(/expired|逾時|過期|到期/i.test(msg));
+        setResult("fail", msg, expired ? "" : "可以重新輸入再送一次。");
+        lockInput(expired);
+        if (!expired) {
+          // NUMBER_INPUT_RETRY_V1：清空舊碼並聚焦，輸錯後可直接打新數字。
+          setCode("", { noAuto: true });
+          try { codeInput.focus({ preventScroll: true }); } catch (_) { codeInput.focus(); }
+        }
         paintBoxes("bad"); vibrate([40, 60, 40]);
       }
     }

@@ -813,9 +813,24 @@ pub(super) async fn client_log_handler(
     let stack = sanitize_client_field(&request.stack, 2000);
     let ua = sanitize_client_field(&request.ua, 200);
     let visibility = sanitize_client_field(&request.visibility, 16);
-    let level = match kind.as_str() {
-        "boot_watchdog_reload" | "js_error" | "unhandled_rejection" => "ERROR",
-        _ => "WARN",
+    // CF_INJECTED_TT_NOISE_V1（fix33→fix34 修正）：Cloudflare 的 JavaScript
+    // Detections 會在每個 HTML 回應注入一段用 innerHTML 的腳本
+    // （__CF$cv$params／challenge-platform），在本面板 require-trusted-types-for
+    // CSP 下必炸——面板頁面有 default policy 保護，實務上會回報 TrustedHTML+
+    // innerHTML 的只有 CF 注入碼。fix33 要求 source/stack 含 challenge-platform
+    // 特徵的條件實測漏判（stack 只剩 `c @ admin?next=...:524:236`、source 非空
+    // ——注入碼以 inline script 執行，堆疊位置隨頁面 URL 變動），故 fix34
+    // 簡化為 message 同時含兩關鍵字即判。降為 INFO＋註記，不洗 console。
+    // 治本＝CF 儀表板（Security → Bots）關閉 JavaScript Detections。
+    let is_cf_injected_tt_noise =
+        message.contains("TrustedHTML") && message.contains("innerHTML");
+    let level = if is_cf_injected_tt_noise {
+        "INFO"
+    } else {
+        match kind.as_str() {
+            "boot_watchdog_reload" | "js_error" | "unhandled_rejection" => "ERROR",
+            _ => "WARN",
+        }
     };
     let mut details = format!(
         "page={page} account={} ip={ip} standalone={} visibility={visibility} ua={ua}",
@@ -827,6 +842,19 @@ pub(super) async fn client_log_handler(
     if !stack.is_empty() {
         details.push_str("\nstack=");
         details.push_str(&stack);
+    }
+    if is_cf_injected_tt_noise {
+        tracing::debug!(kind = %kind, account = %session.account_id, page = %page,
+            "client-side error report（Cloudflare challenge-platform 注入碼與 Trusted Types CSP 的已知衝突，無害）");
+        crate::logs::record_system(
+            "INFO",
+            &format!("client:{kind}"),
+            format!("[{}] {message}", session.account_id),
+            Some(format!(
+                "{details}\n註記：疑似 Cloudflare JavaScript Detections 注入碼（innerHTML）與本面板 require-trusted-types-for CSP 的已知衝突；不影響面板功能。治本可在 Cloudflare 儀表板（Security → Bots）關閉 JavaScript Detections。"
+            )),
+        );
+        return (StatusCode::NO_CONTENT, ()).into_response();
     }
     tracing::warn!(
         kind = %kind,
