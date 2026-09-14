@@ -368,7 +368,7 @@ fn tc_token_from_referer(headers: &HeaderMap) -> Option<String> {
         if name == "tc_token" {
             let value = value.trim();
             if !value.is_empty() && value.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Some(value.into_owned());
+                return Some(value.to_string());
             }
         }
     }
