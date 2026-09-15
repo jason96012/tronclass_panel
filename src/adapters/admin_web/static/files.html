@@ -1023,12 +1023,13 @@
     </div>
 
     <!-- 拖曳上傳與進度列 -->
-    <div id="dropzone" class="dropzone">將檔案拖曳至此處，即可上傳至當前資料夾</div>
+    <div id="dropzone" class="dropzone">將檔案拖曳至此處即可上傳（不限格式，單檔上限 50 MB）</div>
     <div id="uploadProgress" class="upload-progress">
       <div id="uploadProgressText" class="small">準備上傳...</div>
       <div class="progress-line"><span id="uploadProgressBar"></span></div>
     </div>
-    <input id="fileInput" class="hidden-input" type="file" multiple accept=".pdf,.docx,.pptx,.xlsx,.txt,.md,.jpg,.jpeg,.png,.zip,.mp4,.heic,.gif,.mov">
+    <!-- UPLOAD_ANY_TYPE_V1（fix39）：不再給 accept——任何檔案都能選（含沒有副檔名者）。 -->
+    <input id="fileInput" class="hidden-input" type="file" multiple>
 
     <!-- 資料夾區域 -->
     <div id="folderSection" class="section-title">
@@ -1518,7 +1519,7 @@
     return new Promise((resolve, reject) => {
       const fd = new FormData();
       fd.append('folder', currentFolder);
-      // UPLOAD_PNG_FIX_V2: 帶上（可能補了副檔名的）檔名，後端以此判斷格式
+      // UPLOAD_ANY_TYPE_V1（fix39）：原檔名原樣送出（後端不再判斷格式、也不改名）
       fd.append('file', file, displayName || file.name);
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/admin/api/files/upload');
@@ -1549,46 +1550,18 @@
   //    避免手機大檔上傳到一半被重置（看起來像白畫面/沒反應）
   // 3) 錯誤訊息停留在進度條 8 秒並標紅，不再一閃即逝
   const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
-  // UPLOAD_TYPE_GUARD_V1: 允許格式清單（與後端 MATERIAL_ALLOWED_EXTENSIONS 一致）
-  const UPLOAD_ALLOWED_EXTS = ['pdf','docx','pptx','xlsx','txt','md','jpg','jpeg','png','zip','mp4','heic','gif','mov'];
-  function uploadExtOf(name){
-    const m = String(name || '').toLowerCase().match(/\.([a-z0-9]+)$/);
-    return m ? m[1] : '';
-  }
-  // UPLOAD_PNG_FIX_V2: iPhone 照片選擇器給的檔名常無副檔名（如 IMG_1234），
-  // 改用 MIME 類型輔助判斷，避免 png/heic 等被誤判為格式不支援。
-  const UPLOAD_MIME_EXT = {
-    'image/png':'png','image/jpeg':'jpg','image/heic':'heic','image/gif':'gif',
-    'application/pdf':'pdf','application/zip':'zip','application/x-zip-compressed':'zip',
-    'video/mp4':'mp4','video/quicktime':'mov',
-    'text/plain':'txt','text/markdown':'md',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document':'docx',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation':'pptx',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'xlsx'
-  };
-  function uploadMimeToExt(type){
-    return UPLOAD_MIME_EXT[String(type || '').toLowerCase()] || '';
-  }
-  function uploadRealExt(f){
-    return uploadExtOf(f.name) || uploadMimeToExt(f.type);
-  }
+  // UPLOAD_ANY_TYPE_V1（fix39）：不再有格式白名單，也不再做「無副檔名就依 MIME
+  // 補副檔名」的改名行為——送出的檔名與使用者選的完全一致。伺服器同樣不檢查
+  // 副檔名，只檢查檔名安全性（長度／路徑字元）與單檔 50 MB 上限。
   async function uploadFiles(fileList){
     const arr = Array.from(fileList || []);
     if (q('fileInput')) q('fileInput').value = '';
     if (!arr.length) return;
-    // 格式預檢：不在白名單的檔案跳出提示通知，不上傳（無副檔名時以 MIME 判斷）
-    const badType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadRealExt(f)) < 0);
-    const okType = arr.filter(f => UPLOAD_ALLOWED_EXTS.indexOf(uploadRealExt(f)) >= 0);
-    if (badType.length) {
-      const names = badType.map(f => f.name || f.type || '未知檔案').join('、');
-      alert('以下檔案格式不支援，未上傳：\n' + names + '\n\n允許的格式：' + UPLOAD_ALLOWED_EXTS.join('、'));
-      progressError('未上傳（格式不支援）：' + names + '｜允許：' + UPLOAD_ALLOWED_EXTS.join('、'));
-      toast('格式不支援，未上傳：' + names, false);
-    }
-    const tooBig = okType.filter(f => f.size > UPLOAD_MAX_BYTES);
-    const will = okType.filter(f => f.size <= UPLOAD_MAX_BYTES);
+    // UPLOAD_ANY_TYPE_V1（fix39）：不做格式預檢——所有檔案直接上傳，只擋單檔大小。
+    const tooBig = arr.filter(f => f.size > UPLOAD_MAX_BYTES);
+    const will = arr.filter(f => f.size <= UPLOAD_MAX_BYTES);
     if (!will.length) {
-      if (!badType.length && !tooBig.length) progressError('沒有可上傳的檔案');
+      if (!tooBig.length) progressError('沒有可上傳的檔案');
       hideProgress(8000);
       return;
     }
@@ -1599,14 +1572,10 @@
     }
     try {
       for (let i = 0; i < will.length; i++) {
-        // 無副檔名的檔案（iPhone 照片）：以 MIME 推得副檔名補在後端要看的檔名上
-        const f = will[i];
-        const realExt = uploadRealExt(f);
-        const sendName = (uploadExtOf(f.name) || !realExt) ? f.name : (f.name + '.' + realExt);
-        await uploadOne(f, i + 1, will.length, sendName);
+        await uploadOne(will[i], i + 1, will.length, will[i].name);
       }
       if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
-      const skipped = badType.length + tooBig.length;
+      const skipped = tooBig.length;
       showProgress(100, skipped ? '上傳完成（部分檔案未上傳，詳見提示）' : '所有檔案上傳完成！');
       toast(skipped ? '上傳完成（部分檔案未上傳）' : '教材上傳完成');
       hideProgress();

@@ -206,15 +206,43 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
         r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
         r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
-        // TT_INLINE_GUARD_V1（fix29）：2026-09-14 實測 /admin/homework 回報
-        // 「Failed to set innerHTML … requires 'TrustedHTML' assignment」——
-        // 外部 trusted-types-init.js 因任何原因未執行（快取損毀、網路中斷、
-        // 瀏覽器擴充攔截…）時頁面沒有 default policy，所有 innerHTML 整頁掛掉。
-        // 這段 inline（隨 HTML 本體到達、經 html_page_response 補 nonce）在
-        // 外部腳本缺席時建立 pass-through policy（與 files.html、
+        // TT_INLINE_GUARD_V1（fix29）＋TT_FRAME_GUARD_V1（fix37）：2026-09-14 實測
+        // /admin/homework 回報「Failed to set innerHTML … requires 'TrustedHTML'
+        // assignment」——外部 trusted-types-init.js 因任何原因未執行（快取損毀、
+        // 網路中斷、瀏覽器擴充攔截…）時頁面沒有 default policy，所有 innerHTML
+        // 整頁掛掉。這段 inline（隨 HTML 本體到達、經 html_page_response 補
+        // nonce）在外部腳本缺席時建立 pass-through policy（與 files.html、
         // shares-admin.js 的 identity policy 先例一致；createScriptURL 保留
         // same-origin 檢查）。外部腳本正常時 defaultPolicy 已存在，本段不動作。
-        r#"<script id="TT_INLINE_GUARD_V1">(function(){try{if(window.trustedTypes&&!window.trustedTypes.defaultPolicy){trustedTypes.createPolicy('default',{createHTML:function(s){return String(s)},createScriptURL:function(s){var u=new URL(String(s),location.origin);if(u.origin!==location.origin)throw new TypeError('Untrusted script URL blocked');return u.href}})}}catch(_){}})();</script>"#,
+        //
+        // ⚠️ 順序不可調換：本段必須排在 trusted-types-init.js「之後」。提早執行會
+        // 先建出 pass-through policy，trusted-types-init.js 看到 defaultPolicy 已
+        // 存在就 return——DOMPurify 消毒永遠不會生效。（static_check §19 會驗順序。）
+        //
+        // fix37（WebKit 回報）：客戶端錯誤「TypeError: This assignment requires a
+        // TrustedHTML」是 Safari/WebKit 的字串（WebKit 原始碼
+        // makeString("This assignment requires a ", trustedTypeToString(type))；
+        // Chrome 是 "Failed to set the 'innerHTML' property on 'Element': This
+        // document requires 'TrustedHTML' assignment"）。WebKit 查 default policy
+        // 時看的是「被寫入文件」所屬 realm 的 trustedTypes 工廠：父頁面有 policy
+        // 不代表 about:blank／sandboxed 子文件有，所以第三方注入碼（實務上是
+        // Cloudflare JavaScript Detections）寫子文件時照樣拋錯——面板自己的
+        // innerHTML 全部走同一條 default policy，不會產生這個訊息。這裡做兩件事：
+        //   ① 標記狀態（window.__ttGuardV1 = present／missing／unsupported），
+        //      client-log.js 會把狀態附在錯誤訊息後，health.rs 據此區分「已知
+        //      第三方噪音」與「我方真的沒有 policy」（後者仍以 ERROR 記錄）。
+        //   ② 對同源子文件補裝同一條 default policy（掃描既有 iframe ＋
+        //      MutationObserver 監看新增者；跨域 frame 取用 trustedTypes 會拋
+        //      錯，已包在 try 內；不影響面板自身寫入路徑）。
+        r#"<script id="TT_INLINE_GUARD_V1">(function(){
+function install(cw){try{if(!cw||!cw.trustedTypes||cw.trustedTypes.defaultPolicy)return;cw.trustedTypes.createPolicy('default',{createHTML:function(s){return String(s)},createScriptURL:function(s){var u=new URL(String(s),location.origin);if(u.origin!==location.origin)throw new TypeError('Untrusted script URL blocked');return u.href}})}catch(_){}}
+install(window);
+try{window.__ttGuardV1=window.trustedTypes?(window.trustedTypes.defaultPolicy?'present':'missing'):'unsupported'}catch(_){}
+function scanFrames(){try{var list=document.querySelectorAll('iframe');for(var i=0;i<list.length;i++){install(list[i].contentWindow)}}catch(_){}}
+scanFrames();
+try{var mo=new MutationObserver(function(records){for(var i=0;i<records.length;i++){var added=records[i].addedNodes;for(var j=0;j<added.length;j++){var node=added[j];if(node&&node.tagName==='IFRAME'){install(node.contentWindow)}}}});mo.observe(document.documentElement||document,{childList:true,subtree:true});setTimeout(function(){try{mo.disconnect()}catch(_){}},60000)}catch(_){}
+})();</script>"#,
+
         r#"<link rel="preload" href="/admin/static/session-security.js?v=20260829nopwbtn" as="script">"#,
         r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260829nopwbtn"></script>"#,
         r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
@@ -335,7 +363,11 @@ pub(super) async fn admin_homework_page_handler(
     if page.session.must_change_password {
         return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
-    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_HOMEWORK_HTML), &page.session)), &page, &headers)
+    // HOMEWORK_FILE_V1（fix43）：作業頁的「預覽」需要 PDF.js 與 office-view.js
+    // （+JSZip）——沿用教材頁同一支按需載入器（`window.__tronEnsureFileLib`），
+    // 不把 ~485KB 的重庫塞進每個頁面的同步載入路徑。
+    let html = inject_files_office_assets(&inject_theme(ADMIN_HOMEWORK_HTML));
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&html, &page.session)), &page, &headers)
 }
 
 // FILES_NATIVE_V1
@@ -565,31 +597,58 @@ pub(super) struct PageSession {
 }
 
 /// 解析頁面請求的 session（access → refresh 輪換）。回 `None` 表示未登入。
+///
+/// SESSION_DUAL_CANDIDATE_V1（fix36）：access 與 refresh 都改為「**兩個 cookie
+/// 名字都試**」。舊版只讀 priority 最高的那一顆，於是「過期的 `__Host-`
+/// 殘留＋剛種下的 local」這種並存狀態下，每次都拿舊 token 去驗／去輪換，
+/// 必定失敗 → 使用者看到「登入成功後又跳回登入畫面」。
 pub(super) async fn resolve_page_session(
     state: &AdminWebState,
     headers: &HeaderMap,
     query_token: &str,
 ) -> Option<PageSession> {
     let token = session_token(headers, query_token);
-    if let Some(session) = state.authorize_any(&token).await {
-        return Some(PageSession {
-            session,
-            fresh_cookies: None,
-        });
+    if !token.is_empty() {
+        if let Some(session) = state.authorize_any(&token).await {
+            return Some(PageSession {
+                session,
+                fresh_cookies: None,
+            });
+        }
     }
-    // access 無效：試 refresh cookie（只在有 cookie 時才碰 DB）。
-    let refresh = refresh_cookie_from_headers(headers)?;
+    // 同一次請求可能同時帶著兩個名字的 cookie；逐一試到有效的那一顆為止。
+    for candidate in super::session_cookie_candidates(headers) {
+        if candidate == token {
+            continue;
+        }
+        if let Some(session) = state.authorize_any(&candidate).await {
+            return Some(PageSession {
+                session,
+                fresh_cookies: None,
+            });
+        }
+    }
+    // access 無效：試 refresh cookie（兩個名字都試；只在有 cookie 時才碰 DB）。
+    //
     // 頁面 handler 沒有 peer address（ConnectInfo）可用：這裡的 origin 只會拿到 UA，
     // ip 為空字串；`rotate_session` 只用它「回填」DB 內仍為空的欄位（or_fill），
     // 不會覆蓋原始登入來源，因此裝置頁看到的仍是同一台裝置。
-    let tokens = state
-        .rotate_session(&refresh, Some(SessionOrigin::from_request(headers, "")))
-        .await?;
-    let session = state.authorize_any(&tokens.access).await?;
-    Some(PageSession {
-        session,
-        fresh_cookies: Some(tokens),
-    })
+    for refresh in super::refresh_cookie_candidates(headers) {
+        let Some(tokens) = state
+            .rotate_session(&refresh, Some(SessionOrigin::from_request(headers, "")))
+            .await
+        else {
+            continue;
+        };
+        let Some(session) = state.authorize_any(&tokens.access).await else {
+            continue;
+        };
+        return Some(PageSession {
+            session,
+            fresh_cookies: Some(tokens),
+        });
+    }
+    None
 }
 
 /// 把第 3 態輪換出的新 cookie 附到頁面回應上（含 Filebrowser SSO 重簽）。

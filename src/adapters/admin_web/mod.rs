@@ -134,8 +134,15 @@ const TC_NAV_TOKEN_TTL_SECS: u64 = 90;
 /// TC_NAV_TOKEN_V1：tc_proxy_ticket cookie（子資源短效票券）的效期。
 const TC_NAV_TICKET_TTL_SECS: u64 = 120;
 /// TC_REFERER_GRANT_V1（fix35）：URL 消費後的「頁面授權」效期——滑動式
-///（頁面持續發請求就不過期）；閒置 15 分鐘後失效，需回面板重按按鈕。
-const TC_PAGE_GRANT_TTL_SECS: u64 = 15 * 60;
+///（頁面持續發請求就不過期）。
+///
+/// TC_URL_GRANT_REPLAY_V1（fix36）：15 → 30 分鐘，且 URL 本身也放行重放。
+/// 舊版把「URL 重放」一律當成攻擊面，首次消費後就拒絕 `?tc_token` 再被使用，
+/// 結果使用者在 iClass 分頁按 F5／上一頁時鑑權全滅，被導到面板登入頁——
+/// 回報就是「按了按鈕之後重整就被登出」。URL 內的 token 與頁面 Referer 帶的
+/// 是同一個祕密，而 Referer 授權本來就能在效期內重複使用，因此 URL 一併放行
+/// （每次使用滑動延長）；閒置 30 分鐘後失效，需回面板重按按鈕。
+const TC_PAGE_GRANT_TTL_SECS: u64 = 30 * 60;
 
 const ACCESS_TOKEN_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 /// Long-lived refresh token lifetime (7 days). Each refresh rotates it.
@@ -175,6 +182,23 @@ const SESSION_COOKIE_MAX_AGE: u64 = 12 * 60 * 60;
 const SECURE_REFRESH_COOKIE: &str = "__Host-tronclass_admin_refresh";
 const LOCAL_REFRESH_COOKIE: &str = "tronclass_admin_refresh";
 const REFRESH_COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
+
+/// REFRESH_ROTATE_GRACE_V1（fix38）：refresh 輪換的寬限視窗（秒）。
+///
+/// 舊制度是「一次性」輪換：舊 refresh 立刻刪除、舊 access 立刻撤銷。於是
+/// 多分頁（面板＋子頁面）、同一分頁的並行重試、或「背景分頁的 refresh 與使用者
+/// 剛完成的新登入」只要撞在一起，晚到的那個一定失敗 → 前端把 cookie 當失效、
+/// 導回登入頁。使用者看到的就是「一直被自動登出」與「顯示登入成功後又跳回登入
+/// 畫面」。
+///
+/// 現在：視窗內的舊 refresh 重播時直接拿回同一組新 token（不再輪換一次），舊
+/// access 也保留到視窗結束才移除；視窗一過，行為與舊版完全相同。
+const SESSION_ROTATE_GRACE_SECS: u64 = 180;
+
+/// PROXY_CSRF_BRIDGE_V1（fix40）：iClass `csrftoken` 在記憶體中的保存時間。
+/// Django 於登入時輪換它；保存值只用來讓代理請求與注入頁面帶「同一個」token，
+/// 過期就重新從上游回應學回來。
+const PROXIED_CSRF_TTL_SECS: u64 = 6 * 60 * 60;
 
 pub(super) fn validate_admin_text(
     value: &str,
@@ -1374,12 +1398,18 @@ pub struct AdminWebState {
     /// cookie（has_access_cookie=false has_refresh_cookie=false），但同源
     /// XHR 正常——/tc/ 導航改用 URL token 鑑權，不再依賴 cookie。
     tc_nav_tokens: Arc<std::sync::Mutex<HashMap<String, TcNavTokenEntry>>>,
+    /// REFRESH_ROTATE_GRACE_V1（fix38）：舊 refresh → 該次輪換發出的新 token。
+    /// 讓並行／重播的 refresh 拿回同一組結果，而不是被判失敗。
+    refresh_grace: Arc<std::sync::Mutex<HashMap<String, GraceEntry>>>,
+    /// PROXY_CSRF_BRIDGE_V1（fix40）：account_id → 最近一次從 iClass 收到的
+    /// `csrftoken`。上游 cookie 不再落地，CSRF 需求靠這裡＋注入頁面的 script。
+    proxied_csrf: Arc<std::sync::Mutex<HashMap<String, ProxiedCsrfEntry>>>,
     rate_limiter: RateLimiter,
     default_poll_interval_secs: u64,
 }
 
-/// TC_NAV_TOKEN_V1：token 內容。single_use=true 給轉址 URL（用一次即焚）；
-/// false 給 tc_proxy_ticket cookie（120 秒內的子資源請求可重複用）。
+/// TC_NAV_TOKEN_V1：token 內容。single_use=true 給轉址 URL；false 給
+/// tc_proxy_ticket cookie（短效子資源票券）。兩者用途不同，見 `url_grant`。
 struct TcNavTokenEntry {
     account_id: String,
     is_admin: bool,
@@ -1387,8 +1417,30 @@ struct TcNavTokenEntry {
     single_use: bool,
     /// TC_REFERER_GRANT_V1（fix35）：URL 消費後轉為「頁面授權」——同一頁面的
     /// 子資源／XHR／站內導航以 Referer（=頁面完整 URL，含 tc_token）鑑權；
-    /// URL 本身不得重放（via_url 拒絕），效期滑動 15 分鐘。
+    /// 效期滑動。
     referer_grant: bool,
+    /// TC_URL_GRANT_REPLAY_V1（fix36）：此條目可否「以 URL query 身分重複使用」。
+    /// 由 `mint_tc_nav_token` 依 single_use 決定：轉址 URL 用的 token 可以
+    ///（F5／上一頁／站內導航都靠它），cookie 票券的不行（避免票券被塞進網址）。
+    url_grant: bool,
+}
+
+/// REFRESH_ROTATE_GRACE_V1（fix38）：輪換寬限視窗內保留的輪換結果。
+struct GraceEntry {
+    access: String,
+    refresh: String,
+    expires_at: Instant,
+}
+
+/// PROXY_CSRF_BRIDGE_V1（fix40）：iClass 的 `csrftoken`（Django CSRF cookie）。
+///
+/// 代理路徑**不把上游 cookie 種到面板網域**（fix22 以來的硬規則，fix38 破壞它
+/// 造成「代理頁轉圈＋面板被登出」）；但 iClass 的 SPA 需要 CSRF token 才能 POST。
+/// 折衷：值只留在這裡（伺服器記憶體），由代理注入的 script 交給頁面——
+/// cookie 與標頭都用同一個值，與瀏覽器 cookie jar 完全隔離。
+struct ProxiedCsrfEntry {
+    token: String,
+    expires_at: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -1561,6 +1613,8 @@ impl AdminWebState {
             messenger,
             sessions,
             tc_nav_tokens,
+            refresh_grace: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            proxied_csrf: Arc::new(std::sync::Mutex::new(HashMap::new())),
             default_poll_interval_secs: default_poll_interval_secs.max(1),
         };
         load_runtime_theme();
@@ -1592,8 +1646,11 @@ impl AdminWebState {
     }
 
     /// TC_NAV_TOKEN_V1（fix34）：簽發 /tc/ 導航 token。single_use=true 供轉址
-    /// URL（一次性）；false 供 tc_proxy_ticket cookie（短效可重複）。每次簽發
-    /// 順手清理過期條目，map 體積有界。
+    /// URL；false 供 tc_proxy_ticket cookie（短效可重複）。每次簽發順手清理
+    /// 過期條目，map 體積有界。
+    ///
+    /// TC_URL_GRANT_REPLAY_V1（fix36）：`url_grant` 直接沿用 single_use——
+    /// 「放進轉址 URL 的 token」就是允許以 URL 身分重複使用的那一顆。
     fn mint_tc_nav_token(&self, account_id: &str, is_admin: bool, single_use: bool) -> String {
         let token = uuid::Uuid::new_v4().simple().to_string();
         let mut guard = self
@@ -1614,13 +1671,16 @@ impl AdminWebState {
                     }),
                 single_use,
                 referer_grant: false,
+                url_grant: single_use,
             },
         );
         token
     }
 
-    /// TC_NAV_TOKEN_V1：消費 token。single_use 條目即取即刪；ticket 條目在
-    /// TTL 內可重複消費。回傳 (account_id, is_admin)。
+    /// TC_NAV_TOKEN_V1：以「cookie 票券」身分消費 token（tc_proxy_ticket）。
+    /// single_use 條目即取即刪；ticket 條目在效期內可重複消費。
+    /// TC_PAGE_GRANT_SLIDE_V1（fix36）：每次消費滑動延長效期——票券與 Referer
+    /// 授權同一把祕密，既然 Referer 可滑動，票券也一致（閒置才過期）。
     fn consume_tc_nav_token(&self, token: &str) -> Option<(String, bool)> {
         let token = token.trim();
         if token.is_empty() {
@@ -1630,7 +1690,7 @@ impl AdminWebState {
             .tc_nav_tokens
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let entry = guard.get(token)?;
+        let entry = guard.get_mut(token)?;
         if entry.expires_at <= Instant::now() {
             guard.remove(token);
             return None;
@@ -1638,15 +1698,19 @@ impl AdminWebState {
         let result = Some((entry.account_id.clone(), entry.is_admin));
         if entry.single_use {
             guard.remove(token);
+        } else {
+            entry.expires_at = Instant::now() + Duration::from_secs(TC_PAGE_GRANT_TTL_SECS);
         }
         result
     }
 
     /// TC_REFERER_GRANT_V1（fix35）：以「URL query」身分消費 token（導航請求）。
-    /// single_use 條目消費後不刪除——原地轉為頁面授權（referer_grant=true、
-    /// 效期延長為滑動 15 分鐘），讓同一頁面的後續請求改走 Referer 鑑權；
-    /// 已是 referer_grant 的條目拒絕 URL 重放（重載頁面時 Referer 仍帶原
-    /// token，可繼續用 via_referer）。
+    /// 首次消費把 single_use 條目轉成頁面授權（referer_grant=true）。
+    ///
+    /// TC_URL_GRANT_REPLAY_V1（fix36）：`url_grant` 條目在效期內**可以**重複
+    /// 以 URL 消費（每次滑動延長）——這是 iClass 分頁 F5／上一頁／站內導航的
+    /// 生路。舊版一律拒絕第二次，重載就掉到登入頁。cookie 票券（url_grant=
+    /// false）仍然不得當 URL 用。
     fn consume_tc_nav_token_via_url(&self, token: &str) -> Option<(String, bool)> {
         let token = token.trim();
         if token.is_empty() {
@@ -1661,15 +1725,15 @@ impl AdminWebState {
             guard.remove(token);
             return None;
         }
-        if entry.referer_grant {
+        if !entry.url_grant {
             return None;
         }
         let result = (entry.account_id.clone(), entry.is_admin);
         if entry.single_use {
             entry.single_use = false;
             entry.referer_grant = true;
-            entry.expires_at = Instant::now() + Duration::from_secs(TC_PAGE_GRANT_TTL_SECS);
         }
+        entry.expires_at = Instant::now() + Duration::from_secs(TC_PAGE_GRANT_TTL_SECS);
         Some(result)
     }
 
@@ -1768,6 +1832,26 @@ impl AdminWebState {
             }
         }
 
+        None
+    }
+
+    /// TC_PROXY_NO_ROTATE_V1（fix36）：以請求的 cookie 解析面板 session，
+    /// **只讀取、絕不輪換**。供 iClass 代理路徑使用。
+    ///
+    /// 代理路徑舊版呼叫 `resolve_page_session`（access 失效→refresh 輪換），
+    /// 一旦輪換發生而該請求稍後走 early return（409 沒有 iClass session、
+    /// 上游 502、被導向 iClass 登入頁…），新 cookie 就永遠不會回到瀏覽器，
+    /// 但舊 refresh 已被單用消耗、舊 access 也已被撤銷 → 使用者下一步就被
+    /// 登出。代理的鑑權改由 /admin/tc-go 簽發的 token 承擔，因此這裡不需要
+    /// 動面板 token。
+    ///
+    /// SESSION_DUAL_CANDIDATE_V1：兩個名字的 access cookie 都試。
+    async fn authorize_any_from_cookies(&self, headers: &HeaderMap) -> Option<AdminSession> {
+        for candidate in session_cookie_candidates(headers) {
+            if let Some(session) = self.authorize_any(&candidate).await {
+                return Some(session);
+            }
+        }
         None
     }
 
@@ -1886,6 +1970,12 @@ impl AdminWebState {
         if !is_valid_session_token_format(refresh_token) {
             return None;
         }
+        // REFRESH_ROTATE_GRACE_V1（fix38）：這顆 refresh 剛被輪換過（並行分頁、
+        // 前端重試、或「背景分頁 refresh 撞上剛完成的新登入」）→ 直接回同一次
+        // 輪換的結果。舊版在這裡一定失敗，前端就把 cookie 當失效、跳登入頁。
+        if let Some(tokens) = self.refresh_grace_replay(refresh_token).await {
+            return Some(tokens);
+        }
         let row = self
             .accounts_db
             .get_dashboard_session_by_refresh(refresh_token)
@@ -1904,8 +1994,28 @@ impl AdminWebState {
             return None;
         }
 
-        // Rotate: revoke the old access token's in-memory session too.
-        self.sessions.write().await.remove(&row.token);
+        // ROTATE_ACCESS_GRACE_V1（fix38）：舊 access **不立即撤銷**。它可能還拿在
+        // 另一個分頁／另一個行程手上（面板總覽＋子頁面＋iClass 分頁同時開著是常態），
+        // 舊版直接 remove＋delete＝那些分頁下一個請求就 401 → 前端清 cookie、跳登入頁
+        // ——使用者看到的「一直被自動登出」。改成只把壽命壓到寬限視窗，之後由背景
+        // 任務連 DB 一起清掉。
+        {
+            let mut sessions = self.sessions.write().await;
+            if let Some(session) = sessions.get_mut(&row.token) {
+                let cap = Instant::now() + Duration::from_secs(SESSION_ROTATE_GRACE_SECS);
+                if session.expires_at > cap {
+                    session.expires_at = cap;
+                }
+            }
+        }
+        {
+            let db = self.accounts_db.clone();
+            let old_access = row.token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(SESSION_ROTATE_GRACE_SECS)).await;
+                let _ = db.delete_dashboard_session(&old_access).await;
+            });
+        }
 
         // VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：輪換後沿用 viewer 旗標與原始登入來源
         // （裝置頁看到的仍是「同一台裝置」，不會因為每 12 小時輪換而變成新裝置）。
@@ -1930,13 +2040,108 @@ impl AdminWebState {
             .await;
 
         // Revoke the old row (identified by its refresh token) so the old
-        // refresh token cannot be used again.
+        // refresh token cannot be used again——唯一的例外是寬限視窗內的**重播**：
+        // 那條路徑由 refresh_grace 直接回同一組 token，不會走到這裡。
         let _ = self
             .accounts_db
             .delete_dashboard_session_by_refresh(refresh_token)
             .await;
 
+        // REFRESH_ROTATE_GRACE_V1（fix38）：記下「舊 refresh → 這次的新 token」，
+        // 讓晚到的重複請求拿回同一組結果（等同同一顆 session，不會互相撤銷）。
+        self.refresh_grace_remember(refresh_token, &tokens);
+
         Some(tokens)
+    }
+
+    /// REFRESH_ROTATE_GRACE_V1（fix38）：寬限視窗內的輪換結果查詢（並順手清過期項）。
+    ///
+    /// 只有「那次輪換發出來的 access 仍在記憶體 session 表中」才算有效——登出、
+    /// 改密碼、帳號停用都會撤掉 session，此時不得讓舊 refresh 復活。
+    async fn refresh_grace_replay(&self, refresh_token: &str) -> Option<SessionTokens> {
+        let entry = {
+            let mut map = self
+                .refresh_grace
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let now = Instant::now();
+            map.retain(|_, entry| entry.expires_at > now);
+            map.get(refresh_token)
+                .map(|entry| (entry.access.clone(), entry.refresh.clone()))
+        };
+        let (access, refresh) = entry?;
+        let alive = self.sessions.read().await.contains_key(&access);
+        if !alive {
+            self.refresh_grace_forget(refresh_token);
+            return None;
+        }
+        Some(SessionTokens { access, refresh })
+    }
+
+    /// REFRESH_ROTATE_GRACE_V1（fix38）：記下舊 refresh 對應的輪換結果。
+    fn refresh_grace_remember(&self, old_refresh: &str, tokens: &SessionTokens) {
+        let mut map = self
+            .refresh_grace
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let now = Instant::now();
+        map.retain(|_, entry| entry.expires_at > now);
+        map.insert(
+            old_refresh.to_string(),
+            GraceEntry {
+                access: tokens.access.clone(),
+                refresh: tokens.refresh.clone(),
+                expires_at: now + Duration::from_secs(SESSION_ROTATE_GRACE_SECS),
+            },
+        );
+    }
+
+    /// REFRESH_ROTATE_GRACE_V1（fix38）：撤掉單一一筆寬限記錄（session 已不存在時）。
+    fn refresh_grace_forget(&self, old_refresh: &str) {
+        let mut map = self
+            .refresh_grace
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        map.remove(old_refresh);
+    }
+
+    /// PROXY_CSRF_BRIDGE_V1（fix40）：記下帳號最新的 iClass `csrftoken`。
+    ///
+    /// 值由 `tc_proxy.rs` 從上游回應的 `Set-Cookie` 攔下（格式已在那裡驗過），
+    /// 這裡只做長度與空值的第二道保險。呼叫端已保證不為空。
+    fn remember_proxied_csrf(&self, account_id: &str, token: &str) {
+        let account_id = account_id.trim();
+        if account_id.is_empty() || token.is_empty() || token.len() > 128 {
+            return;
+        }
+        let mut map = self
+            .proxied_csrf
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let now = Instant::now();
+        map.retain(|_, entry| entry.expires_at > now);
+        map.insert(
+            account_id.to_string(),
+            ProxiedCsrfEntry {
+                token: token.to_string(),
+                expires_at: now + Duration::from_secs(PROXIED_CSRF_TTL_SECS),
+            },
+        );
+    }
+
+    /// PROXY_CSRF_BRIDGE_V1（fix40）：取回帳號目前應使用的 iClass `csrftoken`。
+    fn proxied_csrf_token(&self, account_id: &str) -> Option<String> {
+        let account_id = account_id.trim();
+        if account_id.is_empty() {
+            return None;
+        }
+        let mut map = self
+            .proxied_csrf
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let now = Instant::now();
+        map.retain(|_, entry| entry.expires_at > now);
+        map.get(account_id).map(|entry| entry.token.clone())
     }
 
     async fn revoke_session(&self, token: &str) {
@@ -2052,6 +2257,22 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route(
             "/uploads/{*path}",
+            axum::routing::any(tc_proxy::tc_proxy_handler)
+                .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
+        )
+        // TC_BULLETIN_LIST_ROUTE_V1（fix36）：iClass 的「課程公告」頁。使用者從面板
+        // 公告卡片按「↗ iClass」時，伺服器是 302 到 `/tc/bulletin-list/?type=course`
+        // （/tc 前綴會被剝掉轉給上游）；但 iClass SPA 的站內連結與資產都是「根絕對
+        // 路徑」寫法，站內導覽或 F5 之後瀏覽器會直接要 `/bulletin-list/...`——
+        // 面板沒有這個路由就 404（使用者看到的「按了公告按鈕進不去 iClass」）。
+        // 這裡把該前綴也掛上代理；面板本身不使用 /bulletin-list。
+        .route(
+            "/bulletin-list",
+            axum::routing::any(tc_proxy::tc_proxy_handler)
+                .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
+        )
+        .route(
+            "/bulletin-list/{*path}",
             axum::routing::any(tc_proxy::tc_proxy_handler)
                 .layer(DefaultBodyLimit::max(tc_proxy::TC_PROXY_BODY_LIMIT)),
         )
@@ -2680,10 +2901,40 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/tc-go",
             get(tc_proxy::tc_go_handler),
         )
+        // HOMEWORK_DETAIL_V1（fix41）：面板內看作業內容（說明＋附件），
+        // 不需登入 iClass、不經過 /tc/ 代理。
+        .route(
+            "/admin/api/homework/detail",
+            get(homework::admin_homework_detail_handler),
+        )
+        .route(
+            "/admin/api/homework/attachment",
+            get(homework::admin_homework_attachment_handler),
+        )
+        // HOMEWORK_FILE_V1（fix43）：作業附件／自己繳交的檔案，可預覽（inline）與下載
+        // （attachment）。與 attachment 同一條實作，差別只在 Content-Disposition 與
+        // 是否轉送 Range（影音／PDF 分段讀取都要靠它）。
+        .route(
+            "/admin/api/homework/file",
+            get(homework::admin_homework_file_handler),
+        )
         .route(
             "/admin/api/homework/complete",
             post(homework::admin_homework_complete_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // HOMEWORK_SUBMIT_V1（fix42）：面板內直接繳交作業。
+        // 檔案走 multipart（欄位名 `file`，可多個），因此 body 上限放寬到
+        // 100 MiB＋餘裕；真正的把關在 handler 內（單檔 50 MiB、總量 100 MiB、10 檔）。
+        .route(
+            "/admin/api/homework/submit",
+            post(homework::admin_homework_submit_handler)
+                .layer(DefaultBodyLimit::max(homework::HOMEWORK_SUBMIT_BODY_LIMIT)),
+        )
+        // HOMEWORK_SUBMIT_V1（fix42）：目前繳交狀態（彈窗顯示用）。
+        .route(
+            "/admin/api/homework/submission",
+            get(homework::admin_homework_submission_handler),
         )
         .route(
             "/admin/api/session/refresh",
@@ -2732,7 +2983,46 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                         .and(tower_http::compression::predicate::NotForContentType::SSE),
                 ),
         )
+        // STREAM_NO_COMPRESSION_V1（fix43）：上面的壓縮層要在**更外層**先看到請求，
+        // 才能把串流路徑的 `accept-encoding` 拿掉；axum 的 `.layer()` 是後加的在外層。
+        .layer(axum::middleware::from_fn(
+            no_compression_for_file_streams_middleware,
+        ))
         .with_state(state)
+}
+
+/// STREAM_NO_COMPRESSION_V1（fix43）：這些路徑回的是「檔案位元組」，不做即時壓縮。
+///
+/// 為什麼要排除：`CompressionLayer` 的預設判定只看「大小 > 32 bytes」與
+/// gRPC／SSE／圖片，**不看內容是否已經是壓縮格式**。教材裡的 PDF、PPTX、ZIP、
+/// 影片、音檔本來就壓過了，再過一次 brotli/gzip 幾乎不會變小，卻讓 CPU 成為下載
+/// 速度的天花板；串流回應還會在每個 chunk 觸發 flush，成本更高。症狀就是
+/// 「明明是區網等級的頻寬，教材卻下載得很慢」。
+///
+/// 只影響下列檔案串流路徑；HTML／JSON／JS／CSS 的壓縮完全不變。
+fn is_no_compression_stream_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/admin/api/files/download"
+            | "/admin/api/files/preview"
+            | "/admin/api/homework/file"
+            | "/admin/api/homework/attachment"
+            | "/pub/office"
+            | "/pub/share"
+    )
+}
+
+async fn no_compression_for_file_streams_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !is_no_compression_stream_path(request.uri().path()) {
+        return next.run(request).await;
+    }
+    // 拿掉 accept-encoding：壓縮層協商不到編碼，就會原樣傳輸位元組。
+    let (mut parts, body) = request.into_parts();
+    parts.headers.remove(axum::http::header::ACCEPT_ENCODING);
+    next.run(axum::extract::Request::from_parts(parts, body)).await
 }
 
 async fn https_redirect_middleware(
@@ -2914,6 +3204,27 @@ fn session_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+/// SESSION_DUAL_CANDIDATE_V1（fix36）：兩個名字的 session cookie **候選清單**
+///（`__Host-` 優先，同值只留一份）。
+///
+/// 為什麼需要「清單」而不只是「第一個」：fix27 讓讀取端優先讀 `__Host-`，
+/// 但如果瀏覽器手上是「過期的 __Host-＋剛種下的 local」（見
+/// SESSION_COOKIE_SYNC_V1 的說明），優先序反而讓舊 token 每次都勝出——單一值
+/// 的讀取端永遠救不回來。resolve_page_session／refresh handler／代理會依序
+/// 試完所有候選，任何一顆有效就成功，等於「舊名殘留」再也不會把使用者鎖在
+/// 登入頁外。
+fn session_cookie_candidates(headers: &HeaderMap) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in [SECURE_SESSION_COOKIE, LOCAL_SESSION_COOKIE] {
+        if let Some(value) = session_cookie_value_named(headers, name) {
+            if !out.contains(&value) {
+                out.push(value);
+            }
+        }
+    }
+    out
+}
+
 /// 掃 Cookie header 中「指定名稱」的 session cookie；格式檢查與
 /// REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2) 共用同一定義。
 fn session_cookie_value_named(headers: &HeaderMap, want: &str) -> Option<String> {
@@ -2954,12 +3265,24 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
             response.headers_mut().append(header::SET_COOKIE, value);
             // SESSION_COOKIE_PRIORITY_V1：種 __Host- 版時，順手把 local 名的
             // 舊 cookie 過期清掉，避免瀏覽器兩顆並存、下次請求又送舊 token。
-            if name == SECURE_SESSION_COOKIE {
-                if let Ok(expire) = HeaderValue::from_str(&format!(
-                    "{LOCAL_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
-                )) {
-                    response.headers_mut().append(header::SET_COOKIE, expire);
-                }
+            //
+            // SESSION_COOKIE_SYNC_V1（fix36）：反向也要清。舊版只清了「種
+            // __Host- → 清 local」這一個方向；在「這台伺服器判定為 http（例如
+            // 反向代理沒帶 X-Forwarded-Proto/CF-Visitor）」但瀏覽器其實持有舊
+            // __Host- cookie 的情況下，新 token 一律以 local 名落地，而讀取端
+            // 又優先讀 __Host-（fix27 的 SESSION_COOKIE_PRIORITY_V1）→ 每次請求
+            // 都拿著過期的 __Host- token ＝「登入成功又被導回登入頁」。兩個方向
+            // 都清之後，瀏覽器永遠只會留著最新那一顆。清除 __Host- 的標頭一定
+            // 帶 Secure；在真正的 http 連線上瀏覽器會直接忽略（無害）。
+            let other = if name == SECURE_SESSION_COOKIE {
+                format!("{LOCAL_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+            } else {
+                format!(
+                    "{SECURE_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure"
+                )
+            };
+            if let Ok(expire) = HeaderValue::from_str(&other) {
+                response.headers_mut().append(header::SET_COOKIE, expire);
             }
         }
         Err(e) => {
@@ -2973,6 +3296,11 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
 }
 
 /// Set the HttpOnly refresh-token cookie (long-lived, rotates on each refresh).
+///
+/// SESSION_COOKIE_SYNC_V1（fix36）：與 access cookie 相同的「兩個名字互清」
+/// 規則——舊版連單向清理都沒有，只要歷史上出現過不同名字的 refresh cookie
+///（http 期 vs https 期），讀取端永遠優先讀到舊的那一顆，輪換就會以「已消耗
+/// 的 refresh token」失敗，前端接著把使用者登出。
 fn append_refresh_cookie(
     mut response: Response,
     refresh_token: &str,
@@ -2989,6 +3317,14 @@ fn append_refresh_cookie(
     );
     if let Ok(value) = cookie.parse::<HeaderValue>() {
         response.headers_mut().append(header::SET_COOKIE, value);
+        let other = if secure {
+            format!("{LOCAL_REFRESH_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax")
+        } else {
+            format!("{SECURE_REFRESH_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure")
+        };
+        if let Ok(expire) = HeaderValue::from_str(&other) {
+            response.headers_mut().append(header::SET_COOKIE, expire);
+        }
     } else {
         tracing::error!("refresh cookie 無法建立");
     }
@@ -3013,6 +3349,22 @@ fn refresh_cookie_from_headers(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+/// SESSION_DUAL_CANDIDATE_V1（fix36）：兩個名字的 refresh cookie 候選清單。
+/// 輪換（refresh token 單用）必須依序試完——只試第一個的話，「過期 __Host-＋
+/// 有效 local」會讓輪換必定失敗，前端接著把使用者登出（使用者回報的
+/// 「登入成功後又跳回登入畫面」）。
+fn refresh_cookie_candidates(headers: &HeaderMap) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in [SECURE_REFRESH_COOKIE, LOCAL_REFRESH_COOKIE] {
+        if let Some(value) = session_cookie_value_named(headers, name) {
+            if !out.contains(&value) {
+                out.push(value);
+            }
+        }
+    }
+    out
 }
 
 fn append_expired_session_cookies(mut response: Response) -> Response {
@@ -3501,6 +3853,11 @@ fn is_tc_proxy_path(path: &str) -> bool {
         || path.starts_with("/course/")
         || path == "/uploads"
         || path.starts_with("/uploads/")
+        // TC_BULLETIN_LIST_ROUTE_V1（fix36）：iClass 課程公告頁（站內導覽／F5 會以
+        // 根絕對路徑打進來）。同樣必須走 passthrough，否則會被套上
+        // require-trusted-types-for 而讓 iClass 頁面整頁拋 TypeError。
+        || path == "/bulletin-list"
+        || path.starts_with("/bulletin-list/")
 }
 
 async fn admin_security_headers_middleware(
@@ -3529,7 +3886,10 @@ async fn admin_security_headers_middleware(
     // （PDF 走瀏覽器原生檢視器）。若沿用全站 `X-Frame-Options: DENY` +
     // `frame-ancestors 'none'`，瀏覽器會拒絕在框內顯示這份 PDF，預覽只剩空白。
     // 這裡只放寬到 same-origin：跨站仍然無法內嵌我們的預覽回應。
-    let is_framable_preview = path == "/admin/api/files/preview";
+    // HOMEWORK_FILE_V1（fix43）：作業附件／繳交檔的預覽也是 <iframe> 內嵌，
+    // 同樣只放寬到 same-origin（跨站仍無法內嵌）。
+    let is_framable_preview =
+        path == "/admin/api/files/preview" || path == "/admin/api/homework/file";
     // SHARE_V1c: /pub/ 是公開分享/串流端點，需被「跨域」檢視器（Microsoft Office
     // Online、外部 <img>/<iframe>）載入。若沿用 same-origin 的 CORP 與 X-Frame-Options
     // DENY，跨域檢視器會直接拒絕載入 → Office Online 顯示 "An error occurred"。
@@ -3987,15 +4347,17 @@ mod tests {
         );
     }
 
-    /// TC_REFERER_GRANT_V1（fix35）：URL 消費 single_use 後轉為頁面授權——
-    /// URL 不得重放、Referer 可重複使用且效期滑動；過期即刪。
+    /// TC_REFERER_GRANT_V1（fix35）＋TC_URL_GRANT_REPLAY_V1（fix36）：URL 消費
+    /// 後轉為頁面授權——URL 在效期內**可重複**使用（iClass 分頁 F5／上一頁／
+    /// 站內導航），Referer 亦可；每次使用滑動延長；過期即刪。票券 cookie 的
+    /// token（mint 時 single_use=false）不得當 URL 用。
     #[tokio::test]
     async fn tc_nav_token_referer_grant_semantics() {
         let file = NamedTempFile::new().unwrap();
         let db = AccountsDb::open(file.path()).await.unwrap();
         let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
 
-        // URL 消費 → 轉 grant：第二次 via_url 拒絕，via_referer 可用。
+        // URL 消費 → 轉 grant：URL 仍可重複使用（重載頁面），Referer 也可。
         let nav = state.mint_tc_nav_token("grant-user", true, true);
         assert_eq!(
             state.consume_tc_nav_token_via_url(&nav),
@@ -4003,8 +4365,8 @@ mod tests {
         );
         assert_eq!(
             state.consume_tc_nav_token_via_url(&nav),
-            None,
-            "referer_grant 條目不得再用 URL 重放"
+            Some(("grant-user".to_string(), true)),
+            "URL grant 在效期內可重放（F5／上一頁不再掉到登入頁）"
         );
         for _ in 0..3 {
             assert_eq!(
@@ -4013,6 +4375,19 @@ mod tests {
                 "頁面授權在效期內可重複以 Referer 消費"
             );
         }
+
+        // 票券 cookie 的 token 不得當 URL grant 用（反之亦然：它只能走 cookie）。
+        let ticket = state.mint_tc_nav_token("ticket-user", false, false);
+        assert_eq!(
+            state.consume_tc_nav_token_via_url(&ticket),
+            None,
+            "票券 token 不得以 URL 身分使用"
+        );
+        assert_eq!(
+            state.consume_tc_nav_token(&ticket),
+            Some(("ticket-user".to_string(), false)),
+            "票券走 cookie 路徑仍有效"
+        );
 
         // 滑動效期：via_referer 後 entry 的過期時間被推到 now+GRANT 之後。
         {
@@ -4072,6 +4447,10 @@ mod tests {
             "/api/org-bulletin/bulletins",
             "/course/123",
             "/uploads/file.png",
+            // TC_BULLETIN_LIST_ROUTE_V1（fix36）：公告頁（站內導覽／F5 的根絕對路徑）。
+            "/bulletin-list",
+            "/bulletin-list/?type=course",
+            "/bulletin-list/some-id",
         ] {
             assert!(is_tc_proxy_path(path), "proxy path must bypass: {path}");
         }
@@ -4092,6 +4471,7 @@ mod tests {
         assert!(!is_tc_proxy_path("/tcexam"));
         assert!(!is_tc_proxy_path("/statics"));
         assert!(!is_tc_proxy_path("/courseware"));
+        assert!(!is_tc_proxy_path("/bulletin-listing"));
     }
 
     #[test]
@@ -4293,6 +4673,71 @@ mod tests {
             Some("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"),
             "secure refresh cookie must win over an older local-name refresh cookie"
         );
+    }
+
+    /// SESSION_DUAL_CANDIDATE_V1（fix36）：候選清單要涵蓋兩個名字（`__Host-`
+    /// 優先）、同值去重。
+    ///
+    /// 為什麼需要它：fix27 讓讀取端「優先讀 __Host-」，但如果瀏覽器手上是
+    /// 「過期的 __Host- ＋ 剛種下的 local」（反向情形：伺服器判定為 http 時
+    /// 新 token 一律落 local 名），單一值讀取端每次都會挑到過期那顆，使用者
+    /// 就卡在「登入成功→跳回登入畫面」。有了候選清單，驗證與輪換都能往下試。
+    #[test]
+    fn cookie_candidates_cover_both_names_and_dedupe() {
+        let mut mixed = HeaderMap::new();
+        mixed.insert(
+            header::COOKIE,
+            HeaderValue::from_static(
+                "cf_clearance=x; tronclass_admin_session=00000000000000000000000000000001; __Host-tronclass_admin_session=ffffffffffffffffffffffffffffffff",
+            ),
+        );
+        assert_eq!(
+            session_cookie_candidates(&mixed),
+            vec![
+                "ffffffffffffffffffffffffffffffff".to_string(),
+                "00000000000000000000000000000001".to_string(),
+            ],
+            "兩個名字都要進候選，__Host- 優先"
+        );
+
+        let mut same_value = HeaderMap::new();
+        same_value.insert(
+            header::COOKIE,
+            HeaderValue::from_static(
+                "tronclass_admin_session=abcdefabcdefabcdefabcdefabcdefab; __Host-tronclass_admin_session=abcdefabcdefabcdefabcdefabcdefab",
+            ),
+        );
+        assert_eq!(
+            session_cookie_candidates(&same_value).len(),
+            1,
+            "同值只留一份（避免同一次請求白驗兩遍）"
+        );
+
+        let mut refresh = HeaderMap::new();
+        refresh.insert(
+            header::COOKIE,
+            HeaderValue::from_static(
+                "tronclass_admin_refresh=00000000000000000000000000000002; __Host-tronclass_admin_refresh=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            ),
+        );
+        assert_eq!(
+            refresh_cookie_candidates(&refresh),
+            vec![
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+                "00000000000000000000000000000002".to_string(),
+            ],
+            "refresh cookie 同規則"
+        );
+
+        // 沒有 cookie／格式不合（非 32 hex）＝空清單。
+        assert!(session_cookie_candidates(&HeaderMap::new()).is_empty());
+        let mut malformed = HeaderMap::new();
+        malformed.insert(
+            header::COOKIE,
+            HeaderValue::from_static("tronclass_admin_session=short"),
+        );
+        assert!(session_cookie_candidates(&malformed).is_empty());
+        assert!(refresh_cookie_candidates(&malformed).is_empty());
     }
 
     #[test]
@@ -5521,6 +5966,106 @@ mod tests {
         );
     }
 
+    /// REFRESH_FAIL_NO_CLEAR_V1（fix36）：refresh 失敗的 401 **不得**帶任何
+    /// `Set-Cookie`。
+    ///
+    /// 舊版會回 `Max-Age=0` 把 cookie 清掉。情境：舊分頁的 401 觸發自動 refresh，
+    /// 與使用者正在登入頁送出的新登入並行；refresh 回應若晚於登入的 Set-Cookie
+    /// 抵達，就會把剛種好的新 session 刪掉——使用者看到「顯示登入成功後又跳回
+    /// 登入畫面」。無效的 cookie 留著沒有安全影響（就是驗不過），誤刪有效的那顆
+    /// 才是災難。
+    #[tokio::test]
+    async fn refresh_failure_and_status_401_never_clear_browser_cookies() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let app = build_admin_router(state);
+
+        // 格式合法（32 hex）但不存在於 DB 的 refresh token。
+        let response = router_response_from_peer(
+            app.clone(),
+            "127.0.0.1:41002",
+            Request::builder()
+                .method(Method::POST)
+                .uri("/admin/api/session/refresh")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_REFRESH_COOKIE}={}", "b".repeat(32)),
+                )
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get_all(header::SET_COOKIE).iter().count(),
+            0,
+            "refresh 失敗不得清除瀏覽器 cookie"
+        );
+
+        // /admin/api/status 是每個分頁（含背景恢復驗證）都會打的熱點，同樣不得清。
+        let response = router_response_from_peer(
+            app,
+            "127.0.0.1:41003",
+            Request::builder()
+                .uri("/admin/api/status")
+                .header(
+                    header::COOKIE,
+                    format!("{SECURE_SESSION_COOKIE}={}", "c".repeat(32)),
+                )
+                .header("x-forwarded-proto", "https")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get_all(header::SET_COOKIE).iter().count(),
+            0,
+            "status 401 不得清除瀏覽器 cookie（否則舊分頁會把新登入踢掉）"
+        );
+    }
+
+    /// SESSION_DUAL_CANDIDATE_V1（fix36）：帶著「過期的 __Host- cookie ＋ 有效
+    /// 的 local cookie」時，`/admin/dashboard` 必須照常送出（200），而不是把
+    /// 使用者當成未登入送去登入頁。
+    ///
+    /// 這是「登入成功後又跳回登入畫面」的端到端迴歸測試：那個症狀的其中一條
+    /// 路徑就是瀏覽器兩顆並存、而讀取端只認優先最高的那一顆。
+    #[tokio::test]
+    async fn stale_secure_cookie_does_not_shadow_valid_local_cookie() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("mixed-name".to_string(), true, false)
+            .await;
+        let app = build_admin_router(state);
+
+        let response = router_response_from_peer(
+            app,
+            "127.0.0.1:41004",
+            Request::builder()
+                .uri("/admin/dashboard")
+                .header(
+                    header::COOKIE,
+                    format!(
+                        "{SECURE_SESSION_COOKIE}=0000000000000000000000000000000f; {LOCAL_SESSION_COOKIE}={}",
+                        tokens.access
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "有效的 local cookie 必須能登入，不得被過期的 __Host- cookie 遮蔽"
+        );
+    }
+
     #[tokio::test]
     async fn refresh_endpoint_rejects_oversized_cookie_end_to_end() {
         let file = NamedTempFile::new().unwrap();
@@ -5710,5 +6255,80 @@ mod tests {
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert_eq!(location, "/admin");
+    }
+}
+
+#[cfg(test)]
+mod rotate_grace_tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    /// REFRESH_ROTATE_GRACE_V1（fix38）：同一顆 refresh 在寬限視窗內重播時，
+    /// 必須拿回**同一組** token（而不是被判失敗）——這是「多分頁／競態導致被
+    /// 自動登出」與「登入成功後又跳回登入頁」的根因。
+    #[tokio::test]
+    async fn repeated_refresh_replays_the_same_tokens_instead_of_failing() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state.create_session("grace-user".to_string(), false, false).await;
+
+        let first = state
+            .rotate_session(&tokens.refresh, None)
+            .await
+            .expect("第一次輪換必須成功");
+        let replay = state
+            .rotate_session(&tokens.refresh, None)
+            .await
+            .expect("寬限視窗內的重播必須成功（並行分頁／重試）");
+        assert_eq!(replay.access, first.access);
+        assert_eq!(replay.refresh, first.refresh);
+
+        // 新的 refresh 仍然可以正常輪換（重播不會把 session 卡住）。
+        let third = state
+            .rotate_session(&first.refresh, None)
+            .await
+            .expect("輪換後的新 refresh 必須可用");
+        assert_ne!(third.refresh, first.refresh);
+    }
+
+    /// REFRESH_ROTATE_GRACE_V1（fix38）：輪換後舊 access 在寬限視窗內仍有效——
+    /// 否則「另一個分頁」下一個請求就是 401，前端會清 cookie、跳登入頁。
+    #[tokio::test]
+    async fn previous_access_token_survives_the_rotation_grace() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state.create_session("grace-user".to_string(), false, false).await;
+
+        let rotated = state
+            .rotate_session(&tokens.refresh, None)
+            .await
+            .expect("輪換必須成功");
+        assert!(state.authorize_any(&rotated.access).await.is_some());
+        assert!(
+            state.authorize_any(&tokens.access).await.is_some(),
+            "舊 access 在寬限視窗內仍須可用（其他分頁不會被登出）"
+        );
+    }
+
+    /// REFRESH_ROTATE_GRACE_V1（fix38）：登出／撤銷後，寬限視窗不得讓舊 refresh
+    /// 復活（重播路徑必須確認那次輪換的 session 還存在）。
+    #[tokio::test]
+    async fn revoked_session_is_not_resurrected_by_the_grace_window() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state.create_session("grace-user".to_string(), false, false).await;
+
+        let rotated = state
+            .rotate_session(&tokens.refresh, None)
+            .await
+            .expect("輪換必須成功");
+        state.revoke_session(&rotated.access).await;
+        assert!(
+            state.rotate_session(&tokens.refresh, None).await.is_none(),
+            "session 已被撤銷時，寬限視窗不得復活它"
+        );
     }
 }

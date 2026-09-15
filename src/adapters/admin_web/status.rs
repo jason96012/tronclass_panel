@@ -462,7 +462,14 @@ pub(super) async fn admin_status_handler(
             uses_https = request_uses_https(&headers),
             "STATUS 401: no valid session"
         );
-        return append_expired_session_cookies(unauthorized_response());
+        // REFRESH_FAIL_NO_CLEAR_V1（fix36）：這裡**不再**清 session cookie。
+        //
+        // /admin/api/status 是每個面板分頁（含背景的恢復驗證）都會打的熱點。
+        // 舊版在無效 session 時回 Max-Age=0，等於「任何一個還開著的舊分頁」
+        // 都能在使用者剛完成登入後把新 cookie 刪掉——症狀是「登入成功又被導回
+        // 登入頁」。無效的 cookie 留著沒有任何安全意義（反正驗不過），但誤刪
+        // 有效的那一顆會直接把人踢出面板。清 cookie 只發生在登出。
+        return unauthorized_response();
     };
     let auth_elapsed = request_started.elapsed();
     // LOGIN_DEVICES_V1：/admin/api/status 是 bootstrap 白名單路徑，middleware 不會經過

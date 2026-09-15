@@ -486,28 +486,44 @@ pub(super) async fn admin_session_refresh_handler(
 ) -> Response {
     // Prefer the HttpOnly refresh cookie; fall back to a token query param
     // (only for compatibility with clients that cannot send cookies).
-    let refresh_token = refresh_cookie_from_headers(&headers)
-        .filter(|t| !t.is_empty())
-        .or_else(|| {
-            let t = query.token.trim();
-            if t.is_empty() { None } else { Some(t.to_string()) }
-        });
-
-    let Some(refresh_token) = refresh_token else {
-        return unauthorized_response();
-    };
+    //
+    // SESSION_DUAL_CANDIDATE_V1（fix36）：兩個 cookie 名字都當候選依序輪換。
+    // 舊版只試 priority 最高的那一顆——「過期 __Host- 殘留＋有效 local」時必定
+    // 失敗，前端接著清 cookie 把人登出（使用者回報的「登入成功後又跳回登入
+    // 畫面」）。
+    let mut candidates = refresh_cookie_candidates(&headers);
+    let query_token = query.token.trim();
+    if !query_token.is_empty() && !candidates.iter().any(|c| c == query_token) {
+        candidates.push(query_token.to_string());
+    }
 
     // LOGIN_DEVICES_V1：帶入這次請求的來源，讓功能上線前建立的 session
     // （ip / UA 為空）在輪換時補齊。
-    let Some(tokens) = state
-        .rotate_session(&refresh_token, Some(SessionOrigin::from_request(&headers, &ip)))
-        .await
-    else {
-        // Invalid/expired refresh token: clear the cookies so the frontend
-        // stops trying.
-        return fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
-            unauthorized_response(),
-        ));
+    let mut rotated = None;
+    for refresh_token in &candidates {
+        if let Some(tokens) = state
+            .rotate_session(
+                refresh_token,
+                Some(SessionOrigin::from_request(&headers, &ip)),
+            )
+            .await
+        {
+            rotated = Some(tokens);
+            break;
+        }
+    }
+    let Some(tokens) = rotated else {
+        // REFRESH_FAIL_NO_CLEAR_V1（fix36）：**不要**在這裡清掉瀏覽器的
+        // session/refresh cookie。
+        //
+        // 這個回應只代表「本次帶來的 refresh token 無效」，無法證明瀏覽器手上
+        // 的就只有這一顆。實測情境：舊分頁的 401 → 自動 refresh，與使用者正在
+        // 登入頁送出的新登入**並行**；refresh 的回應若晚於登入的 Set-Cookie
+        // 抵達，舊版的 Max-Age=0 會把剛種好的新 session 直接刪掉——使用者看到
+        // 的正是「顯示登入成功後又跳回登入畫面」。無效的 cookie 留著不會有安全
+        // 影響（它就是無效），但誤刪有效的那一顆會把使用者踢出去。
+        // 真正要清 cookie 的地方是登出（/admin/logout）。
+        return unauthorized_response();
     };
 
     // Resolve account id / is_admin for the response.

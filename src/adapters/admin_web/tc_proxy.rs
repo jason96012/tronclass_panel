@@ -18,8 +18,13 @@
 //!   其餘路徑要求有效面板 session；cookie 失效時 fallback：URL 一次性
 //!   token → tc_proxy_ticket 票券 cookie → Referer 內的頁面授權 token。
 //! - 非 admin session 只能代理「自己」的帳號（tc_proxy_account cookie 驗證）。
-//! - 上游回應的 Set-Cookie 一律剝除：iClass 的同名 `session` cookie 若種到
-//!   面板網域，會覆蓋面板登入。
+//! - 上游回應的 Set-Cookie **一顆都不種到面板網域**（PROXY_NO_COOKIE_PLANT_V1
+//!   ／fix40）。fix22 以來「iClass 的 cookie 不得落地」是用實戰換來的硬規則：
+//!   fix38 曾把上游 cookie 改寫後種下（`csrftoken` 等），結果代理頁與面板登入
+//!   互相污染——症狀是代理頁一直轉圈、面板被登出、得清掉網站資料才恢復。
+//!   現在恢復「不種任何上游 cookie」，只把 CSRF 需要的那顆 `csrftoken` 值留在
+//!   伺服器記憶體，並由注入的 script 交給頁面（PROXY_CSRF_BRIDGE_V1，見
+//!   `inject_token_keep_script`）——完全不經過瀏覽器 cookie。
 //! - 上游 30x 的 Location 若指向 iClass 網域，改寫為相對路徑（瀏覽器留在
 //!   代理內循環），reqwest 不自動跟隨轉址。
 
@@ -43,8 +48,17 @@ const FORWARD_REQ_HEADERS: &[&str] = &[
     "accept-language",
     "range",
     "x-requested-with",
+    // CSRF_PROXY_HEADERS_V1（fix38）：Django／DRF 的 SessionAuthentication 要求
+    // 不安全方法附上與 `csrftoken` cookie 相符的 token；iClass 前端會放在這幾個
+    // 標頭名（各版本不一），一律轉發。
+    "x-csrftoken",
+    "x-csrf-token",
+    "x-xsrf-token",
 ];
-/// 回應不轉發給瀏覽器的 header（set-cookie 必剝，見模組註解）。
+/// 回應不轉發給瀏覽器的 header。`set-cookie` 也在這裡：代理路徑**永遠不把上游
+/// cookie 種到面板網域**（PROXY_NO_COOKIE_PLANT_V1／fix40）。CSRF 需要的
+/// `csrftoken` 由回應組裝迴圈先行攔下存進記憶體（PROXY_CSRF_BRIDGE_V1），
+/// 不經過瀏覽器；這裡保留 `set-cookie` 是第二道保險。
 const DROP_RESP_HEADERS: &[&str] = &[
     "set-cookie",
     "content-length",
@@ -104,6 +118,13 @@ pub(super) struct TcGoQuery {
 }
 
 /// GET /admin/tc-go：記住代理帳號 → 302 到代理內的 iClass 目標頁。
+///
+/// TC_GO_ALL_PATHS_COOKIES_V1（fix36）：**每一個出口都必須附上輪換後的
+/// cookie**。`resolve_page_session` 一旦做了 refresh 輪換，舊 refresh 就被單用
+/// 消耗、舊 access 也被撤銷；舊版只有在最後的 302 成功路徑才附新 cookie，任何
+/// early return（403 非本人、404 找不到帳號、409 沒有 iClass session…）都會把
+/// 新 cookie 丟掉——使用者按一次按鈕就等於把自己的面板 session 玩壞（下一步
+/// 401 → 前端把 cookie 清掉 → 被登出）。這裡改成「先算結果、最後統一附」。
 pub(super) async fn tc_go_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -116,15 +137,24 @@ pub(super) async fn tc_go_handler(
     // 仍有效時，伺服器端直接換發並把新 cookie 種回，導航繼續不中斷。
     let Some(page) = super::pages::resolve_page_session(&state, &headers, &token).await else {
         // access＋refresh 都無效：送往登入頁（頂層導航回 JSON 對使用者不友善；
-        // 登入後回 dashboard，再按一次按鈕即可）。
+        // 登入後回 dashboard，再按一次按鈕即可）。沒有任何輪換發生，沒有
+        // cookie 需要附。
         return Redirect::to("/admin?next=%2Fadmin%2Fdashboard").into_response();
     };
+    // TC_GO_ALL_PATHS_COOKIES_V1：以下所有出口（含 early return）都由這裡統一
+    // 附上輪換後的新 cookie。
+    let response = tc_go_after_auth(&state, query, &page).await;
+    super::pages::attach_fresh_cookies(response, &page, &headers)
+}
+
+/// `tc_go_handler` 的已鑑權主體（`page` 一定是有效的面板 session）。
+async fn tc_go_after_auth(
+    state: &AdminWebState,
+    query: TcGoQuery,
+    page: &super::pages::PageSession,
+) -> Response {
     if page.session.must_change_password {
-        return super::pages::attach_fresh_cookies(
-            Redirect::to("/admin/password?first=1").into_response(),
-            &page,
-            &headers,
-        );
+        return Redirect::to("/admin/password?first=1").into_response();
     }
     let session = page.session.clone();
     let account_id = query
@@ -193,12 +223,16 @@ pub(super) async fn tc_go_handler(
 
     // TC_NAV_TOKEN_V1（fix34）：實測（2026-09-14 log）使用者瀏覽器對 /tc/ 頂層
     // 導航不帶任何 cookie（has_access/has_refresh 全 false）——在轉址 URL 帶
-    // 一次性 token（90 秒、用一次即焚）供導航鑑權；另種 120 秒票券 cookie
-    // 供 /tc/ 頁面的子資源請求（/static、/api）短時間內重複使用。
+    // token 供導航鑑權；另種票券 cookie 供 /tc/ 頁面的子資源請求（/static、
+    // /api）短時間內重複使用。
+    //
+    // TC_URL_GRANT_REPLAY_V1（fix36）：URL token 現在有效期間內可重複使用
+    // （每次滑動 30 分鐘）——iClass 分頁的 F5／上一頁／站內導航全靠它；票券
+    // token 則維持「只能當 cookie 用」。
     let nav_token = state.mint_tc_nav_token(&account_id, session.is_admin, true);
     let ticket_token = state.mint_tc_nav_token(&account_id, session.is_admin, false);
     let target_with_token = append_query_before_fragment(&target_path, "tc_token", &nav_token);
-    let mut response = Redirect::to(&format!("/tc{target_with_token}")).into_response();
+    let mut response: Response = Redirect::to(&format!("/tc{target_with_token}")).into_response();
     let cookie = format!(
         "{TC_ACCOUNT_COOKIE}={account_id}; Path=/; Max-Age={TC_ACCOUNT_COOKIE_MAX_AGE_SECS}; HttpOnly; SameSite=Lax"
     );
@@ -216,10 +250,9 @@ pub(super) async fn tc_go_handler(
             .headers_mut()
             .append(axum::http::header::SET_COOKIE, value);
     }
-    // TC_REFRESH_FALLBACK_V1：本次若做了 refresh 輪換，新 cookie 必須隨 302
-    // 種回——否則緊接的 /tc/ 請求帶著「已撤銷的 access＋已被單用消耗的
-    // refresh」，會在代理鑑權直接失敗（refresh token 單用，rotate 即作廢舊值）。
-    super::pages::attach_fresh_cookies(response, &page, &headers)
+    // TC_GO_ALL_PATHS_COOKIES_V1：本次若做了 refresh 輪換，新 cookie 由
+    // `tc_go_handler` 統一附加（所有出口一致），這裡不必再處理。
+    response
 }
 
 /// 代理主 handler：掛在 `/tc/{*path}` 與頂層 `/static`、`/api`、`/course`、`/uploads`。
@@ -317,6 +350,113 @@ fn tc_ticket_from_headers(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
+}
+
+/// TC_TOKEN_HEADER_AUTH_V1（fix36）：讀取代理頁面注入腳本送出的 `X-TC-Token`。
+/// 與 Referer 內的 token 同一把祕密、同樣走「頁面授權」語義（不消耗、滑動）。
+/// 這是 cookie 不送、網址又被 SPA 改寫時的最後一道保險。
+fn tc_token_from_header(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get("x-tc-token")?.to_str().ok()?.trim().to_string();
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+/// TC_PROXY_TOKEN_KEEP_V1（fix36）：把 `tc_token` 從「只有導覽那一次」變成
+/// 「整頁生命週期都在」。
+///
+/// 背景：使用者的瀏覽器對 /tc/ 家族的請求不帶任何 cookie（實測 log），代理
+/// 鑑權只能落在「URL／Referer 內的 token」。但 iClass 是前端路由 SPA：站內切換
+/// 時會用 history.pushState / replaceState 改寫 query，token 一旦被洗掉，這一頁
+/// 之後的 XHR／子資源就沒有 token 可帶，使用者看到的是「按鈕進去了，但頁面一直
+/// 說要登入／資料載不出來」。
+///
+/// 因此在代理的 HTML 最前面（SPA 任何程式碼之前）注入一小段腳本：
+///   ① `pushState`／`replaceState` 的同源 URL 一律保留 `tc_token`；
+///   ② 同源 `fetch`／`XMLHttpRequest` 一律附上 `X-TC-Token` 標頭——這條最強，
+///      不依賴 cookie、也不依賴網址怎麼被改寫。
+///
+/// 兩者都只在同源時生效（token 不會外流到學校或其他網域）；token 一定是 32 位
+/// hex（簽發端是 UUID simple hex），格式不符就完全不注入，避免字串注入風險。
+fn inject_token_keep_script(html: &str, token: Option<&str>, csrf: Option<&str>) -> String {
+    // token 一律 32 位 hex（簽發端是 UUID simple hex，見 mint_tc_nav_token）；csrf 是
+    // Django 的英數字串。兩者各自獨立驗證：只有一半有效就只注入那一半；都不合法
+    // 完全不注入——避免任何字串注入風險。
+    let token = token.filter(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_hexdigit()));
+    let csrf = csrf.filter(|c| is_valid_csrf_token(c));
+    if token.is_none() && csrf.is_none() {
+        return html.to_string();
+    }
+    // 用 push_str 拼接而不用 format!：JS 內有大量大括號，format! 的跳脫一旦漏掉
+    // 就編譯失敗（本工作區不能編譯，故此處刻意避開這個風險）。
+    // JS 原始碼一律用 r#"..."# raw string，內部雙引號不需要跳脫。
+    let mut script = String::with_capacity(3072);
+    script.push_str(
+        r#"<script>/* TC_PROXY_TOKEN_KEEP_V1 */
+(function(){var T=""#,
+    );
+    script.push_str(token.unwrap_or(""));
+    script.push_str(
+        r#"",C=""#,
+    );
+    script.push_str(csrf.unwrap_or(""));
+    script.push_str(
+        r#"";try{
+/* PROXY_CSRF_BRIDGE_V1（fix40）：iClass 的 CSRF token 由伺服器注入。上游 cookie
+   一律不落地面板網域，因此這裡種一顆同值的 csrftoken 供 SPA 讀取，並在
+   XHR／fetch 沒有（或帶空值）X-CSRFToken 時補上——POST／PUT／DELETE 才不會
+   被 Django／DRF 判 CSRF Failed。T 為空時全部略過。 */
+if(C){try{document.cookie="csrftoken="+C+"; Path=/; SameSite=Lax";}catch(e){}}
+var keep=function(u){if(!T||u==null)return u;try{var x=new URL(String(u),location.origin);
+if(x.origin!==location.origin)return u;
+var q=x.searchParams;if(q.get("tc_token")!==T)q.set("tc_token",T);
+return x.pathname+x.search+x.hash;}catch(e){return u;}};
+["pushState","replaceState"].forEach(function(f){
+var o=history[f];if(typeof o!=="function")return;
+history[f]=function(s,t,u){return o.call(this,s,t,keep(u));};});
+var csrfBad=function(v){return !v||v==="null"||v==="undefined";};
+var of=window.fetch;
+if(typeof of==="function"){
+window.fetch=function(input,init){
+try{
+if(typeof Request!=="undefined"&&input instanceof Request){
+var h=new Headers(input.headers);
+if(T&&!h.has("X-TC-Token"))h.set("X-TC-Token",T);
+if(C&&csrfBad(h.get("X-CSRFToken")))h.set("X-CSRFToken",C);
+input=new Request(input,{headers:h});
+}else if(typeof input==="string"||input instanceof URL){
+var x=new URL(String(input),location.origin);
+if(x.origin===location.origin){
+init=init?Object.assign({},init):{};
+var h2=new Headers(init.headers||{});
+if(T&&!h2.has("X-TC-Token"))h2.set("X-TC-Token",T);
+if(C&&csrfBad(h2.get("X-CSRFToken")))h2.set("X-CSRFToken",C);
+init.headers=h2;}
+}}catch(e){}
+return of.call(window,input,init);};}
+var xo=XMLHttpRequest.prototype.open,xs=XMLHttpRequest.prototype.setRequestHeader,xsend=XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.open=function(m,u){
+try{var x=new URL(String(u),location.origin);this.__tcSame=x.origin===location.origin;}catch(e){this.__tcSame=false;}
+return xo.apply(this,arguments);};
+XMLHttpRequest.prototype.setRequestHeader=function(n,v){
+try{if(C&&String(n).toLowerCase()==="x-csrftoken"&&csrfBad(v))return;}catch(e){}
+return xs.apply(this,arguments);};
+XMLHttpRequest.prototype.send=function(){
+try{if(this.__tcSame){if(T)xs.call(this,"X-TC-Token",T);if(C)xs.call(this,"X-CSRFToken",C);}}catch(e){}
+return xsend.apply(this,arguments);};
+}catch(e){}})();</script>"#,
+    );
+    // 插在 <head ...> 之後（早於 SPA 的任何腳本）；沒有 <head> 就擺最前面。
+    let lower = html.to_ascii_lowercase();
+    if let Some(pos) = lower.find("<head") {
+        if let Some(rel) = lower[pos..].find('>') {
+            let at = pos + rel + 1;
+            return format!("{}{}{}", &html[..at], script, &html[at..]);
+        }
+    }
+    format!("{script}{html}")
 }
 
 /// TC_PUBLIC_STATIC_V1（fix35）：/static/* 是 iClass 的編譯前端資產——實測
@@ -627,6 +767,76 @@ mod tests {
         );
         assert!(tc_token_from_referer(&no_host).is_none());
     }
+    /// TC_TOKEN_HEADER_AUTH_V1（fix36）：`X-TC-Token` 只收 32 位 hex，其餘
+    /// （空、短字串、HTML 片段）一律 None——注入端與讀取端都靠這個格式約束
+    /// 撐住「不可能被當字串注入」的性質。
+    #[test]
+    fn tc_token_from_header_strictness() {
+        let mut headers = HeaderMap::new();
+        assert!(tc_token_from_header(&headers).is_none(), "沒有標頭＝None");
+
+        headers.insert(
+            axum::http::HeaderName::from_static("x-tc-token"),
+            axum::http::HeaderValue::from_static("0123456789abcdef0123456789abcdef"),
+        );
+        assert_eq!(
+            tc_token_from_header(&headers).as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+
+        headers.insert(
+            axum::http::HeaderName::from_static("x-tc-token"),
+            axum::http::HeaderValue::from_static("deadbeef"),
+        );
+        assert!(tc_token_from_header(&headers).is_none(), "非 32 hex 拒收");
+
+        headers.insert(
+            axum::http::HeaderName::from_static("x-tc-token"),
+            axum::http::HeaderValue::from_static(r#"<script>alert(1)</script>"#),
+        );
+        assert!(tc_token_from_header(&headers).is_none(), "HTML 片段拒收");
+    }
+
+    /// TC_TOKEN_KEEP_V1（fix36）：注入點（<head> 之後、SPA 腳本之前）、大小寫
+    /// 容忍、無 <head> 時擺最前，以及「token 非 hex 就完全不注入」。
+    #[test]
+    fn inject_token_keep_script_rules() {
+        let token = "0123456789abcdef0123456789abcdef";
+        let html = "<html><head><title>t</title></head><body>x</body></html>";
+        let out = inject_token_keep_script(html, Some(token), None);
+        let head_end = out.find("<head>").expect("head tag") + "<head>".len();
+        assert!(
+            out[head_end..].starts_with("<script>/* TC_PROXY_TOKEN_KEEP_V1"),
+            "必須插在 <head> 之後：{out}"
+        );
+        assert!(out.ends_with("</script></head><body>x</body></html>"));
+        assert!(out.contains("var T=\"0123456789abcdef0123456789abcdef\""));
+        // token 只以資料形式出現，不得被寫成會破壞 JS 的片段。
+        assert!(!out.contains("\\\""), "不該出現被跳脫的引號：{out}");
+
+        // 大寫 <HEAD ...> 也要認得（找 '>' 而非固定字串 "<head>"）。
+        let upper = "<HTML><HEAD ><script src=\"/static/app.js\"></script></HEAD></HTML>";
+        let out = inject_token_keep_script(upper, Some(token), None);
+        assert!(
+            out.starts_with("<HTML><HEAD ><script>/* TC_PROXY_TOKEN_KEEP_V1"),
+            "{out}"
+        );
+        assert!(out.contains("<script src=\"/static/app.js\"></script></HEAD>"), "{out}");
+
+        // 沒有 <head> → 擺最前面（仍早於任何 SPA 腳本）。
+        let bare = "<div>hi</div>";
+        let out = inject_token_keep_script(bare, Some(token), None);
+        assert!(out.starts_with("<script>/* TC_PROXY_TOKEN_KEEP_V1"), "{out}");
+        assert!(out.ends_with(bare));
+
+        // 非 32 hex（空字串、亂碼、帶引號的注入嘗試）→ 原樣返回，零注入。
+        assert_eq!(inject_token_keep_script(html, None, None), html);
+        assert_eq!(inject_token_keep_script(html, Some("not-hex"), None), html);
+        assert_eq!(
+            inject_token_keep_script(html, Some(r#"ab";alert(1);//"#), None),
+            html
+        );
+    }
 }
 async fn tc_proxy_core(
     state: &AdminWebState,
@@ -636,32 +846,73 @@ async fn tc_proxy_core(
     body: axum::body::Bytes,
     tc_token: Option<&str>,
 ) -> Response {
-    // ── 面板鑑權（TC_NAV_TOKEN_V1：① cookie → ② 一次性 token／短效票券）──
-    // TC_REFRESH_FALLBACK_V1（fix30）：access 無效時用 refresh cookie 伺服器端
-    // 輪換（與 /admin 頁面的 resolve_page_session 同一機制）。/tc/ 是純導航，
-    // 沒有頁面 JS 可以像 /admin/api 的前端那樣在 401 時自動換 token；多分頁
-    // 並用時，任一分頁剛好 refresh 過（rotate 會撤銷所有舊 token），本分頁
-    // 的導航就會直接撞上「請先登入面板」錯誤頁（2026-09-14 使用者實測）。
-    let maybe_page = super::pages::resolve_page_session(state, headers, "").await;
+    // ── 面板鑑權（cookie → URL token → 票券 cookie → X-TC-Token → Referer）──
+    //
+    // TC_PROXY_NO_ROTATE_V1（fix36）：這裡**只讀取 cookie、絕不輪換**。
+    //
+    // 舊版呼叫 `resolve_page_session`（access 失效→以 refresh 輪換）。那個設計
+    // 有兩個致命後果：
+    //   1) 輪換會消耗（單用）舊 refresh、撤銷舊 access，而新 cookie 只在「成功
+    //      回應」才附回瀏覽器；本函式任何 early return（409 沒有 iClass session、
+    //      502 上游失敗、被導向上游登入頁…）都把新 cookie 丟掉 → 使用者只是按了
+    //      一次「↗ iClass」，面板 session 就變成「已消耗的 refresh＋已撤銷的
+    //      access」→ 下一個面板請求 401 → 前端把 cookie 清掉 → 「點按鈕後重整
+    //      就被登出」。
+    //   2) iClass 頁面會連續發出數十個子資源／XHR 請求，每個都可能在讀到同一個
+    //      refresh cookie 後競相輪換：第一個成功、其餘全部失敗（token 單用）。
+    //
+    // 代理路徑的鑑權本來就由 /admin/tc-go 簽發的 token 承擔（token 不會因為
+    // 面板輪換而失效），面板 cookie 只是「順手可用就沿用」的加分項，因此改成
+    // 唯讀查詢即可；面板本身的續期照舊由頁面層與前端 refresh 負責。
+    let maybe_session = state.authorize_any_from_cookies(headers).await;
     // TC_PUBLIC_STATIC_V1（fix35）：/static/* 是 iClass 公開編譯資產——不需
     // 面板鑑權（下方仍先試鑑權，成功可沿用帳號的 provider 與上游 cookie）。
     let public_asset = is_public_tc_asset(upstream_pq);
     // TC_NAV_TOKEN_V1（fix34）＋TC_REFERER_GRANT_V1（fix35）：cookie 全滅時
     // （實測該瀏覽器對 /tc/ 頁面家族的導航與子資源都不帶 cookie，連剛種的
-    // Path=/ 票券也不送），依序 fallback：① URL 一次性 token（導航；消費後
-    // 轉頁面授權）→ ② 120 秒票券 cookie → ③ Referer 內的 token（頁面的
-    // 子資源／XHR／站內導航；Referer=頁面完整 URL 含 tc_token，滑動 15 分鐘）。
-    let auth: Option<(String, bool)> = match maybe_page.as_ref() {
-        Some(page) => Some((page.session.account_id.clone(), page.session.is_admin)),
-        None => tc_token
-            .and_then(|t| state.consume_tc_nav_token_via_url(t))
-            .or_else(|| {
-                tc_ticket_from_headers(headers).and_then(|t| state.consume_tc_nav_token(&t))
-            })
-            .or_else(|| {
-                tc_token_from_referer(headers)
-                    .and_then(|t| state.consume_tc_nav_token_via_referer(&t))
-            }),
+    // Path=/ 票券也不送），依序 fallback：① URL token（導航；有效期間內可重複
+    // 使用，每次滑動——TC_URL_GRANT_REPLAY_V1）→ ② 票券 cookie → ③ Referer
+    // 內的 token（頁面的子資源／XHR／站內導航；Referer=頁面完整 URL 含
+    // tc_token，同樣滑動）。
+    // TC_TOKEN_KEEP_V1（fix36）：記下「這一頁真正拿來授權成功的那把 token」，
+    // 稍後注入頁面（見 inject_token_keep_script）——SPA 洗掉網址、瀏覽器又不送
+    // cookie 時，這把 token 就是後續 XHR／站內導覽唯一的續命索。
+    let header_token = tc_token_from_header(headers);
+    let referer_token = tc_token_from_referer(headers);
+    let mut page_token: Option<String> = None;
+    let auth: Option<(String, bool)> = match maybe_session.as_ref() {
+        Some(session) => Some((session.account_id.clone(), session.is_admin)),
+        None => {
+            let mut resolved = tc_token.and_then(|t| state.consume_tc_nav_token_via_url(t));
+            if resolved.is_some() {
+                page_token = tc_token.map(str::to_string);
+            }
+            if resolved.is_none() {
+                if let Some(ticket) = tc_ticket_from_headers(headers) {
+                    resolved = state.consume_tc_nav_token(&ticket);
+                    if resolved.is_some() {
+                        page_token = Some(ticket);
+                    }
+                }
+            }
+            if resolved.is_none() {
+                if let Some(token) = header_token.as_deref() {
+                    resolved = state.consume_tc_nav_token_via_referer(token);
+                    if resolved.is_some() {
+                        page_token = header_token.clone();
+                    }
+                }
+            }
+            if resolved.is_none() {
+                if let Some(token) = referer_token.as_deref() {
+                    resolved = state.consume_tc_nav_token_via_referer(token);
+                    if resolved.is_some() {
+                        page_token = referer_token.clone();
+                    }
+                }
+            }
+            resolved
+        }
     };
     if auth.is_none() && !public_asset {
         // TC_NAV_LOGIN_REDIRECT_V1（fix31）：留下診斷線索——access/refresh
@@ -673,7 +924,8 @@ async fn tc_proxy_core(
             has_tc_token = tc_token.is_some(),
             has_ticket_cookie = tc_ticket_from_headers(headers).is_some(),
             has_referer = headers.contains_key(axum::http::header::REFERER),
-            referer_had_token = tc_token_from_referer(headers).is_some(),
+            referer_had_token = referer_token.is_some(),
+            has_header_token = header_token.is_some(),
             is_navigation = is_tc_navigation_request(headers),
             path = %upstream_pq,
             "tc proxy 面板鑑權失敗"
@@ -690,8 +942,10 @@ async fn tc_proxy_core(
             "請先登入面板，再從作業／公告頁的按鈕進入 iClass",
         );
     }
-    if let Some(page) = maybe_page.as_ref() {
-        if page.session.must_change_password {
+    if let Some(session) = maybe_session.as_ref() {
+        // token/ticket 鑑權路徑不經此檢查——/admin/tc-go 簽發前已經擋掉
+        // must_change_password（fix34 語義不變）。
+        if session.must_change_password {
             return tc_error_page(
                 StatusCode::UNAUTHORIZED,
                 "請先回面板完成密碼變更，再使用 iClass 代理",
@@ -724,11 +978,26 @@ async fn tc_proxy_core(
         .as_ref()
         .map(|r| r.session_cookie.trim().to_string())
         .unwrap_or_default();
+    // TC_SILENT_LOGIN_V1（fix36）：資料庫裡還沒有這個帳號的 iClass session
+    // （新帳號、剛被清掉、或面板尚未輪詢過）時，**直接由伺服器用帳號密碼登入
+    // 一次**，而不是把使用者擋在「請等面板完成一次輪詢同步」的錯誤頁上——
+    // 使用者的要求是「點按鈕就近到 iClass、不要再額外登入」。節流沿用
+    // RELOGIN_THROTTLE（每帳號 60 秒一次），失敗才回錯誤頁。
     if auth.is_some() && cookie_value.is_empty() {
-        return tc_error_page(
-            StatusCode::CONFLICT,
-            "此帳號尚無 iClass session；請等面板完成一次輪詢同步後再試",
-        );
+        if let Some(raw_account) = raw.as_ref() {
+            if relogin_allowed(&account_id).await {
+                info!(account = %account_id, "代理：帳號尚無 iClass session，先自動登入一次");
+                if let Some(new_cookie) = relogin_and_persist(state, raw_account).await {
+                    cookie_value = new_cookie;
+                }
+            }
+        }
+        if cookie_value.is_empty() {
+            return tc_error_page(
+                StatusCode::CONFLICT,
+                "此帳號尚未建立 iClass session，自動登入也沒成功；請到面板的帳號設定確認帳號密碼後再試",
+            );
+        }
     }
     // ── base_url（比照 homework.rs 的 provider 解析鏈）──
     let Some(config) = crate::config::try_get_config() else {
@@ -762,12 +1031,16 @@ async fn tc_proxy_core(
         );
     };
 
+    // PROXY_CSRF_BRIDGE_V1（fix40）：CSRF token 由伺服器保存（見回應組裝），
+    // 上游請求與注入頁面共用同一個值。
+    let csrf_token = state.proxied_csrf_token(&account_id);
     let mut upstream = match send_upstream(
         http,
         upstream_method.clone(),
         &url,
         headers,
         &cookie_value,
+        csrf_token.as_deref(),
         &body,
     )
     .await
@@ -794,6 +1067,7 @@ async fn tc_proxy_core(
                     &url,
                     headers,
                     &cookie_value,
+                    csrf_token.as_deref(),
                     &body,
                 )
                 .await
@@ -820,6 +1094,21 @@ async fn tc_proxy_core(
     let mut response_headers = HeaderMap::new();
     for (name, value) in upstream.headers().iter() {
         let lower = name.as_str().to_ascii_lowercase();
+        // PROXY_CSRF_BRIDGE_V1（fix40）：上游 cookie 一顆都不種（見 DROP_RESP_HEADERS），
+        // 只攔下 `csrftoken` 的值存進伺服器記憶體——iClass 的 Django／DRF 需要它做
+        // CSRF 比對，頁面端由注入的 script 拿到同一個值（不經瀏覽器 cookie，因此與
+        // 面板的登入 cookie 完全隔離，也不可能被 iClass 的 session cookie 覆蓋）。
+        if lower == "set-cookie" {
+            if let Ok(raw) = value.to_str() {
+                if let Some((cookie_name, token)) = parse_cookie_pair(raw) {
+                    if cookie_name.eq_ignore_ascii_case("csrftoken") && is_valid_csrf_token(&token)
+                    {
+                        state.remember_proxied_csrf(&account_id, &token);
+                    }
+                }
+            }
+            continue;
+        }
         if DROP_RESP_HEADERS.contains(&lower.as_str()) {
             continue;
         }
@@ -854,16 +1143,131 @@ async fn tc_proxy_core(
             return tc_error_page(StatusCode::BAD_GATEWAY, "iClass 回應讀取失敗，請稍後再試");
         }
     };
-    let mut response = (status, bytes.to_vec()).into_response();
+    // TC_TOKEN_KEEP_V1（fix36）：HTML 才注入（JSON／資產注入會壞檔，且沒有
+    // SPA 路由問題）。body 一改長度，content-length 已在白名單被剝除，安全。
+    //
+    // PROXY_CSRF_BRIDGE_V1（fix40）：CSRF token 取「回應處理後的最新保存值」——
+    // 上游常常在這一次回應才剛輪換 csrftoken，用舊值注入會讓後續 POST 對不上。
+    let csrf_for_page = state.proxied_csrf_token(&account_id);
+    let bytes = if content_type_is_html {
+        match std::str::from_utf8(&bytes) {
+            Ok(html) => inject_token_keep_script(
+                html,
+                page_token.as_deref(),
+                csrf_for_page.as_deref(),
+            )
+            .into_bytes(),
+            Err(_) => bytes.to_vec(),
+        }
+    } else {
+        bytes.to_vec()
+    };
+    let mut response = (status, bytes).into_response();
     *response.headers_mut() = response_headers;
-    // TC_REFRESH_FALLBACK_V1：本次導航若有做 refresh 輪換，把新 cookie 種回
-    // 瀏覽器（正常成功路徑必附；錯誤頁 early-return 不附——極罕見，代價只是
-    // 下次導航需重新登入一次）。TC_NAV_TOKEN_V1：token 鑑權路徑沒有 PageSession
-    // （cookie 已失效或不存在），無新 cookie 可附。
-    match maybe_page {
-        Some(page) => super::pages::attach_fresh_cookies(response, &page, headers),
-        None => response,
+    // TC_PROXY_NO_ROTATE_V1（fix36）：代理路徑不再輪換面板 session，因此**面板
+    // 自己的 cookie** 完全不動（不種也不清）——iClass 的任何頁面／資產都不可能
+    // 再影響面板登入狀態。
+    //
+    // PROXY_NO_COOKIE_PLANT_V1（fix40）：上游的 Set-Cookie **一顆都不種**——fix38
+    // 曾經把 iClass 的 cookie 改寫後種到面板網域（含 `csrftoken`），造成代理頁
+    // 與面板登入互相污染（轉圈、被登出、要清網站資料才恢復）。CSRF 改由
+    // PROXY_CSRF_BRIDGE_V1 承擔：token 只留在伺服器記憶體＋注入頁面的 script。
+    response
+}
+
+/// PROXY_NO_COOKIE_PLANT_V1（fix40）：面板自己（含 Filebrowser SSO）使用的
+/// cookie 名字。上游同名 cookie 一律不得種到面板網域、也不得轉發給上游——
+/// 否則 iClass 的 `session` 會蓋掉面板登入／FB SSO，票券被覆蓋則代理鑑權失效。
+fn is_panel_cookie_name(name: &str) -> bool {
+    let name = name.trim().to_ascii_lowercase();
+    name.is_empty()
+        || name == "session"
+        || name.starts_with("__host-tronclass")
+        || name.starts_with("tronclass_")
+        || name.starts_with("tc_proxy_")
+}
+
+/// PROXY_CSRF_BRIDGE_V1（fix40）：取出 `Set-Cookie` 的 `name=value`（第一段）。
+fn parse_cookie_pair(raw: &str) -> Option<(String, String)> {
+    let pair = raw.split(';').next()?.trim();
+    let (name, value) = pair.split_once('=')?;
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() || value.is_empty() {
+        return None;
     }
+    Some((name.to_string(), value.to_string()))
+}
+
+/// PROXY_CSRF_BRIDGE_V1（fix40）：CSRF token 格式（Django 是 64 字元英數、舊版
+/// 32）。值會被放進注入頁面的 JS 字串與 Cookie，因此只收英數、長度有上限。
+fn is_valid_csrf_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= 128 && token.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// PROXY_CSRF_BRIDGE_V1（fix40）：讀 Cookie header 中指定名稱的原始值。
+/// 僅用於 CSRF 這種需要「值必須與頁面一致」的 cookie；面板 cookie 不在此列。
+fn cookie_value_from_headers(headers: &HeaderMap, want: &str) -> Option<String> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    for pair in cookies.split(';') {
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case(want) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// PROXY_CSRF_BRIDGE_V1（fix40）：上游請求要帶的 Cookie 標頭＝資料庫存的
+/// iClass session（＋CSRF token）。**面板 cookie 與瀏覽器手上的其他 cookie
+/// 一律不外送**——fix38 曾把瀏覽器 cookie 併進來，等於讓面板網域的 cookie
+/// jar 與代理來回互相污染；現在只有兩個來源：DB 的 session、以及我們自己
+/// 保存／注入的 `csrftoken`。
+///
+/// 為什麼仍然需要 `csrftoken`：iClass（Django／DRF）對 POST／PUT／DELETE
+/// 會比對「Cookie 的 csrftoken」與「X-CSRFToken 標頭」；兩邊都由我們用同一個
+/// 值填（cookie 由上游請求帶、標頭由頁面注入的 script 帶），比對必過。
+fn upstream_cookie_header(headers: &HeaderMap, stored: &str, csrf: Option<&str>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    let stored = stored.trim().trim_end_matches(';').trim();
+    if !stored.is_empty() {
+        for chunk in stored.split(';') {
+            let chunk = chunk.trim();
+            if chunk.is_empty() {
+                continue;
+            }
+            let name = chunk.split('=').next().unwrap_or_default().trim();
+            if is_panel_cookie_name(name) {
+                // 資料庫存的 session 本來就是上游要的那顆（`session=…`）——這裡
+                // 只擋面板自己的名字，避免舊資料殘留時污染上游請求。
+                if name != "session" {
+                    continue;
+                }
+            }
+            names.push(name.to_ascii_lowercase());
+            parts.push(chunk.to_string());
+        }
+    }
+    // CSRF：優先用伺服器保存的 token（與注入頁面的值一致，保證與上游 cookie
+    // 相符）；記憶體沒有時（例如剛重啟）退回瀏覽器持有的那一顆。
+    let csrf = csrf
+        .filter(|value| is_valid_csrf_token(value))
+        .map(str::to_string)
+        .or_else(|| {
+            cookie_value_from_headers(headers, "csrftoken").filter(|value| is_valid_csrf_token(value))
+        });
+    if let Some(value) = csrf {
+        if !names.iter().any(|existing| existing == "csrftoken") {
+            parts.push(format!("csrftoken={value}"));
+        }
+    }
+    parts.join("; ")
 }
 
 async fn send_upstream(
@@ -872,12 +1276,29 @@ async fn send_upstream(
     url: &str,
     headers: &HeaderMap,
     cookie: &str,
+    csrf: Option<&str>,
     body: &[u8],
 ) -> Result<reqwest::Response, reqwest::Error> {
-    let mut req = http.request(method, url).header("cookie", cookie.as_bytes());
+    let mut req = http
+        .request(method, url)
+        .header("cookie", upstream_cookie_header(headers, cookie, csrf));
     for name in FORWARD_REQ_HEADERS {
         if let Some(value) = headers.get(*name) {
             req = req.header(*name, value.as_bytes());
+        }
+    }
+    // CSRF_PROXY_ORIGIN_V1（fix38）：iClass 是 Django／DRF——不安全方法會驗
+    // CSRF：Origin（或 Referer）必須指向上游自己，且不轉發瀏覽器的（那是面板
+    // 的 origin，必定被拒）。這裡一律改寫成上游 origin；Referer 只帶路徑，
+    // 不把面板的 query（含 tc_token）外洩給上游。
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            let mut origin = format!("{}://{}", parsed.scheme(), host);
+            if let Some(port) = parsed.port() {
+                origin.push_str(&format!(":{port}"));
+            }
+            req = req.header("origin", origin.clone());
+            req = req.header("referer", format!("{origin}{}", parsed.path()));
         }
     }
     if !body.is_empty() {
@@ -1022,4 +1443,94 @@ fn tc_error_page(status: StatusCode, message: &str) -> Response {
         html,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod proxy_cookie_tests {
+    use super::*;
+
+    /// PROXY_NO_COOKIE_PLANT_V1：面板自己的 cookie 名字（含 iClass 的 session）
+    /// 永遠不得轉發給上游。
+    #[test]
+    fn panel_cookie_names_are_never_forwarded() {
+        assert!(is_panel_cookie_name("session"));
+        assert!(is_panel_cookie_name("tc_proxy_ticket"));
+        assert!(is_panel_cookie_name("tc_proxy_account"));
+        assert!(is_panel_cookie_name("tronclass_admin_session"));
+        assert!(is_panel_cookie_name("tronclass_fb_sso"));
+        assert!(is_panel_cookie_name("__Host-tronclass_admin_refresh"));
+        assert!(!is_panel_cookie_name("csrftoken"));
+        assert!(!is_panel_cookie_name("_ga"));
+        assert!(!is_panel_cookie_name("SERVERID"));
+    }
+
+    /// PROXY_NO_COOKIE_PLANT_V1（fix40）：上游 Set-Cookie **不得**被種到瀏覽器。
+    /// 這條規則由「DROP_RESP_HEADERS 含 set-cookie」釘住（fix38 曾把它拿掉）。
+    #[test]
+    fn upstream_set_cookie_is_never_planted() {
+        assert!(
+            DROP_RESP_HEADERS.contains(&"set-cookie"),
+            "上游 cookie 必須維持不落地（fix38 的 regression 就是這裡）"
+        );
+    }
+
+    /// PROXY_CSRF_BRIDGE_V1：上游 `Set-Cookie` 只攔 `csrftoken` 的值。
+    #[test]
+    fn only_csrftoken_is_captured_from_upstream_set_cookie() {
+        let (name, value) =
+            parse_cookie_pair("csrftoken=abc123DEF; Domain=iclass.tku.edu.tw; Path=/; Secure")
+                .expect("應解析出 name=value");
+        assert_eq!(name, "csrftoken");
+        assert_eq!(value, "abc123DEF");
+        assert!(is_valid_csrf_token(&value));
+
+        // session cookie（iClass 的登入狀態）絕不落地，也不進 CSRF 橋。
+        let (session_name, _) =
+            parse_cookie_pair("session=V2-abcdef; Path=/").expect("仍可解析");
+        assert_ne!(session_name.to_ascii_lowercase(), "csrftoken");
+        assert!(is_panel_cookie_name(&session_name));
+
+        // 格式不合格的值一律不採用（會被放進 JS 字串與 Cookie，必須嚴格）。
+        assert!(!is_valid_csrf_token(""));
+        assert!(!is_valid_csrf_token("abc;alert(1)"));
+        assert!(!is_valid_csrf_token(&"a".repeat(129)));
+        assert!(is_valid_csrf_token(&"a".repeat(128)));
+    }
+
+    /// PROXY_CSRF_BRIDGE_V1：上游請求只帶 DB 的 session ＋ 我們保存／注入的
+    /// `csrftoken`；瀏覽器上的面板 cookie 與其他 cookie 一律不外送（fix38 的
+    /// 全面合併是 regression）。
+    #[test]
+    fn upstream_cookie_header_carries_only_stored_session_and_csrf() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static(
+                "csrftoken=browser; tronclass_admin_session=panel; tc_proxy_ticket=ticket; _ga=GA1",
+            ),
+        );
+
+        // 有伺服器保存的 CSRF token 時：DB session ＋ 保存值，瀏覽器 cookie 全不用。
+        let merged = upstream_cookie_header(&headers, "session=stored", Some("savedcsrf"));
+        assert!(merged.contains("session=stored"), "{merged}");
+        assert!(merged.contains("csrftoken=savedcsrf"), "{merged}");
+        assert!(!merged.contains("browser"), "{merged}");
+        assert!(!merged.contains("tronclass_admin_session"), "{merged}");
+        assert!(!merged.contains("tc_proxy_ticket"), "{merged}");
+        assert!(!merged.contains("_ga"), "{merged}");
+
+        // 記憶體沒有保存值（剛重啟）時，退回瀏覽器那顆 CSRF cookie（僅此一顆）。
+        let fallback = upstream_cookie_header(&headers, "session=stored", None);
+        assert!(fallback.contains("csrftoken=browser"), "{fallback}");
+        assert!(!fallback.contains("tronclass_admin_session"), "{fallback}");
+        assert!(!fallback.contains("tc_proxy_ticket"), "{fallback}");
+
+        // 瀏覽器沒有能力提供 CSRF 時（跨 App cookie jar）就只帶 DB session。
+        assert_eq!(
+            upstream_cookie_header(&HeaderMap::new(), "session=stored", None),
+            "session=stored"
+        );
+        // 資料庫那顆為空（新帳號）也不產生空的 Cookie 標頭。
+        assert_eq!(upstream_cookie_header(&HeaderMap::new(), "", None), "");
+    }
 }

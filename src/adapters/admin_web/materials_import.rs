@@ -600,7 +600,9 @@ async fn process_upload(
 ///      （tc-minio.tku.edu.tw 的簽章連結，走 :443、伺服器也抓得到）。
 ///   2. 若無 upload_id，退回以 `key` 拼的舊位址（較不可靠）。
 ///   3. 回傳依序嘗試的清單，由 download_file 逐個試。
-async fn resolve_download_urls(
+/// HOMEWORK_DETAIL_V1（fix41）：改為 `pub(super)`——作業附件下載走同一條
+/// 「已知且實測過」的取檔路徑（單一來源，避免兩份解析漂移）。
+pub(super) async fn resolve_download_urls(
     client: &reqwest::Client,
     base_url: &str,
     upload: &Value,

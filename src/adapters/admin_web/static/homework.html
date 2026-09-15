@@ -364,6 +364,183 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   .err-msg{max-width:600px;margin:0 auto 14px;line-height:1.6;color:var(--ds-text)}
   .err-hint{font-size:13px;color:var(--ds-muted);margin:0 auto 18px}
   .button.err-btn{border-color:#ef4444!important;color:#ef4444!important}
+
+  /* HOMEWORK_DETAIL_V1（fix41）：面板內作業詳情彈窗。
+     內容由 /admin/api/homework/detail 提供（伺服器端用已保存的 iClass session
+     抓取），完全不經過 iClass 頁面代理。 */
+  .hw-detail-mask{position:fixed;inset:0;background:rgba(15,23,42,.55);display:flex;align-items:center;justify-content:center;padding:16px;z-index:10000}
+  .hw-detail-mask[hidden]{display:none}
+  .hw-detail-panel{width:min(760px,96vw);max-height:88vh;display:flex;flex-direction:column;background:var(--ds-card,#fff);color:var(--ds-text,#0f172a);border-radius:16px;box-shadow:0 24px 64px rgba(15,23,42,.35);overflow:hidden}
+  .hw-detail-head{display:flex;align-items:flex-start;gap:12px;padding:16px 18px 10px;border-bottom:1px solid var(--ds-line-soft,#e2e8f0)}
+  .hw-detail-head h2{margin:0;font-size:17px;line-height:1.45;flex:1}
+  .hw-detail-close{border:0;background:transparent;font-size:18px;line-height:1;cursor:pointer;color:var(--ds-muted,#64748b);padding:4px 6px}
+  .hw-detail-sub{padding:10px 18px 0;font-size:13px;color:var(--ds-muted,#64748b);display:flex;flex-wrap:wrap;gap:6px 14px}
+  .hw-detail-body{padding:12px 18px 18px;overflow:auto;flex:1;font-size:14px;line-height:1.75}
+  .hw-detail-body .hw-detail-loading{display:flex;align-items:center;gap:10px;color:var(--ds-muted,#64748b)}
+  .hw-detail-body h3{margin:18px 0 8px;font-size:14px;color:var(--ds-muted,#64748b);font-weight:700}
+  .hw-detail-body h3:first-child{margin-top:0}
+  .hw-detail-desc{white-space:normal}
+  /* 沒有 DOMPurify 時以純文字顯示說明，保留換行（不用 inline style：
+     CSP_STYLE_ATTR_STAGED_V1 把 style 屬性收緊成 class）。 */
+  .hw-detail-desc.plain{white-space:pre-wrap}
+  .hw-detail-desc img,.hw-detail-desc iframe,.hw-detail-desc video{display:none}
+  .hw-detail-desc table{max-width:100%;border-collapse:collapse}
+  .hw-detail-desc td,.hw-detail-desc th{border:1px solid var(--ds-line-soft,#e2e8f0);padding:4px 8px}
+  .hw-detail-hint{margin:10px 0 0;padding:8px 10px;border-radius:8px;background:rgba(37,99,235,.08);color:var(--ds-muted,#64748b);font-size:12.5px;line-height:1.6}
+  .hw-detail-attach{list-style:none;margin:0;padding:0}
+  .hw-detail-attach li{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px dashed var(--ds-line-soft,#e2e8f0)}
+  .hw-detail-attach li:last-child{border-bottom:0}
+  .hw-detail-attach .attach-name{flex:1;word-break:break-all}
+  .hw-detail-attach .attach-size{color:var(--ds-muted,#64748b);font-size:12px;white-space:nowrap}
+  .hw-detail-attach .attach-none{color:var(--ds-muted,#64748b);font-size:13px}
+  .hw-detail-foot{display:flex;gap:10px;justify-content:flex-end;padding:12px 18px;border-top:1px solid var(--ds-line-soft,#e2e8f0);background:rgba(148,163,184,.06)}
+  .hw-detail-foot .button{text-decoration:none}
+  /* HOMEWORK_SUBMIT_V1（fix42）：面板內直接繳交作業。
+     檔案在面板內就以 multipart 送往伺服器，由伺服器端用已保存的 iClass session
+     代打上游；因此不需要跨站表單、不碰 iClass 的 cookie、也不會被登出。 */
+  .hw-submit{margin-top:22px;padding-top:16px;border-top:1px solid var(--ds-line-soft,#e2e8f0)}
+  .hw-submit-status{padding:10px 12px;border-radius:10px;background:rgba(148,163,184,.10);font-size:13px;line-height:1.7;color:var(--ds-text,#0f172a)}
+  .hw-submit-status.submitted{background:rgba(16,185,129,.12)}
+  .hw-submit-status.pending{background:rgba(245,158,11,.12)}
+  .hw-submit-files{margin:6px 0 0;padding-left:18px}
+  .hw-submit-comment-preview{margin-top:6px;color:var(--ds-muted,#64748b);word-break:break-word}
+  .hw-submit-field{margin-top:12px}
+  .hw-submit-field label{display:block;font-size:13px;color:var(--ds-muted,#64748b);margin-bottom:6px}
+  .hw-submit input[type=file]{width:100%;font-size:13px}
+  .hw-submit textarea{width:100%;min-height:70px;padding:10px;border:1px solid var(--ds-line,#d8e0eb);border-radius:10px;background:var(--ds-input,#fff);color:var(--ds-text,#0f172a);font-size:13.5px;line-height:1.6;resize:vertical;font-family:inherit}
+  .hw-submit-picked{list-style:none;margin:10px 0 0;padding:0}
+  .hw-submit-picked li{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px dashed var(--ds-line-soft,#e2e8f0);font-size:13px}
+  .hw-submit-picked .pick-name{flex:1;word-break:break-all}
+  .hw-submit-picked .pick-size{color:var(--ds-muted,#64748b);font-size:12px;white-space:nowrap}
+  .hw-submit-picked .pick-remove{border:0;background:transparent;color:var(--ds-muted,#64748b);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}
+  .hw-submit-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .hw-submit-progress{font-size:12.5px;color:var(--ds-muted,#64748b)}
+  .hw-submit-note{margin:10px 0 0;font-size:12px;color:var(--ds-muted,#64748b);line-height:1.6}
+  .hw-submit button[disabled]{opacity:.55;cursor:not-allowed}
+  /* HOMEWORK_FILE_V1（fix43）：附件／繳交檔的預覽浮層。
+     內容依型別由前端選擇渲染方式（圖片／PDF／影音／文字／Office 本機解析），
+     檔案一律由面板伺服器端代抓（/admin/api/homework/file）。 */
+  .hw-file-preview,.hw-file-download{white-space:nowrap}
+  .hw-detail-attach li .hw-file-preview,.hw-detail-attach li .hw-file-download{margin-left:6px}
+  .hw-submit-files li{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .hw-submit-files .file-name{flex:1;min-width:120px;word-break:break-all}
+  .hw-submit-files .file-size{color:var(--ds-muted,#64748b);font-size:12px;white-space:nowrap}
+  .hw-preview{position:fixed;inset:0;z-index:10050;display:none;align-items:center;justify-content:center;background:rgba(2,6,23,.72);padding:18px;box-sizing:border-box}
+  .hw-preview.open{display:flex}
+  .hw-preview-panel{display:flex;flex-direction:column;width:100%;max-width:1080px;height:100%;max-height:100%;background:var(--surface,var(--card,#fff));color:var(--text,#172033);border:1px solid var(--line2,#e2e8f0);border-radius:14px;overflow:hidden;box-shadow:0 18px 48px rgba(2,6,23,.45)}
+  .hw-preview-head{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line2,#e2e8f0);background:var(--card,#fff)}
+  .hw-preview-title{flex:1;min-width:0;font-size:13.5px;font-weight:650;word-break:break-all}
+  .hw-preview-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+  .hw-preview-body{flex:1;min-height:0;overflow:auto;display:block;background:var(--surface,var(--card,#fff))}
+  .hw-preview-note{padding:24px 18px;color:var(--muted,#64748b);font-size:13px;line-height:1.7;text-align:center}
+  .hw-preview-img{display:block;max-width:100%;max-height:100%;margin:auto;object-fit:contain}
+  .hw-preview-media{display:block;width:100%;height:100%;max-height:100%;background:#000}
+  .hw-preview-audio{display:block;width:min(520px,90%);margin:40px auto}
+  .hw-preview-frame{width:100%;height:100%;min-height:70vh;border:0;background:#fff}
+  .hw-preview-text{margin:0;padding:16px 18px;white-space:pre-wrap;word-break:break-word;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text,#172033)}
+  /* PDF.js 逐頁 canvas（與檔案頁同一套樣式）。 */
+  .tron-pdf{display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px;box-sizing:border-box;background:#40444a;min-height:100%}
+  .tron-pdf canvas{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.45);border-radius:2px;max-width:100%}
+  /* Office 本機解析（office-view.js）輸出的樣式子集；與檔案頁一致。 */
+  .tron-office{width:100%;min-height:100%;box-sizing:border-box;background:var(--surface,var(--card,#fff));color:var(--text,#172033)}
+  .tron-docx{overflow:auto;padding:20px 24px;box-sizing:border-box;line-height:1.5;font-size:14px}
+  .tron-docx p,.tron-docx h2,.tron-docx h3,.tron-docx h4,.tron-docx h5{margin:0 0 6px 0}
+  .tron-docx table{max-width:100%}
+  .tron-slides{overflow:auto;padding:16px;box-sizing:border-box}
+  .tron-slide{position:relative;width:100%;max-width:960px;margin:0 auto 16px auto;background:#fff;border:1px solid var(--line2,#e2e8f0);border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.10);overflow:hidden}
+  .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
+  .tron-slide-img{position:absolute}
+  .tron-office-error{padding:36px 18px;text-align:center;color:var(--muted,#64748b);border:1px dashed var(--line2,#e2e8f0);border-radius:14px;font-size:13px}
+  .tron-office-note{padding:10px 12px;font-size:12px;color:var(--muted,#64748b);background:var(--card,#fff);border-top:1px solid var(--line2,#e2e8f0)}
+  .tron-xlsx,.tron-odf{overflow:auto;box-sizing:border-box;padding:0}
+  .tron-odf{padding:20px 24px;line-height:1.5;font-size:14px}
+  .tron-odf-p{margin:0 0 6px 0}
+  .tron-odf-sheet{margin:18px 0 8px 0;font-size:13px;color:var(--muted,#64748b);font-weight:700}
+  .tron-xlsx-tabs{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;gap:4px;padding:8px 10px;background:var(--card,#fff);border-bottom:1px solid var(--line2,#e2e8f0)}
+  .tron-xlsx-tab{padding:5px 12px;font-size:12px;border:1px solid var(--line2,#e2e8f0);border-radius:8px;cursor:pointer;color:var(--muted,#64748b);background:transparent;user-select:none}
+  .tron-xlsx-tab.active{background:var(--primary,#2563EB);border-color:var(--primary,#2563EB);color:#fff;font-weight:650}
+  .tron-xlsx-sheet{padding:10px}
+  .tron-xlsx-table{border-collapse:collapse;font-size:12.5px;min-width:100%;background:var(--surface,var(--card,#fff))}
+  .tron-xlsx-table th,.tron-xlsx-table td{border:1px solid var(--line2,#e2e8f0);padding:4px 8px;text-align:left;vertical-align:top;white-space:pre-wrap;word-break:break-word;max-width:340px}
+  .tron-xlsx-table thead th{position:sticky;top:0;background:var(--card,#fff);color:var(--muted,#64748b);font-weight:650;text-align:center}
+  .tron-xlsx-rowhead{background:var(--card,#fff);color:var(--muted,#64748b);font-weight:600;text-align:center!important;width:44px}
+  .tron-rtf{overflow:auto;margin:0;padding:20px 24px;box-sizing:border-box;white-space:pre-wrap;word-break:break-word;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+  /* ── HOMEWORK_MOBILE_SHEET_V1（fix44）：手機版作業詳情＝全螢幕分頁 ──────────
+     手機截圖（2026-09-15）看到的兩個問題：
+       ① 面板原本用 `max-height:88vh`：iOS Safari 的 `vh` 是「最大視窗」高度，
+          比實際看得到的區域高，面板上緣於是跑到畫面外（標題列與說明開頭看不到），
+          而且因為遮罩是 position:fixed，使用者怎麼捲都捲不到。
+       ② 共用底部導覽列 `#mobileNavFinalV2` 的 z-index 是 2147482500，任何彈窗都
+          壓不過它 → 它直接蓋在彈窗內容上（截圖裡「繳交作業」整個被擋住）。
+     做法：貼滿動態視窗（100dvh）、標題列與底部按鈕列固定不動、避開瀏海與 Home
+     指示器安全區；浮層開著時把 `body` 鎖住並把共用導覽列收起來。
+     僅在 ≤820px（共用導覽列的顯示斷點）生效，桌機版面完全不動。 */
+  @media (max-width:820px){
+    /* 浮層開著時：鎖住背景、收起底部導覽列。
+       class 刻意寫兩次（`.hw-overlay-open.hw-overlay-open`）拉高 specificity：
+       共用導覽列的顯示規則 `html.dash-auth-ok body #mobileNavFinalV2{…!important}`
+       與本檔同等級，而 mobile-navigation.css 是執行時才插進 <head>（排在後面），
+       不這樣寫會壓不過它。 */
+    body.hw-overlay-open{overflow:hidden!important}
+    html body.hw-overlay-open.hw-overlay-open #mobileNavFinalV2,
+    html body.hw-overlay-open.hw-overlay-open #ttMobileNavV2{display:none!important}
+
+    /* ── 作業詳情：全螢幕分頁 ─────────────────────────────── */
+    .hw-detail-mask{padding:0;align-items:stretch}
+    .hw-detail-panel{width:100%;max-width:100%;max-height:none;height:100vh;height:100dvh;border-radius:0;box-shadow:none}
+    .hw-detail-head{padding:calc(env(safe-area-inset-top,0px) + 12px) 14px 10px;align-items:center;flex-shrink:0}
+    .hw-detail-head h2{font-size:16px}
+    .hw-detail-close{min-width:44px;min-height:44px;font-size:20px;margin:-8px -6px -8px 0}
+    .hw-detail-sub{padding:8px 14px 0;font-size:12.5px;gap:4px 12px;flex-shrink:0}
+    /* min-height:0：欄向 flex 子項的預設 min-height 是 auto，少了它內容一長就會
+       把面板撐出視窗外（正是截圖中「捲不到、上下都被切掉」的另一半原因）。 */
+    .hw-detail-body{padding:10px 14px 18px;font-size:15px;line-height:1.75;min-height:0;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+    .hw-detail-body h3{margin:16px 0 6px;font-size:13px;letter-spacing:.02em}
+    .hw-detail-foot{padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));gap:8px;flex-shrink:0}
+    .hw-detail-foot .button{flex:1 1 0;min-height:46px;display:inline-flex;align-items:center;justify-content:center;text-align:center}
+
+    /* 老師的說明多半是從 Word／Google Docs 貼過來的，帶著固定 px 字級與英文字型
+       （實測樣本：`font-family: arial, sans-serif; font-size: 14px; line-height: 18pt`），
+       在手機上會變成一頁十幾個字。這裡統一成面板的字型與字級；顏色、粗體、底線
+       等「強調」全部保留。 */
+    .hw-detail-desc{font-size:15px;line-height:1.75;overflow-wrap:anywhere}
+    .hw-detail-desc *{max-width:100%;font-family:inherit!important}
+    .hw-detail-desc [style*="font-size"],.hw-detail-desc font[size]{font-size:inherit!important}
+    .hw-detail-desc [style*="line-height"]{line-height:1.75!important}
+    .hw-detail-desc p{margin:0 0 10px}
+    .hw-detail-desc h1,.hw-detail-desc h2{font-size:17px}
+    .hw-detail-desc h3,.hw-detail-desc h4{font-size:15.5px}
+    /* Word 貼上常見的 `<p><br></p>` 空段落，在手機上是一整片空白（截圖中段那塊）。 */
+    .hw-detail-desc p:has(> br:only-child){display:none}
+    /* 寬表格改橫向捲動，不要把整頁撐爆。 */
+    .hw-detail-desc table{display:block;max-width:100%;overflow-x:auto;border-collapse:collapse}
+    .hw-detail-desc ul,.hw-detail-desc ol{padding-left:20px;margin:0 0 10px}
+
+    /* ── 附件列／繳交檔列：44px 觸控目標、檔名自成一列 ─────── */
+    .hw-detail-attach li,.hw-submit-files li{flex-wrap:wrap;gap:6px 10px;padding:10px 0}
+    .hw-detail-attach .attach-name,.hw-submit-files .file-name{flex:1 1 100%;min-width:0}
+    .hw-detail-attach .attach-size,.hw-submit-files .file-size{flex:1 1 auto}
+    .hw-file-preview,.hw-file-download{min-height:40px;padding:8px 14px;display:inline-flex;align-items:center;justify-content:center}
+    .hw-submit-files{list-style:none;padding-left:0;margin-top:8px}
+
+    /* ── 繳交表單：iOS 聚焦不自動放大（字級必須 ≥16px）、按鈕加大 ── */
+    .hw-submit{margin-top:18px;padding-top:14px}
+    .hw-submit input[type=file],.hw-submit textarea,.hw-submit input[type=text],.hw-submit input[type=url]{font-size:16px}
+    .hw-submit textarea{min-height:96px}
+    .hw-submit-actions{gap:8px;margin-top:16px}
+    .hw-submit-actions .button{flex:1 1 auto;min-height:46px;display:inline-flex;align-items:center;justify-content:center}
+    .hw-submit-picked li{padding:8px 0}
+    .hw-submit-picked .pick-remove{min-width:40px;min-height:40px;font-size:16px}
+    .hw-submit-status{padding:12px 13px;font-size:13.5px}
+
+    /* ── 檔案預覽浮層（fix43）：同樣貼滿並避開安全區 ─────────── */
+    .hw-preview{padding:0}
+    .hw-preview-panel{max-width:none;height:100vh;height:100dvh;border-radius:0}
+    .hw-preview-head{padding:calc(env(safe-area-inset-top,0px) + 10px) 12px 10px;flex-wrap:wrap;flex-shrink:0}
+    .hw-preview-actions .button{min-height:40px;display:inline-flex;align-items:center}
+    .hw-preview-body{overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+    .hw-preview-frame{min-height:60vh}
+  }
 </style>
 </head>
 <body>
@@ -483,6 +660,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   let timerId = null;
   // 記錄這批資料實際來自哪個帳號，供 init() 判斷是否需要重抓。
   let loadedAccountId = '';
+  // HOMEWORK_DETAIL_V1：iClass base URL（由 /admin/api/homework 的 iclass_base 提供）
+  //——「在 iClass 開啟」是按鈕直接開 iClass 的深連結，不經過面板代理。
+  let iclassBase = '';
   // 收到 stale 快照後，用它排程一次背景更新的回抓。
   let revalidateTimer = null;
   let revalidatePolls = 0;
@@ -681,6 +861,965 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     }
   }
 
+  // HOMEWORK_DETAIL_V1（fix41）：作業詳情彈窗。
+  //
+  // 資料全部來自 /admin/api/homework/detail（面板伺服器端用已保存的 iClass session
+  // 抓取）：面板本身不碰 iClass 的 cookie，也不需要 iClass 的 CSRF token，
+  // 因此不會影響面板登入狀態。找不到內容時優雅降級（顯示提示＋保留「在 iClass 開啟」）。
+  function formatBytes(bytes) {
+    const n = Number(bytes);
+    if (!isFinite(n) || n <= 0) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = n, idx = 0;
+    while (value >= 1024 && idx < units.length - 1) { value /= 1024; idx += 1; }
+    return (idx === 0 ? String(value) : value.toFixed(value >= 10 ? 0 : 1)) + ' ' + units[idx];
+  }
+
+  function iclassDeepLink(courseId, itemId, fromServer) {
+    if (fromServer) return fromServer;
+    if (!iclassBase || !courseId || !itemId) return '';
+    return iclassBase + '/course/' + encodeURIComponent(courseId) + '/learning-activity/full-screen#' + encodeURIComponent(itemId);
+  }
+
+  // ── HOMEWORK_MOBILE_SHEET_V1（fix44）：浮層狀態管理 ─────────────────────────
+  // ① `body.hw-overlay-open`：手機版用來鎖住背景，並收起共用底部導覽列
+  //    （那條導覽列的 z-index 是 2147482500，彈窗壓不過它，只能收起來）。
+  // ② 返回鍵／返回手勢：開啟浮層時推入一筆 history，讓 Android 返回鍵與 iOS 邊緣
+  //    滑動「先關浮層」而不是直接離開作業頁。`overlayHistory` 是安全鎖——沒有我們
+  //    推入的狀態時**絕不**呼叫 history.back()，不會把使用者帶離面板。
+  const overlayStack = [];    // [{ name, close }]；索引 0 是最底層（作業詳情）
+  let overlayHistory = 0;     // 推入且尚未被消費的歷史筆數
+  let ignoreNextPop = false;  // 我們自己呼叫 history.back() 造成的那一次 popstate
+
+  function syncOverlayBodyClass() {
+    document.body.classList.toggle('hw-overlay-open', overlayStack.length > 0);
+  }
+
+  function openOverlayLayer(name, closeFn) {
+    // 同一層重複開（例如連點兩下「內容」）只更新關閉函式，不重複推 history。
+    for (let i = 0; i < overlayStack.length; i += 1) {
+      if (overlayStack[i].name === name) { overlayStack[i].close = closeFn; return; }
+    }
+    overlayStack.push({ name: name, close: closeFn });
+    syncOverlayBodyClass();
+    try {
+      history.pushState({ hwOverlay: overlayStack.length }, '', location.href);
+      overlayHistory += 1;
+    } catch (_) { /* 無法推入（少見）時功能照舊，只是返回鍵不關浮層 */ }
+  }
+
+  function closeOverlayLayer(useHistory) {
+    const layer = overlayStack.pop();
+    if (!layer) return;
+    syncOverlayBodyClass();
+    if (useHistory && overlayHistory > 0) {
+      overlayHistory -= 1;
+      ignoreNextPop = true;
+      try { history.back(); } catch (_) { ignoreNextPop = false; }
+    }
+    layer.close();
+  }
+
+  // 返回鍵／手勢：只關最上層浮層，且不再呼叫 back（否則會一路退出面板）。
+  window.addEventListener('popstate', function() {
+    if (ignoreNextPop) { ignoreNextPop = false; return; }
+    if (!overlayStack.length) return;
+    if (overlayHistory > 0) overlayHistory -= 1;
+    const layer = overlayStack.pop();
+    syncOverlayBodyClass();
+    if (layer) layer.close();
+  });
+
+  // Escape（桌機鍵盤）＝關掉最上層浮層，行為與返回鍵一致。
+  document.addEventListener('keydown', function(ev) {
+    if (ev.key !== 'Escape' || !overlayStack.length) return;
+    closeOverlayLayer(true);
+  });
+
+  function hideHomeworkDetail() {
+    const mask = q('hwDetailMask');
+    if (mask) mask.hidden = true;
+  }
+
+  function hideHomeworkPreview() {
+    const overlay = q('hwPreviewOverlay');
+    if (!overlay) return;
+    overlay.classList.remove('open');
+    const body = q('hwPreviewBody');
+    // 清空同時讓 <video>/<audio> 停止播放。
+    if (body) body.textContent = '';
+  }
+
+  function ensureDetailModal() {
+    let mask = q('hwDetailMask');
+    if (mask) return mask;
+    mask = document.createElement('div');
+    mask.id = 'hwDetailMask';
+    mask.className = 'hw-detail-mask';
+    mask.hidden = true;
+    mask.innerHTML = '' +
+      '<div class="hw-detail-panel" role="dialog" aria-modal="true" aria-labelledby="hwDetailTitle">' +
+        '<div class="hw-detail-head">' +
+          '<h2 id="hwDetailTitle">作業內容</h2>' +
+          '<button type="button" class="hw-detail-close" id="hwDetailClose" aria-label="關閉">✕</button>' +
+        '</div>' +
+        '<div class="hw-detail-sub" id="hwDetailSub"></div>' +
+        '<div class="hw-detail-body" id="hwDetailBody"></div>' +
+        '<div class="hw-detail-foot">' +
+          '<a class="button secondary" id="hwDetailOpen" target="_blank" rel="noopener" hidden>在 iClass 開啟 ↗</a>' +
+          '<button type="button" class="button" id="hwDetailOk">關閉</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(mask);
+    // HOMEWORK_MOBILE_SHEET_V1（fix44）：關閉一律走浮層堆疊（同時處理 body class
+    // 與 history），三個入口行為才會一致。
+    const close = function() { closeOverlayLayer(true); };
+    q('hwDetailClose').onclick = close;
+    q('hwDetailOk').onclick = close;
+    mask.addEventListener('click', function(ev) { if (ev.target === mask) close(); });
+    return mask;
+  }
+
+  function showDetailError(message, url) {
+    const body = q('hwDetailBody');
+    if (!body) return;
+    body.innerHTML = '';
+    const box = document.createElement('div');
+    box.className = 'empty-box';
+    const title = document.createElement('h3');
+    title.textContent = '無法顯示作業內容';
+    const text = document.createElement('p');
+    text.className = 'err-msg';
+    text.textContent = message || '讀取失敗';
+    const hint = document.createElement('p');
+    hint.className = 'err-hint';
+    hint.textContent = url
+      ? '可以改用下方「在 iClass 開啟」直接查看（需要一次學校登入）。'
+      : '請稍後再試，或先確認帳號的學校連線狀態。';
+    box.appendChild(title);
+    box.appendChild(text);
+    box.appendChild(hint);
+    body.appendChild(box);
+  }
+
+  function setDetailOpenLink(url) {
+    const link = q('hwDetailOpen');
+    if (!link) return;
+    if (url) {
+      link.href = url;
+      link.hidden = false;
+    } else {
+      link.hidden = true;
+      link.removeAttribute('href');
+    }
+  }
+
+  async function openHomeworkDetail(courseId, itemId) {
+    ensureDetailModal();
+    const mask = q('hwDetailMask');
+    const title = q('hwDetailTitle');
+    const sub = q('hwDetailSub');
+    const body = q('hwDetailBody');
+    const existing = allItems.find(it => String(it.id) === String(itemId)) || null;
+    title.textContent = (existing && existing.title) || '作業內容';
+    sub.textContent = existing
+      ? [(existing.course_name || '未指定課程'), '截止：' + formatDateTime(existing.end_time)].join('　·　')
+      : '';
+    setDetailOpenLink(iclassDeepLink(courseId, itemId, ''));
+    body.innerHTML = '<div class="hw-detail-loading"><div class="spinner"></div>正在從學校系統讀取內容…</div>';
+    mask.hidden = false;
+    openOverlayLayer('detail', hideHomeworkDetail);
+
+    const params = new URLSearchParams();
+    params.set('item_id', String(itemId));
+    if (courseId) params.set('course_id', String(courseId));
+    const targetAccount = loadedAccountId || currentAccount || (statusInfo && statusInfo.current_account_id) || '';
+    // HOMEWORK_FILE_V1（fix43）：預覽／下載附件與繳交檔時帶同一個目標帳號。
+    detailAccount = targetAccount || '';
+    if (targetAccount) params.set('account_id', targetAccount);
+
+    let data = null;
+    try {
+      data = await api('/admin/api/homework/detail?' + params.toString());
+    } catch (err) {
+      // 伺服器若連 panel session 都判定失效，api() 已經導向登入頁。
+      showDetailError((err && err.message) || '讀取作業內容失敗', '');
+      return;
+    }
+    // 伺服器也會回深連結（即使抓不到內容），優先採用。
+    setDetailOpenLink(iclassDeepLink(courseId, itemId, data && data.iclass_url));
+    if (!data || data.ok !== true) {
+      showDetailError((data && data.error) || '上游沒有回傳這份作業的內容', (data && data.iclass_url) || '');
+      return;
+    }
+
+    if (data.item && data.item.title) title.textContent = data.item.title;
+    const metaParts = [];
+    if (data.item && data.item.course_name) metaParts.push(data.item.course_name);
+    if (data.item) metaParts.push('截止：' + formatDateTime(data.item.end_time));
+    if (data.item && data.item.allow_late_submission) metaParts.push('允許遲交');
+    sub.textContent = metaParts.join('　·　');
+
+    body.innerHTML = '';
+    // 1) 作業說明（老師編輯的 HTML）：有 DOMPurify 才當 HTML 渲染，否則純文字。
+    const descTitle = document.createElement('h3');
+    descTitle.textContent = '作業說明';
+    body.appendChild(descTitle);
+    const desc = document.createElement('div');
+    desc.className = 'hw-detail-desc';
+    const rawHtml = typeof data.description_html === 'string' ? data.description_html : '';
+    const plain = typeof data.description_text === 'string' ? data.description_text : '';
+    if (rawHtml && window.DOMPurify && DOMPurify.sanitize) {
+      desc.innerHTML = DOMPurify.sanitize(rawHtml, { USE_PROFILES: { html: true } });
+      // 圖片／影音在面板內無法取得（需要 iClass 的 session 與相對路徑），
+      // 一律移除並改以提示引導使用者到 iClass 看，避免一片破圖。
+      const removed = desc.querySelectorAll('img, iframe, video, audio');
+      removed.forEach(function(node) { node.remove(); });
+      if (data.has_images || removed.length) {
+        const hint = document.createElement('p');
+        hint.className = 'hw-detail-hint';
+        hint.textContent = '此說明含圖片或影音，請用下方「在 iClass 開啟」查看完整內容。';
+        body.appendChild(desc);
+        body.appendChild(hint);
+      } else {
+        body.appendChild(desc);
+      }
+    } else if (plain || rawHtml) {
+      desc.textContent = plain || rawHtml;
+      desc.classList.add('plain');
+      body.appendChild(desc);
+      if (data.has_images) {
+        const hint = document.createElement('p');
+        hint.className = 'hw-detail-hint';
+        hint.textContent = '此說明含圖片，請用下方「在 iClass 開啟」查看完整內容。';
+        body.appendChild(hint);
+      }
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'attach-none';
+      empty.textContent = '（這份作業沒有文字說明）';
+      body.appendChild(empty);
+    }
+
+    // 2) 附件（由面板伺服器端代抓，瀏覽器只需下載）。
+    const attachTitle = document.createElement('h3');
+    attachTitle.textContent = '附件';
+    body.appendChild(attachTitle);
+    const list = document.createElement('ul');
+    list.className = 'hw-detail-attach';
+    const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+    if (!attachments.length) {
+      const none = document.createElement('li');
+      none.className = 'attach-none';
+      none.textContent = '沒有附件';
+      list.appendChild(none);
+    } else {
+      attachments.forEach(function(attachment) {
+        const li = document.createElement('li');
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'attach-name';
+        nameSpan.textContent = attachment.name || ('附件 ' + (attachment.upload_id || ''));
+        li.appendChild(nameSpan);
+        const sizeText = formatBytes(attachment.size);
+        if (sizeText) {
+          const sizeSpan = document.createElement('span');
+          sizeSpan.className = 'attach-size';
+          sizeSpan.textContent = sizeText;
+          li.appendChild(sizeSpan);
+        }
+        if (attachment.downloadable && attachment.upload_id != null) {
+          // HOMEWORK_FILE_V1（fix43）：能預覽的格式多一顆「預覽」（不支援的格式
+          // 只給下載，避免按了才知道不行）。
+          appendFileActions(li, attachment.upload_id, attachment.name);
+        } else {
+          const note = document.createElement('span');
+          note.className = 'attach-size';
+          note.textContent = '（請到 iClass 下載）';
+          li.appendChild(note);
+        }
+        list.appendChild(li);
+      });
+    }
+    body.appendChild(list);
+
+    // 3) 繳交（HOMEWORK_SUBMIT_V1）：目前狀態＋挑檔＋文字＋二次確認。
+    //    目標帳號沿用彈窗查詳情時用的那一個（管理員代其他帳號時才會有值）。
+    mountSubmitSection(
+      body,
+      courseId,
+      itemId,
+      targetAccount,
+      (data.item && data.item.title) || (existing && existing.title) || '',
+      data.submit_by_group === true
+    );
+  }
+
+  // ── HOMEWORK_SUBMIT_V1（fix42）：面板內直接繳交作業 ───────────────────────────
+  // 檔案以 multipart 送到本面板，再由伺服器端用「已保存的 iClass session」轉送：
+  // 建立 upload 佔位 → 上傳位元組 → 建立繳交（`src/api/todos.rs` 的
+  // HOMEWORK_SUBMIT_V1 有完整實測紀錄）。前端只負責挑檔、二次確認、進度與結果顯示，
+  // 完全不接觸 iClass 的 cookie，也不需要另外登入。
+  let submitLimits = {
+    max_files: 10,
+    max_file_bytes: 50 * 1024 * 1024,
+    max_total_bytes: 100 * 1024 * 1024,
+    max_comment_chars: 2000
+  };
+  let pickedFiles = [];
+  let submitBusy = false;
+  const submitCtx = { itemId: '', courseId: '', account: '', title: '', submitted: false };
+
+  function formatSubmitLimits() {
+    const parts = [];
+    parts.push('一次最多 ' + (submitLimits.max_files || 10) + ' 個檔案');
+    if (submitLimits.max_file_bytes) parts.push('單檔上限 ' + formatBytes(submitLimits.max_file_bytes));
+    if (submitLimits.max_total_bytes) parts.push('單次合計上限 ' + formatBytes(submitLimits.max_total_bytes));
+    if (submitLimits.max_comment_chars) parts.push('文字說明 ' + submitLimits.max_comment_chars + ' 字以內');
+    return '上限：' + parts.join('、') + '。';
+  }
+
+  function renderPickedFiles() {
+    const list = q('hwSubmitPicked');
+    if (!list) return;
+    list.textContent = '';
+    pickedFiles.forEach(function(file, index) {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.className = 'pick-name';
+      name.textContent = file.name;
+      const size = document.createElement('span');
+      size.className = 'pick-size';
+      size.textContent = formatBytes(file.size);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'pick-remove';
+      remove.textContent = '✕';
+      remove.setAttribute('aria-label', '移除 ' + file.name);
+      remove.addEventListener('click', function() {
+        pickedFiles.splice(index, 1);
+        renderPickedFiles();
+      });
+      li.appendChild(name);
+      li.appendChild(size);
+      li.appendChild(remove);
+      list.appendChild(li);
+    });
+  }
+
+  function addPickedFiles(fileList) {
+    if (!fileList || !fileList.length) return;
+    for (let i = 0; i < fileList.length; i += 1) {
+      const file = fileList[i];
+      const duplicate = pickedFiles.some(function(existing) {
+        return existing.name === file.name && existing.size === file.size;
+      });
+      if (!duplicate) pickedFiles.push(file);
+    }
+    renderPickedFiles();
+  }
+
+  function clearPickedFiles() {
+    pickedFiles = [];
+    renderPickedFiles();
+  }
+
+  function renderSubmitStatus(submission) {
+    const box = q('hwSubmitStatus');
+    if (!box) return;
+    const info = submission || {};
+    const submitted = info.submitted === true;
+    submitCtx.submitted = submitted;
+    box.classList.remove('submitted', 'pending');
+    box.classList.add(submitted ? 'submitted' : 'pending');
+    box.textContent = '';
+
+    const head = document.createElement('div');
+    if (submitted) {
+      const parts = ['✅ 已繳交'];
+      if (info.submitted_at) parts.push(formatDateTime(info.submitted_at));
+      if (info.is_resubmitted) parts.push('重新繳交的版本');
+      head.textContent = parts.join('　·　');
+    } else if (info.is_draft) {
+      head.textContent = '📝 目前只有草稿，尚未正式繳交';
+    } else {
+      head.textContent = '⏳ 尚未繳交';
+    }
+    box.appendChild(head);
+
+    const uploads = Array.isArray(info.uploads) ? info.uploads : [];
+    if (uploads.length) {
+      const list = document.createElement('ul');
+      list.className = 'hw-submit-files';
+      uploads.forEach(function(item) {
+        const li = document.createElement('li');
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'file-name';
+        nameSpan.textContent = item.name || ('檔案 ' + (item.upload_id || ''));
+        li.appendChild(nameSpan);
+        const sizeText = formatBytes(item.size);
+        if (sizeText) {
+          const sizeSpan = document.createElement('span');
+          sizeSpan.className = 'file-size';
+          sizeSpan.textContent = sizeText;
+          li.appendChild(sizeSpan);
+        }
+        // HOMEWORK_FILE_V1（fix43）：自己交出去的檔案也能直接預覽／下載，
+        // 不必回到 iClass 才知道當初交了什麼。
+        appendFileActions(li, item.upload_id, item.name);
+        list.appendChild(li);
+      });
+      box.appendChild(list);
+    }
+    if (info.comment) {
+      const note = document.createElement('div');
+      note.className = 'hw-submit-comment-preview';
+      note.textContent = '說明：' + info.comment + (info.comment_truncated ? '…' : '');
+      box.appendChild(note);
+    }
+  }
+
+  async function loadSubmissionState(courseId, itemId, account) {
+    const box = q('hwSubmitStatus');
+    if (!box) return;
+    const params = new URLSearchParams();
+    params.set('item_id', String(itemId));
+    if (account) params.set('account_id', account);
+    try {
+      const data = await api('/admin/api/homework/submission?' + params.toString());
+      if (!data || data.ok !== true) {
+        box.textContent = (data && data.error) || '讀取繳交狀態失敗；仍可直接按「繳交作業」嘗試。';
+        box.classList.add('pending');
+        return;
+      }
+      if (data.limits) submitLimits = Object.assign({}, submitLimits, data.limits);
+      renderSubmitStatus(data.submission);
+      const limits = q('hwSubmitLimits');
+      if (limits) limits.textContent = formatSubmitLimits();
+    } catch (err) {
+      box.textContent = (err && err.message) || '讀取繳交狀態失敗';
+      box.classList.add('pending');
+    }
+  }
+
+  // 用 XHR 而非 fetch：需要上傳進度。401/403 比照 api() 先換發 session 再重試一次。
+  async function postHomeworkSubmit(url, formData, onProgress) {
+    const send = function() {
+      return new Promise(function(resolve, reject) {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.withCredentials = true;
+        if (xhr.upload && onProgress) {
+          xhr.upload.onprogress = function(ev) {
+            if (ev.lengthComputable && ev.total > 0) {
+              onProgress(Math.round((ev.loaded / ev.total) * 100));
+            }
+          };
+        }
+        xhr.onload = function() {
+          let data = null;
+          try { data = JSON.parse(xhr.responseText || '{}'); } catch (e) { data = null; }
+          resolve({ status: xhr.status, data: data });
+        };
+        xhr.onerror = function() { reject(new Error('網路連線失敗，請再試一次')); };
+        xhr.send(formData);
+      });
+    };
+
+    let result = await send();
+    if (result.status === 401 || result.status === 403) {
+      const refreshed = await _tryRefresh();
+      if (!refreshed) {
+        location.replace('/admin');
+        throw new Error('請先登入');
+      }
+      result = await send();
+    }
+    if (result.status < 200 || result.status >= 300) {
+      throw new Error((result.data && result.data.error) || ('HTTP ' + result.status));
+    }
+    return result.data || {};
+  }
+
+  async function doSubmitHomework() {
+    if (submitBusy) return;
+    const button = q('hwSubmitBtn');
+    const commentEl = q('hwSubmitComment');
+    const progress = q('hwSubmitProgress');
+    const comment = commentEl ? commentEl.value.trim() : '';
+    if (!submitCtx.itemId) { showToast('缺少作業資訊，請關閉後重新開啟', 'warn'); return; }
+    if (!pickedFiles.length && !comment) {
+      showToast('請至少選擇一個檔案，或填寫要繳交的文字／連結', 'warn');
+      return;
+    }
+    const maxFiles = submitLimits.max_files || 10;
+    if (pickedFiles.length > maxFiles) { showToast('一次最多 ' + maxFiles + ' 個檔案', 'warn'); return; }
+    let total = 0;
+    for (let i = 0; i < pickedFiles.length; i += 1) {
+      const file = pickedFiles[i];
+      if (submitLimits.max_file_bytes && file.size > submitLimits.max_file_bytes) {
+        showToast('「' + file.name + '」超過單檔上限 ' + formatBytes(submitLimits.max_file_bytes), 'warn');
+        return;
+      }
+      total += file.size;
+    }
+    if (submitLimits.max_total_bytes && total > submitLimits.max_total_bytes) {
+      showToast('這次共 ' + formatBytes(total) + '，超過單次上限 ' + formatBytes(submitLimits.max_total_bytes), 'warn');
+      return;
+    }
+    if (submitLimits.max_comment_chars && comment.length > submitLimits.max_comment_chars) {
+      showToast('文字說明超過 ' + submitLimits.max_comment_chars + ' 字', 'warn');
+      return;
+    }
+
+    const names = pickedFiles.map(function(file) { return file.name; });
+    const preview = [
+      '作業：' + (submitCtx.title || submitCtx.itemId),
+      '帳號：' + (submitCtx.account || '目前帳號'),
+      pickedFiles.length ? ('檔案（' + pickedFiles.length + ' 個）：' + names.join('、')) : '檔案：無（只送文字）',
+      comment ? ('文字說明：' + (comment.length > 60 ? comment.slice(0, 60) + '…' : comment)) : '文字說明：無'
+    ];
+    // 二次確認：第一次確認內容，第二次（已繳交過時）確認要重新繳交。
+    if (!window.confirm('確定要繳交這份作業嗎？送出後會立刻寫入 iClass。\n\n' + preview.join('\n'))) return;
+    if (submitCtx.submitted
+      && !window.confirm('注意：這份作業已經繳交過。\n重新繳交會在 iClass 建立新版本，老師會看到新的繳交紀錄。\n\n確定要重新繳交嗎？')) {
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('item_id', String(submitCtx.itemId));
+    if (submitCtx.courseId) formData.append('course_id', String(submitCtx.courseId));
+    if (comment) formData.append('comment', comment);
+    pickedFiles.forEach(function(file) { formData.append('file', file, file.name); });
+
+    const params = new URLSearchParams();
+    if (submitCtx.account) params.set('account_id', submitCtx.account);
+
+    submitBusy = true;
+    if (button) button.disabled = true;
+    if (progress) progress.textContent = '上傳中… 0%';
+    try {
+      const data = await postHomeworkSubmit(
+        '/admin/api/homework/submit?' + params.toString(),
+        formData,
+        function(percent) {
+          if (!progress) return;
+          progress.textContent = percent < 100 ? ('上傳中… ' + percent + '%') : '學校系統處理中…';
+        }
+      );
+      if (!data || data.ok !== true) throw new Error((data && data.error) || '繳交失敗');
+      if (progress) progress.textContent = '✅ 已送出';
+      showToast(data.is_draft ? '已儲存草稿' : '繳交完成，iClass 已收到', 'ok');
+      clearPickedFiles();
+      if (commentEl) commentEl.value = '';
+      const item = allItems.find(function(it) { return String(it.id) === String(submitCtx.itemId); });
+      if (item) {
+        item.is_submitted = true;
+        if (!data.is_draft) item.submission_status = 'submitted';
+      }
+      renderSubmitStatus(data.submission || { submitted: true });
+      renderList();
+      loadData(true);
+    } catch (err) {
+      if (progress) progress.textContent = '';
+      showToast((err && err.message) || '繳交失敗', 'err');
+    } finally {
+      submitBusy = false;
+      if (button) button.disabled = false;
+    }
+  }
+
+  function mountSubmitSection(body, courseId, itemId, account, itemTitle, isGroupWork) {
+    submitCtx.itemId = itemId || '';
+    submitCtx.courseId = courseId || '';
+    submitCtx.account = account || '';
+    submitCtx.title = itemTitle || '';
+    submitCtx.submitted = false;
+    pickedFiles = [];
+
+    const wrap = document.createElement('div');
+    wrap.className = 'hw-submit';
+
+    const title = document.createElement('h3');
+    title.textContent = '繳交作業';
+    wrap.appendChild(title);
+
+    if (isGroupWork === true) {
+      // 小組作業的繳交走另一條上游端點，面板不代繳；這裡只說明，不給按鈕。
+      const notice = document.createElement('div');
+      notice.className = 'hw-submit-status pending';
+      notice.textContent = '這是小組作業：小組繳交走 iClass 的另一條端點，面板目前只代繳個人作業。'
+        + '請在小組頁面或 iClass 上傳。';
+      wrap.appendChild(notice);
+      body.appendChild(wrap);
+      return;
+    }
+
+    const status = document.createElement('div');
+    status.id = 'hwSubmitStatus';
+    status.className = 'hw-submit-status';
+    status.textContent = '正在讀取目前的繳交狀態…';
+    wrap.appendChild(status);
+
+    const fileField = document.createElement('div');
+    fileField.className = 'hw-submit-field';
+    const fileLabel = document.createElement('label');
+    fileLabel.setAttribute('for', 'hwSubmitFileInput');
+    fileLabel.textContent = '選擇檔案（可多選；選擇後可再追加）';
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.id = 'hwSubmitFileInput';
+    fileInput.multiple = true;
+    fileInput.addEventListener('change', function() {
+      addPickedFiles(fileInput.files);
+      fileInput.value = '';
+    });
+    fileField.appendChild(fileLabel);
+    fileField.appendChild(fileInput);
+    const picked = document.createElement('ul');
+    picked.id = 'hwSubmitPicked';
+    picked.className = 'hw-submit-picked';
+    fileField.appendChild(picked);
+    wrap.appendChild(fileField);
+
+    const commentField = document.createElement('div');
+    commentField.className = 'hw-submit-field';
+    const commentLabel = document.createElement('label');
+    commentLabel.setAttribute('for', 'hwSubmitComment');
+    commentLabel.textContent = '文字說明／連結（可留空）';
+    const comment = document.createElement('textarea');
+    comment.id = 'hwSubmitComment';
+    comment.placeholder = '要對老師說的話、報告連結或雲端硬碟網址…';
+    commentField.appendChild(commentLabel);
+    commentField.appendChild(comment);
+    wrap.appendChild(commentField);
+
+    const actions = document.createElement('div');
+    actions.className = 'hw-submit-actions';
+    const submit = document.createElement('button');
+    submit.type = 'button';
+    submit.className = 'button';
+    submit.id = 'hwSubmitBtn';
+    submit.textContent = '繳交作業';
+    submit.addEventListener('click', doSubmitHomework);
+    const progress = document.createElement('span');
+    progress.id = 'hwSubmitProgress';
+    progress.className = 'hw-submit-progress';
+    actions.appendChild(submit);
+    actions.appendChild(progress);
+    wrap.appendChild(actions);
+
+    const limits = document.createElement('p');
+    limits.className = 'hw-submit-note';
+    limits.id = 'hwSubmitLimits';
+    limits.textContent = formatSubmitLimits();
+    wrap.appendChild(limits);
+
+    const note = document.createElement('p');
+    note.className = 'hw-submit-note';
+    note.textContent = '檔案由面板伺服器端代送到 iClass（用已保存的登入 session），不必再登入一次。'
+      + '若作業已截止或老師關閉繳交，學校系統會回報原因，面板會照實顯示。';
+    wrap.appendChild(note);
+
+    body.appendChild(wrap);
+    renderPickedFiles();
+    loadSubmissionState(courseId, itemId, account);
+  }
+
+  // ── HOMEWORK_FILE_V1（fix43）：附件／繳交檔的預覽與下載 ───────────────────────
+  // 檔案的來源是 iClass 的 upload id，一律由面板伺服器端代抓（瀏覽器不接觸 iClass
+  // 的 cookie）。同一條端點 `/admin/api/homework/file`：
+  //   disposition=inline    → 面板內預覽（正確的 Content-Type ＋ Range，可分段讀）
+  //   disposition 省略      → 下載（attachment）
+  // 副檔名清單必須與 `files.rs` 的 PREVIEWABLE_EXTS 一致（tools/check_src.py 會比對）。
+  const HW_IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'avif', 'ico', 'svg'];
+  const HW_PDF_EXTS = ['pdf'];
+  const HW_VIDEO_EXTS = ['mp4', 'webm', 'mov', 'm4v'];
+  const HW_AUDIO_EXTS = ['mp3', 'wav', 'ogg', 'm4a', 'flac'];
+  const HW_TEXT_EXTS = ['txt', 'text', 'md', 'markdown', 'log', 'csv', 'tsv', 'json', 'xml', 'yaml', 'yml', 'ini', 'conf', 'cfg', 'srt', 'vtt', 'toml', 'sql', 'sh', 'rs', 'js', 'ts', 'jsx', 'tsx', 'css', 'py', 'java', 'c', 'h', 'cpp', 'hpp', 'go', 'php', 'html', 'htm', 'url'];
+  const HW_OFFICE_EXTS = ['docx', 'pptx', 'xlsx', 'odt', 'ods', 'odp', 'rtf'];
+  const HW_LEGACY_OFFICE_EXTS = ['doc', 'ppt', 'xls'];
+
+  // 目前彈窗對應的目標帳號（管理員代其他帳號時才有值）。
+  let detailAccount = '';
+
+  function hwExtOf(name) {
+    const parts = String(name || '').toLowerCase().split('.');
+    return parts.length > 1 ? parts.pop() : '';
+  }
+
+  function hwInList(list, value) {
+    return list.indexOf(value) >= 0;
+  }
+
+  function hwIsPreviewable(name) {
+    const ext = hwExtOf(name);
+    if (!ext) return false;
+    return hwInList(HW_IMAGE_EXTS, ext)
+      || hwInList(HW_PDF_EXTS, ext)
+      || hwInList(HW_VIDEO_EXTS, ext)
+      || hwInList(HW_AUDIO_EXTS, ext)
+      || hwInList(HW_TEXT_EXTS, ext)
+      || hwInList(HW_OFFICE_EXTS, ext)
+      || hwInList(HW_LEGACY_OFFICE_EXTS, ext);
+  }
+
+  function hwFileUrl(uploadId, name, disposition) {
+    const params = new URLSearchParams();
+    params.set('upload_id', String(uploadId));
+    if (name) params.set('name', name);
+    if (detailAccount) params.set('account_id', detailAccount);
+    if (disposition) params.set('disposition', disposition);
+    return '/admin/api/homework/file?' + params.toString();
+  }
+
+  /// 在檔案列尾端加上「預覽」「下載」。
+  function appendFileActions(parent, uploadId, name) {
+    if (uploadId === null || uploadId === undefined || uploadId === '') return;
+    if (hwIsPreviewable(name)) {
+      const preview = document.createElement('button');
+      preview.type = 'button';
+      preview.className = 'button secondary hw-file-preview';
+      preview.textContent = '預覽';
+      preview.addEventListener('click', function() { openHomeworkPreview(uploadId, name || ''); });
+      parent.appendChild(preview);
+    }
+    const link = document.createElement('a');
+    link.className = 'button secondary hw-file-download';
+    link.textContent = '下載';
+    link.href = hwFileUrl(uploadId, name || '', '');
+    parent.appendChild(link);
+  }
+
+  function ensureHomeworkPreview() {
+    let overlay = q('hwPreviewOverlay');
+    if (overlay) return overlay;
+    overlay = document.createElement('div');
+    overlay.id = 'hwPreviewOverlay';
+    overlay.className = 'hw-preview';
+    const panel = document.createElement('div');
+    panel.className = 'hw-preview-panel';
+    const head = document.createElement('div');
+    head.className = 'hw-preview-head';
+    const title = document.createElement('div');
+    title.className = 'hw-preview-title';
+    title.id = 'hwPreviewTitle';
+    const actions = document.createElement('div');
+    actions.className = 'hw-preview-actions';
+    const download = document.createElement('a');
+    download.className = 'button secondary';
+    download.id = 'hwPreviewDownload';
+    download.textContent = '下載';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'button secondary';
+    close.textContent = '關閉';
+    close.addEventListener('click', closeHomeworkPreview);
+    actions.appendChild(download);
+    actions.appendChild(close);
+    head.appendChild(title);
+    head.appendChild(actions);
+    const body = document.createElement('div');
+    body.className = 'hw-preview-body';
+    body.id = 'hwPreviewBody';
+    panel.appendChild(head);
+    panel.appendChild(body);
+    overlay.appendChild(panel);
+    overlay.addEventListener('click', function(ev) {
+      if (ev.target === overlay) closeHomeworkPreview();
+    });
+    // Escape 由上面的全域處理器統一關「最上層浮層」（避免一次 Escape 連關兩層）。
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  // HOMEWORK_MOBILE_SHEET_V1（fix44）：關閉預覽＝關掉浮層堆疊最上層；
+  // 實際的收尾（移除 .open、清空內容讓影音停止播放）在 hideHomeworkPreview()。
+  function closeHomeworkPreview() {
+    closeOverlayLayer(true);
+  }
+
+  function hwPreviewNote(body, text) {
+    const note = document.createElement('div');
+    note.className = 'hw-preview-note';
+    note.textContent = text;
+    body.textContent = '';
+    body.appendChild(note);
+    return note;
+  }
+
+  async function openHomeworkPreview(uploadId, name) {
+    const ext = hwExtOf(name);
+    const overlay = ensureHomeworkPreview();
+    const body = q('hwPreviewBody');
+    const title = q('hwPreviewTitle');
+    const download = q('hwPreviewDownload');
+    if (!body) return;
+    if (title) title.textContent = name || ('檔案 ' + uploadId);
+    if (download) download.href = hwFileUrl(uploadId, name, '');
+    body.textContent = '';
+    overlay.classList.add('open');
+    openOverlayLayer('preview', hideHomeworkPreview);
+
+    const url = hwFileUrl(uploadId, name, 'inline');
+    if (hwInList(HW_IMAGE_EXTS, ext)) {
+      const img = document.createElement('img');
+      img.className = 'hw-preview-img';
+      img.alt = name || '';
+      img.src = url;
+      body.appendChild(img);
+      return;
+    }
+    if (hwInList(HW_VIDEO_EXTS, ext)) {
+      const video = document.createElement('video');
+      video.className = 'hw-preview-media';
+      video.controls = true;
+      video.src = url;
+      body.appendChild(video);
+      return;
+    }
+    if (hwInList(HW_AUDIO_EXTS, ext)) {
+      const audio = document.createElement('audio');
+      audio.className = 'hw-preview-audio';
+      audio.controls = true;
+      audio.src = url;
+      body.appendChild(audio);
+      return;
+    }
+    if (hwInList(HW_PDF_EXTS, ext)) {
+      await hwPreviewPdf(url, body);
+      return;
+    }
+    if (hwInList(HW_TEXT_EXTS, ext)) {
+      await hwPreviewText(url, ext, body);
+      return;
+    }
+    if (hwInList(HW_OFFICE_EXTS, ext)) {
+      await hwPreviewOffice(url, ext, body);
+      return;
+    }
+    if (hwInList(HW_LEGACY_OFFICE_EXTS, ext)) {
+      hwPreviewNote(body, '舊版 Office 格式（.' + ext + '）沒有純前端的解析器，請按右上角「下載」後用本機程式開啟。');
+      return;
+    }
+    hwPreviewNote(body, '這種檔案類型（' + (ext ? '.' + ext : '無副檔名') + '）無法在面板內預覽，請按右上角「下載」取得檔案。');
+  }
+
+  async function hwPreviewPdf(url, body) {
+    // PDF.js 與檔案頁共用同一支按需載入器（作業頁也注入了）。
+    if (window.__tronEnsureFileLib) {
+      try { await window.__tronEnsureFileLib('pdf'); } catch (err) { /* 沒引擎就走 iframe */ }
+    }
+    const fallbackFrame = function() {
+      hwPreviewNote(body, '改用瀏覽器內建 PDF 檢視器…');
+      const frame = document.createElement('iframe');
+      frame.className = 'hw-preview-frame';
+      frame.src = url + '#toolbar=1';
+      body.textContent = '';
+      body.appendChild(frame);
+    };
+    if (!window.pdfjsLib) { fallbackFrame(); return; }
+    hwPreviewNote(body, '正在載入 PDF…');
+    let data = null;
+    try {
+      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = new Uint8Array(await res.arrayBuffer());
+    } catch (err) {
+      hwPreviewNote(body, 'PDF 讀取失敗（' + ((err && err.message) || '未知錯誤') + '），請改用「下載」。');
+      return;
+    }
+    try {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+      const doc = await window.pdfjsLib.getDocument({ data: data, isEvalSupported: false }).promise;
+      body.textContent = '';
+      const wrap = document.createElement('div');
+      wrap.className = 'tron-pdf';
+      body.appendChild(wrap);
+      const targetWidth = Math.max(320, (body.clientWidth || 800) - 28);
+      for (let p = 1; p <= doc.numPages; p += 1) {
+        const page = await doc.getPage(p);
+        const base = page.getViewport({ scale: 1 });
+        const viewport = page.getViewport({ scale: targetWidth / base.width });
+        const canvas = document.createElement('canvas');
+        const ratio = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(viewport.width * ratio);
+        canvas.height = Math.floor(viewport.height * ratio);
+        canvas.style.width = Math.floor(viewport.width) + 'px';
+        canvas.style.height = 'auto';
+        wrap.appendChild(canvas);
+        await page.render({
+          canvasContext: canvas.getContext('2d'),
+          viewport: viewport,
+          transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null
+        }).promise;
+      }
+    } catch (err) {
+      fallbackFrame();
+    }
+  }
+
+  async function hwPreviewText(url, ext, body) {
+    hwPreviewNote(body, '正在載入…');
+    let text = '';
+    try {
+      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      text = await res.text();
+    } catch (err) {
+      hwPreviewNote(body, '讀取失敗（' + ((err && err.message) || '未知錯誤') + '），請改用「下載」。');
+      return;
+    }
+    // URL_SHORTCUT_V1：.url 是 Internet Shortcut（文字檔），讀出 URL= 後直接跳轉。
+    if (ext === 'url') {
+      const match = text.match(/^\s*URL\s*=\s*(\S+)/im);
+      if (match) {
+        window.open(match[1], '_blank', 'noopener');
+        hwPreviewNote(body, '已在新的分頁開啟連結：' + match[1]);
+      } else {
+        hwPreviewNote(body, '這個 .url 檔裡找不到 URL= 欄位。');
+      }
+      return;
+    }
+    body.textContent = '';
+    const pre = document.createElement('pre');
+    pre.className = 'hw-preview-text';
+    // 內容可能很大：只顯示前 200000 個字元，其餘提示下載。
+    pre.textContent = text.length > 200000 ? text.slice(0, 200000) + '\n…（內容過長，僅顯示前 20 萬字元，完整內容請下載）' : text;
+    body.appendChild(pre);
+  }
+
+  async function hwPreviewOffice(url, ext, body) {
+    hwPreviewNote(body, '正在載入 Office 檢視引擎…');
+    if (window.__tronEnsureFileLib) {
+      try { await window.__tronEnsureFileLib('office'); } catch (err) { /* 下面會提示 */ }
+    }
+    if (!window.TronOfficeView || !window.TronOfficeView.preview) {
+      hwPreviewNote(body, '這個頁面沒有載入 Office 檢視引擎，請按右上角「下載」後用本機程式開啟。');
+      return;
+    }
+    let bytes = null;
+    try {
+      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      bytes = new Uint8Array(await res.arrayBuffer());
+    } catch (err) {
+      hwPreviewNote(body, '讀取失敗（' + ((err && err.message) || '未知錯誤') + '），請改用「下載」。');
+      return;
+    }
+    try {
+      const html = await window.TronOfficeView.preview(bytes, ext);
+      body.textContent = '';
+      const mount = document.createElement('div');
+      mount.className = 'tron-office';
+      body.appendChild(mount);
+      // mount() 內部會走 Trusted Types 的 DOMPurify 政策（與檔案頁同一條路徑）。
+      if (window.TronOfficeView.mount) window.TronOfficeView.mount(mount, html);
+      else mount.textContent = '此格式無法在面板內預覽。';
+    } catch (err) {
+      hwPreviewNote(body, '預覽失敗（' + ((err && err.message) || '未知錯誤') + '），請改用「下載」。');
+    }
+  }
+
   function renderList() {
     const container = q('homeworkContainer');
     const searchVal = q('searchInput').value.trim().toLowerCase();
@@ -846,9 +1985,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
               title="${userDone ? '取消標記完成' : '標記為已完成，停止截止提醒'}">
               ${userDone ? '↩️ 取消完成' : '✅ 標記完成'}
             </button>
-            ${item.course_id ? `<button class="tc-open-btn" type="button" data-tc-open="1"
-              data-course-id="${esc(item.course_id)}" data-item-id="${esc(item.id)}"
-              title="在新分頁開啟 iClass 的這個作業（由面板代理，免學校登入）">↗ iClass</button>` : ''}
+            <button class="tc-open-btn" type="button" data-hw-detail="1"
+              data-course-id="${item.course_id ? esc(item.course_id) : ''}" data-item-id="${esc(item.id)}"
+              title="在面板內查看作業內容與附件（不需登入 iClass）">📄 內容</button>
           </div>
         </article>
       `;
@@ -904,6 +2043,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         : [];
       userCompleted = new Set(Array.isArray(data.user_completed) ? data.user_completed : []);
       loadedAccountId = data.account_id || targetAccount || '';
+      iclassBase = typeof data.iclass_base === 'string' ? data.iclass_base.replace(/\/+$/, '') : '';
       if (data.user_name) {
         q('brandSub').textContent = `${data.user_name} (${targetAccount || '目前帳號'}) 的作業待辦清單`;
       }
@@ -990,14 +2130,11 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     // HOMEWORK_USER_COMPLETED_V1
     // 委派處理「標記完成／取消」按鈕（卡片會重新 render，用容器委派避免重綁）。
     q('homeworkContainer').addEventListener('click', async function(ev) {
-      // TRONCLASS_PROXY_JUMP_V1：在 iClass 開啟（面板代理，免學校登入）。
-      const tcBtn = ev.target.closest('[data-tc-open]');
-      if (tcBtn) {
-        const cid = tcBtn.getAttribute('data-course-id');
-        const iid = tcBtn.getAttribute('data-item-id');
-        if (!cid || !iid) return;
-        const acct = loadedAccountId ? ('&account_id=' + encodeURIComponent(loadedAccountId)) : '';
-        window.open('/admin/tc-go?course_id=' + encodeURIComponent(cid) + '&item_id=' + encodeURIComponent(iid) + acct, '_blank');
+      // HOMEWORK_DETAIL_V1（fix41）：面板內看內容（伺服器端抓 iClass 資料）。
+      // 不再走 /admin/tc-go 代理——代理路線會動到瀏覽器 cookie，是 fix38 事故的來源。
+      const detailBtn = ev.target.closest('[data-hw-detail]');
+      if (detailBtn) {
+        openHomeworkDetail(detailBtn.getAttribute('data-course-id'), detailBtn.getAttribute('data-item-id'));
         return;
       }
       const btn = ev.target.closest('.hw-complete-btn');
@@ -1079,7 +2216,8 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   init();
 })();
 </script>
-<style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){#backDashboard,.hw-back{display:none!important}}</style>
+<style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){#backDashboard,.hw-back{display:none!important}}
+</style>
 <script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
 </body>
 </html>

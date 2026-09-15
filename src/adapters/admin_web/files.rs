@@ -3,7 +3,7 @@
 use super::*;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Semaphore;
 
 #[derive(Debug, Deserialize)]
@@ -115,7 +115,9 @@ async fn cached_materials_list(
     Ok(scan)
 }
 
-const MATERIAL_STREAM_CHUNK_SIZE: usize = 64 * 1024;
+// RANGE_STREAM_V1: 64 KiB → 256 KiB。tokio::fs::File 每次 read 都是一趟
+// spawn_blocking，區塊太小時 syscall／排程成本會吃掉頻寬（大檔尤其明顯）。
+const MATERIAL_STREAM_CHUNK_SIZE: usize = 256 * 1024;
 
 // SNIFF_CONTENT_TYPE_V1: 副檔名與內容不符時（例如「.ppt」其實是 PDF），依真實
 // 魔數回 Content-Type，否則 <iframe> 的 PDF 檢視器認不出內容類型→全白。
@@ -131,17 +133,73 @@ async fn sniff_content_type(path: &std::path::Path) -> &'static str {
     material_content_type(path)
 }
 
+/// RANGE_STREAM_V1：單一 byte range 的解析結果。
+#[derive(Debug, PartialEq, Eq)]
+enum MaterialByteRange {
+    /// 可滿足，`(start, end)` 皆為**含端點**的位元組索引。
+    Partial(u64, u64),
+    /// 語法正確但超出檔案範圍 → 依 RFC 9110 回 416。
+    Unsatisfiable,
+}
+
+/// RANGE_STREAM_V1：解析 `Range: bytes=…`（只支援單一範圍）。
+///
+/// 回 `None` ＝「不認得這個 Range」→ 呼叫端照常回 200 全文。這比回 416 更寬容，
+/// RFC 9110 允許伺服器忽略無法理解的 Range，而且對「PDF 檢視器只想拿部分內容」
+/// 這種情境，回全文一定不會錯。
+///
+/// 多範圍（`bytes=0-9,20-29`）刻意回 `None`：multipart/byteranges 的回應對面板的
+/// 下載／預覽沒有實益，徒增實作面積與出錯機會。
+fn parse_material_range(raw: &str, total: u64) -> Option<MaterialByteRange> {
+    let spec = raw.trim().strip_prefix("bytes=")?.trim();
+    if spec.contains(',') {
+        return None;
+    }
+    let (start_raw, end_raw) = spec.split_once('-')?;
+    let start_raw = start_raw.trim();
+    let end_raw = end_raw.trim();
+    if total == 0 {
+        // 空檔案沒有任何可滿足的範圍。
+        return Some(MaterialByteRange::Unsatisfiable);
+    }
+    if start_raw.is_empty() {
+        // suffix range：`bytes=-500` ＝ 最後 500 bytes。
+        let len: u64 = end_raw.parse().ok()?;
+        if len == 0 {
+            return Some(MaterialByteRange::Unsatisfiable);
+        }
+        let start = total.saturating_sub(len);
+        return Some(MaterialByteRange::Partial(start, total - 1));
+    }
+    let start: u64 = start_raw.parse().ok()?;
+    if start >= total {
+        return Some(MaterialByteRange::Unsatisfiable);
+    }
+    let end = if end_raw.is_empty() {
+        total - 1
+    } else {
+        end_raw.parse::<u64>().ok()?.min(total - 1)
+    };
+    if end < start {
+        return Some(MaterialByteRange::Unsatisfiable);
+    }
+    Some(MaterialByteRange::Partial(start, end))
+}
+
 async fn stream_material_file_response(
     path: PathBuf,
     disposition_prefix: &str,
     cache_control: Option<&str>,
     read_error_label: &str,
     build_error_label: &str,
+    // RANGE_STREAM_V1：呼叫端傳入請求的 `Range` 標頭（原樣，不預先解析）。
+    range: Option<&axum::http::HeaderValue>,
 ) -> Response {
     // CLOUD_FILE_STREAMING_V1: avoid loading downloads/previews into a single
-    // Vec<u8>. Stream 64KB chunks from tokio::fs::File so large PDFs/videos do
-    // not spike memory usage per request.
-    let file = match tokio::fs::File::open(&path).await {
+    // Vec<u8>. Stream `MATERIAL_STREAM_CHUNK_SIZE` chunks from tokio::fs::File so
+    // large PDFs/videos do not spike memory usage per request.
+    // RANGE_STREAM_V1: 有 Range 時先 seek 到起點，再只讀約定的位元組數。
+    let mut file = match tokio::fs::File::open(&path).await {
         Ok(file) => file,
         Err(e) => {
             return (
@@ -161,26 +219,86 @@ async fn stream_material_file_response(
         sanitize_header_filename(file_name)
     );
 
-    let stream = futures::stream::try_unfold(file, |mut file| async move {
-        let mut chunk = vec![0u8; MATERIAL_STREAM_CHUNK_SIZE];
-        let read = file.read(&mut chunk).await?;
-        if read == 0 {
-            Ok::<Option<(Vec<u8>, tokio::fs::File)>, std::io::Error>(None)
-        } else {
-            chunk.truncate(read);
-            Ok::<Option<(Vec<u8>, tokio::fs::File)>, std::io::Error>(Some((chunk, file)))
+    // RANGE_STREAM_V1：影音要能「邊下邊播、拖動時間軸」，PDF 檢視器也常先要一小段；
+    // 沒有 206 時瀏覽器只能整份抓完才動作。只實作單一範圍（見 parse_material_range）。
+    let mut status = StatusCode::OK;
+    let mut offset: u64 = 0;
+    let mut send_len = content_len;
+    let mut content_range: Option<String> = None;
+    if let (Some(raw), Some(total)) = (range.and_then(|v| v.to_str().ok()), content_len) {
+        match parse_material_range(raw, total) {
+            Some(MaterialByteRange::Partial(start, end)) => {
+                status = StatusCode::PARTIAL_CONTENT;
+                offset = start;
+                send_len = Some(end - start + 1);
+                content_range = Some(format!("bytes {start}-{end}/{total}"));
+            }
+            Some(MaterialByteRange::Unsatisfiable) => {
+                return match Response::builder()
+                    .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                    .header(header::CONTENT_RANGE, format!("bytes */{total}"))
+                    .header(header::ACCEPT_RANGES, "bytes")
+                    .body(axum::body::Body::empty())
+                {
+                    Ok(response) => response,
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("{build_error_label}：{e}") })),
+                    )
+                        .into_response(),
+                };
+            }
+            // 不認得的 Range（多範圍、語法怪異）→ 照常回 200 全文。
+            None => {}
         }
-    });
+    }
+    if offset > 0 {
+        if let Err(e) = file.seek(std::io::SeekFrom::Start(offset)).await {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("{read_error_label}：{e}") })),
+            )
+                .into_response();
+        }
+    }
+
+    let stream = futures::stream::try_unfold(
+        (file, send_len),
+        |(mut file, remaining)| async move {
+            // 有 range 時只讀約定的長度；沒有時讀到 EOF。
+            let want = match remaining {
+                Some(0) => return Ok(None),
+                Some(left) => (left.min(MATERIAL_STREAM_CHUNK_SIZE as u64)) as usize,
+                None => MATERIAL_STREAM_CHUNK_SIZE,
+            };
+            let mut chunk = vec![0u8; want];
+            let read = file.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(None);
+            }
+            chunk.truncate(read);
+            let next = remaining.map(|left| left.saturating_sub(read as u64));
+            Ok::<Option<(Vec<u8>, (tokio::fs::File, Option<u64>))>, std::io::Error>(Some((
+                chunk,
+                (file, next),
+            )))
+        },
+    );
 
     let mut builder = Response::builder()
-        .status(StatusCode::OK)
+        .status(status)
         .header(header::CONTENT_TYPE, content_type)
-        .header(header::CONTENT_DISPOSITION, disposition);
+        .header(header::CONTENT_DISPOSITION, disposition)
+        // 沒有這個標頭時，影音播放器不會嘗試分段抓取。
+        .header(header::ACCEPT_RANGES, "bytes");
     if let Some(cache_control) = cache_control {
         builder = builder.header(header::CACHE_CONTROL, cache_control);
     }
-    if let Some(content_len) = content_len {
-        builder = builder.header(header::CONTENT_LENGTH, content_len.to_string());
+    if let Some(content_range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, content_range);
+    }
+    if let Some(send_len) = send_len {
+        builder = builder.header(header::CONTENT_LENGTH, send_len.to_string());
     }
 
     builder
@@ -387,9 +505,11 @@ pub(super) async fn admin_files_list_handler(
         StatusCode::OK,
         Json(json!({
             "is_admin": session.is_admin,
-            "max_file_size_mb": null,
-            "max_file_size_unlimited": true,
-            "allowed_extensions": MATERIAL_ALLOWED_EXTENSIONS,
+            // UPLOAD_ANY_TYPE_V1（fix39）：允許清單改回 null＝「不限制格式」；
+            // 大小如實回報單檔上限（與 MATERIALS_MAX_FILE_SIZE 同步）。
+            "max_file_size_mb": MATERIALS_MAX_FILE_SIZE / (1024 * 1024),
+            "max_file_size_unlimited": false,
+            "allowed_extensions": null,
             "folders": folders,
             "files": files,
         })),
@@ -399,6 +519,7 @@ pub(super) async fn admin_files_list_handler(
 
 pub(super) async fn admin_files_download_handler(
     State(state): State<AdminWebState>,
+    headers: HeaderMap,
     Query(query): Query<AdminFilesQuery>,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
@@ -442,6 +563,8 @@ pub(super) async fn admin_files_download_handler(
         None,
         "讀取檔案失敗",
         "建立下載回應失敗",
+        // RANGE_STREAM_V1：下載也能分段／續傳。
+        headers.get(header::RANGE),
     )
     .await
 }
@@ -921,6 +1044,7 @@ pub(super) struct PublicOfficeQuery {
 /// 公開端點：驗證簽章與時效後串流原始檔案（供微軟檢視器抓取）。不驗證 session。
 pub(super) async fn public_office_file_handler(
     ClientIp(ip): ClientIp,
+    headers: HeaderMap,
     Query(query): Query<PublicOfficeQuery>,
 ) -> Response {
     if pub_rate_exceeded(&ip, 120, 60) {
@@ -966,6 +1090,7 @@ pub(super) async fn public_office_file_handler(
         Some("no-store"),
         "讀取預覽檔失敗",
         "建立預覽回應失敗",
+        headers.get(header::RANGE),
     )
     .await
 }
@@ -998,6 +1123,7 @@ __SCRIPTS__
 /// 公開分享預覽頁：驗證簽章與時效後回傳一個免登入的預覽 HTML。不驗證 session。
 pub(super) async fn public_share_preview_handler(
     ClientIp(ip): ClientIp,
+    headers: HeaderMap,
     Query(query): Query<PublicOfficeQuery>,
 ) -> Response {
     if pub_rate_exceeded(&ip, 120, 60) {
@@ -1038,6 +1164,7 @@ pub(super) async fn public_share_preview_handler(
             Some("no-store"),
             "讀取分享檔失敗",
             "建立分享回應失敗",
+            headers.get(header::RANGE),
         )
         .await;
     }
@@ -1105,6 +1232,7 @@ pub(super) async fn public_share_preview_handler(
 // 無純 JS 解析器，走 Office Online（需對外可達）或下載。
 pub(super) async fn admin_files_preview_handler(
     State(state): State<AdminWebState>,
+    headers: HeaderMap,
     Query(query): Query<AdminFilesQuery>,
 ) -> Response {
     let Some(session) = state.authorize(&query.token).await else {
@@ -1171,6 +1299,7 @@ pub(super) async fn admin_files_preview_handler(
         Some("no-store"),
         "讀取預覽檔失敗",
         "建立預覽回應失敗",
+        headers.get(header::RANGE),
     )
     .await
 }
@@ -1312,15 +1441,9 @@ pub(super) async fn admin_files_upload_handler(
             )
                 .into_response();
         };
-        if !is_allowed_material_file(&file_name) {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!("不允許的檔案格式，允許：{}", MATERIAL_ALLOWED_EXTENSIONS.join(", "))
-                })),
-            )
-                .into_response();
-        }
+        // UPLOAD_ANY_TYPE_V1（fix39）：不再有副檔名白名單——任何檔案都能上傳。
+        // `safe_file_name` 仍守住安全底線（無路徑分隔／控制字元、長度上限），
+        // 單檔大小與總容量限制也照舊。
 
         // CLOUD_UPLOAD_STREAMING_V1: write multipart chunks directly to a temp
         // file instead of collecting the full field into memory with bytes().
@@ -1736,5 +1859,36 @@ pub(super) async fn admin_files_history_handler(
             Json(json!({ "error": format!("讀取教材操作紀錄失敗：{e}") })),
         )
             .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod material_range_tests {
+    use super::*;
+
+    /// RANGE_STREAM_V1：解析結果必須符合 RFC 9110 的單一範圍語意。
+    #[test]
+    fn parse_material_range_handles_the_common_forms() {
+        assert_eq!(parse_material_range("bytes=0-99", 1000), Some(MaterialByteRange::Partial(0, 99)));
+        assert_eq!(parse_material_range("bytes=100-", 1000), Some(MaterialByteRange::Partial(100, 999)));
+        // 尾端超出檔案大小時夾到最後一個位元組（RFC 允許）。
+        assert_eq!(parse_material_range("bytes=900-5000", 1000), Some(MaterialByteRange::Partial(900, 999)));
+        // suffix range：最後 200 bytes。
+        assert_eq!(parse_material_range("bytes=-200", 1000), Some(MaterialByteRange::Partial(800, 999)));
+        // 前後空白與大小寫外的空白都要容忍。
+        assert_eq!(parse_material_range("  bytes= 5 - 9 ", 1000), Some(MaterialByteRange::Partial(5, 9)));
+    }
+
+    /// 超出範圍 → 416；語法不認得 → 回 None（照常送 200 全文）。
+    #[test]
+    fn parse_material_range_rejects_out_of_range_and_ignores_unknown_syntax() {
+        assert_eq!(parse_material_range("bytes=1000-1200", 1000), Some(MaterialByteRange::Unsatisfiable));
+        assert_eq!(parse_material_range("bytes=-0", 1000), Some(MaterialByteRange::Unsatisfiable));
+        assert_eq!(parse_material_range("bytes=0-", 0), Some(MaterialByteRange::Unsatisfiable));
+        // 多範圍、非 bytes 單位、壞語法 → 一律當成「不認得」。
+        assert_eq!(parse_material_range("bytes=0-9,20-29", 1000), None);
+        assert_eq!(parse_material_range("items=0-9", 1000), None);
+        assert_eq!(parse_material_range("bytes=abc-def", 1000), None);
+        assert_eq!(parse_material_range("bytes=50-10", 1000), Some(MaterialByteRange::Unsatisfiable));
     }
 }

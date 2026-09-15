@@ -13,12 +13,13 @@ use serde_json::json;
 pub(super) const MATERIALS_MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
 pub(super) const MATERIALS_MAX_LIST_ENTRIES: usize = 5000;
 
-pub(super) const MATERIAL_ALLOWED_EXTENSIONS: &[&str] = &[
-    "pdf", "docx", "pptx", "xlsx", "txt", "md", "jpg", "jpeg", "png", "zip", "mp4", "heic", "gif", "mov",
-    // UPLOAD_LEGACY_OFFICE_V1: 允許舊版 Office 與 RTF/ODF，與預覽能力對齊；
-    // 舊版 .doc/.ppt/.xls 預覽走 Office Online 線上檢視。
-    "doc", "ppt", "xls", "rtf", "odt", "ods", "odp",
-];
+// UPLOAD_ANY_TYPE_V1（fix39）：這裡原本是 `MATERIAL_ALLOWED_EXTENSIONS` 副檔名白名單
+// （連同 files.rs 的 `is_allowed_material_file` 檢查）。使用者要求「雲端硬碟可以上傳
+// 所有檔案、不限制檔名」，因此白名單整組移除：任何副檔名（含沒有副檔名）都能上傳。
+//
+// 若日後要恢復格式限制，記得同步三個地方：本檔的允許清單、files.rs 上傳 handler 的
+// 檢查、files.html 的 `#fileInput accept` 與用戶端預檢——否則前後端規則會不一致
+//（舊版就不一致：前端 14 種、後端 20 種，舊版 Office 檔案在前端就被擋掉）。
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct MaterialFileEntry {
@@ -182,6 +183,16 @@ pub(super) fn safe_relative_path(value: &str) -> Option<PathBuf> {
     Some(out)
 }
 
+/// UPLOAD_ANY_TYPE_V1（fix39）：檔名只留「安全底線」，其餘一律放行。
+///
+/// 仍然拒絕的只有：空字串、長度超過 255 bytes（檔案系統上限）、含路徑分隔字元
+///（`/`、`\`——防止使用者把檔案寫到目錄之外）、NUL 或控制字元、以及 `.`／`..`。
+/// 含 `.` 開頭的隱藏檔名（`.env`、`.gitignore`）、空白、中文、emoji、沒有副檔名
+/// 的檔名全部照收——使用者要求「不限制檔名」。
+///
+/// 注意：帶目錄成分的值（舊式瀏覽器會送完整路徑）只取最後一段，
+/// 例：`dir/file.txt` → `file.txt`；Windows 形式（`C:\dir\file.txt`）因含反斜線
+/// 一律拒收，避免在 Windows 部署上變成路徑穿越。
 pub(super) fn safe_file_name(value: &str) -> Option<String> {
     if value.len() > 255 {
         return None;
@@ -192,7 +203,6 @@ pub(super) fn safe_file_name(value: &str) -> Option<String> {
         || file_name.contains('\\')
         || file_name.contains('\0')
         || file_name.chars().any(|character| character.is_control())
-        || file_name.starts_with('.')
         || file_name == "."
         || file_name == ".."
     {
@@ -200,19 +210,6 @@ pub(super) fn safe_file_name(value: &str) -> Option<String> {
     } else {
         Some(file_name.to_string())
     }
-}
-
-pub(super) fn is_allowed_material_file(file_name: &str) -> bool {
-    Path::new(file_name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| {
-            let ext = ext.to_ascii_lowercase();
-            MATERIAL_ALLOWED_EXTENSIONS
-                .iter()
-                .any(|allowed| *allowed == ext)
-        })
-        .unwrap_or(false)
 }
 
 pub(super) fn unique_material_path(dir: &Path, file_name: &str) -> PathBuf {
@@ -264,10 +261,13 @@ pub(super) fn collect_material_files(
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        // UPLOAD_ANY_TYPE_V1（fix39）：只跳過本模組自己的上傳暫存檔
+        //（`.<uuid>.uploading`）。舊版把「. 開頭」一律視為隱藏，會讓使用者上傳的
+        // `.env`／`.gitignore` 這類檔案無聲消失——現在照實列出。
         if entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with('.'))
+            .is_some_and(|name| name.ends_with(".uploading"))
         {
             continue;
         }
@@ -338,10 +338,13 @@ fn collect_material_tree(
             ));
         }
         let entry = entry?;
+        // UPLOAD_ANY_TYPE_V1（fix39）：只跳過本模組自己的上傳暫存檔
+        //（`.<uuid>.uploading`）。舊版把「. 開頭」一律視為隱藏，會讓使用者上傳的
+        // `.env`／`.gitignore` 這類檔案無聲消失——現在照實列出。
         if entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with('.'))
+            .is_some_and(|name| name.ends_with(".uploading"))
         {
             continue;
         }
@@ -420,10 +423,13 @@ pub(super) fn collect_material_folders(
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
+        // UPLOAD_ANY_TYPE_V1（fix39）：只跳過本模組自己的上傳暫存檔
+        //（`.<uuid>.uploading`）。舊版把「. 開頭」一律視為隱藏，會讓使用者上傳的
+        // `.env`／`.gitignore` 這類檔案無聲消失——現在照實列出。
         if entry
             .file_name()
             .to_str()
-            .is_some_and(|name| name.starts_with('.'))
+            .is_some_and(|name| name.ends_with(".uploading"))
         {
             continue;
         }
@@ -654,4 +660,42 @@ pub(super) fn material_total_size(root: &Path) -> std::io::Result<u64> {
     let mut total = 0u64;
     walk(root, &mut total)?;
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// UPLOAD_ANY_TYPE_V1（fix39）：檔名不再限制——`.` 開頭、空白、中文、emoji、
+    /// 沒有副檔名、多段副檔名都要放行；只有「會逃出資料夾」或會打亂檔案系統的
+    /// 形式才拒收（安全底線，與格式政策無關）。
+    #[test]
+    fn safe_file_name_allows_everything_but_traversal() {
+        for ok in [
+            "報告(1).pdf",
+            "期末 專題 final v2.docx",
+            "資料.rar",
+            ".env",
+            ".gitignore",
+            "no_extension_at_all",
+            "影片 🎬.mp4",
+            "a.tar.gz",
+        ] {
+            assert_eq!(safe_file_name(ok).as_deref(), Some(ok), "應放行：{ok}");
+        }
+
+        assert!(safe_file_name("").is_none());
+        assert!(safe_file_name("   ").is_none());
+        assert!(safe_file_name(".").is_none());
+        assert!(safe_file_name("..").is_none());
+        assert!(safe_file_name("a\u{0}b").is_none(), "NUL 必須拒收");
+        assert!(safe_file_name("bad\nname").is_none(), "控制字元必須拒收");
+        assert!(safe_file_name(&"x".repeat(256)).is_none(), "超過 255 bytes 必須拒收");
+        assert!(
+            safe_file_name("C:\\dir\\file.txt").is_none(),
+            "含反斜線（Windows 路徑）一律拒收"
+        );
+        // 舊式瀏覽器送來帶目錄的值時，只保留最後一段。
+        assert_eq!(safe_file_name("dir/file.txt").as_deref(), Some("file.txt"));
+    }
 }

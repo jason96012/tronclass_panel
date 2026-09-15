@@ -773,6 +773,52 @@ fn sanitize_client_field(value: &str, max_chars: usize) -> String {
     crate::text_utils::truncate_chars(cleaned.trim(), max_chars).to_string()
 }
 
+/// CF_INJECTED_TT_NOISE_V1（fix34）＋TT_ASSIGNMENT_NOISE_V1（fix37）：判斷「不是
+/// 面板自己壞掉」的 Trusted Types 例外訊息。
+///
+/// 背景：本面板的 CSP 帶 `require-trusted-types-for 'script'`，而面板每個頁面在
+/// `<head>` 最前面就裝好 default policy（pages.rs 的 TT_INLINE_GUARD_V1）——面板
+/// 自己的 innerHTML 一定走得到 policy。會回報這類例外的是「被寫入的文件不屬於
+/// 面板頁面本身」的情況：Cloudflare JavaScript Detections 等第三方注入碼會建
+/// about:blank／sandboxed 子文件並用 innerHTML 寫入，而 Trusted Types 的 default
+/// policy 是 **per-realm** 的（WebKit 的 processValueWithDefaultPolicy 取的是被寫
+/// 入文件所屬 window 的 trustedTypes 工廠），子文件沒有 policy 就拋錯。
+///
+/// 瀏覽器訊息有兩種形式：
+///   - Blink/Chromium：`Failed to set the 'innerHTML' property on 'Element': This
+///     document requires 'TrustedHTML' assignment.`
+///   - WebKit/Safari  ：`This assignment requires a TrustedHTML`（見 WebKit
+///     `TrustedType.cpp`：`makeString("This assignment requires a ",
+///     trustedTypeToString(type))`）——**不含 sink 名稱**，所以舊版 fix34 只看
+///     `TrustedHTML + innerHTML` 會漏判（2026-09-14 22:40 `/admin#overview` 的
+///     上報字串正是這個形式），當時被記成 ERROR。
+///
+/// client-log.js 會把當下 `window.__ttGuardV1` 的狀態附在訊息尾端（`[tt=...]`）：
+///   - `[tt=missing]`＝我們自己的頁面真的沒有 default policy → **不視為噪音**，
+///     照 ERROR 記錄（這才是需要修的 bug）。
+///   - `[tt=present]`／`[tt=unsupported]`／沒有標記 → 已知的外部注入噪音，降為 INFO。
+fn is_external_trusted_types_noise(message: &str) -> bool {
+    // 我方頁面缺 policy 時 client-log.js 會明確標記——這種一定要當故障處理。
+    if message.contains("tt=missing") {
+        return false;
+    }
+    let mentions_trusted_type = message.contains("TrustedHTML")
+        || message.contains("TrustedScriptURL")
+        || message.contains("TrustedScript");
+    if !mentions_trusted_type {
+        return false;
+    }
+    // Blink 的 sink 名稱（innerHTML／outerHTML／insertAdjacentHTML…）或兩個引擎
+    // 共通的 "requires (a|')Trusted…" 句型。
+    message.contains("innerHTML")
+        || message.contains("outerHTML")
+        || message.contains("insertAdjacentHTML")
+        || message.contains("requires a Trusted")
+        || message.contains("requires 'Trusted")
+        || message.contains("requires a trusted")
+        || message.contains("requires 'trusted")
+}
+
 /// CLIENT_ERROR_REPORT_V1：前端錯誤／看門狗事件回報。
 ///
 /// - 需登入（access cookie；sendBeacon 會帶同源 cookie）。未登入回 401 但不寫任何東西。
@@ -813,17 +859,22 @@ pub(super) async fn client_log_handler(
     let stack = sanitize_client_field(&request.stack, 2000);
     let ua = sanitize_client_field(&request.ua, 200);
     let visibility = sanitize_client_field(&request.visibility, 16);
-    // CF_INJECTED_TT_NOISE_V1（fix33→fix34 修正）：Cloudflare 的 JavaScript
-    // Detections 會在每個 HTML 回應注入一段用 innerHTML 的腳本
-    // （__CF$cv$params／challenge-platform），在本面板 require-trusted-types-for
-    // CSP 下必炸——面板頁面有 default policy 保護，實務上會回報 TrustedHTML+
-    // innerHTML 的只有 CF 注入碼。fix33 要求 source/stack 含 challenge-platform
-    // 特徵的條件實測漏判（stack 只剩 `c @ admin?next=...:524:236`、source 非空
-    // ——注入碼以 inline script 執行，堆疊位置隨頁面 URL 變動），故 fix34
-    // 簡化為 message 同時含兩關鍵字即判。降為 INFO＋註記，不洗 console。
+    // CF_INJECTED_TT_NOISE_V1（fix33→fix34→fix37）：Cloudflare 的 JavaScript
+    // Detections 會在 HTML 回應注入腳本（__CF$cv$params／challenge-platform），
+    // 它會建立 about:blank／sandboxed 子文件再用 innerHTML 寫入——Trusted Types
+    // 的 default policy 是 per-realm 的（子文件取不到父頁面的 policy），所以在
+    // 面板 require-trusted-types-for CSP 下必炸。面板頁面自己有 policy 保護，
+    // 實務上會回報這類例外的只有外部注入碼。
+    // fix33 要求 source/stack 含 challenge-platform 特徵的條件實測漏判（stack 只剩
+    // `c @ admin?next=...:524:236`、source 非空——注入碼以 inline script 執行，堆疊
+    // 位置隨頁面 URL 變動），故 fix34 簡化為 message 同時含 TrustedHTML＋innerHTML。
+    // fix37：2026-09-14 22:40 的上報字串是 WebKit/Safari 形式
+    // 「This assignment requires a TrustedHTML」——不含 sink 名稱，fix34 的條件
+    // 漏判而記成 ERROR。判斷改抽為 is_external_trusted_types_noise()（涵蓋 Blink／
+    // WebKit 兩種形式，並保留 client-log.js 附帶的 [tt=missing] 作為真故障告警）。
+    // 降為 INFO＋註記，不洗 console。
     // 治本＝CF 儀表板（Security → Bots）關閉 JavaScript Detections。
-    let is_cf_injected_tt_noise =
-        message.contains("TrustedHTML") && message.contains("innerHTML");
+    let is_cf_injected_tt_noise = is_external_trusted_types_noise(&message);
     let level = if is_cf_injected_tt_noise {
         "INFO"
     } else {
@@ -845,13 +896,13 @@ pub(super) async fn client_log_handler(
     }
     if is_cf_injected_tt_noise {
         tracing::debug!(kind = %kind, account = %session.account_id, page = %page,
-            "client-side error report（Cloudflare challenge-platform 注入碼與 Trusted Types CSP 的已知衝突，無害）");
+            "client-side error report（第三方注入碼與 Trusted Types CSP 的已知衝突，無害）");
         crate::logs::record_system(
             "INFO",
             &format!("client:{kind}"),
             format!("[{}] {message}", session.account_id),
             Some(format!(
-                "{details}\n註記：疑似 Cloudflare JavaScript Detections 注入碼（innerHTML）與本面板 require-trusted-types-for CSP 的已知衝突；不影響面板功能。治本可在 Cloudflare 儀表板（Security → Bots）關閉 JavaScript Detections。"
+                "{details}\n註記：Trusted Types 例外但面板頁面自身的 default policy 正常（訊息尾端 [tt=…] 可證），屬於第三方注入碼（實務上是 Cloudflare JavaScript Detections）在 about:blank／sandboxed 子文件寫入 innerHTML 的已知衝突——子文件的 default policy 是獨立的 realm，父頁面的 policy 罩不到。不影響面板功能。治本可在 Cloudflare 儀表板（Security → Bots）關閉 JavaScript Detections；若訊息帶 [tt=missing] 則相反，代表面板頁面真的沒裝 policy，會以 ERROR 記錄。"
             )),
         );
         return (StatusCode::NO_CONTENT, ()).into_response();
@@ -870,4 +921,49 @@ pub(super) async fn client_log_handler(
         Some(details),
     );
     (StatusCode::NO_CONTENT, ()).into_response()
+}
+
+#[cfg(test)]
+mod tt_noise_tests {
+    use super::is_external_trusted_types_noise;
+
+    /// TT_ASSIGNMENT_NOISE_V1（fix37）：兩個引擎的字串都要被判成已知噪音。
+    #[test]
+    fn trusted_type_assignment_messages_are_known_noise() {
+        // WebKit/Safari 形式：不含 sink 名稱（2026-09-14 22:40 的上報字串）
+        assert!(is_external_trusted_types_noise(
+            "This assignment requires a TrustedHTML"
+        ));
+        assert!(is_external_trusted_types_noise(
+            "This assignment requires a TrustedHTML [tt=present]"
+        ));
+        assert!(is_external_trusted_types_noise(
+            "This assignment requires a TrustedScriptURL"
+        ));
+        // Blink/Chromium 形式：含 sink 名稱
+        assert!(is_external_trusted_types_noise(
+            "Failed to set the 'innerHTML' property on 'Element': This document requires 'TrustedHTML' assignment."
+        ));
+        assert!(is_external_trusted_types_noise(
+            "Failed to execute 'insertAdjacentHTML' on 'Element': This document requires 'TrustedHTML' assignment."
+        ));
+        // 大小寫不同的引擎字串
+        assert!(is_external_trusted_types_noise(
+            "this assignment requires a trustedhtml"
+        ));
+    }
+
+    /// 我方頁面缺 policy（`tt=missing`）與無關訊息都不可被降級。
+    #[test]
+    fn missing_policy_and_unrelated_messages_stay_errors() {
+        assert!(!is_external_trusted_types_noise(
+            "Uncaught TypeError: This assignment requires a TrustedHTML [tt=missing]"
+        ));
+        assert!(!is_external_trusted_types_noise("Failed to fetch"));
+        assert!(!is_external_trusted_types_noise(
+            "Cannot read properties of null (reading 'classList')"
+        ));
+        // 只出現型別名稱、沒有 assignment 語句者不算噪音
+        assert!(!is_external_trusted_types_noise("TrustedHTML is not defined"));
+    }
 }

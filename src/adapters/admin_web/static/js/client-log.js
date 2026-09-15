@@ -35,6 +35,23 @@
     var text = String(value == null ? '' : value);
     return text.length > max ? text.slice(0, max) + '…' : text;
   }
+  // TT_ASSIGNMENT_DIAG_V1（fix37）：Safari/WebKit 的 Trusted Types 例外字串是
+  // 「TypeError: This assignment requires a TrustedHTML」，Chrome 則是
+  // 「…Failed to set the 'innerHTML' property on 'Element': This document requires
+  // 'TrustedHTML' assignment」。面板頁面在 <head> 最前面就裝好 default policy
+  // （pages.rs 的 TT_INLINE_GUARD_V1），所以這種錯誤通常代表「被寫入的文件」不是
+  // 我方頁面（about:blank／sandboxed 子文件、第三方注入碼）。把當下的 guard 狀態
+  // 附在訊息尾端，health.rs 才能把這類已知噪音與「我方真的沒有 policy」分開記錄。
+  function withTtNote(message) {
+    try {
+      if (!/requires a Trusted|requires 'Trusted/.test(message)) return message;
+      var state = 'unsupported';
+      if (window.trustedTypes) {
+        state = window.__ttGuardV1 || (window.trustedTypes.defaultPolicy ? 'present' : 'missing');
+      }
+      return message + ' [tt=' + state + ']';
+    } catch (_) { return message; }
+  }
   function post(kind, message, extra) {
     if (sent >= MAX_PER_PAGE) return;
     var key = kind + '|' + clip(message, 120);
@@ -81,7 +98,7 @@
         return;
       }
       var err = event.error;
-      post('js_error', event.message || (err && err.message) || 'script error', {
+      post('js_error', withTtNote(event.message || (err && err.message) || 'script error'), {
         stack: err && err.stack, source: event.filename, line: event.lineno, col: event.colno
       });
     }, true);
@@ -90,7 +107,7 @@
       var message = reason && (reason.message || reason.error || reason.statusText) || String(reason || 'unhandled rejection');
       // 401/403 的 API 拒絕是正常流程（session 過期→refresh），不回報。
       if (reason && (reason.status === 401 || reason.status === 403)) return;
-      post('unhandled_rejection', message, { stack: reason && reason.stack });
+      post('unhandled_rejection', withTtNote(message), { stack: reason && reason.stack });
     });
     document.addEventListener('securitypolicyviolation', function (event) {
       if (!event) return;

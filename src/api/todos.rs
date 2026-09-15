@@ -8,7 +8,7 @@
 
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
 use futures::stream::StreamExt;
-use miette::Result;
+use miette::{IntoDiagnostic, Result, WrapErr};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -780,6 +780,964 @@ pub fn parse_single_todo(
         allow_late_submission,
         score,
     })
+}
+
+// ─────────────────────────────────────────────────────────────
+// HOMEWORK_DETAIL_V1（fix41）：面板內顯示作業詳情（說明＋附件）
+//
+// 目的：使用者「按一個按鈕就看到作業內容」，但**完全不經過 iClass 頁面代理**
+// （代理從 fix22 到 fix40 反覆出問題；見 KB §15.5 起）。這裡改走「伺服器端用面板
+// 已保存的 iClass session 直接抓資料、面板自己渲染」，因此：
+//   * 不會碰任何瀏覽器 cookie（面板登入狀態零風險）
+//   * 不需要 iClass 的 CSRF token（面板伺服器端呼叫自己帶 cookie）
+//   * 上游 JSON 的形狀未知的部分一律「多鍵候選 + 深度掃描 + 找不到就優雅降級」
+//
+// 說明文字可能是老師編輯的 HTML：伺服器只回原文（另附純文字版），前端用
+// DOMPurify 消毒後才 innerHTML（沒有 DOMPurify 就退回純文字）——與 bulletins.html
+// 的既有做法一致。
+// ─────────────────────────────────────────────────────────────
+
+/// `/homework-activities` 逐頁掃描時的每頁筆數（詳情查找用；與清單抓取共用常數語意）。
+pub const HOMEWORK_DETAIL_PAGE_SIZE: u64 = 100;
+/// 詳情查找最多掃幾頁，避免單一請求打出數十次上游往返。
+pub const HOMEWORK_DETAIL_MAX_PAGES: u64 = 6;
+/// 深度掃描 JSON 時的節點預算（防止病態大的回應把 CPU 吃光）。
+const DETAIL_SCAN_NODE_BUDGET: usize = 6000;
+/// 說明文字長度上限（超過截斷；HTML 標籤也算在內）。
+const DETAIL_DESCRIPTION_MAX_CHARS: usize = 60_000;
+/// 一張作業最多列出幾個附件。
+const DETAIL_MAX_ATTACHMENTS: usize = 30;
+
+/// 作業附件（面板內可直接下載）。
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct HomeworkAttachment {
+    /// 上游 upload id——面板端只用它去 `/api/uploads/{id}/preview` 取檔。
+    /// `None` 表示上游只給了檔名、沒有可用 id（前端顯示但不下載）。
+    pub upload_id: Option<u64>,
+    pub name: String,
+    pub size: Option<u64>,
+}
+
+/// 作業詳情＝清單既有的欄位（`TronclassTodoItem`）＋說明與附件。
+#[derive(Debug, Clone, Serialize)]
+pub struct HomeworkDetail {
+    #[serde(flatten)]
+    pub item: TronclassTodoItem,
+    /// 上游原始的說明 HTML（前端負責消毒）。找不到說明時為空字串。
+    pub description_html: String,
+    /// 說明是否含 `<img>`——前端據此提示「圖片請到 iClass 看」。
+    pub has_images: bool,
+    /// 是否為小組作業（上游 `submit_by_group`）。
+    ///
+    /// HOMEWORK_SUBMIT_V1：小組作業的繳交走 `/api/activities/{id}/groups/{gid}/submission`，
+    /// 個人端點送出去會被上游拒絕或記到錯的地方——所以面板先擋下來（前端也一併提示）。
+    pub submit_by_group: bool,
+    pub attachments: Vec<HomeworkAttachment>,
+    /// 這份資料是從哪個端點找到的（診斷用，不影響功能）。
+    pub source: String,
+}
+
+/// 取出節點上的 id（多鍵候選；與 `parse_single_todo` 的順序一致）。
+fn node_id(node: &serde_json::Value) -> Option<u64> {
+    let obj = node.as_object()?;
+    for key in ["id", "activity_id", "todo_id", "homework_id"] {
+        if let Some(id) = obj.get(key).and_then(parse_u64) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+/// 「這個節點有多像我們要的作業詳情」：有說明、有附件者優先。
+/// 同一個 item_id 會同時出現在 `/api/todos`、`/homework-activities`、`/activities`
+/// 等回應裡，其中只有部分帶完整說明／附件——取最豐富的那一份。
+fn node_richness(node: &serde_json::Value) -> usize {
+    let described = if parse_homework_description(node).is_empty() {
+        0
+    } else {
+        1
+    };
+    described * 1000 + parse_homework_attachments(node).len()
+}
+
+fn detail_string_at(node: &serde_json::Value, path: &[&str]) -> Option<String> {
+    let mut current = node;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    if let Some(text) = current.as_str() {
+        let trimmed = text.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+        return None;
+    }
+    // 少數回應把說明包成物件（例如 { "text": "…" }／{ "html": "…" }）。
+    if let Some(obj) = current.as_object() {
+        for key in ["text", "html", "content", "value", "description"] {
+            if let Some(text) = obj.get(key).and_then(|v| v.as_str()) {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 取出作業說明（HTML）。候選鍵依「實測／最常見」排序，全部找不到回空字串。
+pub fn parse_homework_description(node: &serde_json::Value) -> String {
+    const CANDIDATES: &[&[&str]] = &[
+        &["data", "description"],
+        &["description"],
+        &["data", "content"],
+        &["content"],
+        &["data", "requirement"],
+        &["data", "requirements"],
+        &["description_html"],
+        &["body_html"],
+        &["content_html"],
+        &["data", "summary"],
+        &["summary"],
+    ];
+    for path in CANDIDATES {
+        if let Some(text) = detail_string_at(node, path) {
+            let truncated = crate::text_utils::truncate_chars(&text, DETAIL_DESCRIPTION_MAX_CHARS);
+            return truncated.to_string();
+        }
+    }
+    String::new()
+}
+
+fn attachment_from_value(value: &serde_json::Value) -> Option<HomeworkAttachment> {
+    // 只給檔名的字串形式（例如 attachments: ["a.pdf"]）。
+    if let Some(name) = value.as_str() {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        return Some(HomeworkAttachment {
+            upload_id: None,
+            name: name.to_string(),
+            size: None,
+        });
+    }
+    let obj = value.as_object()?;
+    let mut upload_id = None;
+    for key in ["id", "upload_id", "attachment_id", "file_id", "uploadId"] {
+        if let Some(id) = obj.get(key).and_then(parse_u64) {
+            upload_id = Some(id);
+            break;
+        }
+    }
+    let mut name = String::new();
+    for key in [
+        "name",
+        "file_name",
+        "filename",
+        "title",
+        "display_name",
+        "original_name",
+    ] {
+        if let Some(text) = obj.get(key).and_then(|v| v.as_str()) {
+            let trimmed = text.trim();
+            if !trimmed.is_empty() {
+                name = trimmed.to_string();
+                break;
+            }
+        }
+    }
+    let mut size = None;
+    for key in ["size", "file_size", "filesize", "bytes"] {
+        if let Some(bytes) = obj.get(key).and_then(parse_u64) {
+            size = Some(bytes);
+            break;
+        }
+    }
+    if name.is_empty() && upload_id.is_none() {
+        return None;
+    }
+    if name.is_empty() {
+        name = format!("附件 {}", upload_id.unwrap_or_default());
+    }
+    Some(HomeworkAttachment {
+        upload_id,
+        name,
+        size,
+    })
+}
+
+fn collect_attachments_from(value: &serde_json::Value, out: &mut Vec<HomeworkAttachment>) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if out.len() >= DETAIL_MAX_ATTACHMENTS {
+                    return;
+                }
+                if let Some(parsed) = attachment_from_value(item) {
+                    out.push(parsed);
+                }
+            }
+        }
+        // 單一物件（只有一個附件時上游不一定包成陣列）。
+        _ => {
+            if out.len() < DETAIL_MAX_ATTACHMENTS {
+                if let Some(parsed) = attachment_from_value(value) {
+                    out.push(parsed);
+                }
+            }
+        }
+    }
+}
+
+/// 取出作業附件清單。多鍵候選＋`data.` 內外都找，並自動去重。
+pub fn parse_homework_attachments(node: &serde_json::Value) -> Vec<HomeworkAttachment> {
+    const CANDIDATES: &[&[&str]] = &[
+        &["data", "attachments"],
+        &["attachments"],
+        &["data", "uploads"],
+        &["uploads"],
+        &["data", "files"],
+        &["files"],
+        &["data", "materials"],
+        &["materials"],
+        &["data", "attachment"],
+        &["attachment"],
+        &["data", "attachment_list"],
+        &["attachment_list"],
+    ];
+    let mut out: Vec<HomeworkAttachment> = Vec::new();
+    for path in CANDIDATES {
+        let mut current = node;
+        let mut found = true;
+        for key in *path {
+            match current.get(*key) {
+                Some(next) => current = next,
+                None => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if found {
+            collect_attachments_from(current, &mut out);
+        }
+    }
+    // 去重：同一個 upload id 或同名者只留一份。
+    let mut seen: Vec<String> = Vec::new();
+    out.retain(|attachment| {
+        let key = match attachment.upload_id {
+            Some(id) => format!("id:{id}"),
+            None => format!("name:{}", attachment.name.to_ascii_lowercase()),
+        };
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
+    });
+    out.truncate(DETAIL_MAX_ATTACHMENTS);
+    out
+}
+
+/// 在任意 JSON 形狀中找出「這一份作業」最完整的那個節點。
+///
+/// 採廣度優先（先淺後深）、限制節點預算；同 id 的多份取「有說明／附件」者。
+/// 完全找不到回 `None`（呼叫端據此優雅降級，而不是報錯）。
+pub fn find_activity_node(root: &serde_json::Value, item_id: u64) -> Option<&serde_json::Value> {
+    let mut queue: Vec<(&serde_json::Value, usize)> = vec![(root, 0)];
+    let mut visited = 0usize;
+    let mut best: Option<(&serde_json::Value, usize)> = None;
+    while let Some((node, depth)) = queue.pop() {
+        visited += 1;
+        if visited > DETAIL_SCAN_NODE_BUDGET {
+            break;
+        }
+        if depth <= 6 {
+            if node_id(node) == Some(item_id) {
+                let richness = node_richness(node);
+                // 取最豐富的那一份；同分時保留較淺層（BFS 先到者）。
+                if best.map(|(_, score)| richness > score).unwrap_or(true) {
+                    best = Some((node, richness));
+                }
+            }
+            match node {
+                serde_json::Value::Object(map) => {
+                    for value in map.values() {
+                        queue.push((value, depth + 1));
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for value in items {
+                        queue.push((value, depth + 1));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    best.map(|(node, _)| node)
+}
+
+/// HOMEWORK_DETAIL_V1：由上游節點組出詳情；基礎欄位沿用 `parse_single_todo`
+/// （與清單一致的解析規則），再補上說明／附件。
+pub fn build_homework_detail(
+    node: &serde_json::Value,
+    fallback_course_name: Option<&str>,
+    fallback_course_id: Option<u64>,
+    source: &str,
+) -> Option<HomeworkDetail> {
+    let item = parse_single_todo(node, fallback_course_name, fallback_course_id)?;
+    let description_html = parse_homework_description(node);
+    let lower = description_html.to_ascii_lowercase();
+    let submit_by_group = node
+        .get("submit_by_group")
+        .and_then(|value| value.as_bool())
+        .or_else(|| {
+            node.get("data")
+                .and_then(|data| data.get("submit_by_group"))
+                .and_then(|value| value.as_bool())
+        })
+        .unwrap_or(false);
+    Some(HomeworkDetail {
+        item,
+        has_images: lower.contains("<img"),
+        submit_by_group,
+        description_html,
+        attachments: parse_homework_attachments(node),
+        source: source.to_string(),
+    })
+}
+
+/// HOMEWORK_DETAIL_V1：iClass 的作業深連結（直接開在 iClass 網域，不經面板代理）。
+///
+/// 與 `tc_go_handler` 使用同一個路徑格式（fix22 實測），變更時兩處必須同步：
+/// `tc_proxy.rs` 的 `format!("/course/{course_id}/learning-activity/full-screen#{item_id}")`。
+/// 註：這個連結需要瀏覽器自己有 iClass 登入；面板無法代為登入。
+pub fn iclass_activity_deep_link(base_url: &str, course_id: u64, item_id: u64) -> String {
+    format!(
+        "{}/course/{course_id}/learning-activity/full-screen#{item_id}",
+        base_url.trim_end_matches('/')
+    )
+}
+
+/// HOMEWORK_DETAIL_V1：把一個候選節點併進 `best`（只留資訊量最多的那一份）。
+///
+/// COMPILE_FIX_V1（fix42 revB）：原本用閉包捕獲 `best`，但閉包的可變借用會活到
+/// 作用域結束，後面 `best.is_some()`／`best.as_ref()` 的讀取就會撞借用檢查
+/// （rustc E0502）。改成顯式傳 `&mut` 的自由函式，借用範圍只到呼叫那一行。
+fn consider_homework_detail(
+    best: &mut Option<HomeworkDetail>,
+    node: &serde_json::Value,
+    course_id: Option<u64>,
+    item_id: u64,
+    source: &str,
+    course_name: Option<&str>,
+) {
+    let Some(detail) = build_homework_detail(node, course_name, course_id, source) else {
+        return;
+    };
+    if detail.item.id != item_id {
+        return;
+    }
+    // 評分方式：有說明 > 沒說明（權重 1000），其次附件越多越好。
+    let new_score = if detail.description_html.is_empty() { 0 } else { 1000 }
+        + detail.attachments.len();
+    let better = match best.as_ref() {
+        Some(current) => {
+            let old_score = if current.description_html.is_empty() { 0 } else { 1000 }
+                + current.attachments.len();
+            new_score > old_score
+        }
+        None => true,
+    };
+    if better {
+        *best = Some(detail);
+    }
+}
+
+impl super::ApiClient {
+    /// HOMEWORK_DETAIL_V1：抓單一作業的說明與附件。
+    ///
+    /// 查找順序（每一種都「拿到 JSON 且找到該 id」才算命中，否則換下一種）：
+    ///   1. `GET /api/courses/{cid}/homework-activities/{id}`（單一資源；未實測存在性）
+    ///   2. `GET /api/homework-activities/{id}`
+    ///   3. `GET /api/courses/{cid}/homework-activities?page=N&page_size=100`（已實測端點，逐頁掃）
+    ///   4. `GET /api/courses/{cid}/activities?page=N&page_size=100`（備援）
+    ///   5. `GET /api/todos`（最後手段：說明／附件可能沒有，但至少標題時間齊全）
+    ///
+    /// 回 `Ok(None)` 代表「上游沒有這份作業的資料」——呼叫端顯示提示，不視為錯誤。
+    #[instrument(skip(self))]
+    pub async fn get_homework_detail(
+        &self,
+        course_id: Option<u64>,
+        item_id: u64,
+    ) -> Result<Option<HomeworkDetail>> {
+        let mut best: Option<HomeworkDetail> = None;
+        // ① 單一資源端點（不確定是否存在的兩條路徑；HTML／非 JSON 一律視為未命中）。
+        if let Some(course_id) = course_id {
+            let mut singles = vec![
+                format!(
+                    "{}/api/courses/{course_id}/homework-activities/{item_id}",
+                    self.base_url
+                ),
+                format!("{}/api/homework-activities/{item_id}", self.base_url),
+            ];
+            singles.dedup();
+            for url in singles {
+                if let Some(json) = self.get_json_value(&url).await {
+                    if let Some(node) = find_activity_node(&json, item_id) {
+                        consider_homework_detail(&mut best, node, Some(course_id), item_id, "activity-single", None);
+                        if best.is_some() {
+                            return Ok(best);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ② 課程層級的列表端點（逐頁掃描）。
+        //
+        // 分頁規則：每一頁都整份 BFS 找 item_id；**一旦命中就停止翻頁**——同一份作業
+        // 只會落在其中一頁，後面的頁面是「別的作業」，繼續掃只是浪費上游往返。
+        // 兩個端點（homework-activities／activities）都試，是因為兩者的 submitted
+        // 與說明欄位完整度不同（fix23 SUBMISSION_PAGINATION_V1 的同一個已知現象）。
+        if let Some(course_id) = course_id {
+            for endpoint in ["homework-activities", "activities"] {
+                let mut page = 1u64;
+                loop {
+                    let url = format!(
+                        "{}/api/courses/{course_id}/{endpoint}?page={page}&page_size={HOMEWORK_DETAIL_PAGE_SIZE}",
+                        self.base_url
+                    );
+                    let Some(json) = self.get_json_value(&url).await else {
+                        break;
+                    };
+                    if let Some(node) = find_activity_node(&json, item_id) {
+                        consider_homework_detail(&mut best, node, Some(course_id), item_id, endpoint, None);
+                        break;
+                    }
+                    let pages = json.get("pages").and_then(|v| v.as_u64()).unwrap_or(1);
+                    if page >= pages.max(1) || page >= HOMEWORK_DETAIL_MAX_PAGES {
+                        break;
+                    }
+                    page += 1;
+                }
+                // 已經拿到說明或附件就不必再試其他端點（省上游往返）。
+                if best.as_ref().is_some_and(|detail| {
+                    !detail.description_html.is_empty() || !detail.attachments.is_empty()
+                }) {
+                    return Ok(best);
+                }
+            }
+        }
+
+        // ③ 全域待辦（最後手段）。
+        let todos_url = format!("{}/api/todos", self.base_url);
+        if let Some(json) = self.get_json_value(&todos_url).await {
+            if let Some(node) = find_activity_node(&json, item_id) {
+                consider_homework_detail(&mut best, node, course_id, item_id, "todos", None);
+            }
+        }
+
+        Ok(best)
+    }
+
+    /// HOMEWORK_DETAIL_V1：抓一個端點並要求「真的是 JSON 物件」。
+    ///
+    /// iClass 對未知路徑可能回 SPA 的 HTML 殼（HTTP 200）——那種情況必須視為
+    /// 未命中，否則後續解析會拿到整包 HTML。非 2xx 一律 `None`（不當錯誤）。
+    async fn get_json_value(&self, url: &str) -> Option<serde_json::Value> {
+        let resp = self.client.get(url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = resp.bytes().await.ok()?;
+        let first = bytes.iter().copied().find(|b| !b.is_ascii_whitespace());
+        if first != Some(b'{') && first != Some(b'[') {
+            return None;
+        }
+        serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+    }
+}
+
+// ─── HOMEWORK_SUBMIT_V1（fix42）：面板內直接繳交作業 ─────────────────────────
+//
+// 2026-09-15 以真實 iClass（淡江）session 逐步實測確認的流程：
+//   1. `POST /api/uploads`（JSON：name／size／parent_type／parent_id／is_scorm／is_wmpkg）
+//      → 201，回一組 upload 佔位（`{id, name, upload_url, storage_type, transcoder, key}`）。
+//   2. `PUT {upload_url}`（multipart，欄位名固定 `file`）→ 200，位元組進物件儲存。
+//      淡江站台 `storage_type=S3`、`transcoder=MEDIA` 走的就是這一條；只有
+//      `S3 + WRPC` 才需要再補打 `/internal-api/upload/callback/{id}`（iClass 前端
+//      `isUploadCallback` 的判斷式），本模組不需要。
+//   3. `POST /api/course/activities/{activity_id}/submissions`
+//      body `{"comment": "…", "uploads": [upload_id…], "slides": [], "is_draft": false}`
+//      → 建立一次繳交；再呼叫一次就是「重新繳交」，上游會保留新版本。
+//      （同一條路徑的 `PUT` 是更新既有版本：OPTIONS 實測 Allow: PUT, OPTIONS, POST。）
+//   4. `GET /api/course/activities/{activity_id}/students/{user_id}/submission`
+//      讀回目前版本（沒繳交過時上游回 404，實測）。
+//
+// 為什麼由伺服器端代打：與點名（`api/rollcall.rs` 的
+// `PUT /api/rollcall/{id}/answer_number_rollcall`）同一條路線——用已保存的登入
+// session 直接寫入上游，瀏覽器完全不必碰 iClass 的 cookie，也不會再遇到
+// 「跳轉到 iClass 後被登出」那類問題。
+
+/// 繳交說明（`comment`）在面板端的上限。超過就整筆拒絕，不默默截斷。
+pub const HOMEWORK_SUBMIT_MAX_COMMENT_CHARS: usize = 2000;
+
+/// `POST /api/uploads` 的回應（只留面板會用到的欄位）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadTicket {
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
+    /// 上游給的簽章上傳網址（含 token，有時效性）。
+    #[serde(default)]
+    pub upload_url: String,
+    #[serde(default)]
+    pub storage_type: Option<String>,
+    #[serde(default)]
+    pub transcoder: Option<String>,
+}
+
+/// 繳交版本裡的一個檔案（回給前端顯示用）。
+#[derive(Debug, Clone, Serialize)]
+pub struct HomeworkSubmissionUpload {
+    pub upload_id: Option<u64>,
+    pub name: String,
+    pub size: Option<u64>,
+}
+
+/// 目前繳交版本的摘要。刻意只挑「顯示用」欄位——上游回應裡還有
+/// `created_by`（含系級、學號）、`submission_correct` 等，沒有必要整包送進瀏覽器。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct HomeworkSubmissionSummary {
+    /// 上游的 `marked_submitted`（true = 真的送出了，false = 只存了草稿）。
+    pub submitted: bool,
+    pub submission_id: Option<u64>,
+    pub submitted_at: Option<String>,
+    pub created_at: Option<String>,
+    pub marked_submitted: bool,
+    pub is_draft: bool,
+    pub is_resubmitted: bool,
+    pub is_redo: bool,
+    pub submit_by_instructor: bool,
+    pub comment: String,
+    #[serde(skip_serializing_if = "is_false_flag")]
+    pub comment_truncated: bool,
+    pub uploads: Vec<HomeworkSubmissionUpload>,
+}
+
+/// `serde(skip_serializing_if)` 用：false 時不輸出這個欄位。
+fn is_false_flag(value: &bool) -> bool {
+    !*value
+}
+
+fn value_str_at(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+fn value_bool_at(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// 把上游的 submission JSON 收斂成面板要用的摘要（純函式，可單元測試）。
+pub fn summarize_submission(value: &serde_json::Value) -> HomeworkSubmissionSummary {
+    let uploads = value
+        .get("uploads")
+        .and_then(|v| v.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| HomeworkSubmissionUpload {
+                    upload_id: item.get("id").and_then(|v| v.as_u64()),
+                    name: item
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    size: item.get("size").and_then(|v| v.as_u64()),
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let raw_comment = value
+        .get("comment")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let comment = crate::text_utils::truncate_chars(raw_comment, HOMEWORK_SUBMIT_MAX_COMMENT_CHARS)
+        .to_string();
+
+    let marked_submitted = value_bool_at(value, "marked_submitted");
+    HomeworkSubmissionSummary {
+        submitted: marked_submitted,
+        submission_id: value.get("id").and_then(|v| v.as_u64()),
+        submitted_at: value_str_at(value, "submitted_at"),
+        created_at: value_str_at(value, "created_at"),
+        marked_submitted,
+        is_draft: value_bool_at(value, "is_draft"),
+        is_resubmitted: value_bool_at(value, "is_resubmitted"),
+        is_redo: value_bool_at(value, "is_redo"),
+        submit_by_instructor: value_bool_at(value, "submit_by_instructor"),
+        comment_truncated: raw_comment.chars().count() > comment.chars().count(),
+        comment,
+        uploads,
+    }
+}
+
+/// 上傳網址只允許 http/https，且不得指向本機或內網（SSRF 防線）。
+///
+/// `upload_url` 是上游回應給的，正常一定是學校自己的物件儲存
+/// （實測站台為學校自有的物件儲存主機 `https://tc-media.<校網>/upload/file/{id}?…`）；
+/// 仍然驗一次，避免上游回應被替換時，面板變成「帶著請求去戳內網」的跳板。
+pub fn is_safe_upload_url(raw: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(raw) else {
+        return false;
+    };
+    if parsed.scheme() != "https" && parsed.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() || host == "localhost" || host.ends_with(".localhost") {
+        return false;
+    }
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                // 255.255.255.255（廣播）
+                || v4.octets() == [255, 255, 255, 255]
+                // 0.0.0.0/8
+                || v4.octets()[0] == 0)
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let segments = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                // fc00::/7 unique-local
+                || (segments[0] & 0xfe00) == 0xfc00
+                // fe80::/10 link-local
+                || (segments[0] & 0xffc0) == 0xfe80)
+        }
+        // 不是 IP 字面值 → 是一般網域，交由 DNS／TLS 決定。
+        Err(_) => true,
+    }
+}
+
+impl super::ApiClient {
+    /// HOMEWORK_SUBMIT_V1：向 iClass 建立 upload 佔位（位元組還沒上傳）。
+    ///
+    /// `name` 必須先過面板的檔名檢查（`safe_file_name`）；`size` 只用於上游預留，
+    /// 真正的大小以實際 PUT 的內容為準。
+    #[instrument(skip(self), fields(size = size))]
+    pub async fn create_upload_ticket(&self, name: &str, size: u64) -> Result<UploadTicket> {
+        let url = format!("{}/api/uploads", self.base_url);
+        let body = serde_json::json!({
+            "name": name,
+            "size": size,
+            // 上游前端在「作業繳交」情境帶的是空 parent，實測可行。
+            "parent_type": serde_json::Value::Null,
+            "parent_id": 0,
+            "is_scorm": false,
+            "is_wmpkg": false,
+        });
+        debug!(url = %url, "POST /api/uploads");
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .into_diagnostic()
+            .wrap_err("POST /api/uploads failed")?;
+        self.handle_response(resp).await
+    }
+
+    /// HOMEWORK_SUBMIT_V1：把位元組 PUT 到上游給的簽章網址（multipart，欄位名 `file`）。
+    ///
+    /// 淡江的儲存後端是 S3 但 `transcoder` 不是 `WRPC`，因此走的就是 iClass 前端
+    /// `upload2Local()` 的通用分支：multipart PUT，不需要 callback。
+    #[instrument(skip(self, bytes), fields(size = bytes.len()))]
+    pub async fn put_upload_content(
+        &self,
+        ticket: &UploadTicket,
+        name: &str,
+        content_type: Option<&str>,
+        bytes: Vec<u8>,
+    ) -> Result<()> {
+        if !is_safe_upload_url(&ticket.upload_url) {
+            return Err(miette::miette!(
+                "上游回傳的上傳網址不安全（非 http(s) 或指向內網），已中止繳交"
+            ));
+        }
+
+        // COMPILE_FIX_V2（fix42 revC）：`Part::mime_str(self, mime)` 會**取走 self**
+        // （reqwest 0.12.28：`pub fn mime_str(self, mime: &str) -> crate::Result<Part>`），
+        // 所以不能寫成 `if let Ok(p) = part.mime_str(..) { part = p }`——解析失敗那條路徑
+        // `part` 已被取走、又沒有重新賦值，後面再用 `part` 就是 rustc E0382。
+        // 改成「先把 Content-Type 準備好，再當最後一步鏈上去」：`Part::headers(self, ..)`
+        // 同樣取走 self，但它是鏈式呼叫的最後一步，不會再有後續使用。
+        // （`mime` 為 None 時 reqwest 只會輸出我們放進 map 的那一個 content-type，
+        //  不會重複——見 reqwest 原始碼 compute_headers 的組裝順序。）
+        let mut part_headers = reqwest::header::HeaderMap::new();
+        if let Some(content_type) = content_type.map(str::trim).filter(|v| !v.is_empty()) {
+            // 上游只把 mime 當提示；不合法就整段不帶，不讓整筆繳交失敗。
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(content_type) {
+                part_headers.insert(reqwest::header::CONTENT_TYPE, value);
+            }
+        }
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(name.to_string())
+            .headers(part_headers);
+        let form = reqwest::multipart::Form::new().part("file", part);
+
+        let resp = self
+            .client
+            .put(&ticket.upload_url)
+            .multipart(form)
+            .send()
+            .await
+            .into_diagnostic()
+            .wrap_err("PUT upload_url failed")?;
+        let status = resp.status();
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return Err(miette::miette!(crate::api::ApiError::Unauthorized));
+        }
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(miette::miette!(crate::api::ApiError::ApiStatus {
+                status: status.as_u16(),
+                body: crate::text_utils::truncate_chars(&body, 300).to_string(),
+            }));
+        }
+        Ok(())
+    }
+
+    /// HOMEWORK_SUBMIT_V1：建立繳交（再次呼叫＝重新繳交，上游保留新版本）。
+    ///
+    /// 上游的驗證錯誤（逾期、已關閉、檔案不符規定…）會以非 2xx 回應，這裡原樣
+    /// 轉成 `ApiStatus`，讓前端能顯示學校真正的理由。
+    #[instrument(skip(self, upload_ids, comment), fields(upload_count = upload_ids.len()))]
+    pub async fn create_homework_submission(
+        &self,
+        activity_id: u64,
+        upload_ids: &[u64],
+        comment: &str,
+        is_draft: bool,
+    ) -> Result<serde_json::Value> {
+        let url = format!(
+            "{}/api/course/activities/{activity_id}/submissions",
+            self.base_url
+        );
+        let body = serde_json::json!({
+            "comment": comment,
+            "uploads": upload_ids,
+            "slides": [],
+            "is_draft": is_draft,
+        });
+        debug!(url = %url, uploads = upload_ids.len(), is_draft, "POST submissions");
+
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .into_diagnostic()
+            .wrap_err("POST /api/course/activities/{id}/submissions failed")?;
+
+        let status = resp.status();
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return Err(miette::miette!(crate::api::ApiError::Unauthorized));
+        }
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(miette::miette!(crate::api::ApiError::ApiStatus {
+                status: status.as_u16(),
+                body: crate::text_utils::truncate_chars(&text, 500).to_string(),
+            }));
+        }
+        if text.trim().is_empty() {
+            // 上游若回 204／空 body，呼叫端仍可視為成功（前端之後會重讀狀態）。
+            return Ok(serde_json::json!({}));
+        }
+        serde_json::from_str::<serde_json::Value>(&text).map_err(|_| {
+            miette::miette!(crate::api::ApiError::Json(
+                crate::text_utils::truncate_chars(&text, 300).to_string()
+            ))
+        })
+    }
+
+    /// HOMEWORK_SUBMIT_V1：讀回「我在這份作業的目前繳交版本」。
+    ///
+    /// 沒繳交過時上游回 404（實測）→ `Ok(None)`；若回 HTML（session 失效被導到
+    /// 登入頁）則視為認證錯誤，讓呼叫端走重登重試。
+    #[instrument(skip(self))]
+    pub async fn get_my_homework_submission(
+        &self,
+        activity_id: u64,
+        user_id: u64,
+    ) -> Result<Option<serde_json::Value>> {
+        let url = format!(
+            "{}/api/course/activities/{activity_id}/students/{user_id}/submission",
+            self.base_url
+        );
+        debug!(url = %url, "GET student submission");
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .into_diagnostic()
+            .wrap_err("GET student submission failed")?;
+
+        let status = resp.status();
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+            return Err(miette::miette!(crate::api::ApiError::Unauthorized));
+        }
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(miette::miette!(crate::api::ApiError::ApiStatus {
+                status: status.as_u16(),
+                body: crate::text_utils::truncate_chars(&text, 300).to_string(),
+            }));
+        }
+        if text.trim_start().starts_with('<') {
+            // SPA 的 HTML 殼（未登入）——不是「沒繳交」，要讓上層重登。
+            return Err(miette::miette!(crate::api::ApiError::Unauthorized));
+        }
+        if text.trim().is_empty() {
+            return Ok(None);
+        }
+        match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(value) => Ok(Some(value)),
+            Err(_) => Ok(None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod homework_submit_tests {
+    use super::*;
+
+    /// 2026-09-15 以真實 session 抓回的回應（已去識別化，結構原樣保留）。
+    fn sample_submission_json() -> serde_json::Value {
+        serde_json::json!({
+            "activity_id": 9000001,
+            "comment": "",
+            "created_at": "2026-09-14T07:40:56Z",
+            "id": 8000002,
+            "is_draft": false,
+            "is_redo": false,
+            "is_resubmitted": false,
+            "marked_submitted": true,
+            "mode": "normal",
+            "submit_by_instructor": false,
+            "submitted_at": "2026-09-14T07:40:56Z",
+            "uploads": [
+                {
+                    "id": 7000003,
+                    "name": "homework-report-v1.pdf",
+                    "size": 133979,
+                    "status": "ready",
+                    "type": "document"
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn summarize_submission_reads_real_shape() {
+        let summary = summarize_submission(&sample_submission_json());
+        assert!(summary.submitted);
+        assert!(summary.marked_submitted);
+        assert!(!summary.is_draft);
+        assert!(!summary.is_resubmitted);
+        assert_eq!(summary.submission_id, Some(8000002));
+        assert_eq!(summary.submitted_at.as_deref(), Some("2026-09-14T07:40:56Z"));
+        assert_eq!(summary.uploads.len(), 1);
+        assert_eq!(summary.uploads[0].upload_id, Some(7000003));
+        assert_eq!(summary.uploads[0].name, "homework-report-v1.pdf");
+        assert_eq!(summary.uploads[0].size, Some(133979));
+        assert!(!summary.comment_truncated);
+    }
+
+    #[test]
+    fn summarize_submission_handles_empty_and_draft() {
+        let empty = summarize_submission(&serde_json::json!({}));
+        assert!(!empty.submitted);
+        assert_eq!(empty.submission_id, None);
+        assert!(empty.uploads.is_empty());
+
+        // is_draft = true → 只存草稿，不算已繳交。
+        let draft = summarize_submission(&serde_json::json!({
+            "id": 1,
+            "marked_submitted": false,
+            "is_draft": true
+        }));
+        assert!(!draft.submitted);
+        assert!(draft.is_draft);
+    }
+
+    #[test]
+    fn summarize_submission_truncates_long_comment() {
+        let long = "字".repeat(HOMEWORK_SUBMIT_MAX_COMMENT_CHARS + 10);
+        let summary = summarize_submission(&serde_json::json!({ "comment": long }));
+        assert!(summary.comment_truncated);
+        assert_eq!(
+            summary.comment.chars().count(),
+            HOMEWORK_SUBMIT_MAX_COMMENT_CHARS
+        );
+    }
+
+    #[test]
+    fn safe_upload_url_allows_public_hosts() {
+        assert!(is_safe_upload_url(
+            "https://media.example.edu.tw/upload/file/10000007?token=abc"
+        ));
+        assert!(is_safe_upload_url("http://storage.example.edu.tw/put"));
+        assert!(is_safe_upload_url("https://8.8.8.8/put"));
+    }
+
+    #[test]
+    fn safe_upload_url_rejects_internal_and_bad_schemes() {
+        for bad in [
+            "",
+            "not a url",
+            "file:///etc/passwd",
+            "ftp://example.com/put",
+            "javascript:alert(1)",
+            "https://localhost/put",
+            "https://localhost.:8080/put",
+            "https://127.0.0.1/put",
+            "https://10.1.2.3/put",
+            "https://192.168.0.1/put",
+            "https://172.16.5.5/put",
+            "https://169.254.1.1/put",
+            "https://0.0.0.0/put",
+            "https://[::1]/put",
+            "https://[fd00::1]/put",
+            "https://[fe80::1]/put",
+        ] {
+            assert!(!is_safe_upload_url(bad), "應擋下：{bad}");
+        }
+    }
 }
 
 /// 從 `/api/my-courses` 解析出的單一課程。
@@ -1802,5 +2760,118 @@ mod tests {
         } else {
             panic!("exam-scores 應包含 165979");
         }
+    }
+}
+
+#[cfg(test)]
+mod homework_detail_tests {
+    use super::*;
+
+    fn parse(raw: &str) -> serde_json::Value {
+        serde_json::from_str(raw).expect("測試 JSON 必須合法")
+    }
+
+    /// HOMEWORK_DETAIL_V1：說明藏在 `data.description`（fix22 實測的形狀）。
+    #[test]
+    fn description_is_read_from_data_description() {
+        let node = parse(
+            r#"{"id": 263859, "title": "ASS #1", "data": {"description": "<p>請交報告</p>"}}"#,
+        );
+        assert_eq!(parse_homework_description(&node), "<p>請交報告</p>");
+
+        // 說明包成物件（部分回應是 {"text": …}）。
+        let wrapped = parse(r#"{"id": 1, "data": {"description": {"text": "hi"}}}"#);
+        assert_eq!(parse_homework_description(&wrapped), "hi");
+
+        // 沒有任何說明欄位 → 空字串（呼叫端優雅降級）。
+        let empty = parse(r#"{"id": 1, "title": "x"}"#);
+        assert_eq!(parse_homework_description(&empty), "");
+        assert_eq!(parse_homework_description(&parse("null")), "");
+    }
+
+    /// HOMEWORK_DETAIL_V1：附件可能叫 attachments／uploads／files，也可能是單一物件或字串。
+    #[test]
+    fn attachments_are_found_in_several_shapes() {
+        let uploads = parse(
+            r#"{"id": 1, "data": {"uploads": [{"id": 77, "name": "講義.pdf", "size": 1234}]}}"#,
+        );
+        let list = parse_homework_attachments(&uploads);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].upload_id, Some(77));
+        assert_eq!(list[0].name, "講義.pdf");
+        assert_eq!(list[0].size, Some(1234));
+
+        // 單一物件（不是陣列）。
+        let single = parse(r#"{"id": 1, "attachments": {"file_name": "a.docx"}}"#);
+        let list = parse_homework_attachments(&single);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "a.docx");
+        assert_eq!(list[0].upload_id, None, "沒有 id 就只顯示、不下載");
+
+        // 純字串陣列。
+        let strings = parse(r#"{"id": 1, "files": ["x.pdf", "y.pptx"]}"#);
+        assert_eq!(parse_homework_attachments(&strings).len(), 2);
+
+        // 重複（同一顆 id 同時出現在 attachments 與 uploads）只留一份。
+        let dup = parse(
+            r#"{"id": 1, "attachments": [{"id": 9, "name": "a"}], "uploads": [{"id": 9, "name": "a"}]}"#,
+        );
+        assert_eq!(parse_homework_attachments(&dup).len(), 1);
+
+        // 空／缺欄位。
+        assert!(parse_homework_attachments(&parse(r#"{"id": 1}"#)).is_empty());
+    }
+
+    /// HOMEWORK_DETAIL_V1：同一個 id 可能同時出現在多個端點／巢狀結構，
+    /// 必須挑「最豐富」的那一份（有說明＋附件者），且要能在深層找到。
+    #[test]
+    fn find_activity_node_prefers_the_richest_copy() {
+        let root = parse(
+            r#"{
+                "data": [
+                    {"id": 5, "title": "只有標題"},
+                    {"id": 42, "data": {"description": "<b>說明</b>",
+                        "uploads": [{"id": 3, "name": "附件.zip"}]}}
+                ],
+                "meta": {"id": 5}
+            }"#,
+        );
+        let node = find_activity_node(&root, 42).expect("應找到 id=42");
+        assert_eq!(node_id(node), Some(42));
+        let detail = build_homework_detail(node, None, Some(11), "test").expect("可組出詳情");
+        assert_eq!(detail.item.id, 42);
+        assert!(!detail.description_html.is_empty());
+        assert_eq!(detail.attachments.len(), 1);
+        assert_eq!(detail.item.course_id, Some(11), "fallback course_id 要補上");
+
+        // 同一 id 的兩份：豐富者勝出。
+        let richer = parse(
+            r#"{"data": [{"id": 7, "title": "t"}, {"id": 7, "data": {"description": "rich"}}]}"#,
+        );
+        let node = find_activity_node(&richer, 7).expect("應找到 id=7");
+        assert_eq!(parse_homework_description(node), "rich");
+
+        // 找不到就是 None（不 panic、不誤抓別的作業）。
+        assert!(find_activity_node(&parse(r#"{"data": [{"id": 1}]}"#), 99).is_none());
+    }
+
+    /// HOMEWORK_DETAIL_V1：`has_images` 只反映「說明裡有沒有 <img>」，供前端提示。
+    #[test]
+    fn has_images_flag_follows_the_description() {
+        let node = parse(r#"{"id": 1, "data": {"description": "<p>看圖</p><IMG src='x'>"}}"#);
+        let detail = build_homework_detail(&node, None, None, "test").unwrap();
+        assert!(detail.has_images, "IMG 大小寫都要認得");
+
+        let text_only = parse(r#"{"id": 1, "data": {"description": "純文字"}}"#);
+        assert!(!build_homework_detail(&text_only, None, None, "test").unwrap().has_images);
+    }
+
+    /// HOMEWORK_DETAIL_V1：深連結格式必須與 tc_go_handler 一致（同一條規則兩處同步）。
+    #[test]
+    fn deep_link_matches_the_tc_go_path_shape() {
+        assert_eq!(
+            iclass_activity_deep_link("https://iclass.tku.edu.tw/", 1234, 5678),
+            "https://iclass.tku.edu.tw/course/1234/learning-activity/full-screen#5678"
+        );
     }
 }
