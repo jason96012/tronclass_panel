@@ -356,37 +356,71 @@
   // Word 另存網頁（HTML），JSZip 對這些只會丟出難懂的
   // "Can't find end of central directory"。先嗅探才能給出有意義的說明。
   function officeSniff(buf) {
-    var u = new Uint8Array(buf.slice ? buf.slice(0, 8) : buf);
-    if (u.length >= 2 && u[0] === 0x50 && u[1] === 0x4B) return 'zip';
-    if (u.length >= 4 && u[0] === 0xD0 && u[1] === 0xCF &&
-        u[2] === 0x11 && u[3] === 0xE0) return 'ole2';
+    var bytes = new Uint8Array(buf.slice ? buf.slice(0, 512) : buf);
+    if (bytes.length >= 2 && bytes[0] === 0x50 && bytes[1] === 0x4B) return 'zip';
+    // BOM_PREFIX_ZIP_V1：少數工具會在 zip 前面塞 UTF-8 BOM，前面的魔數檢查
+    // 就看不出它是 zip；這種檔案只要跳過 BOM 就能正常解析。
+    if (bytes.length >= 5 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF &&
+        bytes[3] === 0x50 && bytes[4] === 0x4B) return 'zip-bom';
+    if (bytes.length >= 4 && bytes[0] === 0xD0 && bytes[1] === 0xCF &&
+        bytes[2] === 0x11 && bytes[3] === 0xE0) return 'ole2';
+    if (bytes.length >= 4 && bytes[0] === 0x25 && bytes[1] === 0x50 &&
+        bytes[2] === 0x44 && bytes[3] === 0x46) return 'pdf';
     var head = '';
     try {
-      var bytes = new Uint8Array(buf.slice ? buf.slice(0, 512) : buf);
       for (var i = 0; i < bytes.length; i++) head += String.fromCharCode(bytes[i]);
     } catch (e2) { return 'unknown'; }
-    if (/^\{\\rtf/i.test(head.replace(/^\s+/, ''))) return 'rtf';
-    if (/^\s*</.test(head) || /<html|<body|<\?xml|MIME-Version/i.test(head)) return 'html';
+    var trimmed = head.replace(/^[\s\uFEFF]+/, '');
+    if (/^\{\\rtf/i.test(trimmed)) return 'rtf';
+    // JSON_SNIFF_V1：iClass 的 API 錯誤常以 JSON、HTTP 200 回覆，伺服器若原封
+    // 不動轉出來，使用者看到的「.docx」其實是一段 JSON。
+    if (/^\{|^\[/.test(trimmed)) return 'json';
+    if (/^</.test(trimmed) || /<html|<body|<\?xml|MIME-Version/i.test(head)) return 'html';
     return 'unknown';
   }
 
+  // OFFICE_SNIFF_INFO_V1：給診斷訊息用的開頭位元組（hex ＋ 可列印字元），
+  // 讓「內容與副檔名不符」不再是死路——使用者一眼就能看出伺服器回了什麼。
+  function headHexAndAscii(buf) {
+    var bytes;
+    try {
+      bytes = new Uint8Array(buf.slice ? buf.slice(0, 16) : buf).subarray(0, 16);
+    } catch (e) { return ''; }
+    var hex = [], ascii = '';
+    for (var i = 0; i < bytes.length; i++) {
+      var b = bytes[i];
+      hex.push(('0' + b.toString(16).toUpperCase()).slice(-2));
+      ascii += (b >= 0x20 && b < 0x7F) ? String.fromCharCode(b) : '.';
+    }
+    return hex.join(' ') + '  |' + ascii + '|';
+  }
+
   // 針對「副檔名說是 zip 類 Office、實際卻不是」的檔案，產生清楚說明。
-  function nonZipOfficeMessage(kind, ext) {
+  function nonZipOfficeMessage(kind, ext, buf) {
     var what = {
       ole2: '舊版二進位格式（OLE2，即 .doc/.ppt/.xls 時代的結構）',
       html: 'HTML／網頁存檔格式（Word「另存網頁」產生的檔案）',
+      pdf: 'PDF 檔（副檔名與內容不符）',
+      json: 'JSON 內容（多半是伺服器或學校 API 的錯誤回應）',
       rtf: 'RTF 富文字格式',
       unknown: '無法辨識的二進位內容'
     }[kind] || '無法辨識的內容';
     var hint = kind === 'ole2'
       ? '請按上方「下載」後以 Word／PowerPoint／Excel 開啟。'
       : kind === 'html'
-        ? '可下載後直接用瀏覽器或 Word 開啟。'
-        : kind === 'rtf'
-          ? '此副檔名應為 .rtf 才能走 RTF 預覽；請下載查看。'
-          : '檔案內容與副檔名 .' + ext + ' 不符（也可能伺服器回傳了錯誤頁），請下載查看。';
+        ? '這通常是 iClass 的登入頁或錯誤頁（session 可能已過期）。請按「下載」查看，或回上一頁重新整理後再試。'
+        : kind === 'pdf'
+          ? '內容其實是 PDF，請按「下載」取得後用 PDF 檢視器開啟。'
+          : kind === 'json'
+            ? '伺服器回傳的是 JSON 而不是檔案，請稍後再試；若持續發生，請附上下方診斷資訊回報。'
+            : kind === 'rtf'
+              ? '此副檔名應為 .rtf 才能走 RTF 預覽；請下載查看。'
+              : '檔案內容與副檔名 .' + ext + ' 不符，請下載查看（下方診斷資訊可協助找出原因）。';
+    var diag = buf ? headHexAndAscii(buf) : '';
     return '<div class="tron-office-error">這個 .' + ext + ' 檔案實際為' + what +
-      '，不是標準 OOXML zip 結構，無法在本機預覽。' + hint + '</div>';
+      '，不是標準 OOXML zip 結構，無法在本機預覽。' + hint +
+      (diag ? '<div class="tron-office-diag">開頭位元組：' + diag + '</div>' : '') +
+      '</div>';
   }
 
   async function renderWord(arrayBuffer) {
@@ -843,7 +877,15 @@
           e === 'odt' || e === 'ods' || e === 'odp') {
         var kind = officeSniff(arrayBuffer);
         if (kind === 'rtf') return renderRtf(arrayBuffer);
-        if (kind !== 'zip') return nonZipOfficeMessage(kind, e);
+        // BOM_PREFIX_ZIP_V1：剝掉 BOM 後就是正常的 zip，照常解析。
+        if (kind === 'zip-bom') {
+          var raw = arrayBuffer instanceof Uint8Array
+            ? arrayBuffer
+            : new Uint8Array(arrayBuffer);
+          arrayBuffer = raw.subarray(3);
+        } else if (kind !== 'zip') {
+          return nonZipOfficeMessage(kind, e, arrayBuffer);
+        }
       }
       if (e === 'docx') return renderWord(arrayBuffer);
       if (e === 'pptx') return api.render(arrayBuffer);

@@ -103,6 +103,9 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 .filter-dropdowns select,.filter-dropdowns input{min-height:38px;border:1px solid var(--ds-line);background:var(--ds-input);color:var(--ds-text);border-radius:10px;padding:0 12px;font:inherit;font-size:13px;outline:none}
 .filter-dropdowns input{min-width:200px}
 .filter-dropdowns select:focus,.filter-dropdowns input:focus{border-color:#3b82f6;box-shadow:0 0 0 3px rgba(59,130,246,.13)}
+/* HOMEWORK_PAGE_CURRENT_ONLY_V1（fix45） */
+.hw-semester-note{margin-top:10px;font-size:12.5px;line-height:1.6;color:var(--ds-muted,#64748b)}
+.status-pill.semester-old{background:rgba(148,163,184,.18);color:var(--ds-muted,#64748b)}
 .account-selector{display:flex;align-items:center;gap:8px;min-width:0}
 .account-selector label{font-size:12px;font-weight:750;color:var(--ds-muted);flex:0 0 auto}
 .account-selector select{
@@ -451,6 +454,10 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
   .tron-slide-img{position:absolute}
   .tron-office-error{padding:36px 18px;text-align:center;color:var(--muted,#64748b);border:1px dashed var(--line2,#e2e8f0);border-radius:14px;font-size:13px}
+  /* HOMEWORK_FILE_DIAG_V1（fix47）：內容與副檔名不符時，附上開頭位元組等診斷資訊。 */
+  .tron-office-diag{margin-top:10px;padding:8px 10px;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted,#64748b);background:rgba(148,163,184,.12);border-radius:8px;word-break:break-all;text-align:left}
+  .hw-preview-diag{padding:12px 14px;border-radius:10px;background:rgba(148,163,184,.12);font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted,#64748b);white-space:pre-wrap;word-break:break-word;margin-top:10px;text-align:left}
+  .hw-preview-snippet{margin:0;padding:12px 14px;border:1px solid var(--line2,#e2e8f0);border-radius:10px;background:var(--card,#fff);font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto}
   .tron-office-note{padding:10px 12px;font-size:12px;color:var(--muted,#64748b);background:var(--card,#fff);border-top:1px solid var(--line2,#e2e8f0)}
   .tron-xlsx,.tron-odf{overflow:auto;box-sizing:border-box;padding:0}
   .tron-odf{padding:20px 24px;line-height:1.5;font-size:14px}
@@ -623,6 +630,12 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     </div>
 
     <div class="filter-dropdowns">
+      <!-- HOMEWORK_PAGE_CURRENT_ONLY_V1（fix45）：預設只顯示當學期作業。
+           判定在伺服器端做（semester_current），這裡只是「要看哪個範圍」的開關。 -->
+      <select id="semesterScope" aria-label="學期範圍" title="預設只顯示本學期作業">
+        <option value="current">🗓️ 只看當學期</option>
+        <option value="all">🗂️ 含舊學期作業</option>
+      </select>
       <select id="courseFilter" aria-label="課程篩選">
         <option value="">全部課程</option>
       </select>
@@ -633,6 +646,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       </select>
       <input type="search" id="searchInput" placeholder="搜尋作業名稱 / 課程..." aria-label="搜尋作業">
     </div>
+    <div class="hw-semester-note" id="semesterNote" hidden></div>
     </div>
     </div>
   </section>
@@ -652,6 +666,39 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
   'use strict';
   const q = id => document.getElementById(id);
   let allItems = [];
+
+  // ── HOMEWORK_PAGE_CURRENT_ONLY_V1（fix45）：作業頁預設只顯示「當學期」 ────────
+  // 判定由伺服器端做（`semester_current`，見 src/api/todos.rs 的 label_semester_current）：
+  //   true       ＝ 當學期（截止日不早於本學期起點，或所屬課程確定是當學期）
+  //   false      ＝ 非當學期（舊課，或截止日早於本學期起點）
+  //   null／缺欄 ＝ 無從判定 → **一律保留**（寧可多顯示，也不要誤藏使用者的作業）
+  // 使用者可用「學期範圍」切回「全部學期」查看舊作業，切換時會顯示隱藏了幾筆。
+  function semesterScopeAll() {
+    const el = q('semesterScope');
+    return !!el && el.value === 'all';
+  }
+
+  function isCurrentSemesterItem(item) {
+    return item.semester_current !== false;
+  }
+
+  function scopedItems() {
+    return semesterScopeAll() ? allItems : allItems.filter(isCurrentSemesterItem);
+  }
+
+  function updateSemesterNote() {
+    const note = q('semesterNote');
+    if (!note) return;
+    const hidden = allItems.length - allItems.filter(isCurrentSemesterItem).length;
+    if (semesterScopeAll() || hidden <= 0) {
+      note.hidden = true;
+      note.textContent = '';
+      return;
+    }
+    note.hidden = false;
+    note.textContent = `已隱藏 ${hidden} 筆非當學期作業（可切換上方「學期範圍」為「含舊學期作業」查看）。`;
+  }
+
   // 使用者手動標記「已完成」的作業 id 集合（HOMEWORK_USER_COMPLETED_V1）。
   let userCompleted = new Set();
   let currentFilter = 'pending';
@@ -813,7 +860,8 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 
     const courseSet = new Set();
 
-    allItems.forEach(item => {
+    // 統計與課程下拉都只反映「目前學期範圍」看得到的項目。
+    scopedItems().forEach(item => {
       if (item.course_name) courseSet.add(item.course_name);
       const isSubmitted = item.is_submitted || userCompleted.has(String(item.id)) || ['submitted', 'graded', 'group_submitted', 'completed', 'pass', 'passed'].includes((item.submission_status || '').toLowerCase());
       const rem = getRemainingMs(item.end_time);
@@ -839,7 +887,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     q('statPending').textContent = countPending;
     q('statSubmitted').textContent = countSubmitted;
 
-    q('countAll').textContent = allItems.length;
+    q('countAll').textContent = scopedItems().length;
     q('countPending').textContent = countPending;
     q('countUrgent').textContent = countUrgent;
     q('countSubmitted').textContent = countSubmitted;
@@ -859,6 +907,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     if (courseSet.has(selectedCourse)) {
       courseSelect.value = selectedCourse;
     }
+    updateSemesterNote();
   }
 
   // HOMEWORK_DETAIL_V1（fix41）：作業詳情彈窗。
@@ -1788,6 +1837,56 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     body.appendChild(pre);
   }
 
+  // HOMEWORK_FILE_DIAG_V1（fix47）：把「內容與副檔名不符」變成可自行判斷的資訊。
+  // 開頭 16 bytes 的 hex ＋ 可列印字元，足以分辨 iClass 登入頁（`<`）、API 錯誤
+  // （`{`）、舊版 OLE2（D0 CF 11 E0）或真正的損壞檔。
+  function hwHeadHexAscii(bytes) {
+    const part = bytes.slice(0, 16);
+    const hex = [];
+    let ascii = '';
+    for (let i = 0; i < part.length; i += 1) {
+      hex.push(('0' + part[i].toString(16).toUpperCase()).slice(-2));
+      ascii += part[i] >= 0x20 && part[i] < 0x7f ? String.fromCharCode(part[i]) : '.';
+    }
+    return hex.join(' ') + '  |' + ascii + '|';
+  }
+
+  function hwPreviewDiag(body, lines) {
+    const box = document.createElement('div');
+    box.className = 'hw-preview-diag';
+    box.textContent = lines.join('\n');
+    body.appendChild(box);
+  }
+
+  function hwPreviewSnippet(body, text) {
+    const pre = document.createElement('pre');
+    pre.className = 'hw-preview-snippet';
+    pre.textContent = text;
+    body.appendChild(pre);
+  }
+
+  // 伺服器回非 2xx 時，把 JSON 錯誤訊息（面板自己的說明）顯示出來，
+  // 而不是只顯示「HTTP 502」——fix47 起伺服器會明確說明上游回了什麼。
+  async function hwPreviewServerError(body, res) {
+    let detail = '';
+    try {
+      const text = await res.text();
+      try {
+        const parsed = JSON.parse(text);
+        detail = (parsed && (parsed.error || parsed.message)) || text;
+      } catch (err) {
+        detail = text;
+      }
+    } catch (err) { /* 讀不到 body 就算了 */ }
+    detail = String(detail || '').trim().slice(0, 400);
+    if (res.status === 401) {
+      hwPreviewNote(body, '面板登入狀態已逾期，請重新登入後再試。');
+      return;
+    }
+    hwPreviewNote(body, '取得檔案失敗（HTTP ' + res.status + '）' +
+      (detail ? '：' + detail : '') + '\n\n可先按右上角「下載」試試；若持續失敗，請把這段訊息回報。');
+  }
+
   async function hwPreviewOffice(url, ext, body) {
     hwPreviewNote(body, '正在載入 Office 檢視引擎…');
     if (window.__tronEnsureFileLib) {
@@ -1798,14 +1897,54 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       return;
     }
     let bytes = null;
+    let res = null;
     try {
-      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
-      if (!res.ok) throw new Error('HTTP ' + res.status);
+      res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) {
+        await hwPreviewServerError(body, res);
+        return;
+      }
       bytes = new Uint8Array(await res.arrayBuffer());
     } catch (err) {
       hwPreviewNote(body, '讀取失敗（' + ((err && err.message) || '未知錯誤') + '），請改用「下載」。');
       return;
     }
+
+    // CONTENT_SNIFF_BEFORE_RENDER_V1（fix47）：先看內容再說。
+    // 1) 內容其實是 PDF → 直接用面板的 PDF 檢視器顯示（副檔名錯不代表內容不能用）。
+    // 2) HTML／JSON → 那是 iClass 的登入頁或 API 錯誤，把內容與診斷資訊顯示出來，
+    //    使用者（與回報）才看得出真正原因，而不是只看到「無法辨識」。
+    const kind = window.TronOfficeView.sniff ? window.TronOfficeView.sniff(bytes) : '';
+    if (kind === 'pdf') {
+      hwPreviewNote(body, '這個 .' + ext + ' 檔案的內容其實是 PDF，改用 PDF 檢視器顯示…');
+      await hwPreviewPdf(url, body);
+      return;
+    }
+    if (kind === 'html' || kind === 'json') {
+      const contentType = (res.headers.get('content-type') || '').trim();
+      hwPreviewNote(body, kind === 'html'
+        ? '伺服器回傳的是 HTML 頁面（多半是 iClass 的登入頁或錯誤頁），不是這個檔案。'
+        : '伺服器回傳的是 JSON 內容（多半是 API 錯誤訊息），不是這個檔案。');
+      const text = new TextDecoder('utf-8').decode(bytes);
+      hwPreviewSnippet(body, text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 600) || text.slice(0, 600));
+      hwPreviewDiag(body, [
+        'HTTP ' + res.status + '　Content-Type: ' + (contentType || '(未提供)'),
+        '長度：' + bytes.length + ' bytes',
+        '開頭位元組：' + hwHeadHexAscii(bytes)
+      ]);
+      return;
+    }
+    if (kind === 'ole2') {
+      hwPreviewNote(body, '這個檔案是舊版二進位 Office 格式（.doc/.xls/.ppt 時代的結構），' +
+        '面板沒有可解析它的引擎。請按右上角「下載」後用 Word／Excel／PowerPoint 開啟。');
+      hwPreviewDiag(body, [
+        'HTTP ' + res.status + '　Content-Type: ' + ((res.headers.get('content-type') || '').trim() || '(未提供)'),
+        '長度：' + bytes.length + ' bytes',
+        '開頭位元組：' + hwHeadHexAscii(bytes)
+      ]);
+      return;
+    }
+
     try {
       const html = await window.TronOfficeView.preview(bytes, ext);
       body.textContent = '';
@@ -1826,7 +1965,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     const courseVal = q('courseFilter').value;
     const sortVal = q('sortFilter').value;
 
-    let filtered = allItems.filter(item => {
+    let filtered = scopedItems().filter(item => {
       const state = getItemState(item);
 
       if (currentFilter === 'pending' && (state === 'submitted' || state === 'overdue' || state === 'nolimit')) return false;
@@ -1858,7 +1997,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     });
 
     if (filtered.length === 0) {
-      if (currentFilter === 'pending' && allItems.length > 0) {
+      if (currentFilter === 'pending' && scopedItems().length > 0) {
         container.innerHTML = `
           <div class="empty-box">
             <h3>🎉 太棒了！目前沒有待繳交的作業</h3>
@@ -1949,6 +2088,11 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         ? '<span class="status-pill warn">⚠️ 允許遲交</span>'
         : '<span class="status-pill bad">❌ 不得遲交</span>';
 
+      // 「全部學期」範圍下，非當學期的項目加標籤，避免誤以為是本學期的作業。
+      const semesterChip = item.semester_current === false
+        ? '<span class="status-pill semester-old">🗂️ 非當學期</span>'
+        : '';
+
       let cardClass = 'hw-card';
       if (state === 'urgent') cardClass += ' urgent';
       else if (state === 'warn') cardClass += ' warn';
@@ -1979,6 +2123,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
             <div class="pill-row">
               <span class="status-pill ${statusClass}">${esc(statusText)}</span>
               ${lateNotice}
+              ${semesterChip}
             </div>
             <button class="hw-complete-btn ${userDone ? 'done' : ''}" type="button"
               data-hw-id="${esc(item.id)}" data-completed="${userDone ? '1' : '0'}"
@@ -2123,7 +2268,12 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       });
     });
 
-    q('courseFilter').addEventListener('change', renderList);
+      q('courseFilter').addEventListener('change', renderList);
+    // HOMEWORK_PAGE_CURRENT_ONLY_V1（fix45）：切換學期範圍要同時更新統計、課程下拉與提示。
+    q('semesterScope').addEventListener('change', function () {
+      updateMetrics();
+      renderList();
+    });
     q('sortFilter').addEventListener('change', renderList);
     q('searchInput').addEventListener('input', renderList);
 

@@ -33,6 +33,15 @@ pub(super) struct AdminFolderCreateRequest {
 }
 
 const MATERIALS_LIST_CACHE_TTL: Duration = Duration::from_secs(3);
+/// PREVIEW_REVALIDATE_V1（fix52）：預覽回應改為「一律回瀏覽器快取驗證」。
+///
+/// 原本是 `no-store`：每次打開預覽（含圖片、PDF）都重新把整份檔案抓一次，重複看同
+/// 一份教材等於重複下載。搭配檔案串流的 ETag，`must-revalidate` ＋ `max-age=0`
+/// 保證內容不會過期（每次都會問伺服器），但內容沒變時只回 304（沒有 body），
+/// 瀏覽器直接用快取——重開同一份教材幾乎立刻出現。
+///
+/// 維持 `private`：教材是登入後才看得到的內容，不能被共享快取留存。
+const PREVIEW_CACHE_CONTROL: &str = "private, max-age=0, must-revalidate";
 const MAX_MULTIPART_FIELDS: usize = 32;
 const MAX_UPLOAD_FILES: usize = 16;
 const MAX_MATERIAL_FILENAME_BYTES: usize = 255;
@@ -42,6 +51,106 @@ const MATERIAL_UPLOAD_CONCURRENCY: usize = 1;
 
 static MATERIAL_UPLOAD_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
     once_cell::sync::Lazy::new(|| Semaphore::new(MATERIAL_UPLOAD_CONCURRENCY));
+
+// UPLOAD_WRITE_BUFFER_V1（fix51）：上傳時的寫入合併緩衝。
+//
+// multer 每次交給我們的片段大小由上游 body frame 決定（通常是 8–64 KiB）。照原本
+// 「收到一片就 write 一次」的寫法，一個 50 MB 教材等於一千次左右的 write 系統呼叫，
+// 每一次都還要經過一次 tokio 的工作排程往返；合併成 8 MiB 之後同一個檔案只要 7 次，
+// 系統呼叫與排程開銷直接少兩個數量級，CPU 也就不再是上傳速度的天花板。
+//
+// 緩衝以「池」的形式保留一份重複使用（上限 8 MiB 常駐），連續上傳不必每次重新配置。
+const UPLOAD_WRITE_BUFFER_SIZE: usize = 8 * 1024 * 1024;
+
+static UPLOAD_WRITE_BUFFER_POOL: once_cell::sync::Lazy<std::sync::Mutex<Vec<Vec<u8>>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
+
+/// 取一個至少 `UPLOAD_WRITE_BUFFER_SIZE` 的緩衝；池空時新建。
+fn take_upload_write_buffer() -> Vec<u8> {
+    UPLOAD_WRITE_BUFFER_POOL
+        .lock()
+        .ok()
+        .and_then(|mut pool| pool.pop())
+        .filter(|buffer| buffer.capacity() >= UPLOAD_WRITE_BUFFER_SIZE)
+        .unwrap_or_else(|| Vec::with_capacity(UPLOAD_WRITE_BUFFER_SIZE))
+}
+
+/// 把緩衝還回池中。只保留一份；容量不對的直接丟掉讓 allocator 回收。
+fn return_upload_write_buffer(buffer: Vec<u8>) {
+    if buffer.capacity() < UPLOAD_WRITE_BUFFER_SIZE {
+        return;
+    }
+    if let Ok(mut pool) = UPLOAD_WRITE_BUFFER_POOL.lock() {
+        if pool.is_empty() {
+            pool.push(buffer);
+        }
+    }
+}
+
+async fn write_upload_buffer(out: &mut tokio::fs::File, buffer: &[u8]) -> std::io::Result<()> {
+    if !buffer.is_empty() {
+        out.write_all(buffer).await?;
+    }
+    Ok(())
+}
+
+/// 寫入失敗的回應（訊息與 fix50 之前完全一致，前端仍看得到同一句話）。
+fn upload_write_error(e: std::io::Error) -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(json!({ "error": format!("寫入暫存檔失敗：{e}") })),
+    )
+        .into_response()
+}
+
+// MATERIALS_USAGE_CACHE_V1（fix51）：教材總用量快取。
+//
+// 上傳前的 10 GB 配額檢查原本是「每一個檔案都掃一次整棵教材樹」。教材累積到幾千個
+// 檔案、又剛好冷快取時，第一個檔案的開頭會卡在這一輪 stat 上，而且每個檔案都要再來
+// 一次。改成：
+//   1. 讀取時最多沿用 60 秒內的結果（同一批上傳只有第一個檔案需要掃）；
+//   2. 每個檔案寫入完成後，用「掃描值 + 已寫入位元組」把準確值寫回快取；
+//   3. 刪檔／刪資料夾時直接失效——寧可多掃一次，也不要低估用量而超賣 10 GB 配額。
+const MATERIALS_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+static MATERIALS_USAGE_CACHE: once_cell::sync::Lazy<
+    tokio::sync::Mutex<Option<(PathBuf, Instant, u64)>>,
+> = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(None));
+
+/// 教材總用量：60 秒內沿用快取，過期才真的掃一次（掃描在 blocking 執行緒上跑）。
+async fn cached_materials_total_size(root: PathBuf) -> std::io::Result<u64> {
+    {
+        let cache = MATERIALS_USAGE_CACHE.lock().await;
+        if let Some((cached_root, scanned_at, size)) = cache.as_ref() {
+            if cached_root == &root && scanned_at.elapsed() <= MATERIALS_USAGE_CACHE_TTL {
+                return Ok(*size);
+            }
+        }
+    }
+    let scan_root = root.clone();
+    let size = match tokio::task::spawn_blocking(move || material_total_size(&scan_root)).await {
+        Ok(Ok(size)) => size,
+        Ok(Err(e)) => return Err(e),
+        Err(join) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("教材用量掃描失敗：{join}"),
+            ))
+        }
+    };
+    store_materials_total_size(&root, size).await;
+    Ok(size)
+}
+
+/// 用已知的準確值更新快取（上傳完成後呼叫，下一個檔案就不必再掃）。
+async fn store_materials_total_size(root: &std::path::Path, size: u64) {
+    let mut cache = MATERIALS_USAGE_CACHE.lock().await;
+    *cache = Some((root.to_path_buf(), Instant::now(), size));
+}
+
+async fn invalidate_materials_usage_cache() {
+    *MATERIALS_USAGE_CACHE.lock().await = None;
+}
 
 #[derive(Clone)]
 struct MaterialsListSnapshot {
@@ -117,7 +226,12 @@ async fn cached_materials_list(
 
 // RANGE_STREAM_V1: 64 KiB → 256 KiB。tokio::fs::File 每次 read 都是一趟
 // spawn_blocking，區塊太小時 syscall／排程成本會吃掉頻寬（大檔尤其明顯）。
-const MATERIAL_STREAM_CHUNK_SIZE: usize = 256 * 1024;
+// DOWNLOAD_READAHEAD_V1（fix51）：下載／預覽的讀取單位由 256 KiB 提到 1 MiB。
+// 一個 50 MB 教材原本是 200 次檔案讀取 + 200 個 body frame，現在只要 50 次；核心的
+// readahead 本來就會預抓後續內容，所以放大單位不是「叫核心讀更多」，而是「少打擾
+// 核心」——每個 frame 都代表一次喚醒、一次寫入與一次排程，越小越吃 CPU。邊下邊播
+// （Range）與多個分段同時抓取時最有感。
+const MATERIAL_STREAM_CHUNK_SIZE: usize = 1024 * 1024;
 
 // SNIFF_CONTENT_TYPE_V1: 副檔名與內容不符時（例如「.ppt」其實是 PDF），依真實
 // 魔數回 Content-Type，否則 <iframe> 的 PDF 檢視器認不出內容類型→全白。
@@ -194,6 +308,8 @@ async fn stream_material_file_response(
     build_error_label: &str,
     // RANGE_STREAM_V1：呼叫端傳入請求的 `Range` 標頭（原樣，不預先解析）。
     range: Option<&axum::http::HeaderValue>,
+    // PREVIEW_REVALIDATE_V1（fix52）：呼叫端傳入請求的 `If-None-Match`。
+    if_none_match: Option<&axum::http::HeaderValue>,
 ) -> Response {
     // CLOUD_FILE_STREAMING_V1: avoid loading downloads/previews into a single
     // Vec<u8>. Stream `MATERIAL_STREAM_CHUNK_SIZE` chunks from tokio::fs::File so
@@ -209,7 +325,48 @@ async fn stream_material_file_response(
                 .into_response();
         }
     };
-    let content_len = file.metadata().await.ok().map(|meta| meta.len());
+    let file_meta = file.metadata().await.ok();
+    let content_len = file_meta.as_ref().map(std::fs::Metadata::len);
+    // PREVIEW_REVALIDATE_V1（fix52）：以「長度 + 修改時間」組強 ETag。同一個檔案在
+    // 客戶端快取裡有舊版時，重新開啟預覽只會拿到 304（沒有 body），不必再傳一次
+    // 幾十 MB；檔案被換掉（長度或 mtime 變了）就自然失效。
+    let etag = content_len.map(|len| {
+        let (secs, nanos) = file_meta
+            .as_ref()
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|delta| (delta.as_secs(), delta.subsec_nanos()))
+            .unwrap_or((0, 0));
+        format!("\"{len:x}-{secs:x}-{nanos:x}\"")
+    });
+
+    // 有 Range 的分段請求不做 304（範圍內容不能用整檔的標籤代替）。
+    if range.is_none() {
+        if let (Some(tag), Some(incoming)) = (
+            etag.as_deref(),
+            if_none_match.and_then(|value| value.to_str().ok()),
+        ) {
+            if incoming
+                .split(',')
+                .any(|candidate| candidate.trim() == tag || candidate.trim() == "*")
+            {
+                let mut builder = Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header(header::ETAG, tag);
+                if let Some(cache_control) = cache_control {
+                    builder = builder.header(header::CACHE_CONTROL, cache_control);
+                }
+                return match builder.body(axum::body::Body::empty()) {
+                    Ok(response) => response,
+                    Err(e) => (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("{build_error_label}：{e}") })),
+                    )
+                        .into_response(),
+                };
+            }
+        }
+    }
     // SNIFF_CONTENT_TYPE_V1: 以真實魔數決定 Content-Type（.ppt 實為 PDF 時回 application/pdf）。
     let content_type = sniff_content_type(&path).await;
     let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("file");
@@ -299,6 +456,9 @@ async fn stream_material_file_response(
     }
     if let Some(send_len) = send_len {
         builder = builder.header(header::CONTENT_LENGTH, send_len.to_string());
+    }
+    if let Some(tag) = etag.as_deref() {
+        builder = builder.header(header::ETAG, tag);
     }
 
     builder
@@ -565,32 +725,9 @@ pub(super) async fn admin_files_download_handler(
         "建立下載回應失敗",
         // RANGE_STREAM_V1：下載也能分段／續傳。
         headers.get(header::RANGE),
+        headers.get(header::IF_NONE_MATCH),
     )
     .await
-}
-
-fn material_total_size_for_upload(root: &std::path::Path) -> std::io::Result<u64> {
-    fn walk(path: &std::path::Path, total: &mut u64) -> std::io::Result<()> {
-        if !path.exists() {
-            return Ok(());
-        }
-        for entry in std::fs::read_dir(path)? {
-            let entry = entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                continue;
-            }
-            if file_type.is_dir() {
-                walk(&entry.path(), total)?;
-            } else if file_type.is_file() {
-                *total = total.saturating_add(entry.metadata()?.len());
-            }
-        }
-        Ok(())
-    }
-    let mut total = 0;
-    walk(root, &mut total)?;
-    Ok(total)
 }
 
 /// 可在瀏覽器內直接預覽的副檔名 —— **單一來源**。
@@ -1091,6 +1228,7 @@ pub(super) async fn public_office_file_handler(
         "讀取預覽檔失敗",
         "建立預覽回應失敗",
         headers.get(header::RANGE),
+        headers.get(header::IF_NONE_MATCH),
     )
     .await
 }
@@ -1165,6 +1303,7 @@ pub(super) async fn public_share_preview_handler(
             "讀取分享檔失敗",
             "建立分享回應失敗",
             headers.get(header::RANGE),
+            headers.get(header::IF_NONE_MATCH),
         )
         .await;
     }
@@ -1189,7 +1328,7 @@ pub(super) async fn public_share_preview_handler(
     let office_src = format!("/pub/office?path={}&exp={embed_exp}&sig={embed_sig}", pct(&rel_str));
     let is_modern_office = ["docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf"].contains(&ext.as_str());
     let scripts = if is_modern_office {
-        "<script src=\"/pub/static/js/jszip.min.js?v=sharev6\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev6\"></script>"
+        "<script src=\"/pub/static/js/jszip.min.js?v=sharev6\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev7\"></script>"
     } else {
         ""
     };
@@ -1296,10 +1435,11 @@ pub(super) async fn admin_files_preview_handler(
     stream_material_file_response(
         full_path,
         "inline",
-        Some("no-store"),
+        Some(PREVIEW_CACHE_CONTROL),
         "讀取預覽檔失敗",
         "建立預覽回應失敗",
         headers.get(header::RANGE),
+        headers.get(header::IF_NONE_MATCH),
     )
     .await
 }
@@ -1450,19 +1590,17 @@ pub(super) async fn admin_files_upload_handler(
         let known_materials_size = if let Some(size) = current_materials_size {
             size
         } else {
-            let size_root = root.clone();
-            let scanned = match tokio::task::spawn_blocking(move || material_total_size(&size_root)).await
-            {
-                Ok(Ok(size)) => size,
-                Ok(Err(_)) | Err(_) => {
+            // MATERIALS_USAGE_CACHE_V1（fix51）：同一批上傳只有第一個檔案需要真的掃描。
+            match cached_materials_total_size(root.clone()).await {
+                Ok(size) => size,
+                Err(_) => {
                     return (
                         StatusCode::SERVICE_UNAVAILABLE,
                         Json(json!({ "error": "無法確認教材儲存空間，已停止上傳" })),
                     )
                         .into_response();
                 }
-            };
-            scanned
+            }
         };
 
         let dir = match secure_material_path_for_create(&root, &folder) {
@@ -1490,6 +1628,9 @@ pub(super) async fn admin_files_upload_handler(
         };
 
         let mut written = 0u64;
+        // UPLOAD_WRITE_BUFFER_V1（fix51）：先集中到 8 MiB 緩衝再一次寫。
+        let mut buffer = take_upload_write_buffer();
+        let mut buffered = 0usize;
         loop {
             let chunk = match field.chunk().await {
                 Ok(Some(chunk)) => chunk,
@@ -1524,16 +1665,30 @@ pub(super) async fn admin_files_upload_handler(
                 )
                     .into_response();
             }
-            if let Err(e) = out.write_all(&chunk).await {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("寫入暫存檔失敗：{e}") })),
-                )
-                    .into_response();
+            // 緩衝滿了就整批寫出（最後不足一個緩衝的尾巴在迴圈後補寫）。
+            if buffered + chunk.len() > UPLOAD_WRITE_BUFFER_SIZE && buffered > 0 {
+                if let Err(e) = write_upload_buffer(&mut out, &buffer[..buffered]).await {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return upload_write_error(e);
+                }
+                buffered = 0;
             }
+            buffer.extend_from_slice(&chunk);
+            buffered += chunk.len();
             written = written.saturating_add(chunk_len);
+            if buffered >= UPLOAD_WRITE_BUFFER_SIZE {
+                if let Err(e) = write_upload_buffer(&mut out, &buffer[..buffered]).await {
+                    let _ = tokio::fs::remove_file(&temp_path).await;
+                    return upload_write_error(e);
+                }
+                buffered = 0;
+            }
         }
+        if let Err(e) = write_upload_buffer(&mut out, &buffer[..buffered]).await {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            return upload_write_error(e);
+        }
+        return_upload_write_buffer(buffer);
         if let Err(e) = out.flush().await {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return (
@@ -1571,7 +1726,10 @@ pub(super) async fn admin_files_upload_handler(
             .unwrap_or(&dest)
             .to_string_lossy()
             .replace('\\', "/");
-        current_materials_size = Some(known_materials_size.saturating_add(written));
+        let total_after_write = known_materials_size.saturating_add(written);
+        current_materials_size = Some(total_after_write);
+        // MATERIALS_USAGE_CACHE_V1：把剛算好的準確值寫回快取，同批下一個檔案不用再掃。
+        store_materials_total_size(&root, total_after_write).await;
         let folder_label = folder.to_string_lossy().replace('\\', "/");
         record_material_event(
             &state,
@@ -1671,6 +1829,7 @@ pub(super) async fn admin_files_delete_handler(
             )
             .await;
             invalidate_materials_list_cache().await;
+            invalidate_materials_usage_cache().await;
             crate::logs::record_audit(
                 "web",
                 &session.account_id,
@@ -1747,6 +1906,7 @@ pub(super) async fn admin_files_rmdir_handler(
             )
             .await;
             invalidate_materials_list_cache().await;
+            invalidate_materials_usage_cache().await;
             crate::logs::record_audit(
                 "web",
                 &session.account_id,

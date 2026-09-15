@@ -337,11 +337,36 @@ pub struct HomeworkDeadlineEvent {
     pub deadline: String,
     /// 剩餘時間描述，例如「約 5 小時」。
     pub time_remaining: String,
+    /// HOMEWORK_NEW_NOTIFY_V1：`true`＝「新上架作業」通知（不是倒數提醒）。
+    ///
+    /// 兩者共用同一個事件型別，是因為它們走**完全相同的發送路徑與通知偏好開關**
+    /// （`homework_deadline`），差別只有訊息文案。
+    pub is_new: bool,
 }
 
 impl HomeworkDeadlineEvent {
     /// 組出各 adapter 共用的訊息文字。
     pub fn render(&self) -> String {
+        // HOMEWORK_NEW_NOTIFY_V1：新作業通知的文案與倒數提醒不同——
+        // 標題不能寫「截止提醒」（距離截止還很久），並引導到作業頁。
+        if self.is_new {
+            return format!(
+                "🆕 新作業通知｜{}\n\n\
+                 課程：{}\n\
+                 標題：{}\n\
+                 截止：{}\n\
+                 剩餘：{}\n\
+                 帳號：{}\n\n\
+                 可至面板查看作業內容與附件，或直接線上繳交。",
+                self.stage_badge,
+                self.course_name,
+                self.title,
+                self.deadline,
+                self.time_remaining,
+                self.account
+            );
+        }
+
         format!(
             "📝 作業截止提醒｜{}\n\n\
              課程：{}\n\

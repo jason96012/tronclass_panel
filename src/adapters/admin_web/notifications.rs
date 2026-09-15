@@ -51,8 +51,8 @@ const DISCORD_NOTIFICATION_KEYS: &[(&str, &str, &str)] = &[
     ),
     (
         "homework_deadline",
-        "作業截止提醒",
-        "作業截止倒數階梯提醒",
+        "作業提醒",
+        "作業截止倒數階梯提醒，以及新上架作業通知",
     ),
     ("bulletin", "課程與管理員公告", "新課程公告與管理員公告（含 AI 摘要）"),
     ("monitor_alert", "監控警示", "監控警示與恢復通知（管理員）"),

@@ -370,13 +370,29 @@
     .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
     .toolbar-left,.toolbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
-    .dropzone{display:none;margin-bottom:14px;padding:24px 16px;border:2px dashed var(--line2);border-radius:16px;background:var(--surface);text-align:center;color:var(--muted);font-size:13px}
-    .dropzone.dragover{display:block;border-color:var(--primary);background:var(--primarySoft);color:var(--primary)}
+    /* UPLOAD_DESKTOP_FIX_V1（fix50）：桌機常駐顯示（原寫法要 dragenter 才 display:block，
+       等於電腦版沒有任何「看得見」的第二個上傳入口）。點它＝開選檔視窗。
+       手機（≤ 820px）仍由 mobile media query 的 .dropzone{display:none!important} 隱藏。 */
+    .dropzone{display:block;cursor:pointer;margin-bottom:14px;padding:14px 16px;border:2px dashed var(--line2);border-radius:16px;background:var(--surface);text-align:center;color:var(--muted);font-size:13px}
+    .dropzone:hover{border-color:var(--primary);color:var(--primary)}
+    .dropzone.dragover{border-color:var(--primary);background:var(--primarySoft);color:var(--primary)}
     
     .upload-progress{display:none;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
     .upload-progress.visible{display:block}
     .progress-line{height:6px;border-radius:999px;background:var(--surface3);overflow:hidden;margin-top:6px}
     .progress-line span{display:block;height:100%;width:0;background:var(--primary);transition:width .2s ease}
+    /* UPLOAD_QUEUE_SPEED_V1（fix51）：上傳佇列（每檔一列）＋速度／預估時間 */
+    .upload-queue{margin-top:10px;display:grid;gap:6px}
+    .upload-queue .uq-row{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);font-size:12px}
+    .upload-queue .uq-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+    .upload-queue .uq-meta{color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+    .upload-queue .uq-track{grid-column:1/-1;height:5px;border-radius:999px;background:var(--surface3);overflow:hidden}
+    .upload-queue .uq-fill{display:block;height:100%;width:0;background:var(--primary);transition:width .2s ease}
+    .upload-queue .uq-row.done .uq-fill{background:var(--ok)}
+    .upload-queue .uq-row.failed{border-color:var(--bad)}
+    .upload-queue .uq-row.failed .uq-fill{background:var(--bad);width:100%!important}
+    .upload-queue .uq-row.failed .uq-meta{color:var(--bad)}
+    .upload-queue .uq-actions{margin-top:2px}
 
     .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0 8px}
     
@@ -453,6 +469,8 @@
     .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
     .tron-slide-img{position:absolute}
     .tron-office-error{padding:36px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px;background:var(--surface);font-size:13px}
+    /* OFFICE_SNIFF_INFO_V1（fix47）：內容與副檔名不符時附上開頭位元組。 */
+    .tron-office-diag{margin-top:10px;padding:8px 10px;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);background:rgba(148,163,184,.12);border-radius:8px;word-break:break-all;text-align:left}
     /* NO_LIBREOFFICE_PREVIEW_V1: Excel / ODF / RTF 前端渲染樣式 */
     .modal-body .tron-xlsx,.modal-body .tron-odf{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:0;box-sizing:border-box;background:var(--surface);color:var(--text)}
     .tron-odf{padding:20px 24px!important;line-height:1.5;font-size:14px}
@@ -999,7 +1017,7 @@
       </div>
       <div class="toolbar-right">
         <button id="importHere" class="button secondary" type="button" title="從 iClass 自動下載當學期教材">⬇️ 匯入 iClass 教材</button>
-        <button id="uploadHere" class="button primary" type="button">上傳檔案</button>
+        <button id="uploadHere" class="button primary" type="button" title="上傳檔案（可一次選多個）">上傳檔案</button>
         <button id="mkdirHere" class="button secondary" type="button">新增資料夾</button>
         <button id="manageShares" class="button secondary manage-shares-btn hidden-init" type="button" title="管理所有分享連結">🔗 管理分享連結</button>
       </div>
@@ -1023,10 +1041,13 @@
     </div>
 
     <!-- 拖曳上傳與進度列 -->
-    <div id="dropzone" class="dropzone">將檔案拖曳至此處即可上傳（不限格式，單檔上限 50 MB）</div>
+    <!-- UPLOAD_DESKTOP_FIX_V1（fix50）：桌機常駐且可點擊（＝選檔），手機版由 CSS 隱藏。 -->
+    <div id="dropzone" class="dropzone" role="button" tabindex="0" title="點擊選擇檔案，或直接把檔案拖進來">將檔案拖曳至此處，或點此選擇檔案（不限格式，單檔上限 50 MB）</div>
     <div id="uploadProgress" class="upload-progress">
       <div id="uploadProgressText" class="small">準備上傳...</div>
       <div class="progress-line"><span id="uploadProgressBar"></span></div>
+      <!-- UPLOAD_QUEUE_SPEED_V1（fix51）：每個檔案一列（進度、速度、預估剩餘時間） -->
+      <div id="uploadQueue" class="upload-queue"></div>
     </div>
     <!-- UPLOAD_ANY_TYPE_V1（fix39）：不再給 accept——任何檔案都能選（含沒有副檔名者）。 -->
     <input id="fileInput" class="hidden-input" type="file" multiple>
@@ -1293,7 +1314,8 @@
             '課程 ' + (st.courses_scanned||0) + ' 門\n' +
             '教材 ' + (st.materials_found||0) + ' 項\n' +
             '已儲存 ' + (st.files_saved||0) + '、已跳過 ' + (st.files_skipped||0) +
-            '、連結 ' + (st.links_created||0) + '、失敗 ' + (st.failed||0);
+            '、連結 ' + (st.links_created||0) + '、未開放 ' + (st.pending||0) +
+            '、失敗 ' + (st.failed||0);
           if (Array.isArray(st.errors) && st.errors.length){
             msg += '\n\n錯誤：\n' + st.errors.slice(0,10).join('\n');
           }
@@ -1398,7 +1420,7 @@
     // BADGE_INLINE_V1: 非圖片檔左側只放色塊縮圖，副檔名改以小標籤放在檔名欄內，
     // 不再用左側大格放徽章，徹底避免遮擋檔名。
     const thumb = isImg
-      ? '<img class="file-thumb-img" src="' + pv(f.path) + '" alt="" loading="lazy">'
+      ? '<img class="file-thumb-img" src="' + pv(f.path) + '" alt="" loading="lazy" decoding="async">'
       : '<div class="file-thumb-ph"></div>';
     const chip = isImg ? '' : '<span class="file-chip">' + esc(e || 'FILE') + '</span>';
     return '<div class="file-card">' +
@@ -1457,6 +1479,9 @@
   async function loadFiles(){
     try {
       const body = await api('/admin/api/files/list', { cache: 'no-store' });
+      // PREVIEW_FETCH_ONCE_V1（fix52）：清單重新載入＝伺服器端內容可能已變動，
+      // 前端快取的位元組不能再信任（同檔名覆蓋時會顯示舊內容）。
+      previewCacheClear();
       isAdmin = !!body.is_admin;
       files = (body.files || []).map(f => typeof f === 'string' ? { path: f, name: f } : f);
       folders = body.folders || [];
@@ -1515,29 +1540,312 @@
     if (q('uploadProgressBar')) q('uploadProgressBar').style.width = '0%';
   }
 
-  function uploadOne(file, i, total, displayName){
+  // UPLOAD_DESKTOP_FIX_V1（fix50）：電腦版「選了檔案卻完全沒動靜」強化。
+  //
+  // 症狀：/admin/files 桌面版點「上傳檔案」→ 選檔視窗有開、選完之後沒有任何反應
+  //       （進度列沒出現、console 沒有紅字），同一支手機版卻正常。
+  // 由於桌面與手機共用同一個 <input id="fileInput">、同一個 onchange，
+  // 唯一能造成「完全安靜」的位置就是「change 事件沒有回到我們的處理函式」。
+  // 因此這裡不再假設事件一定會到，改成：
+  //   1) 所有入口（工具列／側欄選單／手機底部列／拖放區點擊）統一走 pickFiles()。
+  //   2) pickFiles() 開檔前先 armUploadWatch()：開檔後 60 秒內每 700ms 檢查一次
+  //      fileInput.files；只要「有檔案但 change 沒來」，就自動接手直接上傳。
+  //   3) 以「檔名|大小|修改時間」簽章去重，change 與 watchdog 不會重複上傳同一批。
+  //   4) 選到檔案立刻顯示進度列＋toast，之後不會再出現「選完看起來像沒反應」的狀態。
+  //   5) 失敗訊息一律經過 uploadStatusMessage()，把 401/403/413/429/5xx 講成人話，
+  //      並把伺服器回的 error 原文一起顯示，方便回報。
+  let _pickWatchTimer = 0;
+  let _pickArmedAt = 0;
+  let _pickSig = '';
+  let _uploading = false;
+
+  function filesSig(fileList){
+    try {
+      return Array.prototype.map.call(fileList || [], f => [f.name, f.size, f.lastModified].join('|')).join('§');
+    } catch(_) { return ''; }
+  }
+
+  function armUploadWatch(){
+    _pickArmedAt = Date.now();
+    _pickSig = '';
+    if (_pickWatchTimer) return;
+    _pickWatchTimer = setInterval(() => {
+      if (Date.now() - _pickArmedAt > 60000) {
+        clearInterval(_pickWatchTimer);
+        _pickWatchTimer = 0;
+        return;
+      }
+      const inp = q('fileInput');
+      if (!inp || !inp.files || !inp.files.length) return;
+      const sig = filesSig(inp.files);
+      if (!sig || sig === _pickSig) return; // change 已經處理過這一批
+      _pickSig = sig;
+      console.info('[upload] change 事件未觸發，watchdog 接手：' + inp.files.length + ' 個檔案');
+      uploadFiles(inp.files);
+    }, 700);
+  }
+
+  // 唯一的上傳入口：開選檔視窗。桌面／手機／拖放區點擊都走這裡。
+  function pickFiles(){
+    const inp = q('fileInput');
+    if (!inp) {
+      progressError('找不到上傳欄位，請重新整理頁面後再試');
+      hideProgress(8000);
+      return;
+    }
+    armUploadWatch();
+    try { inp.value = ''; } catch(_) {}
+    try {
+      inp.click();
+    } catch(e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      progressError('無法開啟選檔視窗：' + msg);
+      hideProgress(8000);
+      toast('無法開啟選檔視窗：' + msg, false);
+    }
+  }
+
+  // UPLOAD_STATUS_MESSAGE_V1（fix50）：把 HTTP 狀態碼翻成看得懂的說明。
+  function uploadStatusMessage(status, body){
+    const server = body && body.error ? String(body.error) : '';
+    const map = {
+      400: '伺服器不接受這次上傳（請求內容不合法）',
+      401: '登入狀態已過期，請重新整理頁面後再試',
+      403: '瀏覽器阻擋了這次上傳（來源驗證失敗），請用同一個網域重新整理後再試',
+      404: '找不到上傳端點（伺服器版本可能過舊，請重新部署）',
+      408: '伺服器等不到上傳資料（連線太慢或中途斷線）',
+      413: '檔案超過伺服器允許的大小上限',
+      429: '已有其他檔案正在上傳，請稍後再試',
+      500: '伺服器內部錯誤',
+      502: '伺服器暫時無法處理（可能正在重新啟動）',
+      503: '伺服器忙碌中或儲存空間不足',
+      504: '伺服器回應逾時'
+    };
+    const friendly = map[status] || '';
+    if (server && friendly) return 'HTTP ' + status + '（' + friendly + '）：' + server;
+    if (server) return 'HTTP ' + status + '：' + server;
+    return 'HTTP ' + status + (friendly ? '（' + friendly + '）' : '');
+  }
+
+  // 回報問題時可在 console 打 __TRON_UPLOAD_DIAG() 看目前狀態。
+  window.__TRON_UPLOAD_DIAG = function(){
+    const inp = q('fileInput');
+    return {
+      build: 'UPLOAD_DESKTOP_FIX_V1',
+      endpoint: '/admin/api/files/upload',
+      hasInput: !!inp,
+      multiple: !!inp && inp.multiple === true,
+      pickedFiles: (inp && inp.files) ? inp.files.length : 0,
+      watchActive: !!_pickWatchTimer,
+      lastSig: _pickSig,
+      uploading: _uploading,
+      online: navigator.onLine !== false,
+      maxBytes: 50 * 1024 * 1024
+    };
+  };
+
+  // UPLOAD_QUEUE_SPEED_V1（fix51）：上傳佇列、即時速度與預估剩餘時間。
+  //
+  // 這一版把「一次一個檔案、任一檔失敗就整批停住」換成真正的佇列：
+  //   1. 每個檔案一列，各自顯示進度、已傳／總量、速度（EMA 平滑）與預估剩餘時間；
+  //      最上面另有整批的百分比、總速度與總預估。
+  //   2. 429（伺服器同一時間只處理一個上傳，用來守住 10 GB 配額）與 5xx、網路中斷
+  //      會自動重試（0.9s／1.8s／3.6s 退避，最多 3 次），不再立刻判死。
+  //   3. 單一檔案失敗不再中斷整批——舊版會 throw，後面還沒送的檔案就那樣消失。
+  //   4. 失敗的檔案在列表下方集中成「重試失敗的檔案」一鍵重送。
+  const UPLOAD_RETRY_LIMIT = 3;
+  const UPLOAD_RETRY_BASE_MS = 900;
+
+  let _uploadRows = [];
+  // 進度事件的節流時間戳：事件可能每秒數十次，逐次重建 DOM 會拖慢上傳本身。
+  let _uqLastPaint = 0;
+
+  function fmtEta(seconds){
+    if (!isFinite(seconds) || seconds <= 0) return '';
+    if (seconds < 60) return Math.ceil(seconds) + ' 秒';
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return s ? (m + ' 分 ' + s + ' 秒') : (m + ' 分');
+  }
+
+  function renderUploadQueue(){
+    const box = q('uploadQueue');
+    if (!box) return;
+    if (!_uploadRows.length) { setHTMLSafe(box, ''); return; }
+    const rows = _uploadRows.map(r => {
+      const total = r.total || (r.file && r.file.size) || 0;
+      const sent = Math.min(r.sent || 0, total);
+      const pct = total ? Math.min(100, Math.round(sent * 100 / total)) : (r.status === 'done' ? 100 : 0);
+      let meta;
+      if (r.status === 'done') {
+        meta = sizeLabel(total) + ' · 完成 ✓';
+      } else if (r.status === 'failed') {
+        meta = '✕ ' + esc(r.error || '上傳失敗');
+      } else if (r.status === 'waiting') {
+        meta = (r.attempts > 1) ? ('等待重試（第 ' + r.attempts + ' 次）') : '等待中…';
+      } else {
+        const speed = r.speed > 0 ? ' · ' + sizeLabel(r.speed) + '/s' : '';
+        const eta = r.eta > 0 ? ' · 剩 ' + fmtEta(r.eta) : '';
+        meta = pct + '% · ' + sizeLabel(sent) + '/' + sizeLabel(total) + speed + eta;
+      }
+      const cls = r.status === 'done' ? ' done' : (r.status === 'failed' ? ' failed' : '');
+      return '<div class="uq-row' + cls + '">'
+        + '<div class="uq-name">' + esc(r.file.name) + '</div>'
+        + '<div class="uq-meta">' + meta + '</div>'
+        + '<div class="uq-track"><span class="uq-fill" style="width:' + pct + '%"></span></div>'
+        + '</div>';
+    }).join('');
+    const failed = _uploadRows.filter(r => r.status === 'failed').length;
+    const retry = (!_uploading && failed > 0)
+      ? '<div class="uq-actions"><button type="button" class="button secondary" data-uq-retry="1">重試失敗的檔案（' + failed + '）</button></div>'
+      : '';
+    setHTMLSafe(box, rows + retry);
+  }
+
+  // 整批的進度：總百分比、總速度、預估剩餘時間。
+  function uploadAggregate(){
+    const totalBytes = _uploadRows.reduce((s, r) => s + (r.total || (r.file && r.file.size) || 0), 0);
+    const sentBytes = _uploadRows.reduce((s, r) => s + Math.min(r.sent || 0, r.total || (r.file && r.file.size) || 0), 0);
+    const done = _uploadRows.filter(r => r.status === 'done').length;
+    const failed = _uploadRows.filter(r => r.status === 'failed').length;
+    const active = _uploadRows.find(r => r.status === 'uploading');
+    const speed = _uploadRows.reduce((s, r) => s + (r.status === 'uploading' ? (r.speed || 0) : 0), 0);
+    const pct = totalBytes ? Math.min(100, Math.round(sentBytes * 100 / totalBytes)) : 0;
+    const idx = Math.min(_uploadRows.length, done + failed + (active ? 1 : 0));
+    let text = '上傳中 ' + idx + '/' + _uploadRows.length;
+    if (active) text = '上傳 ' + active.file.name + '（' + idx + '/' + _uploadRows.length + '）';
+    if (speed > 0) {
+      text += ' · ' + sizeLabel(speed) + '/s';
+      const eta = (totalBytes - sentBytes) / speed;
+      if (eta > 0) text += ' · 預估剩 ' + fmtEta(eta);
+    }
+    if (q('uploadProgressText')) q('uploadProgressText').textContent = text;
+    if (q('uploadProgressBar')) q('uploadProgressBar').style.width = pct + '%';
+    return { pct, done, failed };
+  }
+
+  function uploadFileOnce(row, index, total){
+    return new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      uploadOne(row.file, index, total, row.file.name, (loaded, tot) => {
+        row.status = 'uploading';
+        row.sent = loaded;
+        if (tot) row.total = tot;
+        const secs = (Date.now() - startedAt) / 1000;
+        if (secs > 0.2) {
+          const instant = loaded / secs;
+          row.speed = row.speed > 0 ? (row.speed * 0.6 + instant * 0.4) : instant;
+          const left = (row.total || row.file.size) - loaded;
+          row.eta = row.speed > 0 ? Math.max(0, left / row.speed) : 0;
+        }
+        if (Date.now() - _uqLastPaint >= 120) {
+          _uqLastPaint = Date.now();
+          renderUploadQueue();
+          uploadAggregate();
+        }
+      }).then(resolve, reject);
+    });
+  }
+
+  // 一個檔案（含自動重試）。回傳 true＝成功。
+  async function uploadRowWithRetry(row, index, total){
+    for (let attempt = 1; attempt <= UPLOAD_RETRY_LIMIT; attempt++) {
+      row.attempts = attempt;
+      row.status = 'uploading';
+      row.error = '';
+      row.sent = 0;
+      row.speed = 0;
+      row.eta = 0;
+      renderUploadQueue();
+      try {
+        await uploadFileOnce(row, index, total);
+        row.status = 'done';
+        row.sent = row.total || row.file.size;
+        renderUploadQueue();
+        uploadAggregate();
+        return true;
+      } catch(e) {
+        const msg = (e && e.message) ? e.message : String(e);
+        // 429＝伺服器正在處理另一個檔案（一次只收一個，才守得住 10 GB 配額）；
+        // 5xx 與連線中斷也可能只是一時，都值得再試。
+        const retryable = /HTTP (429|5\d\d)/.test(msg) || /網路連線中斷/.test(msg);
+        if (retryable && attempt < UPLOAD_RETRY_LIMIT) {
+          row.status = 'waiting';
+          row.error = '';
+          renderUploadQueue();
+          await new Promise(r => setTimeout(r, UPLOAD_RETRY_BASE_MS * Math.pow(2, attempt - 1)));
+          continue;
+        }
+        row.status = 'failed';
+        row.error = msg;
+        renderUploadQueue();
+        uploadAggregate();
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // 依序送完 pending（伺服器端一次只處理一個上傳，前端排隊才不會白撞 429）。
+  async function runUploadQueue(pending, label){
+    if (_uploading) return pending.length;
+    _uploading = true;
+    if (_pickWatchTimer) { clearInterval(_pickWatchTimer); _pickWatchTimer = 0; }
+    showProgress(0, label);
+    renderUploadQueue();
+    uploadAggregate();
+    let failedNow = 0;
+    try {
+      for (let i = 0; i < pending.length; i++) {
+        const ok = await uploadRowWithRetry(pending[i], i + 1, pending.length);
+        if (!ok) failedNow++;
+      }
+    } finally {
+      _uploading = false;
+      // UPLOAD_DESKTOP_FIX_V1（fix50）：不論成功失敗都要解鎖，否則之後選檔會被擋。
+      renderUploadQueue();
+      uploadAggregate();
+    }
+    return failedNow;
+  }
+
+  function uploadOne(file, i, total, displayName, onProgress){
     return new Promise((resolve, reject) => {
       const fd = new FormData();
       fd.append('folder', currentFolder);
       // UPLOAD_ANY_TYPE_V1（fix39）：原檔名原樣送出（後端不再判斷格式、也不改名）
       fd.append('file', file, displayName || file.name);
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/admin/api/files/upload');
+      xhr.open('POST', '/admin/api/files/upload', true);
       xhr.withCredentials = true;
       xhr.upload.onprogress = ev => {
+        if (onProgress) {
+          onProgress(ev.loaded, ev.lengthComputable ? ev.total : (file.size || 0));
+          return;
+        }
         if (ev.lengthComputable) {
           showProgress(ev.loaded / ev.total * 100, '上傳 ' + i + '/' + total + '：' + file.name + ' (' + Math.round(ev.loaded / ev.total * 100) + '%)');
         } else {
           showProgress(30, '上傳 ' + i + '/' + total + '：' + file.name);
         }
       };
-      xhr.onerror = () => reject(new Error('網路連線中斷（檔案可能超過伺服器 50 MB 限制，或訊號不穩）'));
+      xhr.onerror = () => {
+        console.warn('[upload] 網路錯誤', { name: file.name, size: file.size });
+        reject(new Error('網路連線中斷（檔案可能超過伺服器 50 MB 限制，或訊號不穩）'));
+      };
       xhr.onabort = () => reject(new Error('上傳已取消'));
       xhr.onload = () => {
         let body = {};
         try { body = JSON.parse(xhr.responseText || '{}'); } catch(_) {}
-        if (xhr.status >= 200 && xhr.status < 300) resolve(body);
-        else reject(new Error(body.error || ('HTTP ' + xhr.status)));
+        if (xhr.status >= 200 && xhr.status < 300) {
+          console.info('[upload] 成功', { name: file.name, status: xhr.status });
+          resolve(body);
+          return;
+        }
+        // UPLOAD_STATUS_MESSAGE_V1（fix50）：不再只顯示「HTTP 500」這種看不懂的字。
+        const msg = uploadStatusMessage(xhr.status, body);
+        console.warn('[upload] 失敗', { name: file.name, status: xhr.status, body: String(xhr.responseText || '').slice(0, 300) });
+        reject(new Error(msg));
       };
       showProgress(0, '準備上傳 ' + i + '/' + total + '：' + file.name);
       xhr.send(fd);
@@ -1554,9 +1862,16 @@
   // 補副檔名」的改名行為——送出的檔名與使用者選的完全一致。伺服器同樣不檢查
   // 副檔名，只檢查檔名安全性（長度／路徑字元）與單檔 50 MB 上限。
   async function uploadFiles(fileList){
-    const arr = Array.from(fileList || []);
-    if (q('fileInput')) q('fileInput').value = '';
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：讀不到檔案也要講話，不再安靜結束。
+    let arr = [];
+    try { arr = Array.from(fileList || []); } catch(e) {
+      progressError('無法讀取選取的檔案：' + ((e && e.message) ? e.message : e));
+      hideProgress(8000);
+      return;
+    }
     if (!arr.length) return;
+    if (_uploading) { toast('已有檔案正在上傳，請等它跑完再選', false); return; }
+    if (q('fileInput')) q('fileInput').value = '';
     // UPLOAD_ANY_TYPE_V1（fix39）：不做格式預檢——所有檔案直接上傳，只擋單檔大小。
     const tooBig = arr.filter(f => f.size > UPLOAD_MAX_BYTES);
     const will = arr.filter(f => f.size <= UPLOAD_MAX_BYTES);
@@ -1570,21 +1885,52 @@
       progressError('未上傳（超過 50 MB 限制）：' + names);
       toast('超過 50 MB 限制，未上傳：' + names, false);
     }
+    _uploadRows = will.map(f => ({ file: f, sent: 0, total: f.size, speed: 0, eta: 0, attempts: 0, status: 'waiting', error: '' }));
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：選到檔案就立刻顯示進度列與提示——
+    // 之後不可能再出現「選完檔案卻看起來完全沒反應」的狀態。
+    if (_pickWatchTimer) { clearInterval(_pickWatchTimer); _pickWatchTimer = 0; }
+    showProgress(0, '已選擇 ' + _uploadRows.length + ' 個檔案，開始上傳…');
+    toast('開始上傳 ' + _uploadRows.length + ' 個檔案…');
     try {
-      for (let i = 0; i < will.length; i++) {
-        await uploadOne(will[i], i + 1, will.length, will[i].name);
+      const failed = await runUploadQueue(_uploadRows.slice(), '已選擇 ' + _uploadRows.length + ' 個檔案，開始上傳…');
+      if (!failed) {
+        if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
+        showProgress(100, tooBig.length ? '上傳完成（部分檔案未上傳，詳見提示）' : '所有檔案上傳完成！');
+        toast(tooBig.length ? '上傳完成（部分檔案未上傳）' : '教材上傳完成');
+        hideProgress();
+      } else {
+        progressError('上傳失敗 ' + failed + ' 個檔案（可點下方「重試失敗的檔案」）');
+        toast('上傳失敗：' + _uploadRows.filter(r => r.status === 'failed').map(r => r.file.name).join('、'), false);
       }
-      if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
-      const skipped = tooBig.length;
-      showProgress(100, skipped ? '上傳完成（部分檔案未上傳，詳見提示）' : '所有檔案上傳完成！');
-      toast(skipped ? '上傳完成（部分檔案未上傳）' : '教材上傳完成');
-      hideProgress();
       await loadFiles();
     } catch(e) {
       progressError('上傳失敗：' + (e.message || e));
       toast('上傳失敗：' + (e.message || e), false);
       hideProgress(8000);
     }
+  }
+
+  function retryFailedUploads(){
+    if (_uploading) { toast('還有檔案正在上傳，請稍等', false); return; }
+    const failed = _uploadRows.filter(r => r.status === 'failed');
+    if (!failed.length) return;
+    toast('重試 ' + failed.length + ' 個檔案…');
+    if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
+    (async () => {
+      try {
+        const still = await runUploadQueue(failed, '重試 ' + failed.length + ' 個檔案…');
+        if (!still) {
+          showProgress(100, '所有檔案上傳完成！');
+          toast('教材上傳完成');
+          hideProgress();
+        } else {
+          progressError('仍有 ' + still + ' 個檔案上傳失敗');
+        }
+        await loadFiles();
+      } catch(e) {
+        progressError('重試失敗：' + (e.message || e));
+      }
+    })();
   }
 
   async function delFile(path){
@@ -1632,6 +1978,183 @@
     } catch(_) {}
   }
 
+  // ===== PREVIEW_FAST_V1（fix52）：預覽載入加速 =====
+  // 目標：從點「預覽」到看到內容之間，不再做重複的事。
+  //   ① previewBytes()：同一份教材的位元組只抓一次（前端快取＋後端 ETag 304）
+  //   ② 下載時顯示百分比（有 Content-Length 時），大檔不再看起來像卡住
+  //   ③ PDF 先畫第一頁（立刻有內容），其餘頁在背景以有限並行補齊
+  //   ④ 關閉彈窗時取消未完成的渲染／下載，並釋放 PDF 文件與畫布
+  //   ⑤ 滑過「預覽」按鈕就先暖引擎、預抓位元組（真的點下去幾乎立即出現）
+  //   ⑥ 判斷「這是不是 PDF」改用 Range 抓前 8 bytes，不為了嗅探下載整檔
+  const PREVIEW_BYTES_MAX = 24 * 1024 * 1024; // 超過此大小不快取（不佔記憶體）
+  const PREVIEW_CACHE_MAX = 6;                // 最多保留 6 份位元組
+  const PDF_RENDER_CONCURRENCY = 2;           // 首頁之外的並行渲染頁數
+  const PREVIEW_PREWARM_MS = 120;             // 滑過按鈕後多久才真的暖機
+  const PREVIEW_RANGE_SNIFF_MIN = 3 * 1024 * 1024; // 大於此大小才用 Range 嗅探
+  var _previewCache = [];        // [{ path, bytes }]，最近用過的排最後
+  var _previewInflight = {};     // path -> { promise, listeners }：同檔只抓一次
+  var _previewXhrs = [];         // 進行中的位元組下載（關閉時 abort）
+  var _previewPdfTasks = [];     // 進行中的 PDF 頁面渲染（關閉時 cancel）
+  var _previewPdf = null;        // 目前開啟中的 PDF 文件（關閉時 destroy）
+  var _previewToken = 0;         // 換檔／關閉就 +1，舊的非同步工作看到不同值即停手
+  var _pdfWorkerReady = false;   // workerSrc 只需設定一次
+  var _previewWarmTimer = null;
+  var _previewWarmed = {};
+
+  function previewCancelled(mine){ return mine !== _previewToken; }
+
+  function previewCacheGet(path){
+    for (let i = 0; i < _previewCache.length; i++){
+      if (_previewCache[i].path === path){
+        const hit = _previewCache.splice(i, 1)[0]; // 移到最後＝最近使用
+        _previewCache.push(hit);
+        return hit.bytes;
+      }
+    }
+    return null;
+  }
+  function previewCacheDrop(path){
+    _previewCache = _previewCache.filter(x => x.path !== path);
+  }
+  function previewCachePut(path, bytes){
+    previewCacheDrop(path);
+    if (!bytes || !bytes.length || bytes.length > PREVIEW_BYTES_MAX) return;
+    _previewCache.push({ path: path, bytes: bytes });
+    while (_previewCache.length > PREVIEW_CACHE_MAX) _previewCache.shift();
+  }
+  // FILE_LIST_REFRESH 時清快取：清單重讀代表伺服器端可能已被上傳／刪除改動，
+  // 不能讓舊位元組留在前端（同檔名覆蓋就會看到舊內容）。
+  function previewCacheClear(){ _previewCache = []; }
+
+  // PREVIEW_FETCH_ONCE_V1（fix52）：取得預覽位元組的唯一入口。
+  //   - 快取命中：同步回傳，完全不碰網路（重開同一份教材幾乎立即出現）。
+  //   - 同檔同時被兩個地方要求（例如暖機＋真的點下去）：共用同一個下載。
+  //   - 用 XHR 而非 fetch，是為了在長檔下載時拿到 lengthComputable 的進度。
+  //   - 不快取超過 PREVIEW_BYTES_MAX 的檔案，避免手機記憶體被撐爆。
+  function fetchPreviewBytes(path, onProgress){
+    const cached = previewCacheGet(path);
+    if (cached){
+      if (onProgress) onProgress(cached.length, cached.length);
+      return Promise.resolve(cached);
+    }
+    const job = _previewInflight[path];
+    if (job){
+      if (onProgress) job.listeners.push(onProgress);
+      return job.promise;
+    }
+    const next = { listeners: onProgress ? [onProgress] : [], promise: null };
+    next.promise = new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      _previewXhrs.push(xhr);
+      const done = () => { _previewXhrs = _previewXhrs.filter(x => x !== xhr); };
+      xhr.open('GET', pv(path), true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onprogress = ev => {
+        if (!ev || !ev.lengthComputable) return;
+        next.listeners.forEach(fn => { try { fn(ev.loaded, ev.total); } catch(_) {} });
+      };
+      xhr.onload = () => {
+        done();
+        if (xhr.status >= 200 && xhr.status < 300 && xhr.response){
+          const bytes = new Uint8Array(xhr.response);
+          previewCachePut(path, bytes);
+          resolve(bytes);
+        } else {
+          reject(new Error('http ' + xhr.status));
+        }
+      };
+      xhr.onerror = () => { done(); reject(new Error('network error')); };
+      xhr.onabort = () => { done(); reject(new Error('aborted')); };
+      xhr.send();
+    }).then(bytes => { delete _previewInflight[path]; return bytes; },
+            err => { delete _previewInflight[path]; throw err; });
+    _previewInflight[path] = next;
+    return next.promise;
+  }
+
+  // PREVIEW_CANCEL_V1（fix52）：換檔案時讓前一個還在跑的工作停手（不 abort 下載，
+  // 讓暖機／進行中的位元組繼續完成並進快取——下一個畫面多半就是它）。
+  function invalidatePreviewWork(){
+    _previewToken++;
+    _previewPdfTasks.forEach(task => { try { task.cancel(); } catch(_) {} });
+    _previewPdfTasks = [];
+    if (_previewPdf){ try { _previewPdf.destroy(); } catch(_){} _previewPdf = null; }
+  }
+  // 關閉彈窗：連下載一起停，並釋放畫布（大檔的 canvas 可能佔數百 MB）。
+  function closePreviewTasks(){
+    invalidatePreviewWork();
+    _previewXhrs.forEach(xhr => { try { xhr.abort(); } catch(_) {} });
+    _previewXhrs = [];
+    _previewInflight = {};
+    const body = q('previewBody');
+    if (body) body.innerHTML = '';
+  }
+
+  function isPdfBytes(bytes){
+    return !!bytes && bytes.length > 4 &&
+      bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+  }
+
+  // PREVIEW_SNIFF_RANGE_V1（fix52）：只用 Range 抓前 8 bytes 判斷「實際內容是不是
+  // PDF」（後端支援 206／Accept-Ranges，見 fix51）。舊版 .doc/.ppt/.xls 因此不必先
+  // 下載整份才發現「其實是 PDF」或「該交給 Office Online」。
+  // 若伺服器／代理忽略 Range 而回整份，剛好可以放進快取，不算白抓。
+  async function previewLooksLikePdf(path, size, forceRange){
+    // 小檔（≤ 3 MB）且後續一定會用到整份內容時：直接抓整份並放進快取，少一次往返；
+    // 舊版 Office（forceRange）之後不會用到內容，一律只用 Range 抓前 8 bytes。
+    if (!forceRange && size && size <= PREVIEW_RANGE_SNIFF_MIN){
+      try { return isPdfBytes(await fetchPreviewBytes(path)); } catch(_) { return false; }
+    }
+    try {
+      const res = await fetch(pv(path), { headers: { 'Range': 'bytes=0-7' } });
+      if (res.ok){
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (res.status === 200) previewCachePut(path, bytes);
+        return isPdfBytes(bytes);
+      }
+    } catch(_) {}
+    try { return isPdfBytes(await fetchPreviewBytes(path)); } catch(_) { return false; }
+  }
+
+  // PREVIEW_WARM_LIBS_V1（fix52）：先按需載入引擎（載入失敗不影響流程，真的要用時
+  // 會再抓一次並依原邏輯顯示錯誤）。
+  function ensurePreviewLib(name){
+    try {
+      if (!window.__tronEnsureFileLib) return Promise.resolve();
+      const p = window.__tronEnsureFileLib(name);
+      return p && p.catch ? p.catch(() => {}) : Promise.resolve(p);
+    } catch(_) { return Promise.resolve(); }
+  }
+
+  // PREVIEW_PREWARM_V1（fix52）：滑鼠停在同一顆「預覽」按鈕上才暖機，避免滑過清單
+  // 就一直抓檔。PDF → 暖引擎＋預抓位元組；Office → 暖本機解析引擎。
+  function prewarmPreview(path){
+    if (!path || _previewWarmed[path]) return;
+    clearTimeout(_previewWarmTimer);
+    _previewWarmTimer = setTimeout(() => {
+      if (_previewWarmed[path]) return;
+      _previewWarmed[path] = true;
+      const f = files.find(x => x.path === path) || { path: path };
+      const e = ext(f);
+      if (e === 'pdf') { ensurePreviewLib('pdf'); fetchPreviewBytes(path).catch(() => {}); }
+      else if (OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e)) ensurePreviewLib('office');
+    }, PREVIEW_PREWARM_MS);
+  }
+
+  // PREVIEW_WARM_IDLE_V1（fix52）：進頁面後在閒置時把兩種引擎準備好，第一次點預覽
+  // 不必等引擎下載。省流量模式或 2G 連線時不暖機。
+  function schedulePreviewWarmup(){
+    try {
+      const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) return;
+    } catch(_) {}
+    const run = () => { ensurePreviewLib('pdf'); ensurePreviewLib('office'); };
+    setTimeout(() => {
+      if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 3000 });
+      else run();
+    }, 1200);
+  }
+
   // OFFICE_ONLINE_V1: OneDrive 同款。向後端索取「限時簽章公開連結」包成的
   // Office Online 嵌入 URL，用 <iframe> 顯示。微軟伺服器會自行抓取該連結。
   // 用於本機無法解析的舊版 .doc/.ppt/.xls。失敗時給明確訊息＋下載。
@@ -1658,55 +2181,121 @@
     }
   }
 
-  // PDFJS_PREVIEW_V1: 用 PDF.js 把 PDF 逐頁渲染成 canvas（同 Firefox 內建檢視器核心）。
-  // 失敗時退回原生 <iframe>，再失敗給明確訊息。
-  // PDFJS_PREVIEW_V1: 把「已取得的 PDF 位元組」逐頁渲染成 canvas（fit-width 堆疊）。
-  async function renderPdfData(data){
+  // PDFJS_PREVIEW_V1: 用 PDF.js 把「已取得的 PDF 位元組」逐頁渲染成 canvas（fit-width 堆疊）。
+  // PDF_FIRST_PAGE_FIRST_V1（fix52）：先把第一頁畫出來（使用者立刻看到內容），其餘頁在
+  // 背景以有限並行補齊；換檔或關閉彈窗時（PREVIEW_CANCEL_V1）停止並取消渲染。
+  async function renderPdfData(data, options){
+    const opts = options || {};
+    const mine = (opts.token === undefined) ? _previewToken : opts.token;
     const body = q('previewBody');
     // FILES_LAZY_LIB_V1: PDF.js 改為按需載入（只在真的開 PDF 時才抓 ~320KB）。
     if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('pdf');
-    window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
-    const doc = await window.pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+    if (previewCancelled(mine)) return;
+    if (!window.pdfjsLib) throw new Error('pdfjsLib missing');
+    // WORKER_SRC_ONCE_V1（fix52）：workerSrc 只需設定一次（每次預覽都重設等於讓
+    // PDF.js 重新比對 worker 位址）。
+    if (!_pdfWorkerReady){
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+      _pdfWorkerReady = true;
+    }
+    // DETACHED_BUFFER_GUARD_V1（fix52）：PDF.js 會把傳入的 ArrayBuffer 轉移（detach）給
+    // worker，直接傳快取裡的位元組會讓第二次預覽拿到「已失效的緩衝區」而整份壞掉。
+    // 這裡傳副本（一次 memcpy，遠比重新下載整檔便宜）。
+    const doc = await window.pdfjsLib.getDocument({ data: data.slice(), isEvalSupported: false }).promise;
+    if (previewCancelled(mine)){ try { doc.destroy(); } catch(_){} return; }
+    if (_previewPdf && _previewPdf !== doc){ try { _previewPdf.destroy(); } catch(_){} }
+    _previewPdf = doc;
+
     const wrap = document.createElement('div');
     wrap.className = 'tron-pdf';
     body.innerHTML = '';
     body.appendChild(wrap);
     const targetWidth = Math.max(320, (body.clientWidth || 800) - 28);
-    for (let p = 1; p <= doc.numPages; p++) {
-      const page = await doc.getPage(p);
+    const ratio = window.devicePixelRatio || 1;
+    // 每頁一個 display:contents 插槽：空插槽不佔位，canvas 直接參與 .tron-pdf 的
+    // flex 排版，因此「哪一頁先畫完」都不會影響頁面順序。
+    const slots = [];
+    for (let i = 0; i < doc.numPages; i++){
+      const slot = document.createElement('div');
+      slot.style.display = 'contents';
+      wrap.appendChild(slot);
+      slots.push(slot);
+    }
+    const paint = async (pageNo) => {
+      if (previewCancelled(mine) || !slots[pageNo - 1]) return;
+      const page = await doc.getPage(pageNo);
+      if (previewCancelled(mine)) return;
       const base = page.getViewport({ scale: 1 });
-      const scale = targetWidth / base.width;
-      const vp = page.getViewport({ scale });
+      const vp = page.getViewport({ scale: targetWidth / base.width });
       const canvas = document.createElement('canvas');
-      const ratio = window.devicePixelRatio || 1;
       canvas.width = Math.floor(vp.width * ratio);
       canvas.height = Math.floor(vp.height * ratio);
       canvas.style.width = Math.floor(vp.width) + 'px';
       canvas.style.height = 'auto';
-      wrap.appendChild(canvas);
-      await page.render({
+      slots[pageNo - 1].appendChild(canvas);
+      const task = page.render({
         canvasContext: canvas.getContext('2d'),
         viewport: vp,
         transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null
-      }).promise;
+      });
+      _previewPdfTasks.push(task);
+      try { await task.promise; } finally { _previewPdfTasks = _previewPdfTasks.filter(t => t !== task); }
+    };
+    // 第一頁優先：使用者視線就在最上面，先給它內容，後面的頁面慢慢補。
+    await paint(1);
+    if (doc.numPages > 1 && !previewCancelled(mine)){
+      let cursor = 2;
+      const fill = async () => {
+        while (!previewCancelled(mine) && cursor <= doc.numPages){
+          const pageNo = cursor++;
+          try { await paint(pageNo); } catch(_) { if (previewCancelled(mine)) return; }
+        }
+      };
+      const workers = [];
+      const workerCount = Math.min(PDF_RENDER_CONCURRENCY, doc.numPages - 1);
+      for (let i = 0; i < workerCount; i++) workers.push(fill());
+      // 背景補頁不阻塞呼叫端（第一頁已經在畫面上），失敗也不影響已顯示的內容。
+      Promise.all(workers).catch(() => {});
     }
   }
 
   async function renderPdfPreview(url, path, ext){
     const body = q('previewBody');
+    const mine = _previewToken;
     const fallbackIframe = () => {
+      if (previewCancelled(mine)) return;
       body.innerHTML = '<iframe src="' + url + '#toolbar=1" type="application/pdf"></iframe>';
     };
+    body.innerHTML = '<div class="empty">正在載入 PDF 檢視器…</div>';
     // FILES_LAZY_LIB_V1: 先按需載入 PDF.js，否則下方的 `!window.pdfjsLib` 會誤判為
     // 「引擎缺失」而退回原生 iframe（首次開 PDF 就降級）。
-    if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('pdf');
-    if (!window.pdfjsLib) { reportPreview(path, ext, 'pdf-noengine', 'pdfjsLib missing'); fallbackIframe(); return; }
-    body.innerHTML = '<div class="empty">正在載入 PDF…</div>';
+    // PREVIEW_PARALLEL_START_V1（fix52）：引擎與檔案位元組同時開抓，不互相等待。
+    const libPromise = (window.__tronEnsureFileLib
+      ? window.__tronEnsureFileLib('pdf')
+      : Promise.resolve()
+    ).catch(() => {}); // 引擎載入失敗不讓整段流程中斷（下方會走明確的降級訊息）
+    // PDF_DOWNLOAD_PROGRESS_V1（fix52）：邊下載邊顯示百分比（幾十 MB 的講義一眼看出
+    // 有在動，而不是空白等半天）。
+    const bytesPromise = fetchPreviewBytes(path, (loaded, total) => {
+      if (previewCancelled(mine)) return;
+      const pct = total ? Math.floor(loaded * 100 / total) : 0;
+      body.innerHTML = '<div class="empty">正在載入 PDF… ' + pct + '%（' +
+        sizeLabel(loaded) + ' / ' + sizeLabel(total) + '）</div>';
+    });
+    await libPromise;
+    if (previewCancelled(mine)){ bytesPromise.catch(() => {}); return; }
+    if (!window.pdfjsLib){
+      bytesPromise.catch(() => {});
+      reportPreview(path, ext, 'pdf-noengine', 'pdfjsLib missing');
+      fallbackIframe();
+      return;
+    }
     try {
-      const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) throw new Error('http ' + res.status);
-      await renderPdfData(new Uint8Array(await res.arrayBuffer()));
+      const bytes = await bytesPromise;
+      if (previewCancelled(mine)) return;
+      await renderPdfData(bytes, { token: mine });
     } catch(err) {
+      if (previewCancelled(mine)) return;
       reportPreview(path, ext, 'pdf', err && err.message);
       fallbackIframe();
     }
@@ -1752,24 +2341,47 @@
   }
 
   // 預覽分流：PDF→PDF.js；舊版二進位→Office Online；現代→本機解析。
-  async function renderOfficeSmart(url, path, ext){
+  async function renderOfficeSmart(url, path, ext, size){
     const body = q('previewBody');
+    const mine = _previewToken;
     body.innerHTML = '<div class="empty">正在載入…</div>';
+    const progress = (loaded, total) => {
+      if (previewCancelled(mine)) return;
+      const pct = total ? Math.floor(loaded * 100 / total) : 0;
+      body.innerHTML = '<div class="empty">正在載入檔案… ' + pct + '%（' +
+        sizeLabel(loaded) + ' / ' + sizeLabel(total) + '）</div>';
+    };
     try {
-      const res = await fetch(url, { cache: 'no-store' });
-      if (!res.ok) throw new Error('http ' + res.status);
-      const buf = new Uint8Array(await res.arrayBuffer());
-      const isPdf = buf.length > 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46; // %PDF
-      if (isPdf) { await renderPdfData(buf); return; }
+      // PREVIEW_SNIFF_RANGE_V1（fix52）：先確認實際內容是不是 PDF。舊版程式碼是
+      // 「先下載整份 → 再判斷」，20 MB 的 .ppt 等於白抓 20 MB；現在只抓前 8 bytes。
+      if (await previewLooksLikePdf(path, size, LEGACY_OFFICE_EXTS.includes(ext))){
+        if (previewCancelled(mine)) return;
+        await renderPdfData(await fetchPreviewBytes(path, progress), { token: mine });
+        return;
+      }
+      if (previewCancelled(mine)) return;
+      // 舊版二進位（.doc/.ppt/.xls）本機與 PDF.js 都無法解析 → 直接交給 Office
+      // Online 檢視器，瀏覽器不必先把整份檔案抓下來。
       if (LEGACY_OFFICE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
+      const buf = await fetchPreviewBytes(path, progress);
+      if (previewCancelled(mine)) return;
       // FILES_LAZY_LIB_V1: 現代 Office 格式才按需載入 jszip + office-view（~145KB），
       // 其餘情況退回 Office Online，避免進頁就抓。
       if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('office');
-      if (window.TronOfficeView && window.JSZip) { await renderOfficeLocal(buf, ext, path); return; }
+      if (previewCancelled(mine)) return;
+      if (window.TronOfficeView && window.JSZip){
+        body.innerHTML = '<div class="empty">正在解析 Office 文件…</div>';
+        // 先讓瀏覽器把提示畫出來，再開始在主執行緒上解析（大檔解析會佔用幾百 ms）。
+        await new Promise(r => setTimeout(r, 0));
+        if (previewCancelled(mine)) return;
+        await renderOfficeLocal(buf, ext, path);
+        return;
+      }
       if (OFFICE_ONLINE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
       reportPreview(path, ext, 'unsupported', 'no engine for ext');
       body.innerHTML = '<div class="empty">此格式（.' + esc(ext) + '）不支援線上預覽，請按上方「下載」查看。</div>';
     } catch(err) {
+      if (previewCancelled(mine)) return;
       reportPreview(path, ext, 'office', err && err.message);
       body.innerHTML = '<div class="empty">無法預覽（' + esc((err && err.message) || String(err)) + '），請按上方「下載」。</div>';
     }
@@ -1812,6 +2424,9 @@
 
   // PREVIEW_HIDE_NAV_V1: 預覽彈窗開/關時同步切換 body class，隱藏手機導覽列。
   function setPreviewOpen(open){
+    // PREVIEW_CANCEL_V1（fix52）：關閉預覽時停掉還在跑的下載／渲染並釋放畫布，
+    // 不讓關掉視窗後手機還在背景燒 CPU。
+    if (!open) closePreviewTasks();
     if (q('previewModal')) q('previewModal').classList.toggle('visible', open);
     document.body.classList.toggle('tron-preview-open', open);
   }
@@ -1876,6 +2491,8 @@
     const f = files.find(x => x.path === path) || { path, name: path };
     const e = ext(f);
     const url = pv(path);
+    // PREVIEW_CANCEL_V1（fix52）：讓上一個還在跑的預覽工作（PDF 背景補頁、下載）停手。
+    invalidatePreviewWork();
     // URL_SHORTCUT_V1: .url 不開彈窗，直接跳轉到檔案內的網址。
     if (e === 'url') { await previewUrlFile(path, f); return; }
     if (q('previewTitle')) q('previewTitle').textContent = f.name || path;
@@ -1892,14 +2509,14 @@
       await renderPdfPreview(url, path, e);
     } else if (isOfficePreview(e)) {
       // SINGLE_CONTAINER_V1: PDF→PDF.js；舊版→Office Online；現代→本機解析。
-      await renderOfficeSmart(url, path, e);
+      await renderOfficeSmart(url, path, e, f.size);
     } else if (VIDEO_PREVIEW_EXTS.includes(e)) {
       q('previewBody').innerHTML = '<video src="' + url + '" controls autoplay></video>';
     } else if (AUDIO_PREVIEW_EXTS.includes(e)) {
       q('previewBody').innerHTML = '<audio src="' + url + '" controls autoplay></audio>';
     } else if (e === 'csv' || e === 'tsv') {
       try {
-        const res = await fetch(url, { cache: 'no-store' });
+        const res = await fetch(url, { credentials: 'same-origin' });
         const table = csvToTable(await res.text(), e === 'tsv' ? '\t' : ',');
         q('previewBody').innerHTML = table || '<div class="empty">此檔案沒有內容</div>';
       } catch(_) {
@@ -1907,7 +2524,7 @@
       }
     } else if (TEXT_PREVIEW_EXTS.includes(e)) {
       try {
-        const res = await fetch(url, { cache: 'no-store' });
+        const res = await fetch(url, { credentials: 'same-origin' });
         // 一律以純文字顯示：html/xml 等格式也只看原始碼，不會被執行。
         q('previewBody').innerHTML = '<pre>' + esc(await res.text()) + '</pre>';
       } catch(_) {
@@ -1937,9 +2554,10 @@
     syncLinks();
     
     if (q('newBtn')) q('newBtn').onclick = () => q('newMenu').classList.toggle('open');
-    if (q('newUpload')) q('newUpload').onclick = () => { q('newMenu').classList.remove('open'); q('fileInput').click(); };
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：上傳入口一律走 pickFiles()（含 watchdog）。
+    if (q('newUpload')) q('newUpload').onclick = () => { q('newMenu').classList.remove('open'); pickFiles(); };
     if (q('newFolder')) q('newFolder').onclick = () => { q('newMenu').classList.remove('open'); mkdir(); };
-    if (q('uploadHere')) q('uploadHere').onclick = () => q('fileInput').click();
+    if (q('uploadHere')) q('uploadHere').onclick = pickFiles;
     if (q('importHere')) q('importHere').onclick = importMaterials;
     if (q('mImportTop')) q('mImportTop').onclick = importMaterials; // MOBILE_IMPORT_TOP_V1
     if (q('mkdirHere')) q('mkdirHere').onclick = mkdir;
@@ -1963,7 +2581,7 @@
     // MOBILE_FILES_BACK_BUTTON_V2: 頂欄「回上一頁」→ 上一層資料夾；底部「返回控制台」→ 控制台
     if (q('filesBackDashboardBtn')) q('filesBackDashboardBtn').onclick = driveHome;
     if (q('mDriveHome')) q('mDriveHome').onclick = () => location.href = withToken('/admin');
-    if (q('mUpload')) q('mUpload').onclick = () => q('fileInput').click();
+    if (q('mUpload')) q('mUpload').onclick = pickFiles;
     if (q('mFolder')) q('mFolder').onclick = mkdir;
 
     if (q('navAll')) q('navAll').onclick = () => setFolder('');
@@ -1975,10 +2593,47 @@
       clearTimeout(_filesDebounce);
       _filesDebounce = setTimeout(render, 120);
     };
-    if (q('fileInput')) q('fileInput').onchange = e => uploadFiles(e.target.files);
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：change 進來時先記下簽章（避免 watchdog 重複上傳）
+    // 並留一行 console 線索；真正的上傳流程仍由 uploadFiles() 統一處理。
+    // UPLOAD_QUEUE_SPEED_V1（fix51）：失敗清單下方的「重試失敗的檔案」。
+    if (q('uploadQueue')) q('uploadQueue').onclick = e => {
+      const btn = e.target && e.target.closest ? e.target.closest('[data-uq-retry]') : null;
+      if (btn) retryFailedUploads();
+    };
+
+    if (q('fileInput')) q('fileInput').onchange = e => {
+      const picked = e.target && e.target.files ? e.target.files : null;
+      if (picked && picked.length) {
+        _pickSig = filesSig(picked);
+        console.info('[upload] 已選擇 ' + picked.length + ' 個檔案');
+      }
+      uploadFiles(picked);
+    };
+    // UPLOAD_DESKTOP_FIX_V1（fix50）保險：若頁面上冒出第二個 file input（擴充套件、
+    // 舊快取頁面片段、未來改版）而 change 沒有走到 #fileInput，也在這裡接住並上傳。
+    document.addEventListener('change', e => {
+      const t = e.target;
+      if (!t || t === q('fileInput')) return;
+      if (!t.files || !t.files.length) return;
+      const sig = filesSig(t.files);
+      if (!sig || sig === _pickSig) return;
+      _pickSig = sig;
+      console.info('[upload] 接到其他 file input 的 change，改走本頁上傳流程');
+      uploadFiles(t.files);
+    }, true);
 
     if (q('previewClose')) q('previewClose').onclick = () => setPreviewOpen(false);
     if (q('previewModal')) q('previewModal').onclick = e => { if (e.target === q('previewModal')) setPreviewOpen(false); };
+
+    // PREVIEW_PREWARM_V1（fix52）：滑過／聚焦「預覽」按鈕時先暖引擎、預抓位元組，
+    // 真的點下去時幾乎立即出現內容。
+    const onPreviewHover = e => {
+      const t = e.target;
+      const btn = t && t.closest ? t.closest('[data-preview]') : null;
+      if (btn) prewarmPreview(btn.dataset.preview);
+    };
+    document.body.addEventListener('pointerover', onPreviewHover, true);
+    document.body.addEventListener('focusin', onPreviewHover, true);
 
     document.body.addEventListener('click', e => {
       const open = e.target.closest('[data-open-folder]');
@@ -1994,6 +2649,11 @@
 
     const drop = q('dropzone');
     if (drop) {
+      // UPLOAD_DESKTOP_FIX_V1（fix50）：桌機常駐的拖放區也可以直接點擊（＝選檔）。
+      drop.onclick = pickFiles;
+      drop.onkeydown = e => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); pickFiles(); }
+      };
       ['dragenter','dragover'].forEach(n => document.addEventListener(n, e => { e.preventDefault(); drop.classList.add('dragover'); }));
       document.addEventListener('dragleave', e => { if (e.clientX === 0 && e.clientY === 0) drop.classList.remove('dragover'); });
       document.addEventListener('drop', e => {
@@ -2007,6 +2667,8 @@
     if (folderParam) currentFolder = norm(folderParam);
 
     loadFiles();
+    // PREVIEW_WARM_IDLE_V1（fix52）：閒置時先把 PDF.js／office-view 準備好。
+    schedulePreviewWarmup();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

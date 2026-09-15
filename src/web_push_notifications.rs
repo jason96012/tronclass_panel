@@ -676,10 +676,51 @@ pub fn notify_homework(
             return;
         }
         if let Err(error) = service
-            .send_homework(&account_id, &course_name, &title, &stage_badge)
+            .send_homework(&account_id, &course_name, &title, &stage_badge, false)
             .await
         {
             warn!(account = %account_id, error = %error, "Web Push 作業截止通知失敗");
+        }
+    });
+}
+
+/// HOMEWORK_NEW_NOTIFY_V1：排入一則「新上架作業」推播。
+///
+/// 與 [`notify_homework`] 共用通知偏好開關（`homework_deadline`：作業提醒），
+/// 差別在標題（🆕 新作業）與點擊後前往的路徑（作業頁，而不是總覽）。
+pub fn notify_homework_new(
+    account_id: &str,
+    homework_id: u64,
+    course_name: &str,
+    title: &str,
+    stage_badge: &str,
+) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    // 去重鍵含徽章：同一份作業的「新作業」與「24 小時」是兩則不同通知，
+    // 但同一則不會因為同一輪被評估兩次而重複發送。
+    let key = format!("hwnew:{account_id}:{homework_id}:{stage_badge}");
+    {
+        let mut recent = RECENT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !dedupe_should_send(&mut recent, &key) {
+            return;
+        }
+    }
+
+    let account_id = account_id.to_string();
+    let course_name = course_name.to_string();
+    let title = title.to_string();
+    let stage_badge = stage_badge.to_string();
+    tokio::spawn(async move {
+        if !push_preference_enabled(&service, &account_id, "homework_deadline").await {
+            return;
+        }
+        if let Err(error) = service
+            .send_homework(&account_id, &course_name, &title, &stage_badge, true)
+            .await
+        {
+            warn!(account = %account_id, error = %error, "Web Push 新作業通知失敗");
         }
     });
 }
@@ -722,21 +763,25 @@ pub fn notify_bulletin(
 }
 
 impl WebPushService {
+    /// `is_new`＝HOMEWORK_NEW_NOTIFY_V1 的新作業通知（標題與落地頁不同）。
     async fn send_homework(
         &self,
         account_id: &str,
         course_name: &str,
         title: &str,
         stage_badge: &str,
+        is_new: bool,
     ) -> Result<()> {
         let subscriptions = self.db.list_web_push_subscriptions(account_id).await?;
         if subscriptions.is_empty() {
             return Ok(());
         }
+        let headline = if is_new { "🆕 新作業" } else { "作業截止提醒" };
+        let url = if is_new { "/admin/homework" } else { "/admin/dashboard" };
         let payload = serde_json::to_vec(&json!({
-            "title": format!("作業截止提醒｜{course_name}"),
+            "title": format!("{headline}｜{course_name}"),
             "body": format!("{stage_badge}：{title}"),
-            "url": "/admin/dashboard",
+            "url": url,
             "tag": format!("tronclass-homework-{account_id}"),
         }))
         .map_err(|error| miette::miette!("序列化 Web Push 作業 payload 失敗：{error}"))?;

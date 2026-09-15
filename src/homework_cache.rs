@@ -216,6 +216,7 @@ mod tests {
             submission_status: "not_submitted".to_string(),
             allow_late_submission: false,
             score: None,
+            semester_current: None,
         }
     }
 

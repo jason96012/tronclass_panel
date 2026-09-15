@@ -15,6 +15,13 @@
 
 use super::*;
 use axum::extract::Query;
+// MATERIALS_PENDING_V1（fix48）：教材開放時間的比對需要 DateTime/Utc。
+use chrono::{DateTime, Utc};
+// IMPORT_STREAM_TO_DISK_V1（fix51）：逐段寫入 .part 需要 AsyncWriteExt。
+use tokio::io::AsyncWriteExt;
+// MATERIALS_DEBUG_MACRO_V1（fix49）：`super::*` 只帶進 mod.rs 匯入的 error/info/warn，
+// `debug!` 必須自己引入——否則編譯直接失敗（cannot find macro `debug` in this scope）。
+use tracing::debug;
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
@@ -84,6 +91,7 @@ fn job_update(message: &str, progress: u64, total: u64, report: &ImportReport) {
     job.report.files_skipped = report.files_skipped;
     job.report.links_created = report.links_created;
     job.report.failed = report.failed;
+    job.report.pending = report.pending;
     job.report.errors = report.errors.clone();
 }
 
@@ -109,6 +117,11 @@ pub(super) struct ImportReport {
     pub files_skipped: u64,
     pub links_created: u64,
     pub failed: u64,
+    /// MATERIALS_PENDING_V1（fix48）：教材「還沒到開放時間」而略過的數量。
+    ///
+    /// 這不是錯誤：iClass 對尚未開放的教材一律不給檔案（連簽章網址都拿不到），
+    /// 硬記成 failed 只會讓日誌滿是紅色 ERROR。開放後再跑一次匯入就會下載。
+    pub pending: u64,
     pub errors: Vec<String>,
 }
 
@@ -137,6 +150,7 @@ pub(super) async fn admin_materials_import_status_handler(
         "files_skipped": job.report.files_skipped,
         "links_created": job.report.links_created,
         "failed": job.report.failed,
+        "pending": job.report.pending,
         "errors": job.report.errors,
     }))
     .into_response()
@@ -235,22 +249,35 @@ pub(super) async fn admin_materials_import_handler(
     let client_clone = client.clone();
     let root_clone = root.clone();
     let only = only_courses.clone();
+    // MATERIALS_RELOGIN_RETRY_V1（fix48）：session 過期時要能重登再抓一次，
+    // 因此背景工作需要帳號設定與 DB（與作業檔案路徑同一套處置）。
+    let account_clone = account.clone();
+    let db_clone = state.accounts_db.clone();
 
     // MATERIALS_IMPORT_SHARED_V1: 背景 job，不佔住 HTTP request。
     tokio::spawn(async move {
-        let report = run_import(&client_clone, &base_url, &root_clone, only.as_deref()).await;
+        let report = run_import(
+            &client_clone,
+            &base_url,
+            &root_clone,
+            only.as_deref(),
+            Some(&account_clone),
+            Some(&db_clone),
+        )
+        .await;
         let mut job = IMPORT_JOB.write().unwrap_or_else(|p| p.into_inner());
         job.running = false;
         job.done = true;
         job.ok = report.ok;
         job.last_update_at = now_ts();
         job.message = format!(
-            "完成：課程 {} 門、教材 {} 項、儲存 {}、跳過 {}、連結 {}、失敗 {}",
+            "完成：課程 {} 門、教材 {} 項、儲存 {}、跳過 {}、連結 {}、未開放 {}、失敗 {}",
             report.courses_scanned,
             report.materials_found,
             report.files_saved,
             report.files_skipped,
             report.links_created,
+            report.pending,
             report.failed,
         );
         job.progress = 1;
@@ -305,6 +332,8 @@ async fn run_import(
     base_url: &str,
     root: &Path,
     only_courses: Option<&[u64]>,
+    account: Option<&crate::account::AccountConfig>,
+    accounts_db: Option<&crate::db::AccountsDb>,
 ) -> ImportReport {
     let mut report = ImportReport {
         ok: true,
@@ -314,7 +343,17 @@ async fn run_import(
         files_skipped: 0,
         links_created: 0,
         failed: 0,
+        pending: 0,
         errors: Vec::new(),
+    };
+    // MATERIALS_IMPORT_CTX_V1：把「每個檔案都會用到的連線資訊」收成一包，
+    // 避免 process_item／process_upload 的參數一路膨脹。
+    let ctx = ImportContext {
+        client,
+        base_url,
+        root,
+        account,
+        accounts_db,
     };
 
     // 1. 課程清單 → 只留當學期。
@@ -401,7 +440,7 @@ async fn run_import(
 
         if let Some(items) = activities {
             for item in items.iter().chain(hw_items.iter()) {
-                process_item(client, base_url, root, &group, &course.name, item, &mut report).await;
+                process_item(&ctx, &group, &course.name, item, &mut report).await;
                 // 即時把進度與累計錯誤同步到背景狀態。
                 job_update(
                     &format!("處理課程 {}/{}：{}", idx + 1, total_courses, course.name),
@@ -412,7 +451,7 @@ async fn run_import(
             }
         } else if !hw_items.is_empty() {
             for item in hw_items.iter() {
-                process_item(client, base_url, root, &group, &course.name, item, &mut report).await;
+                process_item(&ctx, &group, &course.name, item, &mut report).await;
                 job_update(
                     &format!("處理課程 {}/{}：{}", idx + 1, total_courses, course.name),
                     idx as u64 + 1,
@@ -443,11 +482,82 @@ async fn run_import(
     report
 }
 
+/// MATERIALS_IMPORT_CTX_V1（fix48）：匯入過程中每個檔案都會用到的連線資訊。
+///
+/// 收成一包的理由：`process_item`／`process_upload` 原本已經是 7 個參數，
+/// 再加上「重登重試」需要的帳號與 DB 會更難閱讀。
+struct ImportContext<'a> {
+    client: &'a reqwest::Client,
+    base_url: &'a str,
+    root: &'a Path,
+    /// 供 session 過期時重新登入用；不需要（或測試）時為 `None`。
+    account: Option<&'a crate::account::AccountConfig>,
+    accounts_db: Option<&'a crate::db::AccountsDb>,
+}
+
+/// MATERIALS_PENDING_V1（fix48）：教材下載失敗的歸類。
+///
+/// 為什麼要分類：iClass 對「尚未開放」的教材不會給檔案（`/api/uploads/{id}/preview`
+/// 拿不到簽章網址、備援的 `/download/{key}` 回 404）。過去這與真正的故障
+/// （連線失敗、硬碟寫不進去）都記成同一種 ERROR，使用者只看到紅字卻查不出原因。
+enum MaterialFailureKind {
+    /// 還沒到教材開放時間 → 不是錯誤，開放後再匯入即會下載。
+    NotOpenYet(String),
+    /// 上游完全沒給可下載位址 → 通常是尚未開放，或這筆教材本來就不是檔案。
+    NoDownloadUrl(String),
+    /// 其他（連線、HTTP 狀態、0 bytes…）→ 沿用原本的 failed／error 記錄。
+    Other,
+}
+
+/// 依「開放時間」與「有沒有拿到簽章網址」把失敗歸類。
+///
+/// `has_signed_url`：候選網址裡是否有 `/api/uploads/{id}/preview` 取得的簽章連結
+/// （只有備援的 `/download/{key}` 或完全沒有，都代表上游沒有真的給檔案）。
+fn classify_material_failure(
+    opens_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+    has_signed_url: bool,
+) -> MaterialFailureKind {
+    if let Some(open_at) = opens_at.filter(|open_at| *open_at > now) {
+        return MaterialFailureKind::NotOpenYet(format!(
+            "教材尚未開放（預計 {} 開放），開放後再匯入即會下載",
+            open_at
+                .with_timezone(&chrono::Local)
+                .format("%Y-%m-%d %H:%M")
+        ));
+    }
+    if !has_signed_url {
+        return MaterialFailureKind::NoDownloadUrl(
+            "iClass 沒有提供這個檔案的下載位址（可能尚未開放，或這筆教材不是可下載的檔案）"
+                .to_string(),
+        );
+    }
+    MaterialFailureKind::Other
+}
+
+/// 讀出教材項目的「開放時間」（iClass 的 start_time 等欄位）。
+///
+/// 解析沿用 `api::todos::parse_datetime`（與作業頁同一個解析器，支援 RFC 3339、
+/// `YYYY-MM-DD HH:MM[:SS]` 等實際會遇到的格式）。欄位缺漏或格式不合法 → `None`，
+/// 呼叫端就把失敗當成一般錯誤處理（寧可誤報，也不要漏報）。
+fn item_start_time(item: &Value) -> Option<DateTime<Utc>> {
+    for key in [
+        "start_time",
+        "start_at",
+        "open_time",
+        "begin_time",
+        "start_date",
+    ] {
+        if let Some(dt) = item.get(key).and_then(crate::api::todos::parse_datetime) {
+            return Some(dt);
+        }
+    }
+    None
+}
+
 /// 處理單一活動項,依 type 分派。
 async fn process_item(
-    client: &reqwest::Client,
-    base_url: &str,
-    root: &Path,
+    ctx: &ImportContext<'_>,
     group: &str,
     course_name: &str,
     item: &Value,
@@ -466,11 +576,14 @@ async fn process_item(
 
     report.materials_found += 1;
 
+    // MATERIALS_PENDING_V1：記下這筆教材的開放時間，供失敗時判斷「是不是還沒開放」。
+    let opens_at = item_start_time(item);
+
     match item_type.as_str() {
         "material" | "file" | "resource" | "attachment" => {
             if let Some(uploads) = item.get("uploads").and_then(Value::as_array) {
                 for upload in uploads {
-                    let _ = process_upload(client, base_url, root, group, course_name, &title, upload, report).await;
+                    let _ = process_upload(ctx, group, course_name, &title, upload, opens_at, report).await;
                 }
             }
         }
@@ -481,7 +594,7 @@ async fn process_item(
                 .map(str::to_string)
                 .filter(|s| !s.is_empty());
             if let Some(url) = url {
-                match write_link_file(root, group, course_name, &title, &url).await {
+                match write_link_file(ctx.root, group, course_name, &title, &url).await {
                     Ok(wrote) => {
                         if wrote {
                             report.files_saved += 1;
@@ -501,14 +614,14 @@ async fn process_item(
             if let Some(uploads) = item.get("uploads").and_then(Value::as_array) {
                 let mut dl = false;
                 for upload in uploads {
-                    if process_upload(client, base_url, root, group, course_name, &title, upload, report).await {
+                    if process_upload(ctx, group, course_name, &title, upload, opens_at, report).await {
                         dl = true;
                     }
                 }
                 if !dl {
                     // 影片無可下載物件 → 存連結檔(課程頁)。
-                    let url = format!("{base_url}/course/{}/courseware", item.get("course_id").and_then(Value::as_u64).unwrap_or_default());
-                    let _ = write_link_file(root, group, course_name, &title, &url).await;
+                    let url = format!("{}/course/{}/courseware", ctx.base_url, item.get("course_id").and_then(Value::as_u64).unwrap_or_default());
+                    let _ = write_link_file(ctx.root, group, course_name, &title, &url).await;
                     report.links_created += 1;
                 }
             }
@@ -521,13 +634,12 @@ async fn process_item(
 
 /// 下載單一 upload 並寫入磁碟。回傳是否成功下載(供影片分支判斷)。
 async fn process_upload(
-    client: &reqwest::Client,
-    base_url: &str,
-    root: &Path,
+    ctx: &ImportContext<'_>,
     group: &str,
     course_name: &str,
     material_title: &str,
     upload: &Value,
+    opens_at: Option<DateTime<Utc>>,
     report: &mut ImportReport,
 ) -> bool {
     let name = upload
@@ -540,7 +652,8 @@ async fn process_upload(
 
     // 資料夾到「分班/課程」這一層，教材不再細分。
     // MATERIALS_IMPORT_V2: <root>/<group>/<course_name>/<file>
-    let dir = root
+    let dir = ctx
+        .root
         .join(sanitize_component(group))
         .join(sanitize_component(course_name));
     let filename = sanitize_filename(&name);
@@ -567,11 +680,47 @@ async fn process_upload(
 
     // MATERIALS_IMPORT_S3_V1: 以 upload.id 走 /api/uploads/{id}/preview 取得
     // tc-minio 的 S3 URL(走 :443、繞過 :8085 檔案埠)，由 download_file 依序嘗試。
-    let download_urls = resolve_download_urls(client, base_url, upload).await;
+    let mut download_urls = resolve_download_urls(ctx.client, ctx.base_url, upload).await;
+
+    // MATERIALS_RELOGIN_RETRY_V1（fix48）：只剩 `/download/{key}` 備援位址（或完全
+    // 沒有）時，多半是 session 過期——preview 端點回了登入頁，所以解析不到簽章網址。
+    // 與作業檔案路徑同一套處置：重登一次再解析，而不是直接對備援位址硬打（那條路
+    // 在 S3 化的學校一律 404，正是日誌裡那些 404 的來源）。
+    let mut has_signed_url = download_urls.iter().any(|url| !url.contains("/download/"));
+    if !has_signed_url {
+        if let (Some(account), Some(db)) = (ctx.account, ctx.accounts_db) {
+            match super::homework::iclass_api_after_relogin(account, db).await {
+                Ok(fresh) => {
+                    let retried = resolve_download_urls(&fresh.client, ctx.base_url, upload).await;
+                    if retried.iter().any(|url| !url.contains("/download/"))
+                        || download_urls.is_empty()
+                    {
+                        download_urls = retried;
+                        has_signed_url = download_urls.iter().any(|url| !url.contains("/download/"));
+                        if has_signed_url {
+                            info!(
+                                course = %course_name,
+                                file = %filename,
+                                "教材匯入：session 已重建，取得簽章下載位址"
+                            );
+                        }
+                    }
+                }
+                Err(error) => {
+                    debug!(
+                        course = %course_name,
+                        file = %filename,
+                        %error,
+                        "教材匯入：重新登入失敗（沿用原候選位址）"
+                    );
+                }
+            }
+        }
+    }
 
     // 直接串流寫檔：download_file 會把內容串流寫進 dest（先寫到 .part 再改名），
     // 避免把數 GB 檔案讀進記憶體；回傳的是真正寫入的 bytes 數。
-    match download_file(client, &download_urls, &dest).await {
+    match download_file(ctx.client, &download_urls, &dest).await {
         Ok(size) if size > 0 => {
             report.files_saved += 1;
             true
@@ -585,9 +734,40 @@ async fn process_upload(
         Err(e) => {
             // 清理可能殘留的 .part 半成品。
             let _ = tokio::fs::remove_file(dest.with_extension("part")).await;
-            report.failed += 1;
-            report.errors.push(format!("[{}] {filename} 下載失敗：{e}", course_name));
-            error!(course = %course_name, file = %filename, error = %e, "教材匯入：下載檔案失敗");
+            // MATERIALS_PENDING_V1：先分辨「尚未開放」與真正的故障，再決定記錄方式。
+            match classify_material_failure(opens_at, Utc::now(), has_signed_url) {
+                MaterialFailureKind::NotOpenYet(note) => {
+                    report.pending += 1;
+                    report.errors.push(format!("[{course_name}] {filename}：{note}"));
+                    info!(
+                        course = %course_name,
+                        file = %filename,
+                        note = %note,
+                        "教材匯入：尚未開放，略過（開放後重跑即會下載）"
+                    );
+                }
+                MaterialFailureKind::NoDownloadUrl(note) => {
+                    report.failed += 1;
+                    report.errors.push(format!("[{course_name}] {filename}：{note}"));
+                    warn!(
+                        course = %course_name,
+                        file = %filename,
+                        note = %note,
+                        error = %e,
+                        "教材匯入：上游沒有提供下載位址"
+                    );
+                }
+                MaterialFailureKind::Other => {
+                    report.failed += 1;
+                    report.errors.push(format!("[{course_name}] {filename} 下載失敗：{e}"));
+                    error!(
+                        course = %course_name,
+                        file = %filename,
+                        error = %e,
+                        "教材匯入：下載檔案失敗"
+                    );
+                }
+            }
             false
         }
     }
@@ -676,7 +856,7 @@ async fn download_file(
             .header(reqwest::header::ACCEPT, "application/octet-stream, */*")
             .header(reqwest::header::USER_AGENT, "Mozilla/5.0");
 
-        let resp = match req.send().await {
+        let mut resp = match req.send().await {
             Ok(r) if r.status().is_success() => r,
             Ok(r) => {
                 last_err = format!("HTTP {}（{url}）", r.status());
@@ -691,27 +871,53 @@ async fn download_file(
         };
 
         let tmp = dest.with_extension("part");
-        let bytes = match resp.bytes().await {
-            Ok(b) => b,
+        // IMPORT_STREAM_TO_DISK_V1（fix51）：邊收邊寫，不再整份先收進記憶體。
+        //
+        // 原本 resp.bytes() 會把整份教材累積成一個 Bytes（一堂課的影片就是幾百 MB
+        // 的記憶體），而且「先全部讀完、再一次性寫入」讓網路與磁碟完全串起來跑。
+        // 改成逐段寫入 .part 之後，下載與寫入重疊進行，記憶體固定在一段的量。
+        // 寫入失敗或連線中斷都只影響這一個候選位址（與原本 bytes() 失敗時一致）。
+        let mut out = match tokio::fs::File::create(&tmp).await {
+            Ok(file) => file,
             Err(e) => {
-                let _ = tokio::fs::remove_file(&tmp).await;
-                last_err = format!("讀取回應失敗：{e}");
-                warn!(url = %url, error = %last_err, "教材匯入：讀取回應失敗，跳過此位址");
+                last_err = format!("建立暫存檔失敗：{e}");
+                warn!(url = %url, error = %last_err, "教材匯入：建立暫存檔失敗，跳過此位址");
                 continue;
             }
         };
-
-        if bytes.is_empty() {
+        let mut written: u64 = 0;
+        let mut stream_err: Option<String> = None;
+        loop {
+            match resp.chunk().await {
+                Ok(Some(chunk)) => {
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    if let Err(e) = out.write_all(&chunk).await {
+                        stream_err = Some(format!("寫入暫存檔失敗：{e}"));
+                        break;
+                    }
+                    written = written.saturating_add(chunk.len() as u64);
+                }
+                Ok(None) => break,
+                Err(e) => {
+                    stream_err = Some(format!("讀取回應失敗：{e}"));
+                    break;
+                }
+            }
+        }
+        // 先關檔再改名，免得半截資料被當成完成品。
+        drop(out);
+        if let Some(err) = stream_err {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            last_err = err;
+            warn!(url = %url, error = %last_err, "教材匯入：下載中斷，跳過此位址");
+            continue;
+        }
+        if written == 0 {
             let _ = tokio::fs::remove_file(&tmp).await;
             last_err = "下載到 0 bytes".to_string();
             warn!(url = %url, "教材匯入：下載到 0 bytes，跳過此位址");
-            continue;
-        }
-
-        // 先寫 .part，成功再改名成最終檔，避免留下半成品。
-        if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
-            last_err = format!("寫入暫存檔失敗：{e}");
-            warn!(url = %url, error = %last_err, "教材匯入：寫入暫存檔失敗");
             continue;
         }
         if let Err(e) = tokio::fs::rename(&tmp, dest).await {
@@ -720,8 +926,8 @@ async fn download_file(
             warn!(url = %url, error = %last_err, "教材匯入：rename 失敗");
             continue;
         }
-        info!(url = %url, bytes = bytes.len(), "教材匯入：下載成功");
-        return Ok(bytes.len() as u64);
+        info!(url = %url, bytes = written, "教材匯入：下載成功");
+        return Ok(written);
     }
     Err(last_err)
 }
@@ -776,6 +982,8 @@ fn write_manifest(root: &Path, report: &ImportReport) {
         "files_skipped": report.files_skipped,
         "links_created": report.links_created,
         "failed": report.failed,
+        // MATERIALS_PENDING_V1（fix48）：尚未開放而略過的數量（與 failed 分開記）。
+        "pending": report.pending,
     });
     // ATOMIC_WRITE_V1
     if let Err(e) = crate::atomic_write::write_atomic(&dest, serde_json::to_string_pretty(&obj).unwrap_or_default()) {
@@ -909,6 +1117,66 @@ fn course_material_dir(root: &Path, group: &str, course: &str, _title: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MATERIALS_PENDING_V1（fix48）：教材還沒開放 → 記成 pending，不是 failed。
+    #[test]
+    fn classify_material_failure_detects_not_open_yet() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-15T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let future = now + chrono::Duration::days(30);
+        let past = now - chrono::Duration::days(30);
+
+        match classify_material_failure(Some(future), now, false) {
+            MaterialFailureKind::NotOpenYet(note) => {
+                assert!(note.contains("教材尚未開放"), "note = {note}");
+                assert!(note.contains("開放後再匯入即會下載"), "note = {note}");
+            }
+            _ => panic!("未開放的教材應歸類為 NotOpenYet"),
+        }
+
+        // 已開放但完全拿不到下載位址 → NoDownloadUrl（仍算失敗，但訊息可讀）
+        match classify_material_failure(Some(past), now, false) {
+            MaterialFailureKind::NoDownloadUrl(note) => {
+                assert!(note.contains("沒有提供這個檔案的下載位址"), "note = {note}");
+            }
+            _ => panic!("拿不到位址應歸類為 NoDownloadUrl"),
+        }
+
+        // 已開放、也有簽章網址 → 其他（真正的故障，沿用原本的 failed/error）
+        assert!(matches!(
+            classify_material_failure(Some(past), now, true),
+            MaterialFailureKind::Other
+        ));
+        // 沒有開放時間可比對、但有簽章網址 → 不可誤判成「尚未開放」
+        assert!(matches!(
+            classify_material_failure(None, now, true),
+            MaterialFailureKind::Other
+        ));
+        // 沒有開放時間、也沒有簽章網址 → 用「上游沒給下載位址」的說明
+        assert!(matches!(
+            classify_material_failure(None, now, false),
+            MaterialFailureKind::NoDownloadUrl(_)
+        ));
+    }
+
+    /// 開放時間的解析沿用 api::todos::parse_datetime；缺漏／壞格式 → None。
+    #[test]
+    fn item_start_time_reads_common_field_names() {
+        let rfc = serde_json::json!({ "start_time": "2027-01-14T05:10:00Z" });
+        assert!(item_start_time(&rfc).is_some());
+
+        let local = serde_json::json!({ "start_date": "2027-01-14 13:10" });
+        let parsed = item_start_time(&local).expect("本地時間格式也要能解析");
+        // 13:10（+08:00）→ 05:10 UTC
+        assert_eq!(parsed.format("%H:%M").to_string(), "05:10");
+
+        let open_time = serde_json::json!({ "open_time": "2027-02-01T00:00:00Z" });
+        assert!(item_start_time(&open_time).is_some());
+
+        assert!(item_start_time(&serde_json::json!({})).is_none());
+        assert!(item_start_time(&serde_json::json!({ "start_time": "待公告" })).is_none());
+    }
 
     #[test]
     fn sanitize_filters_bad_characters() {

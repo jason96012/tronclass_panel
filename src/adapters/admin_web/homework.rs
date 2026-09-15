@@ -94,6 +94,8 @@ pub(super) async fn admin_homework_test_notification_handler(
         stage_badge: "最後 1 小時".to_string(),
         deadline: deadline.format("%Y-%m-%d %H:%M").to_string(),
         time_remaining: "45 分鐘".to_string(),
+        // HOMEWORK_NEW_NOTIFY_V1：測試通知走的是「截止提醒」文案。
+        is_new: false,
     };
     let message = crate::adapters::events::OutboundMessage::HomeworkDeadline(event);
 
@@ -288,7 +290,7 @@ async fn iclass_api_for_account(
 }
 
 /// HOMEWORK_DETAIL_V1（fix41）：完整帳密登入一次，並把新 session cookie 存回 DB。
-async fn iclass_api_after_relogin(
+pub(super) async fn iclass_api_after_relogin(
     account: &crate::account::AccountConfig,
     accounts_db: &crate::db::AccountsDb,
 ) -> miette::Result<crate::api::ApiClient> {
@@ -697,6 +699,105 @@ struct HomeworkFileRequest {
     inline: bool,
 }
 
+/// HOMEWORK_FILE_SANITY_V1（fix47）：嗅探上游回應開頭所需的 bytes 數。
+///
+/// 只需要認出「這是不是檔案」——HTML 頁面與 JSON 錯誤都出現在最前面幾個 bytes。
+const FILE_SNIFF_BYTES: usize = 512;
+
+/// 這個檔名本來就是文字／網頁類嗎？
+///
+/// 文字類的開頭本來就可能長得像錯誤頁（`.html` 是 `<`、`.json` 是 `{`、
+/// `.rtf` 是 `{\rtf`、`.url` 是 `[InternetShortcut]`），這些一律不套用
+/// 「上游回傳錯誤頁」的檢查，否則正常檔案會被誤擋。
+fn is_texty_file_name(file_name: &str) -> bool {
+    let ext = std::path::Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "html"
+            | "htm"
+            | "xhtml"
+            | "txt"
+            | "text"
+            | "md"
+            | "markdown"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "xml"
+            | "svg"
+            | "yaml"
+            | "yml"
+            | "ini"
+            | "conf"
+            | "cfg"
+            | "toml"
+            | "sql"
+            | "sh"
+            | "rs"
+            | "js"
+            | "mjs"
+            | "ts"
+            | "jsx"
+            | "tsx"
+            | "css"
+            | "py"
+            | "java"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "go"
+            | "php"
+            | "log"
+            | "srt"
+            | "vtt"
+            | "url"
+            | "rtf"
+    )
+}
+
+/// 上游回應「明顯不是檔案」的判斷（回傳原因供 log／錯誤訊息使用）。
+///
+/// 這是教材匯入 `fetch_json` 同一套判斷（首個非空白字元是 `<` 即 HTML 登入頁）的延伸：
+/// 這裡多了 JSON——iClass 的 API 錯誤常以 JSON、HTTP 200 回覆，
+/// 而面板端點若原封不動轉出去，使用者拿到的「.docx」其實是一段 JSON，
+/// 前端只會說「內容與副檔名不符」，完全查不出原因。
+fn looks_like_recognition_page(prefix: &[u8]) -> Option<&'static str> {
+    let first = prefix
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())?;
+    match first {
+        b'<' => Some("HTML 頁面（多半是登入頁或錯誤頁）"),
+        b'{' | b'[' => Some("JSON 回應（多半是 API 錯誤）"),
+        _ => None,
+    }
+}
+
+/// Range 是否從第 0 個 byte 開始；只有這種情況開頭才是檔案真正的開頭，可以嗅探。
+fn range_starts_at_zero(value: &axum::http::HeaderValue) -> bool {
+    match value.to_str() {
+        Ok(text) => text
+            .trim()
+            .trim_start_matches("bytes=")
+            .trim()
+            .starts_with("0-"),
+        Err(_) => false,
+    }
+}
+
+/// HOMEWORK_FILE_SANITY_V1（fix47）：一次「依序試候選網址」的串流結果。
+struct HomeworkFileAttempt {
+    response: Option<Response>,
+    last_error: String,
+    /// 至少有一個候選網址回傳「明顯不是檔案」的內容（HTML／JSON）。
+    saw_page: bool,
+}
+
 /// 決定回給瀏覽器的 Content-Type。
 ///
 /// **以副檔名優先**：上游對同一種檔案常常只回 `application/octet-stream`，而預覽要能
@@ -809,14 +910,75 @@ async fn homework_file_response(
         .get(axum::http::header::RANGE)
         .cloned();
 
+    let mut attempt =
+        stream_homework_file(&api, &urls, &file_name, request.inline, range.as_ref()).await;
+
+    // HOMEWORK_FILE_SANITY_V1（fix47）：上游回「HTML 登入頁／JSON 錯誤」時，
+    // 以前會原封不動當成 .docx 串回瀏覽器，前端只看到「檔案內容與副檔名不符」。
+    // 最常見的成因是 session 過期，這裡重新登入後再試一輪（與上面「只剩 /download/
+    // 備援」同一個處置），仍然失敗才回錯誤，不再把錯誤頁當檔案送出去。
+    if attempt.response.is_none() && attempt.saw_page {
+        match iclass_api_after_relogin(&target.account, &state.accounts_db).await {
+            Ok(fresh) => {
+                let retried_urls = super::materials_import::resolve_download_urls(
+                    &fresh.client,
+                    &target.base_url,
+                    &upload,
+                )
+                .await;
+                if !retried_urls.is_empty() {
+                    info!(account = %target.raw.id, "作業檔案疑似 session 過期：重新登入後重試");
+                    attempt = stream_homework_file(
+                        &fresh,
+                        &retried_urls,
+                        &file_name,
+                        request.inline,
+                        range.as_ref(),
+                    )
+                    .await;
+                }
+            }
+            Err(error) => {
+                warn!(account = %target.raw.id, %error, "作業檔案：重新登入失敗");
+            }
+        }
+    }
+
+    match attempt.response {
+        Some(response) => response,
+        None => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("讀取檔案失敗：{}", attempt.last_error) })),
+        )
+            .into_response(),
+    }
+}
+
+/// HOMEWORK_FILE_SANITY_V1（fix47）：依序嘗試候選網址，成功就回傳可串流的回應。
+///
+/// 與舊版的差別只有一處：送出回應**之前**先看開頭 [`FILE_SNIFF_BYTES`] bytes，
+/// 若內容明顯是 HTML 頁面或 JSON（登入頁／API 錯誤），就當成這個網址失敗、
+/// 換下一個候選，而不是把錯誤頁當成檔案交給瀏覽器。
+///
+/// 已經讀進來的前綴會原樣接回串流前端，因此 Content-Length／Content-Range
+/// 與位元組內容都與上游一致（影音分段、PDF 分段照常運作）。
+async fn stream_homework_file(
+    api: &crate::api::ApiClient,
+    urls: &[String],
+    file_name: &str,
+    inline: bool,
+    range: Option<&axum::http::HeaderValue>,
+) -> HomeworkFileAttempt {
     let mut last_error = String::from("沒有可用的下載位址");
-    for url in &urls {
+    let mut saw_page = false;
+
+    for url in urls {
         let mut upstream_request = api
             .client
             .get(url)
             .timeout(std::time::Duration::from_secs(600))
             .header(reqwest::header::ACCEPT, "application/octet-stream, */*");
-        if let Some(range) = range.as_ref() {
+        if let Some(range) = range {
             upstream_request = upstream_request.header(reqwest::header::RANGE, range.clone());
         }
         let response = upstream_request.send().await;
@@ -839,7 +1001,7 @@ async fn homework_file_response(
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok());
-        let content_type = homework_file_content_type(&file_name, upstream_type);
+        let content_type = homework_file_content_type(file_name, upstream_type);
         let content_length = upstream.content_length();
         let content_range = upstream
             .headers()
@@ -847,7 +1009,52 @@ async fn homework_file_response(
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
 
-        let disposition = if request.inline { "inline" } else { "attachment" };
+        // 只有「整份檔案」或「從第 0 byte 起的分段」才嗅探；中段的 bytes 沒有魔數。
+        let sniffable = !is_texty_file_name(file_name)
+            && range
+                .map(|value| range_starts_at_zero(value))
+                .unwrap_or(true);
+
+        let mut stream = upstream.bytes_stream();
+        let mut prefix: Vec<u8> = Vec::new();
+        // 已讀進來的 chunk（型別由 `bytes_stream()` 推得，不需要直接依賴 bytes crate）。
+        let mut kept = Vec::new();
+        let mut peek_error: Option<String> = None;
+        if sniffable {
+            while prefix.len() < FILE_SNIFF_BYTES {
+                match futures::StreamExt::next(&mut stream).await {
+                    Some(Ok(chunk)) => {
+                        prefix.extend_from_slice(&chunk);
+                        kept.push(chunk);
+                    }
+                    Some(Err(error)) => {
+                        peek_error = Some(error.to_string());
+                        break;
+                    }
+                    None => break,
+                }
+            }
+        }
+        if let Some(error) = peek_error {
+            last_error = format!("讀取回應失敗（{url}）：{error}");
+            warn!(url = %url, %error, "讀取作業檔案：讀取前置內容失敗，換下一個位址");
+            continue;
+        }
+        if sniffable {
+            if let Some(reason) = looks_like_recognition_page(&prefix) {
+                saw_page = true;
+                last_error = format!("iClass 回傳的是{reason}（{url}）");
+                warn!(
+                    url = %url,
+                    reason,
+                    prefix_bytes = prefix.len(),
+                    "讀取作業檔案：上游回傳的不是檔案內容，換下一個位址"
+                );
+                continue;
+            }
+        }
+
+        let disposition = if inline { "inline" } else { "attachment" };
         let mut builder = axum::http::Response::builder()
             .status(status)
             .header(axum::http::header::CONTENT_TYPE, content_type)
@@ -855,7 +1062,7 @@ async fn homework_file_response(
                 axum::http::header::CONTENT_DISPOSITION,
                 format!(
                     "{disposition}; filename*=UTF-8''{}",
-                    percent_encode_filename(&file_name)
+                    percent_encode_filename(file_name)
                 ),
             )
             // 沒有這個標頭時，影音播放器不會嘗試分段抓取。
@@ -870,25 +1077,33 @@ async fn homework_file_response(
         if let Some(content_range) = content_range {
             builder = builder.header(axum::http::header::CONTENT_RANGE, content_range);
         }
+
         // CLOUD_FILE_STREAMING_V1 的同一套理由：串流而不是整包進記憶體。
-        return match builder.body(axum::body::Body::from_stream(upstream.bytes_stream())) {
-            Ok(response) => response,
+        // 已嗅探的前綴接回最前面，內容與上游完全一致。
+        let prefix_stream = futures::stream::iter(kept.into_iter().map(Ok::<_, reqwest::Error>));
+        let body_stream = futures::StreamExt::chain(prefix_stream, stream);
+        return match builder.body(axum::body::Body::from_stream(body_stream)) {
+            Ok(response) => HomeworkFileAttempt {
+                response: Some(response),
+                last_error,
+                saw_page,
+            },
             Err(error) => {
                 warn!(%error, "讀取作業檔案：回應組裝失敗");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "回應組裝失敗" })),
-                )
-                    .into_response()
+                HomeworkFileAttempt {
+                    response: None,
+                    last_error: "回應組裝失敗".to_string(),
+                    saw_page,
+                }
             }
         };
     }
 
-    (
-        StatusCode::BAD_GATEWAY,
-        Json(json!({ "error": format!("讀取檔案失敗：{last_error}") })),
-    )
-        .into_response()
+    HomeworkFileAttempt {
+        response: None,
+        last_error,
+        saw_page,
+    }
 }
 
 /// HOMEWORK_DETAIL_V1（fix41）：作業附件下載（保留原本的專用路徑，行為不變）。

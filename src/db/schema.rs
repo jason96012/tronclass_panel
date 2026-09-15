@@ -619,6 +619,25 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 homework_reminder_preferences 資料表失敗")?;
 
+    // HOMEWORK_NEW_NOTIFY_V1
+    // 新作業通知的「已評估」紀錄：一列 = 一份曾被我們看過的作業。
+    // 不在這裡、又可通知的作業 = 新上架 → 發通知。
+    // `homework_id = 'baseline'` 是保留列，代表「此帳號已建立基準」
+    // （第一次評估時整批寫入，避免剛部署就把既有作業通知一輪）。
+    // 刻意不做保留期清理：清掉舊紀錄會讓長跑的作業被當成新的重複通知。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS homework_seen (
+            account_id TEXT NOT NULL DEFAULT '',
+            homework_id TEXT NOT NULL DEFAULT '',
+            seen_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(account_id, homework_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 homework_seen 資料表失敗")?;
+
     // LOGIN_THROTTLE_SQLITE_V1
     // 登入／通行密鑰／密碼變更等敏感端點的節流事件，改存 SQLite：
     // 服務重啟（或 Pterodactyl 自動重啟）後計數不歸零，攻擊者無法靠「打到重啟」清零。

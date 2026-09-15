@@ -3894,6 +3894,11 @@ async fn admin_security_headers_middleware(
     // Online、外部 <img>/<iframe>）載入。若沿用 same-origin 的 CORP 與 X-Frame-Options
     // DENY，跨域檢視器會直接拒絕載入 → Office Online 顯示 "An error occurred"。
     let is_pub = path.starts_with("/pub/");
+    // PREVIEW_REVALIDATE_V1（fix52）：檔案預覽端點自己帶 Cache-Control 與 ETag
+    // （`private, max-age=0, must-revalidate`），不能被下面的全站 `no-store` 覆寫：
+    // 一被覆寫，瀏覽器不留存內容、也不會送 `If-None-Match`，重開同一份教材就只能
+    // 再整份下載一次。只放行這一個端點（作業附件端點自己仍送 no-store，不受影響）。
+    let keeps_own_cache = is_framable_preview;
     let mut response = next.run(request).await;
 
     // This middleware covers the whole Admin Web router, including `/` and
@@ -3956,7 +3961,7 @@ async fn admin_security_headers_middleware(
             headers.insert(header::CONTENT_SECURITY_POLICY, value);
         }
     }
-    if is_admin_path && !cache_static {
+    if is_admin_path && !cache_static && !keeps_own_cache {
         // Admin HTML must always be revalidated (it is behind auth and may
         // change on redeploy), but `no-store` also forbade conditional
         // requests, so every navigation re-downloaded the full ~260 KB

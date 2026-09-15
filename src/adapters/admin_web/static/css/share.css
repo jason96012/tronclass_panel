@@ -16,3 +16,5 @@ header .dl:hover{background:#2563eb}
 .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
 .tron-slide-img{position:absolute}
 .tron-office-error{padding:36px 18px;text-align:center;color:#94a3b8;border:1px dashed #334155;border-radius:14px;font-size:13px}
+/* OFFICE_SNIFF_INFO_V1（fix47）：內容與副檔名不符時附上開頭位元組。 */
+.tron-office-diag{margin-top:10px;padding:8px 10px;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#94a3b8;background:rgba(148,163,184,.12);border-radius:8px;word-break:break-all;text-align:left}

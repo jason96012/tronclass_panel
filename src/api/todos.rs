@@ -53,6 +53,18 @@ pub struct TronclassTodoItem {
     pub submission_status: String,
     pub allow_late_submission: bool,
     pub score: Option<f64>,
+    /// HOMEWORK_PAGE_CURRENT_ONLY_V1（fix45）：這筆項目是否屬於「當前學期」。
+    ///
+    /// * `Some(true)`：判定為當學期（有截止時間且不早於本學期起點，或所屬課程可確認為當學期）。
+    /// * `Some(false)`：判定為非當學期（所屬課程確定是舊課／已封存，或截止日早於本學期起點）。
+    /// * `None`：無從判定（例如 `/api/my-courses` 抓不到、或該校沒有可判讀的學期欄位）。
+    ///
+    /// 作業頁預設**只顯示 `!= Some(false)`** 的項目（使用者可切換「全部學期」）；
+    /// `None` 一律保留，寧可多顯示也不要誤藏使用者的作業。
+    ///
+    /// `#[serde(default)]`：舊的快照（SQLite）沒有這個欄位，反序列化必須照舊通過。
+    #[serde(default)]
+    pub semester_current: Option<bool>,
 }
 
 impl TronclassTodoItem {
@@ -411,6 +423,25 @@ impl super::ApiClient {
                 );
             }
         }
+
+        // HOMEWORK_PAGE_CURRENT_ONLY_V1（fix45）：為每一筆項目標上「是否屬於當前學期」。
+        //
+        // 為什麼要另立旗標：上面三道防線是「依設定決定要不要過濾」（測試用的
+        // include_all_semesters、以及為各校差異保留的 strict_current_semester），
+        // 而作業頁的預設行為應該是**不論設定如何都只顯示當學期**。把判定結果隨資料
+        // 送給前端（`semester_current`），前端就能用它當預設篩選，並讓使用者按需要
+        // 切換到「全部學期」——比在伺服器端直接刪資料更透明（前端會顯示隱藏了幾筆）。
+        //
+        // 判定規則與第三道防線一致：
+        //   有截止時間 → 以本學期起點（含 14 天寬限）為界；
+        //   沒有截止時間 → 看所屬課程是否可確認為當前學期；
+        //   無法判定（課程清單抓不到、該校沒有可判讀的學期欄位）→ None（保留）。
+        // 放在三道防線之後、EXAM_SCORE_V1 之前：只為最終會回傳的項目標記。
+        label_semester_current(
+            &mut results,
+            &course_current,
+            current_semester_start(Utc::now()),
+        );
 
         // EXAM_SCORE_V1（測驗分數）
         // `/api/courses/{id}/exams` 的項目不含分數；分數在另一個端點
@@ -779,6 +810,8 @@ pub fn parse_single_todo(
         submission_status,
         allow_late_submission,
         score,
+        // 先留空，`get_todos()` 取得課程清單後統一判定（見 HOMEWORK_PAGE_CURRENT_ONLY_V1）。
+        semester_current: None,
     })
 }
 
@@ -1857,6 +1890,31 @@ fn todo_item_is_confirmably_current(
     }
 }
 
+/// HOMEWORK_PAGE_CURRENT_ONLY_V1（fix45）：為整批項目標上「是否屬於當前學期」。
+///
+/// 作業頁預設只顯示「當學期」，但判斷所需的課程學期資訊只在伺服器端（`/api/my-courses`
+/// 的解析結果）；這個函式把判定結果寫進 `TronclassTodoItem::semester_current`，
+/// 隨清單一起送給前端，前端就能用它當預設篩選、並讓使用者切換到「全部學期」。
+///
+/// 規則（與第三道防線 `todo_item_is_confirmably_current` 相同）：
+/// * 有截止時間 → `end >= cutoff`（cutoff ＝ 本學期起點，含 14 天寬限）。
+/// * 沒有截止時間 → 所屬課程是否可確認為當前學期；課程未知／無法判定 → `None`。
+fn label_semester_current(
+    items: &mut [TronclassTodoItem],
+    course_current: &HashMap<u64, Option<bool>>,
+    cutoff: DateTime<Utc>,
+) {
+    for item in items {
+        item.semester_current = match item.end_time {
+            Some(end) => Some(end >= cutoff),
+            None => match item.course_id.and_then(|id| course_current.get(&id)) {
+                Some(flag) => *flag,
+                None => None,
+            },
+        };
+    }
+}
+
 /// 判斷單一課程物件是否為當前學期課程。
 ///
 /// 回傳 `None` 表示無從判斷 — 呼叫端應保留該課程，寧可多顯示也不要漏掉作業。
@@ -2557,6 +2615,7 @@ mod tests {
             submission_status: String::new(),
             allow_late_submission: false,
             score: None,
+            semester_current: None,
         };
         let mut items = vec![mk(Some(1)), mk(Some(2)), mk(None), mk(Some(77))];
         let excluded: HashSet<u64> = [2u64].into_iter().collect();
@@ -2568,6 +2627,49 @@ mod tests {
         let mut untouched = vec![mk(Some(2))];
         assert_eq!(retain_only_current_course_items(&mut untouched, &HashSet::new()), 0);
         assert_eq!(untouched.len(), 1);
+    }
+
+    #[test]
+    fn test_label_semester_current() {
+        let cutoff = Utc::now();
+        let mk = |course_id: Option<u64>, end: Option<DateTime<Utc>>| TronclassTodoItem {
+            id: 1,
+            title: "作業".to_string(),
+            course_id,
+            course_name: None,
+            department_name: None,
+            item_type: "homework".to_string(),
+            start_time: None,
+            end_time: end,
+            is_submitted: false,
+            submission_status: String::new(),
+            allow_late_submission: false,
+            score: None,
+            semester_current: None,
+        };
+        let mut courses: HashMap<u64, Option<bool>> = HashMap::new();
+        courses.insert(10, Some(true)); // 確定當學期
+        courses.insert(20, Some(false)); // 確定舊課
+        courses.insert(30, None); // 無法判定
+
+        let mut items = vec![
+            // 有截止時間：以學期起點為界
+            mk(Some(20), Some(cutoff + chrono::Duration::days(1))),
+            mk(Some(10), Some(cutoff - chrono::Duration::days(1))),
+            // 沒有截止時間：看課程判定
+            mk(Some(10), None),
+            mk(Some(20), None),
+            mk(Some(30), None),
+            mk(None, None),
+        ];
+        label_semester_current(&mut items, &courses, cutoff);
+
+        assert_eq!(items[0].semester_current, Some(true)); // 截止日在學期起點之後
+        assert_eq!(items[1].semester_current, Some(false)); // 截止日在學期起點之前
+        assert_eq!(items[2].semester_current, Some(true)); // 舊課判定不影響：課程確定當學期
+        assert_eq!(items[3].semester_current, Some(false)); // 確定舊課
+        assert_eq!(items[4].semester_current, None); // 無法判定 → 保留
+        assert_eq!(items[5].semester_current, None); // 沒有 course_id → 保留
     }
 
     #[test]
@@ -2585,6 +2687,7 @@ mod tests {
             submission_status: String::new(),
             allow_late_submission: false,
             score: None,
+            semester_current: None,
         };
         let cutoff = DateTime::parse_from_rfc3339("2026-08-15T00:00:00Z")
             .unwrap()

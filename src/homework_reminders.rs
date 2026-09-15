@@ -6,6 +6,7 @@
 //! - 透過 SQLite 進行防重複發送與截止時間延期重置。
 //! - 透過 Discord / LINE / 手機 Web Push 發送即時提醒。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,6 +25,12 @@ use crate::web_push_notifications;
 
 pub(crate) const CHECK_INTERVAL_SECS: u64 = 15 * 60; // 每 15 分鐘檢查一次
 const RETENTION_DAYS: i64 = 14;
+
+/// HOMEWORK_NEW_NOTIFY_V1：每一輪最多發送幾則「新上架作業」通知。
+///
+/// 達到上限時，其餘項目**不會**被標記成已評估，下一輪（4 分鐘後）自然接著發，
+/// 因此老師一次上架十幾份作業時不會變成十幾則通知同時洗版。
+const NEW_HOMEWORK_BATCH_LIMIT: usize = 5;
 
 /// 背景預抓間隔。
 ///
@@ -399,6 +406,21 @@ pub async fn evaluate_and_send_reminders(
         }
     };
 
+    // HOMEWORK_NEW_NOTIFY_V1：先處理「新上架作業」通知。
+    //
+    // 排在倒數迴圈之前，是因為要跳過「已經進入倒數階梯」的項目：
+    // 那些作業同一輪就會收到更精確的截止提醒，不需要再多一則新作業通知。
+    notify_new_homework(
+        account,
+        accounts_db,
+        messenger,
+        todos,
+        &user_completed,
+        &ladder,
+        now_utc,
+    )
+    .await?;
+
     for todo in todos.iter() {
         // HOMEWORK_TRACKED_TYPES_V1
         // 截止提醒只針對「作業」與「測驗/考試」。其餘課程項目（教材 material、
@@ -470,6 +492,8 @@ pub async fn evaluate_and_send_reminders(
             stage_badge: stage_badge.clone(),
             deadline: deadline_str.clone(),
             time_remaining: time_desc.clone(),
+            // 這是倒數提醒（不是新作業通知），文案與事件型別共用、僅以此旗標區分。
+            is_new: false,
         });
 
         let mut delivered = false;
@@ -516,6 +540,241 @@ pub async fn evaluate_and_send_reminders(
     Ok(())
 }
 
+/// HOMEWORK_NEW_NOTIFY_V1：偵測「新上架的作業」並發送通知。
+///
+/// 偵測方式：維護一份「已評估過」的作業集合（`homework_seen` 資料表）。
+/// 不在集合裡、又符合通知條件的作業＝新上架 → 發一則通知，並把它寫進集合。
+///
+/// 為什麼不是「跟上一輪清單比對差異」：作業快照每次抓取都會被覆寫，
+/// 服務重啟、資料庫重建、快照為空時基準就失效，會把整批既有作業當成新的；
+/// 用持久化的「已評估集合」則不受重啟影響，也不需要保留期清理。
+///
+/// 第一次評估某帳號（剛部署、或剛新增帳號）時先建立基準：
+/// 把當下看到的作業整批寫入集合但不發通知，避免上線第一輪就把既有作業推一輪。
+///
+/// 保守設計（寧可少發，也不要洗版或誤報）：
+/// * 只通知「作業／測驗／考試」，且**只通知當學期**（`semester_current != Some(false)`，
+///   與作業頁 HOMEWORK_PAGE_CURRENT_ONLY_V1 的判定一致，不會為舊學期的作業發通知）；
+/// * 已繳交／已評分、使用者已手動標記完成的一律跳過；
+/// * 剩餘時間已進入倒數階梯（≤ 階梯最大門檻）的作業交給截止提醒，不重複發；
+/// * 每輪上限 [`NEW_HOMEWORK_BATCH_LIMIT`] 則，其餘留到下一輪。
+async fn notify_new_homework(
+    account: &AccountConfig,
+    accounts_db: &AccountsDb,
+    messenger: Option<&dyn AdapterMessenger>,
+    todos: &[crate::api::todos::TronclassTodoItem],
+    user_completed: &HashSet<String>,
+    ladder: &[u64],
+    now_utc: DateTime<Utc>,
+) -> miette::Result<()> {
+    let seen = match accounts_db.list_homework_seen_ids(&account.id).await {
+        Ok(seen) => seen,
+        Err(error) => {
+            // 讀不到狀態時這輪不發（避免誤判成「全部都是新作業」而暴衝）。
+            warn!(account = %account.id, %error, "讀取已評估作業清單失敗，本輪略過新作業通知");
+            return Ok(());
+        }
+    };
+
+    let baseline_ready = match accounts_db.is_homework_new_baseline_ready(&account.id).await {
+        Ok(ready) => ready,
+        Err(error) => {
+            warn!(account = %account.id, %error, "讀取新作業通知基準失敗，本輪略過新作業通知");
+            return Ok(());
+        }
+    };
+
+    if !baseline_ready {
+        // 首次評估：建立基準（記錄目前所有作業，不發通知）。
+        let ids: Vec<String> = todos.iter().map(|todo| todo.id.to_string()).collect();
+        accounts_db.mark_homework_seen(&account.id, &ids).await?;
+        accounts_db.mark_homework_new_baseline(&account.id).await?;
+        info!(
+            account = %account.id,
+            items = ids.len(),
+            "新作業通知：建立基準（本輪不發送既有作業的通知）"
+        );
+        return Ok(());
+    }
+
+    // 進入倒數階梯的門檻（分鐘）：剩餘時間在此之內的作業由截止提醒負責。
+    let ladder_max_minutes = ladder.iter().copied().max().unwrap_or(24) as i64 * 60;
+
+    let mut candidates: Vec<&crate::api::todos::TronclassTodoItem> = todos
+        .iter()
+        .filter(|todo| is_notifiable_new_homework(todo))
+        .filter(|todo| !user_completed.contains(&todo.id.to_string()))
+        .filter(|todo| !seen.contains(&todo.id.to_string()))
+        .filter(|todo| {
+            todo.end_time
+                .map(|end| end.signed_duration_since(now_utc).num_minutes() > ladder_max_minutes)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    // 最緊急的排前面；沒有截止時間的排最後。
+    candidates.sort_by_key(|todo| (todo.end_time.is_none(), todo.end_time));
+    let total = candidates.len();
+    let mut sent = 0usize;
+
+    for todo in candidates.iter().take(NEW_HOMEWORK_BATCH_LIMIT) {
+        let course_name = todo
+            .course_name
+            .clone()
+            .unwrap_or_else(|| "未指定課程".to_string());
+        let deadline_str = todo
+            .end_time
+            .map(|end| {
+                end.with_timezone(&Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "未設定截止時間".to_string());
+        let (stage_badge, time_remaining) = new_homework_reminder_text(todo.end_time, now_utc);
+
+        // 與截止提醒共用事件型別與通知偏好開關（homework_deadline），
+        // 只有文案不同（is_new = true）。
+        let event = OutboundMessage::HomeworkDeadline(HomeworkDeadlineEvent {
+            account: account.id.clone(),
+            course_name: course_name.clone(),
+            title: todo.title.clone(),
+            stage_badge: stage_badge.clone(),
+            deadline: deadline_str,
+            time_remaining,
+            is_new: true,
+        });
+
+        let mut delivered = false;
+        if let Some(m) = messenger {
+            let target = AdapterAccountTarget::new(
+                account.id.clone(),
+                account.line_user_id.clone(),
+                account.discord_user_id.clone(),
+            );
+            if let Err(e) = m.push_to_account_or_admin(&target, &event).await {
+                warn!(account = %account.id, error = %e, "新作業通知發送失敗");
+            } else {
+                delivered = true;
+            }
+        }
+
+        web_push_notifications::notify_homework_new(
+            &account.id,
+            todo.id,
+            &course_name,
+            &todo.title,
+            &stage_badge,
+        );
+
+        // 另外記一筆 `homework_reminder_sent`（階段 "new"）供稽核／除錯；
+        // 「已評估」的標記在迴圈後統一處理。
+        let hw_id_str = todo.id.to_string();
+        let deadline_timestamp = todo.end_time.map(|end| end.timestamp()).unwrap_or(0);
+        accounts_db
+            .mark_homework_reminder_sent(&account.id, &hw_id_str, "new", deadline_timestamp)
+            .await?;
+        sent += 1;
+
+        info!(
+            account = %account.id,
+            course = %course_name,
+            title = %todo.title,
+            delivered = delivered,
+            "新作業通知已發送"
+        );
+    }
+
+    // 標記「已評估」：除了**因單輪上限而留待下一輪**的項目之外，其他一律記入——
+    // 包含這輪沒有發通知的（教材／問卷等非追蹤類型、已繳交、已標記完成、
+    // 確定非當學期、以及已進入倒數階梯者）。這樣它們日後就算狀態改變
+    // （老師延期、重新開放繳交、課程學期判定改變）也不會被誤認為新作業。
+    // 上限外的項目刻意不標記，下一輪會自然補上。
+    let deferred: HashSet<u64> = candidates
+        .iter()
+        .skip(NEW_HOMEWORK_BATCH_LIMIT)
+        .map(|todo| todo.id)
+        .collect();
+    let newly_seen: Vec<String> = todos
+        .iter()
+        .filter(|todo| !deferred.contains(&todo.id))
+        .filter(|todo| !seen.contains(&todo.id.to_string()))
+        .map(|todo| todo.id.to_string())
+        .collect();
+    if !newly_seen.is_empty() {
+        accounts_db
+            .mark_homework_seen(&account.id, &newly_seen)
+            .await?;
+    }
+
+    if total > sent {
+        debug!(
+            account = %account.id,
+            total,
+            sent,
+            "新作業通知超過單輪上限，其餘留待下一輪"
+        );
+    }
+
+    Ok(())
+}
+
+/// 這筆項目是否適合發「新作業通知」。
+///
+/// 與作業頁的顯示條件一致：
+/// * 只挑作業／測驗／考試（教材、連結、問卷等不通知）；
+/// * 已繳交／已評分的不通知；
+/// * **確定非當學期**（`Some(false)`）的不通知——與 HOMEWORK_PAGE_CURRENT_ONLY_V1
+///   相同，寧可漏發也不要為舊學期作業發通知；無法判定（`None`）仍可通知。
+fn is_notifiable_new_homework(todo: &crate::api::todos::TronclassTodoItem) -> bool {
+    matches!(
+        todo.item_type.trim().to_ascii_lowercase().as_str(),
+        "homework" | "quiz" | "exam"
+    ) && !todo.is_completed_or_submitted()
+        && todo.semester_current != Some(false)
+}
+
+/// 新作業通知用的徽章與剩餘時間文字。
+///
+/// 徽章會出現在訊息標題與手機推播的內容開頭，例如「還有 3 天」「已截止」。
+fn new_homework_reminder_text(
+    deadline: Option<DateTime<Utc>>,
+    now_utc: DateTime<Utc>,
+) -> (String, String) {
+    let Some(deadline) = deadline else {
+        return (
+            "無截止時間".to_string(),
+            "這是一份沒有設定截止時間的作業".to_string(),
+        );
+    };
+
+    let total_minutes = deadline.signed_duration_since(now_utc).num_minutes();
+    if total_minutes <= 0 {
+        return ("已截止".to_string(), "已超過截止時間".to_string());
+    }
+
+    let days = total_minutes / (24 * 60);
+    let hours = (total_minutes % (24 * 60)) / 60;
+    let minutes = total_minutes % 60;
+
+    let badge = if days >= 1 {
+        format!("還有 {days} 天")
+    } else if hours >= 1 {
+        format!("還有 {hours} 小時")
+    } else {
+        format!("還有 {minutes} 分鐘")
+    };
+
+    let remaining = if days >= 1 {
+        format!("尚有 {days} 天 {hours} 小時")
+    } else if hours >= 1 {
+        format!("尚有 {hours} 小時 {minutes} 分鐘")
+    } else {
+        format!("尚有 {minutes} 分鐘")
+    };
+
+    (badge, remaining)
+}
+
 /// HOMEWORK_LADDER_V1
 /// 依自訂階梯（小時，任意順序）挑出目前所處的階段。
 ///
@@ -557,6 +816,82 @@ fn pick_ladder_stage(total_minutes: i64, ladder: &[u64]) -> Option<(String, Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn todo_item(
+        item_type: &str,
+        submitted: bool,
+        semester_current: Option<bool>,
+    ) -> crate::api::todos::TronclassTodoItem {
+        crate::api::todos::TronclassTodoItem {
+            id: 42,
+            title: "新作業".to_string(),
+            course_id: Some(1),
+            course_name: Some("測試課程".to_string()),
+            department_name: None,
+            item_type: item_type.to_string(),
+            start_time: None,
+            end_time: None,
+            is_submitted: submitted,
+            submission_status: String::new(),
+            allow_late_submission: false,
+            score: None,
+            semester_current,
+        }
+    }
+
+    /// HOMEWORK_NEW_NOTIFY_V1：通知條件的邊界。
+    #[test]
+    fn new_homework_notification_filter() {
+        // 作業／測驗／考試都可通知
+        assert!(is_notifiable_new_homework(&todo_item("homework", false, None)));
+        assert!(is_notifiable_new_homework(&todo_item("Quiz", false, Some(true))));
+        assert!(is_notifiable_new_homework(&todo_item(" exam ", false, None)));
+        // 其他課程項目（教材、連結…）不通知
+        assert!(!is_notifiable_new_homework(&todo_item("material", false, None)));
+        assert!(!is_notifiable_new_homework(&todo_item("web_link", false, None)));
+        // 已繳交不通知
+        assert!(!is_notifiable_new_homework(&todo_item("homework", true, None)));
+        // 確定非當學期不通知；無法判定（None）仍通知（寧可多發也不要漏發）
+        assert!(!is_notifiable_new_homework(&todo_item("homework", false, Some(false))));
+        assert!(is_notifiable_new_homework(&todo_item("homework", false, None)));
+    }
+
+    /// HOMEWORK_NEW_NOTIFY_V1：徽章與剩餘時間文字。
+    #[test]
+    fn new_homework_reminder_text_boundaries() {
+        let now = Utc::now();
+
+        let (badge, remaining) = new_homework_reminder_text(None, now);
+        assert_eq!(badge, "無截止時間");
+        assert!(remaining.contains("沒有設定截止時間"));
+
+        let (badge, remaining) =
+            new_homework_reminder_text(Some(now - chrono::Duration::minutes(5)), now);
+        assert_eq!(badge, "已截止");
+        assert!(remaining.contains("已超過"));
+
+        let (badge, remaining) =
+            new_homework_reminder_text(Some(now + chrono::Duration::days(3)), now);
+        assert_eq!(badge, "還有 3 天");
+        assert!(remaining.starts_with("尚有 3 天"));
+
+        let (badge, remaining) =
+            new_homework_reminder_text(Some(now + chrono::Duration::hours(5)), now);
+        assert_eq!(badge, "還有 5 小時");
+        assert!(remaining.starts_with("尚有 5 小時"));
+
+        let (badge, remaining) =
+            new_homework_reminder_text(Some(now + chrono::Duration::minutes(40)), now);
+        assert_eq!(badge, "還有 40 分鐘");
+        assert!(remaining.starts_with("尚有 40 分鐘"));
+    }
+
+    /// HOMEWORK_NEW_NOTIFY_V1：單輪上限必須是合理的小正數。
+    /// 太大（老師一次上架十幾份作業會洗版）或 0（永遠發不出去）都不行。
+    #[test]
+    fn new_homework_batch_limit_is_sane() {
+        assert!((1..=10).contains(&NEW_HOMEWORK_BATCH_LIMIT));
+    }
 
     /// 預設階梯的行為必須與舊版硬編碼 if 鏈逐例相同（回歸測試）。
     #[test]

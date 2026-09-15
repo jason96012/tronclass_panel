@@ -85,6 +85,89 @@ impl AccountsDb {
         Ok(result.rows_affected() > 0)
     }
 
+    // ── 新作業通知（HOMEWORK_NEW_NOTIFY_V1）────────────────────────────────
+
+    /// 新作業通知的「已評估」紀錄，用於偵測新上架的作業。
+    ///
+    /// 語意是「這份作業我們看過了」，因此：
+    /// * 不在集合裡、又可通知 → 就是新上架的作業；
+    /// * 第一次評估某帳號時（見 [`Self::is_homework_new_baseline_ready`]）先整批寫入，
+    ///   避免剛部署時把既有作業全部當成新的通知一輪；
+    /// * 這個資料表**不做保留期清理**（與 `homework_reminder_sent` 不同）：
+    ///   一旦清掉舊紀錄，長跑的作業會被當成新的重複通知。列數等於歷來作業數，很小。
+    pub const HOMEWORK_SEEN_BASELINE_ID: &'static str = "baseline";
+
+    /// 取得此帳號「已評估過」的作業 id 集合（不含基準標記）。
+    pub async fn list_homework_seen_ids(
+        &self,
+        account_id: &str,
+    ) -> Result<std::collections::HashSet<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT homework_id FROM homework_seen WHERE account_id = ? AND homework_id <> ?",
+        )
+        .bind(account_id.trim())
+        .bind(Self::HOMEWORK_SEEN_BASELINE_ID)
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢已評估作業清單失敗")?;
+
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
+    /// 標記一批作業為「已評估」。已存在者不重複寫入。
+    pub async fn mark_homework_seen(&self, account_id: &str, homework_ids: &[String]) -> Result<()> {
+        let now = chrono::Local::now().timestamp();
+        for homework_id in homework_ids {
+            let homework_id = homework_id.trim();
+            if homework_id.is_empty() {
+                continue;
+            }
+            sqlx::query(
+                "INSERT OR IGNORE INTO homework_seen (account_id, homework_id, seen_at) VALUES (?, ?, ?)",
+            )
+            .bind(account_id.trim())
+            .bind(homework_id)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("寫入已評估作業清單失敗")?;
+        }
+        Ok(())
+    }
+
+    /// 此帳號是否已建立「新作業通知」基準（第一次評估時由
+    /// [`Self::mark_homework_new_baseline`] 寫入）。
+    pub async fn is_homework_new_baseline_ready(&self, account_id: &str) -> Result<bool> {
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM homework_seen WHERE account_id = ? AND homework_id = ? LIMIT 1",
+        )
+        .bind(account_id.trim())
+        .bind(Self::HOMEWORK_SEEN_BASELINE_ID)
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢新作業通知基準失敗")?;
+        Ok(row.is_some())
+    }
+
+    /// 建立此帳號的新作業通知基準。
+    pub async fn mark_homework_new_baseline(&self, account_id: &str) -> Result<()> {
+        let now = chrono::Local::now().timestamp();
+        sqlx::query(
+            "INSERT OR REPLACE INTO homework_seen (account_id, homework_id, seen_at) VALUES (?, ?, ?)",
+        )
+        .bind(account_id.trim())
+        .bind(Self::HOMEWORK_SEEN_BASELINE_ID)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("建立新作業通知基準失敗")?;
+        Ok(())
+    }
+
     // ── 使用者手動標記作業完成（HOMEWORK_USER_COMPLETED_V1） ───────────────
 
     /// 標記某個作業為「使用者已手動完成」，停止後續截止提醒。
@@ -332,5 +415,46 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    /// HOMEWORK_NEW_NOTIFY_V1：新作業偵測的狀態。
+    ///
+    /// 基準標記是「這個帳號第一次被評估」的依據：一旦遺失，既有作業會被
+    /// 整批當成新的通知一輪；而基準列本身不可出現在「已評估作業」清單裡，
+    /// 否則那段程式會把 "baseline" 當成一份作業。
+    #[tokio::test]
+    async fn homework_seen_baseline_and_evaluated_ids() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+
+        // 全新帳號：還沒有基準，也還沒有任何已評估的作業
+        assert!(!db.is_homework_new_baseline_ready("acc1").await.unwrap());
+        assert!(db.list_homework_seen_ids("acc1").await.unwrap().is_empty());
+
+        db.mark_homework_seen("acc1", &["101".to_string(), "102".to_string()])
+            .await
+            .unwrap();
+        db.mark_homework_new_baseline("acc1").await.unwrap();
+
+        assert!(db.is_homework_new_baseline_ready("acc1").await.unwrap());
+        let seen = db.list_homework_seen_ids("acc1").await.unwrap();
+        assert_eq!(seen.len(), 2, "基準標記不應出現在已評估清單裡");
+        assert!(seen.contains("101") && seen.contains("102"));
+
+        // 重複標記不會報錯，也不會產生重複項目
+        db.mark_homework_seen("acc1", &["101".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(db.list_homework_seen_ids("acc1").await.unwrap().len(), 2);
+
+        // 空字串 id 會被忽略，避免寫入無意義的列
+        db.mark_homework_seen("acc1", &["".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(db.list_homework_seen_ids("acc1").await.unwrap().len(), 2);
+
+        // 帳號之間互不影響
+        assert!(!db.is_homework_new_baseline_ready("acc2").await.unwrap());
+        assert!(db.list_homework_seen_ids("acc2").await.unwrap().is_empty());
     }
 }
