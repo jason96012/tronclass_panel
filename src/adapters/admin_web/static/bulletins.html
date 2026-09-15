@@ -97,6 +97,35 @@
   }
 
   /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  /* ── BULLETIN_PANEL_V1（fix53）：面板內閱讀公告 ──
+     與作業頁同一種顯示方式：點卡片上的「📄 內容」在面板內開啟，不開新分頁、
+     也不經過 /admin/tc-go 代理（代理會動到瀏覽器 cookie，是 fix38 事故的來源）。 */
+  .tcinfo{display:inline-flex;align-items:center;gap:6px;background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:999px;padding:6px 12px;font-size:12.5px;cursor:pointer;min-height:34px;transition:all .15s ease;white-space:nowrap}
+  .tcinfo:hover{border-color:var(--primary);color:var(--primary)}
+  .blp-back{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:9999;padding:16px}
+  .blp-box{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:16px;width:min(760px,100%);max-height:88vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 50px rgba(0,0,0,.38)}
+  .blp-head{position:relative;padding:16px 18px 12px;border-bottom:1px solid var(--line2)}
+  .blp-title{font-size:17px;font-weight:800;line-height:1.45;overflow-wrap:anywhere;padding-right:76px}
+  .blp-meta{font-size:12px;color:var(--muted);margin-top:6px;overflow-wrap:anywhere}
+  .blp-x{position:absolute;top:12px;right:12px;background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:6px 10px;font-size:12px;cursor:pointer;min-height:32px}
+  .blp-x:hover{color:var(--primary);border-color:var(--primary)}
+  .blp-body{padding:16px 18px;overflow:auto;-webkit-overflow-scrolling:touch}
+  .blp-content{font-size:14.5px}
+  .blp-host{display:block}
+  .blp-imgfail{font-size:12px;color:var(--muted);border:1px dashed var(--line);border-radius:10px;padding:8px 10px;margin:6px 0}
+  .blp-sub{margin-top:18px;border-top:1px dashed var(--line);padding-top:12px}
+  .blp-subhead{font-size:11.5px;font-weight:800;color:var(--muted);margin-bottom:6px}
+  .blp-item{display:block;width:100%;text-align:left;background:transparent;border:0;border-radius:10px;padding:8px 10px;font-size:13px;color:var(--text);cursor:pointer;line-height:1.5;font-family:inherit}
+  .blp-item:hover{background:var(--soft)}
+  .blp-item.on{background:var(--soft);font-weight:800}
+  .blp-item .d{color:var(--muted);font-size:11.5px;margin-left:6px;white-space:nowrap;font-weight:400}
+  .blp-foot{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--line2);background:var(--bg);flex-wrap:wrap}
+  .blp-foot .spacer{flex:1}
+  @media(max-width:640px){
+    .blp-back{padding:0;align-items:flex-end}
+    .blp-box{width:100%;max-height:92vh;border-radius:16px 16px 0 0}
+    .blp-foot{gap:6px}
+  }
   .hidden-init{display:none}
 </style>
 <style id="SAFE_AREA_TOP_V1">
@@ -126,7 +155,8 @@
   <div class="filters" id="filters"></div>
   <div class="list" id="list"><div class="skel"></div><div class="skel"></div></div>
 </div>
-<script id="BULLETINS_PAGE_V4">
+<!-- BULLETIN_PANEL_V1（fix53）：公告卡片改為面板內閱讀（原本是開新分頁走 /admin/tc-go 代理）。 -->
+<script id="BULLETINS_PAGE_V5">
 (function(){
   'use strict';
   var list=document.getElementById('list'),countEl=document.getElementById('count'),filtersEl=document.getElementById('filters');
@@ -372,6 +402,144 @@
     box.appendChild(row);box.appendChild(stOut);
     cardEl.insertBefore(box,footEl);
   }
+  // ===== BULLETIN_PANEL_V1（fix53）：公告改成作業頁那樣的「面板內開啟」 =====
+  // 舊版是 `window.open('/admin/tc-go?kind=bulletin','_blank')`：開新分頁、走面板代理
+  // （代理會動到瀏覽器 cookie，fix38 事故的來源），而且代理只能帶到「公告列表」，
+  // 看不到是哪一則。
+  //
+  // 現在跟作業頁（HOMEWORK_DETAIL_V1，fix41 方案 B）同一種顯示方式：
+  //   卡片上「📄 內容」→ 面板內彈窗（標題／課程／日期／作者＋完整內容）
+  //   同一門課的其他公告放在下方清單，可直接切換，不必關掉再點一次
+  //   彈窗底部「✓ 已閱讀」= 舊版行為（標記已讀後卡片淡出）
+  //   拿不到 iClass 網址時按鈕直接隱藏（不給一顆按了會壞的按鈕）
+  var panel={open:false,key:null,course:''};
+  // iClass 公告沒有穩定的單則深連結，因此不提供「在 iClass 開啟」（與舊版一致）。
+  // 這裡的常數是為了讓「以後有深連結時只需要改這一行」。
+  var BULLETIN_DEEP_LINK='';
+  function panelById(k){for(var i=0;i<all.length;i++){if(all[i].key===k)return all[i];}return null;}
+  function panelSame(course){
+    if(!course)return [];
+    return all.filter(function(x){return x.course_name===course;}).sort(function(a,b){return (b.ts||0)-(a.ts||0);});
+  }
+  function isImgPlaceholder(src){
+    src=String(src||'');
+    return !src||src.indexOf('data:')===0||src.indexOf('cid:')===0||/^about:|^javascript:/i.test(src);
+  }
+  function closePanel(){
+    var b=document.getElementById('blPanel');if(!b)return;
+    b.remove();
+    panel.open=false;panel.key=null;panel.course='';
+    document.body.style.overflow='';
+    document.removeEventListener('keydown',panelEsc);
+  }
+  function panelEsc(ev){if(ev.key==='Escape')closePanel();}
+  function togglePanelRead(){
+    var it=panelById(panel.key);if(!it)return;
+    if(it.read){renderPanel();return;}   // 已讀（含 admin 公告）→ 沒有「取消已讀」的端點，維持原狀
+    var btn=document.getElementById('blpRead');
+    if(btn){btn.disabled=true;}
+    markRead(it.key,function(){it.read=true;render();renderPanel();});
+  }
+  function renderPanel(){
+    var it=panelById(panel.key);
+    if(!it){closePanel();return;}
+    var title=document.getElementById('blpTitle'),meta=document.getElementById('blpMeta'),
+        body=document.getElementById('blpBody'),host=document.getElementById('blpHost'),
+        sub=document.getElementById('blpSub'),read=document.getElementById('blpRead');
+    if(!title||!body||!host)return;
+    title.textContent=it.title||'(無標題)';
+    var m=[];
+    if(it.course_name)m.push(it.course_name);
+    if(it.author)m.push(it.author);
+    m.push(it.ts?fmtDate(it.ts):'');
+    meta.textContent=m.filter(Boolean).join(' ・ ');
+    // PANEL_HOST_V1：只清「內容容器」——清整個 body 會把下方的
+    // 「同一門課的其他公告」清單（blpSub）一起清掉，切換公告後清單就消失了。
+    host.innerHTML='';
+    body.scrollTop=0;
+    var ct=document.createElement('div');ct.className='content blp-content';
+    // 與卡片同一套消毒流程（DOMPurify；沒有時退成純文字）——單一來源，不另寫一份。
+    setContent(ct,it.content);
+    host.appendChild(ct);
+    // 圖片在面板內拿不到（需要 iClass 的 session 與相對路徑）：與作業頁一樣
+    // 移除破圖，改留一行說明，避免一片破圖。說明是「有圖真的載不到」才出現，
+    // 圖片正常載入時不會多一行贅字。
+    var broken=0,note=null;
+    var addBroken=function(n){
+      broken+=n;
+      if(!note){
+        note=document.createElement('div');note.className='blp-imgfail';
+        host.appendChild(note);
+      }
+      note.textContent='此公告含圖片，面板內無法顯示（'+broken+' 張）——需要圖片時請到 iClass 課程公告頁查看。';
+    };
+    Array.prototype.forEach.call(ct.querySelectorAll('img'),function(im){
+      if(isImgPlaceholder(im.getAttribute('src'))){im.remove();addBroken(1);return;}
+      im.referrerPolicy='no-referrer';
+      im.addEventListener('error',function(){if(im.parentNode){im.parentNode.removeChild(im);}addBroken(1);});
+    });
+    // 同一門課的其他公告：面板內就近切換，不必關掉再點一次。
+    var same=panelSame(it.course_name).filter(function(x){return x.key!==it.key;});
+    sub.innerHTML='';
+    if(same.length){
+      var head=document.createElement('div');head.className='blp-subhead';
+      head.textContent='同一門課的其他公告（'+same.length+'）';
+      sub.appendChild(head);
+      same.slice(0,30).forEach(function(x){
+        var b=document.createElement('button');b.type='button';
+        b.className='blp-item'+(x.read?'':' unread');
+        var t=document.createElement('span');t.textContent=x.title||'(無標題)';
+        var d=document.createElement('span');d.className='d';d.textContent=rel(x.ts);
+        b.appendChild(t);b.appendChild(d);
+        b.onclick=function(){panel.key=x.key;renderPanel();};
+        sub.appendChild(b);
+      });
+    }
+    if(read){
+      if(it.read){read.textContent='已閱讀 ✓';read.disabled=true;}
+      else{read.textContent='✓ 已閱讀';read.disabled=false;}
+    }
+  }
+  function openPanel(it){
+    if(!it)return;
+    panel.open=true;panel.key=it.key;panel.course=it.course_name||'';
+    var old=document.getElementById('blPanel');
+    if(old)old.remove();
+    var back=document.createElement('div');back.className='blp-back';back.id='blPanel';
+    back.addEventListener('click',function(ev){if(ev.target===back)closePanel();});
+    var box=document.createElement('div');box.className='blp-box';
+    var head=document.createElement('div');head.className='blp-head';
+    var t=document.createElement('div');t.className='blp-title';t.id='blpTitle';
+    var m=document.createElement('div');m.className='blp-meta';m.id='blpMeta';
+    var x=document.createElement('button');x.type='button';x.className='blp-x';x.textContent='✕ 關閉';
+    x.title='關閉（Esc）';x.onclick=closePanel;
+    head.appendChild(t);head.appendChild(m);head.appendChild(x);
+    var body=document.createElement('div');body.className='blp-body';body.id='blpBody';
+    var host=document.createElement('div');host.id='blpHost';host.className='blp-host';
+    var sub=document.createElement('div');sub.className='blp-sub';sub.id='blpSub';
+    body.appendChild(host);body.appendChild(sub);
+    var dl=document.createElement('div');dl.className='blp-foot';
+    var sp=document.createElement('span');sp.className='spacer';
+    var rd=document.createElement('button');rd.type='button';rd.className='readbtn';rd.id='blpRead';
+    rd.onclick=togglePanelRead;
+    var cl=document.createElement('button');cl.type='button';cl.className='readbtn';cl.textContent='關閉';cl.onclick=closePanel;
+    dl.appendChild(sp);dl.appendChild(rd);dl.appendChild(cl);
+    // 有深連結時才放（目前 BULLETIN_DEEP_LINK 為空 → 按鈕不會出現）。
+    // 用 <a target=_blank rel=noopener> 而不是 window.open：面板本身不需要
+    // 任何開新視窗的程式碼，也就沒有「不小心又繞回代理」的空間。
+    if(BULLETIN_DEEP_LINK){
+      var go=document.createElement('a');
+      go.className='readbtn';go.id='blpGo';
+      go.href=BULLETIN_DEEP_LINK;go.target='_blank';go.rel='noopener';
+      go.textContent='在 iClass 開啟 ↗';
+      dl.appendChild(go);
+    }
+    box.appendChild(head);box.appendChild(body);box.appendChild(dl);
+    back.appendChild(box);document.body.appendChild(back);
+    document.body.style.overflow='hidden';
+    document.addEventListener('keydown',panelEsc);
+    renderPanel();
+  }
   function card(it){
     var c=document.createElement('article');c.className='card'+(it.read?' read':'');
     var r1=document.createElement('div');r1.className='row1';
@@ -419,10 +587,12 @@
       }
     };
     foot.appendChild(sm);
-    // TRONCLASS_PROXY_JUMP_V1：免登入跳到 iClass 課程公告列表（面板代理）。
-    // iClass 對課程公告無單則深連結（org 公告才有），故統一到列表頁。
-    var ic=document.createElement('button');ic.type='button';ic.className='smbtn';ic.textContent='↗ iClass';
-    ic.onclick=function(){window.open('/admin/tc-go?kind=bulletin','_blank');};
+    // BULLETIN_PANEL_V1（fix53）：改成作業頁那樣的「面板內開啟」。
+    // 舊版是 window.open('/admin/tc-go?kind=bulletin','_blank')——開新分頁、走面板代理
+    // （代理會動到瀏覽器 cookie，fix38 事故的來源），而且只能到列表、看不到是哪一則。
+    var ic=document.createElement('button');ic.type='button';ic.className='tcinfo';
+    ic.textContent='📄 內容';ic.title='在面板內看這則公告的完整內容（不開新分頁、不需登入 iClass）';
+    ic.onclick=function(){openPanel(it);};
     foot.appendChild(ic);
     // BULLETIN_TRANSLATE_V1
     var tr=document.createElement('button');tr.type='button';tr.className='trbtn';tr.textContent='翻譯';
