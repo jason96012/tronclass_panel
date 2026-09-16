@@ -129,6 +129,8 @@ pub(super) async fn admin_login_handler(
             let state = state.clone();
             let user = username.to_string();
             let ip = ip.clone();
+            // BLACKLIST_UX_V1（fix58）：失敗事件也一起記裝置資訊（黑名單頁顯示用）。
+            let user_agent = SessionOrigin::from_request(&headers, &ip).user_agent;
             tokio::spawn(async move {
                 record_persistent_login_event(
                     &state,
@@ -138,6 +140,7 @@ pub(super) async fn admin_login_handler(
                     "failed",
                     "Dashboard login rejected by rate limit",
                     &ip,
+                    &user_agent,
                 )
                 .await;
                 alert_password_failures(&state, &user, &ip).await;
@@ -182,6 +185,7 @@ pub(super) async fn admin_login_handler(
                 let state = state.clone();
                 let user = username.to_string();
                 let ip = ip.clone();
+                let user_agent = SessionOrigin::from_request(&headers, &ip).user_agent;
                 tokio::spawn(async move {
                     record_persistent_login_event(
                         &state,
@@ -191,6 +195,7 @@ pub(super) async fn admin_login_handler(
                         "failed",
                         "Dashboard login rejected: account temporarily locked",
                         &ip,
+                        &user_agent,
                     )
                     .await;
                     alert_password_failures(&state, &user, &ip).await;
@@ -265,6 +270,7 @@ pub(super) async fn admin_login_handler(
             let state = state.clone();
             let user = username.to_string();
             let ip = ip.clone();
+            let user_agent = SessionOrigin::from_request(&headers, &ip).user_agent;
             tokio::spawn(async move {
                 record_persistent_login_event(
                     &state,
@@ -274,6 +280,7 @@ pub(super) async fn admin_login_handler(
                     "failed",
                     "Web 管理頁登入失敗",
                     &ip,
+                    &user_agent,
                 )
                 .await;
                 alert_password_failures(&state, &user, &ip).await;
@@ -388,6 +395,7 @@ pub(super) async fn admin_login_handler(
                 "success",
                 &msg,
                 &ip,
+                &user_agent,
             )
             .await;
         });

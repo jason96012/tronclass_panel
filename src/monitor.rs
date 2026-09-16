@@ -1182,6 +1182,9 @@ async fn do_poll_and_attend(
     for outcome in &outcomes {
         if !outcome.result.is_skipped() {
             push_rollcall_history(&ctx.status, outcome).await;
+            // ROLLCALL_ATTENDANCE_V1（fix66）：同步寫進資料庫。
+            // 記憶體歷史只有 50 筆且重啟就消失，出席統計與「由誰送出」要靠落地資料。
+            record_rollcall_event(ctx, outcome).await;
         }
 
         if outcome.is_success() {
@@ -1758,6 +1761,33 @@ async fn push_rollcall_history(
     );
     if status.rollcall_history.len() > MAX_HISTORY {
         status.rollcall_history.truncate(MAX_HISTORY);
+    }
+}
+
+/// ROLLCALL_ATTENDANCE_V1（fix66）：把單次點名送出結果寫進資料庫。
+///
+/// 統計屬輔助資訊，寫入失敗只留一筆 warn，不影響點名流程本身（不外洩、也不 panic）。
+async fn record_rollcall_event(ctx: &MonitorContext, outcome: &crate::rollcalls::RollcallOutcome) {
+    let user_name = {
+        let status = ctx.status.lock().await;
+        status.user_name.clone()
+    };
+    let input = crate::db::RollcallEventInput {
+        account_id: ctx.account.id.clone(),
+        username: ctx.account.username.clone(),
+        user_name,
+        rollcall_id: outcome.rollcall.rollcall_id,
+        course_name: outcome.rollcall.course_title.clone(),
+        attendance_type: outcome.attendance_type.to_string(),
+        success: outcome.is_success(),
+        result: outcome.result.to_string(),
+    };
+    if let Err(error) = ctx.accounts_db.record_rollcall_event(input).await {
+        warn!(
+            account = %ctx.account.id,
+            %error,
+            "點名紀錄寫入資料庫失敗（出席統計可能不完整）"
+        );
     }
 }
 

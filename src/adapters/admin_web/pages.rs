@@ -509,6 +509,33 @@ pub(super) async fn admin_credits_page_handler(
     attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(&inject_theme(CREDITS_PAGE_HTML), &page.session)), &page, &headers)
 }
 
+/// SEO_LANDING_V1（fix60）：`GET /` 的分流。
+///
+/// 需求原話：「我希望能在google打關鍵字就能搜尋到我的網站」。
+/// 舊行為是 `/` 一律 302 到 `/admin`，而 `/admin` 未登入時只會回登入頁——
+/// Google 看到的永遠是一面登入牆，任何關鍵字都不會有排名。
+///
+/// 現在依身分分流（對既有使用者完全無感）：
+/// - 帶 `?token=`（無 cookie 的舊式呼叫）→ 照舊轉送 `/admin`（token 由 redirect 剝除）
+/// - 有有效 session cookie → 照舊 302 到 `/admin`
+/// - 其他（訪客、搜尋引擎）→ 回公開介紹頁 `static/landing.html`
+///
+/// 注意：這裡**不能**把 session 資訊或面板內容帶進介紹頁；介紹頁是純靜態內容。
+pub(super) async fn admin_root_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
+    if session_token_from_uri(&uri).is_some() {
+        return admin_root_redirect_handler(uri).await;
+    }
+    let token = session_token(&headers, "");
+    if state.authorize(&token).await.is_some() {
+        return admin_root_redirect_handler(uri).await;
+    }
+    seo::landing_page_response(&headers)
+}
+
 pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Response {
     // TOKEN_QUERY_STRIP_ALL_ADMIN_V1 (H-2): `/` is outside the scrubbing
     // middleware's `/admin` scope, so forwarding the query verbatim would

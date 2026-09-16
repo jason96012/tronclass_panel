@@ -713,6 +713,9 @@ pub(super) async fn handle_admin_account_action(
                 group_submit_interval_ms: action
                     .group_submit_interval_ms
                     .unwrap_or(current.group_submit_interval_ms),
+                group_submit_jitter_ms: action
+                    .group_submit_jitter_ms
+                    .unwrap_or(current.group_submit_jitter_ms),
                 auto_stop_time: match action.auto_stop_time {
                     Some(value) => value,
                     None => current.auto_stop_time,

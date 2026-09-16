@@ -11,7 +11,15 @@
 //! - `web_link`：存成 `.url` 連結檔。
 //! - `online_video`：能下載就下載，否則存 `.url` 連結檔。
 //! - 冪等：目的檔案已存在即跳過；一律寫一份 `tronclass_materials_manifest.json`。
-//! - 節流：課程間 sleep，避免打爆學校 WAF。
+//! - 節流：課程間 sleep ＋ 有界並行（課程 3／教材項 3／同時下載 4），避免打爆學校 WAF。
+//! - MATERIALS_IMPORT_FAST_V1（fix59）：匯入速度優化（見下方常數區的說明）。
+//! - MATERIALS_IMPORT_FAST_V2（fix59b）：併行任務改成「擁有自己的資料」——
+//!   修正部署第一版的編譯錯誤 `implementation of FnOnce/Iterator is not general enough`
+//!   （詳見第 2 節上方與下方兩處 `into_iter()`）。
+//!
+//! 版本自檢：本檔（V2）的課程流與教材項都走 `into_iter()` 取得所有權，教材清單是擁有的
+//! `Value`（不再是以借用元素組成的清單）；舊版（V1）兩者都是借用，行數也少 21 行。
+//! 精確的比對指令寫在 fix59 報告的「部署注意」一節（不在原始碼裡，避免指令自己命中自己）。
 
 use super::*;
 use axum::extract::Query;
@@ -23,9 +31,12 @@ use tokio::io::AsyncWriteExt;
 // `debug!` 必須自己引入——否則編譯直接失敗（cannot find macro `debug` in this scope）。
 use tracing::debug;
 use serde_json::{json, Value};
+// MATERIALS_IMPORT_FAST_V1（fix59）：課程／教材項的有界並行（buffer_unordered）。
+use futures::stream::StreamExt;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // MATERIALS_IMPORT_SHARED_V1
 // 雲端硬碟是共用的，因此：
@@ -68,6 +79,41 @@ impl Default for ImportJob {
 static IMPORT_JOB: once_cell::sync::Lazy<RwLock<ImportJob>> =
     once_cell::sync::Lazy::new(|| RwLock::new(ImportJob::default()));
 
+// ─────────────────────────────────────────────────────────────
+// MATERIALS_IMPORT_FAST_V1（fix59）：匯入速度優化
+//
+// 原本的匯入是「一門課接一門課、一個檔案接一個檔案」的嚴格序列，而且每個「拿不到
+// 簽章網址」的教材都會 (a) 重新完整登入一次 (b) 依序硬打 5 個備援位址——其中 4 個是
+// 學校 S3 化之後早已關閉的檔案埠（8085/8443 的 http 與 https），封包被防火牆丟棄時
+// 要等 OS 預設的 SYN 重試（約兩分鐘）才會失敗。三十幾門課跑完常要十幾分鐘。
+//
+// 這裡做四件事（不改任何對外行為、統計數字與錯誤分類都保持一致）：
+//   1. 課程層有界並行；每門課的 activities／homework-activities 也改成同時抓
+//   2. 課程內教材項有界並行 ＋ 全域下載號誌（同時最多 4 個檔案在下載）
+//   3. 「尚未開放」的教材不再做任何網路嘗試（iClass 當下就是不會給檔案）
+//   4. 同一次匯入只重登一次；備援位址先做 3 秒 TCP 探測、整批最多 20 秒
+// ─────────────────────────────────────────────────────────────
+
+/// 同時處理幾門課（每門課一開始會同時打 2 個 JSON 清單）。
+///
+/// 3 這個數字是刻意保守的：作業頁的 `api::todos::COURSE_FETCH_CONCURRENCY` 早就用 8
+/// 對同一個 iClass 併發抓各課程資料（線上實際跑得動），這裡只用 3；若學校 WAF 有
+/// 意見，只要調這幾個常數即可（單一位置）。
+const IMPORT_COURSE_CONCURRENCY: usize = 3;
+/// 同一門課內同時處理幾個教材項（大多是「已存在→跳過」；真正下載另有全域號誌）。
+const IMPORT_ITEM_CONCURRENCY: usize = 3;
+/// 整個匯入同時最多幾個檔案在下載（跨課程共用；學校 WAF 不喜歡一次開太多連線）。
+const IMPORT_MAX_CONCURRENT_DOWNLOADS: usize = 4;
+/// 課程之間的最小間隔（併行後仍保留，讓請求不要全部在同一瞬間送出）。
+const IMPORT_COURSE_STAGGER_MS: u64 = 150;
+/// 備援位址動手前的 TCP 探測逾時：連不上就直接跳過，不等 OS 的兩分鐘。
+const IMPORT_FALLBACK_PROBE_TIMEOUT_SECS: u64 = 3;
+/// 同一個檔案花在「備援位址」上的總時間上限（含探測）。
+/// 簽章網址（真正的大檔）不受此限，30 分鐘的長逾時照舊。
+const IMPORT_FALLBACK_BUDGET_SECS: u64 = 20;
+/// 重登失敗後的冷卻：避免幾十個教材輪流嘗試登入。
+const IMPORT_RELOGIN_FAILURE_COOLDOWN_SECS: u64 = 300;
+
 fn now_ts() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -92,6 +138,9 @@ fn job_update(message: &str, progress: u64, total: u64, report: &ImportReport) {
     job.report.links_created = report.links_created;
     job.report.failed = report.failed;
     job.report.pending = report.pending;
+    job.report.disallowed = report.disallowed;
+    job.report.disallowed_files = report.disallowed_files.clone();
+    job.report.all_types = report.all_types;
     job.report.errors = report.errors.clone();
 }
 
@@ -105,7 +154,26 @@ pub(super) struct AdminMaterialsImportQuery {
     /// 只匯入指定課程 id（逗號分隔）。留空 = 全部當學期課程。
     #[serde(default)]
     course_ids: Option<String>,
+    /// IMPORT_ALL_TYPES_V1（fix64）：`all_types=1` 時不套用副檔名白名單，
+    /// 把 iClass 上的教材全部抓下來（前端只在使用者按了「確定」之後才帶這個參數）。
+    #[serde(default)]
+    all_types: Option<String>,
 }
+
+/// IMPORT_ALL_TYPES_V1（fix64）：把 `all_types` query 參數解析成 bool。
+///
+/// 只接受 1/true/yes/on（大小寫不拘）；其他值一律當成「關閉」——打錯字不該變成
+/// 「全部匯入」，那是使用者的明確決定而不是預設值。
+fn parse_all_types_flag(raw: Option<&str>) -> bool {
+    matches!(
+        raw.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1") | Some("true") | Some("yes") | Some("on")
+    )
+}
+
+/// IMPORT_ALL_TYPES_V1（fix64）：報告裡最多留幾個「被跳過的檔名」樣本。
+/// 只給人看與判斷用，不需要全部列出（幾百個檔案的通知沒人讀得完）。
+const DISALLOWED_SAMPLE_LIMIT: usize = 20;
 
 /// 匯入結果報告（回傳給前端）。
 #[derive(Debug, Serialize, Default, Clone)]
@@ -122,6 +190,13 @@ pub(super) struct ImportReport {
     /// 這不是錯誤：iClass 對尚未開放的教材一律不給檔案（連簽章網址都拿不到），
     /// 硬記成 failed 只會讓日誌滿是紅色 ERROR。開放後再跑一次匯入就會下載。
     pub pending: u64,
+    /// IMPORT_ALL_TYPES_V1（fix64）：因為「副檔名不在允許清單」而先跳過的數量。
+    /// 這些檔案不是壞掉、也不算失敗；預設先跳過並回報，讓使用者決定要不要改抓。
+    pub disallowed: u64,
+    /// 被跳過的檔名樣本（最多 [`DISALLOWED_SAMPLE_LIMIT`] 筆），供前端列出給使用者看。
+    pub disallowed_files: Vec<String>,
+    /// 這次匯入是否採用了「不限制類型」模式（前端顯示與診斷用）。
+    pub all_types: bool,
     pub errors: Vec<String>,
 }
 
@@ -151,12 +226,18 @@ pub(super) async fn admin_materials_import_status_handler(
         "links_created": job.report.links_created,
         "failed": job.report.failed,
         "pending": job.report.pending,
+        // IMPORT_ALL_TYPES_V1（fix64）：讓前端能問「這些檔案要不要也抓下來」。
+        "disallowed": job.report.disallowed,
+        "disallowed_files": job.report.disallowed_files,
+        "all_types": job.report.all_types,
         "errors": job.report.errors,
     }))
     .into_response()
 }
 
-/// 實際匯入教材的主 handler：`POST /admin/api/files/import`。
+/// 實際匯入教材的主 handler：`GET /admin/api/files/import`（含 query 參數
+/// `?all_types=1`／`?course_ids=`／`?account_id=`；IMPORT_ALL_TYPES_V1（fix64）順手
+/// 更正原本寫成 POST 的註解，路由表實際掛的是 GET）。
 /// 立即回傳 202「已排程」，實際匯入在背景執行。
 pub(super) async fn admin_materials_import_handler(
     State(state): State<AdminWebState>,
@@ -209,6 +290,9 @@ pub(super) async fn admin_materials_import_handler(
             .into_response();
     };
 
+    // IMPORT_ALL_TYPES_V1（fix64）：使用者確認後前端會帶 all_types=1。
+    let include_all_types = parse_all_types_flag(query.all_types.as_deref());
+
     let only_courses: Option<Vec<u64>> = query
         .course_ids
         .as_deref()
@@ -253,6 +337,7 @@ pub(super) async fn admin_materials_import_handler(
     // 因此背景工作需要帳號設定與 DB（與作業檔案路徑同一套處置）。
     let account_clone = account.clone();
     let db_clone = state.accounts_db.clone();
+    let include_all_types_clone = include_all_types;
 
     // MATERIALS_IMPORT_SHARED_V1: 背景 job，不佔住 HTTP request。
     tokio::spawn(async move {
@@ -263,6 +348,7 @@ pub(super) async fn admin_materials_import_handler(
             only.as_deref(),
             Some(&account_clone),
             Some(&db_clone),
+            include_all_types_clone,
         )
         .await;
         let mut job = IMPORT_JOB.write().unwrap_or_else(|p| p.into_inner());
@@ -271,11 +357,12 @@ pub(super) async fn admin_materials_import_handler(
         job.ok = report.ok;
         job.last_update_at = now_ts();
         job.message = format!(
-            "完成：課程 {} 門、教材 {} 項、儲存 {}、跳過 {}、連結 {}、未開放 {}、失敗 {}",
+            "完成：課程 {} 門、教材 {} 項、儲存 {}、跳過 {}（非允許類型 {}）、連結 {}、未開放 {}、失敗 {}",
             report.courses_scanned,
             report.materials_found,
             report.files_saved,
             report.files_skipped,
+            report.disallowed,
             report.links_created,
             report.pending,
             report.failed,
@@ -334,6 +421,10 @@ async fn run_import(
     only_courses: Option<&[u64]>,
     account: Option<&crate::account::AccountConfig>,
     accounts_db: Option<&crate::db::AccountsDb>,
+    // IMPORT_ALL_TYPES_V1（fix64）：true = 不套用副檔名白名單（使用者已確認）。
+    // 注意：函式參數只能用一般註解 `//`，用 doc 註解 `///` 會被 rustc 擋下
+    // （documentation comments cannot be applied to function parameters）。
+    include_all_types: bool,
 ) -> ImportReport {
     let mut report = ImportReport {
         ok: true,
@@ -344,6 +435,9 @@ async fn run_import(
         links_created: 0,
         failed: 0,
         pending: 0,
+        disallowed: 0,
+        disallowed_files: Vec::new(),
+        all_types: include_all_types,
         errors: Vec::new(),
     };
     // MATERIALS_IMPORT_CTX_V1：把「每個檔案都會用到的連線資訊」收成一包，
@@ -354,7 +448,16 @@ async fn run_import(
         root,
         account,
         accounts_db,
+        downloads: tokio::sync::Semaphore::new(IMPORT_MAX_CONCURRENT_DOWNLOADS),
+        relogin: tokio::sync::Mutex::new(ReloginState::default()),
+        inflight: std::sync::Mutex::new(HashSet::new()),
+        include_all_types,
     };
+    // 進度訊息附上「已用時間」，讓使用者看得出還在跑（不是卡住）。
+    let started_at = IMPORT_JOB
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .started_at;
 
     // 1. 課程清單 → 只留當學期。
     let courses_json = match fetch_json(client, &format!("{base_url}/api/my-courses")).await {
@@ -391,85 +494,80 @@ async fn run_import(
     );
 
     // 2. 每門課抓 activities。
-    for (idx, course) in courses.iter().enumerate() {
-        if idx > 0 {
-            // 節流：課程間請等待,避免打爆學校 WAF。
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        }
+    // MATERIALS_IMPORT_FAST_V1（fix59）：課程層有界並行。
+    //
+    // 用 next() 一個一個收而不是 collect()：buffer_unordered 是「完成順序」，
+    // collect() 會等到全部跑完才回來（等於整個匯入期間都不會更新進度），
+    // next() 則是一門課跑完就合併統計並更新進度條。
+    //
+    // MATERIALS_IMPORT_FAST_V2（fix59b）：這一版把「課程」**擁有**（`into_iter()`）後
+    // 才交給任務。原因是一個 rustc 的已知限制：閉包若「參數是借用、又回傳捕獲該參數的
+    // async 區塊」，編譯器推不出 higher-ranked 的閉包簽章，會出現
+    //   error: implementation of `FnOnce` is not general enough
+    //   error: implementation of `Iterator` is not general enough
+    // （部署第一版時的實際錯誤，指向 tokio::spawn 那一行）。讓參數完全沒有生命週期
+    // 就沒有這個問題——這也是為什麼併行任務最好「自己帶自己的資料」。
+    let mut course_stream = Box::pin(
+        futures::stream::iter(courses.into_iter().enumerate().map(|(idx, course)| {
+            let ctx = &ctx;
+            async move {
+                if idx > 0 {
+                    // 節流：課程間歇一下，別讓所有請求在同一瞬間送出（避免打爆學校 WAF）。
+                    tokio::time::sleep(Duration::from_millis(IMPORT_COURSE_STAGGER_MS)).await;
+                }
+                // LOG_NOISE_V1（fix61）：逐檔／逐位址的訊息一律降到 `debug!`。
+                // 一次匯入是「課程 × 教材數 × 候選位址」，33 門課可以產生上千行，
+                // 真正有用的只有「課程處理完畢」與最後的總結——這兩行留在 info!。
+                debug!(
+                    idx = idx + 1,
+                    total = total_courses,
+                    course = %course.name,
+                    "教材匯入：開始處理課程"
+                );
+                let outcome = import_course(ctx, &course).await;
+                // 把課程本身一起帶回來，完成訊息才有名字（不必再回頭查 courses）。
+                (idx, course, outcome)
+            }
+        }))
+        .buffer_unordered(IMPORT_COURSE_CONCURRENCY),
+    );
+
+    let mut courses_done = 0u64;
+    while let Some((idx, course, outcome)) = course_stream.next().await {
+        courses_done += 1;
+        report.failed += outcome.failed;
+        report.errors.extend(outcome.errors);
+        outcome.items.merge_into(&mut report);
+        let course_name = course.name.as_str();
         info!(
             idx = idx + 1,
             total = total_courses,
-            course = %course.name,
-            "教材匯入：開始處理課程"
+            course = %course_name,
+            "教材匯入：課程處理完畢"
         );
         job_update(
-            &format!("處理課程 {}/{}：{}", idx + 1, total_courses, course.name),
-            idx as u64 + 1,
+            &format!(
+                "完成 {courses_done}/{total_courses} 門：{course_name}（已存 {}、跳過 {}、非允許類型 {}、未開放 {}、失敗 {}；已用 {}s）",
+                report.files_saved,
+                report.files_skipped,
+                report.disallowed,
+                report.pending,
+                report.failed,
+                now_ts().saturating_sub(started_at),
+            ),
+            courses_done,
             total_courses,
             &report,
-        );
-        // MATERIALS_IMPORT_V1: 依系所決定「分班資料夾」。
-        // 結構 = <root>/<分班>/<課程>/<教材>/<檔名>。
-        // 共同科(通識/體育/核心課程/三全教育)統一歸到「共同科」。
-        let group = group_folder_for(course.department.as_deref(), &course.name);
-        let base = format!("{}/api/courses/{}", base_url, course.id);
-        let activities_url = format!("{base}/activities?page=1&page_size=300");
-        let json = match fetch_json(client, &activities_url).await {
-            Ok(v) => v,
-            Err(e) => {
-                report.failed += 1;
-                report.errors.push(format!("[{}] 讀取 activities 失敗", course.name));
-                warn!(course = %course.name, error = %e, "教材匯入：讀取 activities 失敗");
-                continue;
-            }
-        };
-
-        let activities = json.get("activities").and_then(Value::as_array);
-
-        // 注意:部分教材的 uploads 只在 `/homework-activities` 帶 key。
-        // 這裡先併入 homework-activities 的 material,再處理 activities。
-        let hw_url = format!("{base}/homework-activities?page=1&page_size=300");
-        let hw_items = if let Ok(hj) = fetch_json(client, &hw_url).await {
-            hj.get("homework_activities")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-
-        if let Some(items) = activities {
-            for item in items.iter().chain(hw_items.iter()) {
-                process_item(&ctx, &group, &course.name, item, &mut report).await;
-                // 即時把進度與累計錯誤同步到背景狀態。
-                job_update(
-                    &format!("處理課程 {}/{}：{}", idx + 1, total_courses, course.name),
-                    idx as u64 + 1,
-                    total_courses,
-                    &report,
-                );
-            }
-        } else if !hw_items.is_empty() {
-            for item in hw_items.iter() {
-                process_item(&ctx, &group, &course.name, item, &mut report).await;
-                job_update(
-                    &format!("處理課程 {}/{}：{}", idx + 1, total_courses, course.name),
-                    idx as u64 + 1,
-                    total_courses,
-                    &report,
-                );
-            }
-        }
-        info!(
-            idx = idx + 1,
-            total = total_courses,
-            course = %course.name,
-            "教材匯入：課程處理完畢",
         );
     }
 
     // 3. 寫 manifest。
     write_manifest(root, &report);
+    // IMPORT_INVALIDATE_CACHE_V1（fix61）：匯入是直接寫磁碟、不經過上傳端點，所以
+    // 教材頁的快取不會自己失效——以前只能等 TTL（列表 3 秒、用量 60 秒）過去，
+    // 匯入剛結束的那一分鐘「已使用容量」是舊的。這裡主動清一次。
+    super::files::invalidate_materials_list_cache().await;
+    super::files::invalidate_materials_usage_cache().await;
     info!(
         courses = report.courses_scanned,
         materials = report.materials_found,
@@ -477,6 +575,7 @@ async fn run_import(
         skipped = report.files_skipped,
         links = report.links_created,
         failed = report.failed,
+        disallowed = report.disallowed,
         "教材匯入：完成（共用硬碟）"
     );
     report
@@ -493,6 +592,162 @@ struct ImportContext<'a> {
     /// 供 session 過期時重新登入用；不需要（或測試）時為 `None`。
     account: Option<&'a crate::account::AccountConfig>,
     accounts_db: Option<&'a crate::db::AccountsDb>,
+    /// MATERIALS_IMPORT_FAST_V1（fix59）：同時下載數的全域上限（跨課程共用）。
+    downloads: tokio::sync::Semaphore,
+    /// 同一次匯入的「重登」狀態：成功後所有檔案共用同一份新連線，失敗則進入冷卻。
+    relogin: tokio::sync::Mutex<ReloginState>,
+    /// 正在被某個任務下載的目標檔（避免兩個併行任務抓同一個檔名）。
+    inflight: std::sync::Mutex<HashSet<PathBuf>>,
+    /// IMPORT_ALL_TYPES_V1（fix64）：使用者已確認「不允許的副檔名也要抓」。
+    include_all_types: bool,
+}
+
+/// 同一次匯入的重新登入狀態（MATERIALS_IMPORT_FAST_V1）。
+#[derive(Default)]
+struct ReloginState {
+    /// 重登成功後的新 client（含新的 cookie jar），後續所有檔案共用。
+    client: Option<reqwest::Client>,
+    /// 最近一次重登失敗的時間；冷卻期內不再嘗試。
+    failed_at: Option<Instant>,
+    /// 這次匯入總共嘗試登入幾次（給日誌／診斷用）。
+    attempts: u32,
+}
+
+/// 單一教材項目的處理結果。
+///
+/// 為什麼要獨立一個型別：併行處理時每個任務各自累計，回到主流程再合併進
+/// `ImportReport`——原本所有任務共用一個 `&mut ImportReport`，在併行下根本
+/// 不能這樣共享可變參考（而且編譯不過）。
+#[derive(Debug, Default, Clone)]
+struct ItemOutcome {
+    /// 處理了幾個教材（對應原本的 `materials_found`）。
+    materials: u64,
+    saved: u64,
+    skipped: u64,
+    links: u64,
+    pending: u64,
+    failed: u64,
+    /// IMPORT_ALL_TYPES_V1（fix64）：被副檔名白名單擋下的數量與樣本。
+    disallowed: u64,
+    disallowed_files: Vec<String>,
+    errors: Vec<String>,
+}
+
+impl ItemOutcome {
+    /// 把另一個任務的結果併進來（課程內多個教材項的合併）。
+    fn absorb(&mut self, other: ItemOutcome) {
+        self.materials += other.materials;
+        self.saved += other.saved;
+        self.skipped += other.skipped;
+        self.links += other.links;
+        self.pending += other.pending;
+        self.failed += other.failed;
+        self.disallowed += other.disallowed;
+        for name in other.disallowed_files {
+            if self.disallowed_files.len() >= DISALLOWED_SAMPLE_LIMIT {
+                break;
+            }
+            self.disallowed_files.push(name);
+        }
+        self.errors.extend(other.errors);
+    }
+
+    /// 併進整份匯入報告（課程完成時呼叫）。
+    fn merge_into(&self, report: &mut ImportReport) {
+        report.materials_found += self.materials;
+        report.files_saved += self.saved;
+        report.files_skipped += self.skipped;
+        report.links_created += self.links;
+        report.pending += self.pending;
+        report.failed += self.failed;
+        report.disallowed += self.disallowed;
+        for name in &self.disallowed_files {
+            if report.disallowed_files.len() >= DISALLOWED_SAMPLE_LIMIT {
+                break;
+            }
+            report.disallowed_files.push(name.clone());
+        }
+        for error in &self.errors {
+            report.errors.push(error.clone());
+        }
+    }
+}
+
+/// 單一課程的處理結果（掃描失敗的記錄＋課程內所有教材的合計）。
+#[derive(Debug, Default)]
+struct CourseOutcome {
+    failed: u64,
+    errors: Vec<String>,
+    items: ItemOutcome,
+}
+
+/// 目標檔的「正在下載」註冊表：離開 scope 時自動移除（含所有提前 return）。
+struct InflightGuard<'a> {
+    set: &'a std::sync::Mutex<HashSet<PathBuf>>,
+    path: PathBuf,
+}
+
+impl Drop for InflightGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.set.lock() {
+            set.remove(&self.path);
+        }
+    }
+}
+
+/// MATERIALS_IMPORT_FAST_V1（fix59）：取得「重登後可用的 client」——**整次匯入只登入一次**。
+///
+/// 原本每個「拿不到簽章網址」的檔案都各自呼叫 `iclass_api_after_relogin`（完整 SSO
+/// 登入＋寫回 DB）。一堂課若有幾十個尚未開放的教材，那就是幾十次登入，而且回來
+/// 還是一樣拿不到檔案。現在改成共用同一份結果，失敗則進入冷卻期。
+async fn fresh_client_after_relogin(ctx: &ImportContext<'_>) -> Option<reqwest::Client> {
+    let (Some(account), Some(db)) = (ctx.account, ctx.accounts_db) else {
+        return None;
+    };
+    let mut state = ctx.relogin.lock().await;
+    if let Some(client) = state.client.clone() {
+        return Some(client);
+    }
+    if let Some(failed_at) = state.failed_at {
+        if failed_at.elapsed() < Duration::from_secs(IMPORT_RELOGIN_FAILURE_COOLDOWN_SECS) {
+            return None;
+        }
+    }
+    state.attempts += 1;
+    match super::homework::iclass_api_after_relogin(account, db).await {
+        Ok(fresh) => {
+            info!(
+                attempts = state.attempts,
+                "教材匯入：session 已重建，後續檔案共用這個連線"
+            );
+            state.client = Some(fresh.client.clone());
+            state.client.clone()
+        }
+        Err(error) => {
+            state.failed_at = Some(Instant::now());
+            debug!(%error, attempts = state.attempts, "教材匯入：重新登入失敗（冷卻中）");
+            None
+        }
+    }
+}
+
+/// 備援位址動手前的 TCP 探測。
+///
+/// 學校的檔案埠多半已關閉；若封包被防火牆丟棄（DROP），沒有這一步就要等 OS 預設的
+/// SYN 重試（約兩分鐘）才會失敗——這正是「匯入要等很久」的主要來源。
+/// 解析不出 host/port 時回 `true`（交給原本的下載流程處理）。
+async fn tcp_reachable(url: &str, timeout_secs: u64) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return true;
+    };
+    let (Some(host), Some(port)) = (parsed.host_str(), parsed.port_or_known_default()) else {
+        return true;
+    };
+    let connect = tokio::net::TcpStream::connect((host, port));
+    matches!(
+        tokio::time::timeout(Duration::from_secs(timeout_secs), connect).await,
+        Ok(Ok(_))
+    )
 }
 
 /// MATERIALS_PENDING_V1（fix48）：教材下載失敗的歸類。
@@ -555,13 +810,90 @@ fn item_start_time(item: &Value) -> Option<DateTime<Utc>> {
     None
 }
 
+/// 處理單一課程：同時抓兩個清單，再把教材項有界並行處理。
+///
+/// MATERIALS_IMPORT_FAST_V1（fix59）：從 `run_import` 的迴圈抽出來，才能讓多門課
+/// 同時進行；課程內則用 `buffer_unordered` 併行處理教材項。
+async fn import_course(
+    ctx: &ImportContext<'_>,
+    course: &crate::api::todos::CourseBrief,
+) -> CourseOutcome {
+    let mut outcome = CourseOutcome::default();
+
+    // MATERIALS_IMPORT_V1: 依系所決定「分班資料夾」。
+    // 結構 = <root>/<分班>/<課程>/<教材>/<檔名>。
+    // 共同科(通識/體育/核心課程/三全教育)統一歸到「共同科」。
+    let group = group_folder_for(course.department.as_deref(), &course.name);
+    let base = format!("{}/api/courses/{}", ctx.base_url, course.id);
+    let activities_url = format!("{base}/activities?page=1&page_size=300");
+    // 注意:部分教材的 uploads 只在 `/homework-activities` 帶 key。
+    // 這裡先併入 homework-activities 的 material,再處理 activities。
+    let hw_url = format!("{base}/homework-activities?page=1&page_size=300");
+
+    // 兩個清單同時抓（原本是一個 await 完才換另一個，等於每門課多花一個 RTT）。
+    let (activities_result, hw_result) = tokio::join!(
+        fetch_json(ctx.client, &activities_url),
+        fetch_json(ctx.client, &hw_url)
+    );
+
+    let activities_json = match activities_result {
+        Ok(value) => value,
+        Err(error) => {
+            // 與原本行為一致：讀不到 activities 就跳過這門課（計一次失敗）。
+            outcome.failed += 1;
+            outcome.errors.push(format!("[{}] 讀取 activities 失敗", course.name));
+            warn!(course = %course.name, error = %error, "教材匯入：讀取 activities 失敗");
+            return outcome;
+        }
+    };
+
+    let hw_items = hw_result
+        .ok()
+        .and_then(|value| {
+            value
+                .get("homework_activities")
+                .and_then(Value::as_array)
+                .cloned()
+        })
+        .unwrap_or_default();
+
+    // MATERIALS_IMPORT_FAST_V2（fix59b）：教材項同樣改成**擁有**的 `Value` 清單。
+    // 這裡的 clone 是刻意的：一堂課的清單只有幾百 KB（相對於動輒數百 MB 的教材下載
+    // 可以忽略），換來的是閉包參數完全沒有生命週期——見上面課程流那段對
+    // 「FnOnce is not general enough」的說明。
+    // 順序：activities 在前、homework-activities 在後（與原本 chain 的順序一致）。
+    let items: Vec<Value> = match activities_json.get("activities").and_then(Value::as_array) {
+        Some(list) => list.iter().cloned().chain(hw_items).collect(),
+        None => hw_items,
+    };
+
+    // 有界並行處理這門課的教材項（已經存在的檔案會立刻跳過，真正下載另有全域號誌）。
+    let group_name: &str = group.as_str();
+    let course_name: &str = course.name.as_str();
+    let mut item_stream = Box::pin(
+        futures::stream::iter(items.into_iter().map(|item| {
+            let ctx = &ctx;
+            async move {
+                let mut item_outcome = ItemOutcome::default();
+                process_item(ctx, group_name, course_name, &item, &mut item_outcome).await;
+                item_outcome
+            }
+        }))
+        .buffer_unordered(IMPORT_ITEM_CONCURRENCY),
+    );
+    while let Some(item_outcome) = item_stream.next().await {
+        outcome.items.absorb(item_outcome);
+    }
+    outcome
+}
+
 /// 處理單一活動項,依 type 分派。
 async fn process_item(
     ctx: &ImportContext<'_>,
     group: &str,
     course_name: &str,
     item: &Value,
-    report: &mut ImportReport,
+    outcome: &mut ItemOutcome,
 ) {
     let item_type = item.get("type").and_then(Value::as_str).unwrap_or("").trim().to_lowercase();
     if item_type.is_empty() {
@@ -574,7 +906,7 @@ async fn process_item(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "未命名教材".to_string());
 
-    report.materials_found += 1;
+    outcome.materials += 1;
 
     // MATERIALS_PENDING_V1：記下這筆教材的開放時間，供失敗時判斷「是不是還沒開放」。
     let opens_at = item_start_time(item);
@@ -583,7 +915,7 @@ async fn process_item(
         "material" | "file" | "resource" | "attachment" => {
             if let Some(uploads) = item.get("uploads").and_then(Value::as_array) {
                 for upload in uploads {
-                    let _ = process_upload(ctx, group, course_name, &title, upload, opens_at, report).await;
+                    let _ = process_upload(ctx, group, course_name, &title, upload, opens_at, outcome).await;
                 }
             }
         }
@@ -597,15 +929,15 @@ async fn process_item(
                 match write_link_file(ctx.root, group, course_name, &title, &url).await {
                     Ok(wrote) => {
                         if wrote {
-                            report.files_saved += 1;
+                            outcome.saved += 1;
                         } else {
-                            report.files_skipped += 1;
+                            outcome.skipped += 1;
                         }
-                        report.links_created += 1;
+                        outcome.links += 1;
                     }
                     Err(e) => {
-                        report.failed += 1;
-                        report.errors.push(format!("[{}] {} 寫入連結檔失敗：{e}", course_name, title));
+                        outcome.failed += 1;
+                        outcome.errors.push(format!("[{}] {} 寫入連結檔失敗：{e}", course_name, title));
                     }
                 }
             }
@@ -614,7 +946,7 @@ async fn process_item(
             if let Some(uploads) = item.get("uploads").and_then(Value::as_array) {
                 let mut dl = false;
                 for upload in uploads {
-                    if process_upload(ctx, group, course_name, &title, upload, opens_at, report).await {
+                    if process_upload(ctx, group, course_name, &title, upload, opens_at, outcome).await {
                         dl = true;
                     }
                 }
@@ -622,7 +954,7 @@ async fn process_item(
                     // 影片無可下載物件 → 存連結檔(課程頁)。
                     let url = format!("{}/course/{}/courseware", ctx.base_url, item.get("course_id").and_then(Value::as_u64).unwrap_or_default());
                     let _ = write_link_file(ctx.root, group, course_name, &title, &url).await;
-                    report.links_created += 1;
+                    outcome.links += 1;
                 }
             }
         }
@@ -640,7 +972,7 @@ async fn process_upload(
     material_title: &str,
     upload: &Value,
     opens_at: Option<DateTime<Utc>>,
-    report: &mut ImportReport,
+    outcome: &mut ItemOutcome,
 ) -> bool {
     let name = upload
         .get("name")
@@ -660,74 +992,128 @@ async fn process_upload(
     if filename.is_empty() {
         return false;
     }
-    // 只保留 pdf/ppt/圖片，其它的跳過。
+    // 只保留 pdf/ppt/圖片，其它的先跳過。
+    //
+    // IMPORT_ALL_TYPES_V1（fix64）：使用者要求「遇到不是許可的檔名要讓他選」。
+    // 因此預設行為不變（跳過、計入 skipped），但多記一筆 disallowed ＋ 檔名樣本，
+    // 讓前端在完成後問「這些要不要也抓？」；使用者按確定後前端會帶 all_types=1
+    // 再跑一次，這次 ctx.include_all_types 為 true，就直接抓下來。
     if !is_allowed_file_type(&filename) {
-        report.files_skipped += 1;
-        warn!(course = %course_name, file = %filename, "教材匯入：副檔名不在允許清單，跳過");
-        return false;
+        if !ctx.include_all_types {
+            outcome.skipped += 1;
+            outcome.disallowed += 1;
+            if outcome.disallowed_files.len() < DISALLOWED_SAMPLE_LIMIT {
+                outcome
+                    .disallowed_files
+                    .push(format!("{course_name}／{filename}"));
+            }
+            warn!(
+                course = %course_name,
+                file = %filename,
+                "教材匯入：副檔名不在允許清單，先跳過（可由使用者決定是否仍要匯入）"
+            );
+            return false;
+        }
+        debug!(
+            course = %course_name,
+            file = %filename,
+            "教材匯入：副檔名不在允許清單，但使用者選擇全部匯入 → 照抓"
+        );
     }
-    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
-        report.failed += 1;
-        report.errors.push(format!("[{}] 建立目錄失敗：{e}", dir.display()));
-        return false;
-    }
+    // 先判斷「要不要做」再建目錄：原本連已存在、要跳過的檔案都先建一次目錄
+    // （每個檔案一次 syscall，幾百個檔案就多幾百次）。
     let dest = dir.join(&filename);
     if dest.exists() {
-        report.files_skipped += 1;
-        info!(course = %course_name, file = %filename, "教材匯入：已存在，跳過（共用省硬碟）");
+        outcome.skipped += 1;
+        debug!(course = %course_name, file = %filename, "教材匯入：已存在，跳過（共用省硬碟）");
         return true;
     }
+    if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+        outcome.failed += 1;
+        outcome.errors.push(format!("[{}] 建立目錄失敗：{e}", dir.display()));
+        return false;
+    }
+    // MATERIALS_IMPORT_FAST_V1（fix59）：併行處理時，同一個目標檔可能被兩個任務同時
+    // 看上（同名的教材、或影片與教材指向同一個檔）→ 第二個直接讓給第一個做，
+    // 不要重複抓同一份檔案。
+    {
+        let mut inflight = ctx
+            .inflight
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !inflight.insert(dest.clone()) {
+            outcome.skipped += 1;
+            debug!(
+                course = %course_name,
+                file = %filename,
+                "教材匯入：同一個檔名正在由其他任務下載，跳過"
+            );
+            return true;
+        }
+    }
+    let _inflight_guard = InflightGuard {
+        set: &ctx.inflight,
+        path: dest.clone(),
+    };
 
     // MATERIALS_IMPORT_S3_V1: 以 upload.id 走 /api/uploads/{id}/preview 取得
     // tc-minio 的 S3 URL(走 :443、繞過 :8085 檔案埠)，由 download_file 依序嘗試。
     let mut download_urls = resolve_download_urls(ctx.client, ctx.base_url, upload).await;
 
-    // MATERIALS_RELOGIN_RETRY_V1（fix48）：只剩 `/download/{key}` 備援位址（或完全
-    // 沒有）時，多半是 session 過期——preview 端點回了登入頁，所以解析不到簽章網址。
-    // 與作業檔案路徑同一套處置：重登一次再解析，而不是直接對備援位址硬打（那條路
-    // 在 S3 化的學校一律 404，正是日誌裡那些 404 的來源）。
     let mut has_signed_url = download_urls.iter().any(|url| !url.contains("/download/"));
+
     if !has_signed_url {
-        if let (Some(account), Some(db)) = (ctx.account, ctx.accounts_db) {
-            match super::homework::iclass_api_after_relogin(account, db).await {
-                Ok(fresh) => {
-                    let retried = resolve_download_urls(&fresh.client, ctx.base_url, upload).await;
-                    if retried.iter().any(|url| !url.contains("/download/"))
-                        || download_urls.is_empty()
-                    {
-                        download_urls = retried;
-                        has_signed_url = download_urls.iter().any(|url| !url.contains("/download/"));
-                        if has_signed_url {
-                            info!(
-                                course = %course_name,
-                                file = %filename,
-                                "教材匯入：session 已重建，取得簽章下載位址"
-                            );
-                        }
-                    }
-                }
-                Err(error) => {
+        // MATERIALS_IMPORT_FAST_V1（fix59）：已經知道「還沒到開放時間」的教材，iClass
+        // 當下不會給檔案（連簽章網址都沒有）。原本這裡還是會重登一次、再依序硬打 5 個
+        // 備援位址——一個檔案就要數十秒。現在直接記成 pending，不做任何網路嘗試。
+        if let MaterialFailureKind::NotOpenYet(note) =
+            classify_material_failure(opens_at, Utc::now(), false)
+        {
+            outcome.pending += 1;
+            outcome.errors.push(format!("[{course_name}] {filename}：{note}"));
+            debug!(
+                course = %course_name,
+                file = %filename,
+                note = %note,
+                "教材匯入：尚未開放，略過（開放後重跑即會下載）"
+            );
+            return false;
+        }
+
+        // MATERIALS_RELOGIN_RETRY_V1（fix48）：只剩 `/download/{key}` 備援位址（或完全
+        // 沒有）時，多半是 session 過期——preview 端點回了登入頁，所以解析不到簽章網址。
+        // MATERIALS_IMPORT_FAST_V1（fix59）：整次匯入只重登「一次」，而且成功後的連線
+        // 所有檔案共用（原本每個檔案都各自完整登入一次）。
+        if let Some(fresh) = fresh_client_after_relogin(ctx).await {
+            let retried = resolve_download_urls(&fresh, ctx.base_url, upload).await;
+            if retried.iter().any(|url| !url.contains("/download/")) || download_urls.is_empty() {
+                download_urls = retried;
+                has_signed_url = download_urls.iter().any(|url| !url.contains("/download/"));
+                if has_signed_url {
                     debug!(
                         course = %course_name,
                         file = %filename,
-                        %error,
-                        "教材匯入：重新登入失敗（沿用原候選位址）"
+                        "教材匯入：session 已重建，取得簽章下載位址"
                     );
                 }
             }
         }
     }
 
+    // 全域下載上限（MATERIALS_IMPORT_FAST_V1）：跨課程共用一個號誌，同時最多
+    // IMPORT_MAX_CONCURRENT_DOWNLOADS 個檔案在下載——併行之餘仍不對學校開太多連線。
+    let _download_permit = ctx.downloads.acquire().await.ok();
+
     // 直接串流寫檔：download_file 會把內容串流寫進 dest（先寫到 .part 再改名），
     // 避免把數 GB 檔案讀進記憶體；回傳的是真正寫入的 bytes 數。
     match download_file(ctx.client, &download_urls, &dest).await {
         Ok(size) if size > 0 => {
-            report.files_saved += 1;
+            outcome.saved += 1;
             true
         }
         Ok(_) => {
-            report.failed += 1;
-            report.errors.push(format!("[{}] {filename} 下載到 0 bytes", course_name));
+            outcome.failed += 1;
+            outcome.errors.push(format!("[{}] {filename} 下載到 0 bytes", course_name));
             warn!(course = %course_name, file = %filename, "教材匯入：下載到 0 bytes");
             false
         }
@@ -737,9 +1123,9 @@ async fn process_upload(
             // MATERIALS_PENDING_V1：先分辨「尚未開放」與真正的故障，再決定記錄方式。
             match classify_material_failure(opens_at, Utc::now(), has_signed_url) {
                 MaterialFailureKind::NotOpenYet(note) => {
-                    report.pending += 1;
-                    report.errors.push(format!("[{course_name}] {filename}：{note}"));
-                    info!(
+                    outcome.pending += 1;
+                    outcome.errors.push(format!("[{course_name}] {filename}：{note}"));
+                    debug!(
                         course = %course_name,
                         file = %filename,
                         note = %note,
@@ -747,8 +1133,8 @@ async fn process_upload(
                     );
                 }
                 MaterialFailureKind::NoDownloadUrl(note) => {
-                    report.failed += 1;
-                    report.errors.push(format!("[{course_name}] {filename}：{note}"));
+                    outcome.failed += 1;
+                    outcome.errors.push(format!("[{course_name}] {filename}：{note}"));
                     warn!(
                         course = %course_name,
                         file = %filename,
@@ -758,8 +1144,8 @@ async fn process_upload(
                     );
                 }
                 MaterialFailureKind::Other => {
-                    report.failed += 1;
-                    report.errors.push(format!("[{course_name}] {filename} 下載失敗：{e}"));
+                    outcome.failed += 1;
+                    outcome.errors.push(format!("[{course_name}] {filename} 下載失敗：{e}"));
                     error!(
                         course = %course_name,
                         file = %filename,
@@ -819,9 +1205,12 @@ pub(super) async fn resolve_download_urls(
         if let Ok(parsed) = reqwest::Url::parse(base_url) {
             let host = parsed.host_str().unwrap_or_default().to_string();
             if !host.is_empty() {
+                // MATERIALS_IMPORT_FAST_V1（fix59）：原本列出 5 個候選（8085／8443 的
+                // https＋http，再加 443）。學校 S3 化之後那些檔案埠早已關閉，每多一個
+                // 候選就是一次白等的連線；只留 3 個 https 候選，而且動手前還會先做
+                // 3 秒 TCP 探測（見 download_file）。
                 for port in ["8085", "8443"] {
                     urls.push(format!("https://{host}:{port}/download/{key}"));
-                    urls.push(format!("http://{host}:{port}/download/{key}"));
                 }
                 urls.push(format!("https://{host}/download/{key}"));
             }
@@ -840,16 +1229,43 @@ pub(super) async fn resolve_download_urls(
 ///   新的 dead-port(8085/8443)仍會因「連線失敗」在~10s 快速跳過，不會被長逾時拖住。
 /// - **先寫 .part 再改名**：避免中斷時留下半個檔；成功才 rename 成最終檔名。
 /// - 回傳真正寫入的 bytes 數（>0 才算成功）。
+///
+/// MATERIALS_IMPORT_FAST_V1（fix59）：備援的 `/download/{key}` 位址先用 3 秒 TCP 探測
+/// （連不上就跳過，不必等 OS 的兩分鐘 SYN 重試），而且所有備援位址共用 20 秒的總預算
+/// ——就算上游全掛，單一檔案也不會在備援位址上耗掉數分鐘。簽章網址（真正的教材內容）
+/// 不受這兩個限制，30 分鐘的長逾時照舊。
 async fn download_file(
     client: &reqwest::Client,
     urls: &[String],
     dest: &Path,
 ) -> Result<u64, String> {
-    let read_timeout = std::time::Duration::from_secs(30 * 60);
+    let read_timeout = Duration::from_secs(30 * 60);
 
     let mut last_err = String::new();
+    let mut fallback_deadline: Option<Instant> = None;
     for url in urls {
-        info!(url = %url, "教材匯入：嘗試下載位址");
+        // 只有 `/download/{key}` 這條備援路徑需要保護；S3 簽章網址直接放行。
+        if url.contains("/download/") {
+            let deadline = *fallback_deadline.get_or_insert_with(|| {
+                Instant::now() + Duration::from_secs(IMPORT_FALLBACK_BUDGET_SECS)
+            });
+            if Instant::now() >= deadline {
+                last_err = format!(
+                    "備援位址跳過（已用完 {IMPORT_FALLBACK_BUDGET_SECS} 秒預算）：{url}"
+                );
+                debug!(%url, "教材匯入：備援位址預算用盡，跳過");
+                continue;
+            }
+            if !tcp_reachable(url, IMPORT_FALLBACK_PROBE_TIMEOUT_SECS).await {
+                last_err = format!("連不上（{url}）");
+                debug!(
+                    url = %url,
+                    "教材匯入：備援位址 TCP 探測失敗（學校檔案埠多半已關閉），跳過"
+                );
+                continue;
+            }
+        }
+        debug!(url = %url, "教材匯入：嘗試下載位址");
         let req = client
             .get(url)
             .timeout(read_timeout) // 整段下載最多 30 分鐘；大檔放行、dead-port 仍以連線錯誤快速失敗
@@ -926,7 +1342,7 @@ async fn download_file(
             warn!(url = %url, error = %last_err, "教材匯入：rename 失敗");
             continue;
         }
-        info!(url = %url, bytes = written, "教材匯入：下載成功");
+        debug!(url = %url, bytes = written, "教材匯入：下載成功");
         return Ok(written);
     }
     Err(last_err)
@@ -984,6 +1400,10 @@ fn write_manifest(root: &Path, report: &ImportReport) {
         "failed": report.failed,
         // MATERIALS_PENDING_V1（fix48）：尚未開放而略過的數量（與 failed 分開記）。
         "pending": report.pending,
+        // IMPORT_ALL_TYPES_V1（fix64）：被副檔名白名單先擋下的數量與樣本。
+        // 目的：下次（或使用者決定「全部匯入」後）可以從 manifest 看得出來還少哪些。
+        "disallowed": report.disallowed,
+        "disallowed_files": report.disallowed_files,
     });
     // ATOMIC_WRITE_V1
     if let Err(e) = crate::atomic_write::write_atomic(&dest, serde_json::to_string_pretty(&obj).unwrap_or_default()) {

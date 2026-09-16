@@ -84,8 +84,12 @@ mod tc_proxy;
 mod notifications;
 mod pages;
 mod passkey;
+// SEO_LANDING_V1（fix60）：公開介紹頁 ＋ robots.txt／sitemap.xml。
+mod seo;
 mod static_assets;
 mod status;
+// ROLLCALL_ATTENDANCE_V1（fix66）：點名出席統計與送出者查詢。
+mod rollcall_stats;
 mod credits;
 mod timetable;
 mod web_push;
@@ -102,16 +106,22 @@ use self::utils::*;
 
 const PW_SALT: &[u8] = b"tronclass-rollcall-admin-web-password-hash-v2";
 
-// Body limits are assigned to individual POST routes below. Only multipart
-// material uploads need the 51 MiB allowance; ordinary JSON must stay small
-// enough that extraction before handler-local authorization cannot spike RSS.
+// Body limits are assigned to individual POST routes below. Multipart material
+// uploads no longer have a per-file cap (UPLOAD_NO_FILE_CAP_V1, fix54), so the
+// route-level allowance has to cover a single file that fills the whole quota;
+// ordinary JSON must stay small enough that extraction before handler-local
+// authorization cannot spike RSS.
 const ADMIN_TINY_BODY_LIMIT: usize = 8 * 1024;
 const ADMIN_LOGIN_BODY_LIMIT: usize = 16 * 1024;
 // AI_CHAT_V7：AI 聊天可以附圖片（base64 會膨脹約 4/3），預設的 2 MB 不夠用。
 const ADMIN_AI_CHAT_BODY_LIMIT: usize = 20 * 1024 * 1024;
 const ADMIN_MOCK_BODY_LIMIT: usize = 64 * 1024;
 const ADMIN_JSON_BODY_LIMIT: usize = 256 * 1024;
-const ADMIN_UPLOAD_BODY_LIMIT: usize = MATERIALS_MAX_FILE_SIZE + 1024 * 1024;
+// UPLOAD_NO_FILE_CAP_V1（fix54）：教材單檔已無 50 MiB 上限，body limit 必須容得下
+// 「單一檔案吃滿整個配額」的情形（總容量 10 GiB ＋ multipart 邊界與欄位標頭的少量開銷）。
+// DefaultBodyLimit 只是門檻、不會預先配置記憶體；真正的配額仍由 handler 在收檔迴圈裡
+// 逐片段檢查（超過就 413 並刪除暫存檔）。
+const ADMIN_UPLOAD_BODY_LIMIT: usize = MATERIALS_MAX_TOTAL_SIZE + 16 * 1024 * 1024;
 
 pub(super) const ADMIN_MAX_USERNAME_BYTES: usize = 128;
 pub(super) const ADMIN_MAX_PASSWORD_BYTES: usize = 1024;
@@ -906,6 +916,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                             result: "success".to_string(),
                             details: format!("Auto-blocked after {ip_fails} failed Dashboard logins within 15 minutes"),
                             ip: blocked_ip.clone(),
+                            user_agent: String::new(),
                         })
                         .await;
                     // This notification deliberately has no alert cooldown:
@@ -970,6 +981,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                     result: "locked".to_string(),
                     details: format!("{} consecutive failed password logins; password login locked for {} minutes", user_fails, ACCOUNT_LOGIN_LOCK_TTL.as_secs() / 60),
                     ip: ip.trim().to_string(),
+                    user_agent: String::new(),
                 })
                 .await;
             let event = SecurityAlertEvent {
@@ -1287,6 +1299,14 @@ async fn check_unusual_login_location(
     let location = geo.label();
     let alert_reason = login_alert_reason(&geo, &home_countries, recent_failures);
 
+    // 編譯修正：`ua` 原本宣告在「確定要告警」之後，但下面兩個分支（本國不通知的 info、
+    // 告警的 alert）都要寫進事件，因此把正規化（空＝"-"、截 120 字元）提到分支之前共用。
+    let ua = if user_agent.trim().is_empty() {
+        "-".to_string()
+    } else {
+        crate::text_utils::truncate_chars(user_agent.trim(), 120).to_string()
+    };
+
     // 不告警的情況也留一筆 activity（result=info），事後在活動頁仍看得到新 IP 從哪裡來。
     let Some(reason) = alert_reason else {
         info!(account = %account_id, ip = %ip, location = %location, "新 IP 登入（本國，不通知）");
@@ -1299,8 +1319,9 @@ async fn check_unusual_login_location(
                 account_id: account_id.to_string(),
                 path: String::new(),
                 result: "info".to_string(),
-                details: format!("新 IP 登入（{method_label}）；位置：{location}；本國，未通知"),
+                details: format!("新 IP 登入（{method_label}）；位置：{location}；本國，未通知；UA: {ua}"),
                 ip: ip.to_string(),
+                user_agent: ua.to_string(),
             })
             .await;
         return;
@@ -1311,13 +1332,8 @@ async fn check_unusual_login_location(
         return;
     }
 
-    let when = security_now_label();
-    let ua = if user_agent.trim().is_empty() {
-        "-".to_string()
-    } else {
-        crate::text_utils::truncate_chars(user_agent.trim(), 120).to_string()
-    };
     info!(account = %account_id, ip = %ip, location = %location, %reason, "偵測到異常位置登入 Dashboard");
+    let when = security_now_label();
     crate::logs::record_audit(
         "web",
         "system:login-location",
@@ -1337,6 +1353,7 @@ async fn check_unusual_login_location(
             result: "alert".to_string(),
             details: format!("異常位置登入（{method_label}）；位置：{location}；原因：{reason}；UA: {ua}"),
             ip: ip.to_string(),
+            user_agent: ua.to_string(),
         })
         .await;
 
@@ -2229,7 +2246,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
     let password_guard_state = state.clone();
     let blacklist_guard_state = state.clone();
     Router::new()
-        .route("/", get(pages::admin_root_redirect_handler))
+        // SEO_LANDING_V1（fix60）：`/` 依身分分流——已登入照舊 302 到 `/admin`，
+        // 未登入回公開介紹頁（Google 唯一收得到的內容）。
+        .route("/", get(pages::admin_root_page_handler))
+        // 搜尋引擎用：只允許首頁被檢索（見 seo.rs 的 robots_txt／sitemap_xml）。
+        .route("/robots.txt", get(seo::robots_txt_handler))
+        .route("/sitemap.xml", get(seo::sitemap_xml_handler))
         .route("/healthz", get(health::healthz_handler))
         // TRONCLASS_PROXY_JUMP_V1：iClass 反向代理。SPA 資源是根絕對路徑
         //（/static/...），因此頂層 /static、/api、/course、/uploads 也掛代理；
@@ -2527,6 +2549,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // BULLETINS_V1: 課程公告頁＋API。
         .route("/admin/bulletins", get(bulletins::page_handler))
         .route("/admin/api/bulletins", get(bulletins::list_handler))
+        // BULLETIN_ATTACHMENT_V1（fix55）：公告附件代理（伺服器端用保存的
+        // iClass session 取簽章 URL 再串流；支援 Range／206）。
+        .route(
+            "/admin/api/bulletins/attachment",
+            get(bulletins::admin_bulletin_attachment_handler),
+        )
         .route(
             "/admin/api/bulletins/read",
             post(bulletins::read_handler),
@@ -2612,6 +2640,13 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/logs", get(logs::admin_logs_page_handler))
         .route("/admin/api/public_status", get(status::admin_public_status_handler))
         .route("/admin/api/blacklist", get(blacklist::admin_blacklist_list_handler))
+        // BLACKLIST_UX_V1（fix58）：黑名單頁的「最近登入失敗」改用這個端點——它會
+        // 附上「位置」（geoip，24h 快取）與「裝置」（User-Agent 摘要），並標記該 IP
+        // 是否已經在黑名單裡（前端就不用自己比對，也不會再出現重複的「加入黑名單」）。
+        .route(
+            "/admin/api/blacklist/recent-logins",
+            get(blacklist::admin_blacklist_recent_logins_handler),
+        )
         .route(
             "/admin/api/blacklist/block",
             post(blacklist::admin_blacklist_block_handler)
@@ -2829,6 +2864,16 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/timetable",
             get(timetable::admin_timetable_list_handler),
         )
+        // ROLLCALL_ATTENDANCE_V1（fix66）：點名頁的出席統計與「由誰送出」。
+        // 兩者都是唯讀（GET），資料來源＝rollcall_events 資料表。
+        .route(
+            "/admin/api/rollcalls/stats",
+            get(rollcall_stats::admin_rollcall_stats_handler),
+        )
+        .route(
+            "/admin/api/rollcalls/records",
+            get(rollcall_stats::admin_rollcall_records_handler),
+        )
         .route(
             "/admin/api/credits",
             get(credits::admin_credits_report_handler),
@@ -2988,7 +3033,47 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .layer(axum::middleware::from_fn(
             no_compression_for_file_streams_middleware,
         ))
+        // SEO_LANDING_V1（fix60）：私有路徑一律補 `X-Robots-Tag: noindex`。
+        .layer(axum::middleware::from_fn(
+            noindex_private_paths_middleware,
+        ))
         .with_state(state)
+}
+
+/// SEO_LANDING_V1（fix60）：這些前綴的路徑不該出現在搜尋結果。
+///
+/// 為什麼 robots.txt 之外還需要這個標頭：robots.txt 只擋「爬取」，Google 仍可能因為
+/// 外部連結而以「只顯示網址、不顯示摘要」的形式收錄（那對隱私沒幫助、對品牌也難看）；
+/// `X-Robots-Tag: noindex` 才是要求「不要收錄」。兩者併用最乾淨。
+///
+/// `/tc`、`/api`、`/course`、`/uploads` 是 iClass 反向代理：上游內容已經有自己的網域，
+/// 讓它掛在本站下面只會產生重複內容（duplicate content），一併排除。
+fn path_is_private_for_search(path: &str) -> bool {
+    const PRIVATE_PREFIXES: [&str; 7] = [
+        "/admin",
+        "/pub",
+        "/tc/",
+        "/api/",
+        "/course/",
+        "/uploads/",
+        "/healthz",
+    ];
+    PRIVATE_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+}
+
+async fn noindex_private_paths_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let mut response = next.run(request).await;
+    if path_is_private_for_search(&path) {
+        // 不覆蓋既有的值（管線內其他層若已標註，以它為準）。
+        response.headers_mut().entry(HeaderName::from_static("x-robots-tag")).or_insert_with(|| {
+            HeaderValue::from_static("noindex, nofollow")
+        });
+    }
+    response
 }
 
 /// STREAM_NO_COMPRESSION_V1（fix43）：這些路徑回的是「檔案位元組」，不做即時壓縮。
@@ -3005,6 +3090,7 @@ fn is_no_compression_stream_path(path: &str) -> bool {
         path,
         "/admin/api/files/download"
             | "/admin/api/files/preview"
+            | "/admin/api/bulletins/attachment"
             | "/admin/api/homework/file"
             | "/admin/api/homework/attachment"
             | "/pub/office"
@@ -3897,8 +3983,12 @@ async fn admin_security_headers_middleware(
     // PREVIEW_REVALIDATE_V1（fix52）：檔案預覽端點自己帶 Cache-Control 與 ETag
     // （`private, max-age=0, must-revalidate`），不能被下面的全站 `no-store` 覆寫：
     // 一被覆寫，瀏覽器不留存內容、也不會送 `If-None-Match`，重開同一份教材就只能
-    // 再整份下載一次。只放行這一個端點（作業附件端點自己仍送 no-store，不受影響）。
-    let keeps_own_cache = is_framable_preview;
+    // 再整份下載一次。（作業附件端點自己仍送 no-store，不受影響。）
+    //
+    // BULLETIN_ATTACHMENT_CACHE_V1（fix61）：公告附件端點同一套理由——它每次都要先問
+    // iClass 拿簽章 URL、再從 MinIO 串流，重看同一份附件原本等於整條路重跑。
+    let keeps_own_cache =
+        is_framable_preview || path == "/admin/api/bulletins/attachment";
     let mut response = next.run(request).await;
 
     // This middleware covers the whole Admin Web router, including `/` and
@@ -4150,6 +4240,9 @@ struct AdminActionRequest {
     poll_interval_secs: Option<Option<u64>>,
     #[serde(default)]
     group_submit_interval_ms: Option<u64>,
+    /// GROUP_SUBMIT_RELAY_V1（fix67）：送出間隔的隨機上限（毫秒）。
+    #[serde(default)]
+    group_submit_jitter_ms: Option<u64>,
     #[serde(default)]
     auto_stop_time: Option<Option<String>>,
     #[serde(default)]
@@ -4178,6 +4271,9 @@ fn must_change_password_redirect() -> Response {
         .into_response()
 }
 
+/// BLACKLIST_UX_V1（fix58）：`user_agent` ＝ 這次請求的 User-Agent（呼叫端用
+/// `SessionOrigin::from_request(&headers, &ip).user_agent` 取；拿不到就傳空字串）。
+/// 黑名單頁的「裝置」欄就是靠它——瀏覽器不會提供 MAC 位址，這是真正拿得到的裝置資訊。
 async fn record_persistent_login_event(
     state: &AdminWebState,
     actor: &str,
@@ -4186,6 +4282,7 @@ async fn record_persistent_login_event(
     result: &str,
     details: &str,
     ip: &str,
+    user_agent: &str,
 ) {
     let _ = state
         .accounts_db
@@ -4198,6 +4295,7 @@ async fn record_persistent_login_event(
             result: result.to_string(),
             details: details.to_string(),
             ip: ip.trim().to_string(),
+            user_agent: user_agent.trim().to_string(),
         })
         .await;
 }

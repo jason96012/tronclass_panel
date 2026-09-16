@@ -42,7 +42,8 @@ pub(super) fn session_public_id(token: &str) -> String {
 }
 
 /// 從 User-Agent 粗略歸納「裝置／瀏覽器」摘要，純字串比對、不引入 UA parser。
-fn summarize_user_agent(ua: &str) -> (String, String) {
+/// BLACKLIST_UX_V1（fix58）：黑名單頁的「裝置」欄也用這支（同層模組共用）。
+pub(super) fn summarize_user_agent(ua: &str) -> (String, String) {
     let ua_l = ua.to_ascii_lowercase();
     let os = if ua_l.contains("iphone") {
         "iPhone"

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     Json,
 };
@@ -55,8 +55,12 @@ pub(super) async fn page_handler(
     if page.session.must_change_password {
         return super::pages::attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
     }
+    // BULLETIN_ATTACHMENT_V1（fix55）：公告附件要在面板內預覽（PDF 用 PDF.js），
+    // 沿用教材／作業頁同一支按需載入器（`window.__tronEnsureFileLib`），
+    // 不把 ~485KB 的重庫塞進這頁的同步載入路徑。
+    let html = super::pages::inject_files_office_assets(&super::pages::inject_theme(PAGE_HTML));
     super::pages::attach_fresh_cookies(
-        html_page_response(&headers, super::pages::inject_auth_attrs(&super::pages::inject_theme(PAGE_HTML), &page.session)),
+        html_page_response(&headers, super::pages::inject_auth_attrs(&html, &page.session)),
         &page,
         &headers,
     )
@@ -448,9 +452,47 @@ pub(super) async fn list_handler(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            // BULLETIN_ATTACHMENT_V1（fix55）：公告附件。iClass 把附件放在公告的
+            // `uploads` 陣列裡（每筆有 id／key／name／size／allow_download），
+            // 實測 263861 課程的 Course Policy 公告即為此形狀。
+            // 前端只拿得到「名稱／大小／可否下載」，真正的位元組一律由伺服器端用
+            // 已保存的 iClass session 代抓（見下方 *_attachment_handler）。
+            let attachments: Vec<Value> = b
+                .get("uploads")
+                .and_then(Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter(|u| {
+                            !u.get("deleted").and_then(Value::as_bool).unwrap_or(false)
+                        })
+                        .filter_map(|u| {
+                            let id = u.get("id").and_then(Value::as_u64)?;
+                            let name = u
+                                .get("name")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("附件-{id}"));
+                            let size = u.get("size").and_then(Value::as_u64).unwrap_or(0);
+                            Some(json!({
+                                "id": id,
+                                "name": name,
+                                "size": size,
+                                "size_label": super::utils::format_file_size(size),
+                                "allow_download": u
+                                    .get("allow_download")
+                                    .and_then(Value::as_bool)
+                                    .unwrap_or(true),
+                            }))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             json!({
                 "key": key,
                 "course_name": course_name,
+                "attachments": attachments,
                 "title": pick_str(&b, &["title", "name", "subject"]),
                 "content": pick_str(&b, &["content", "body", "text", "description"]),
                 "author": pick_str(&b, &["author", "user", "creator", "instructor", "publisher"]),
@@ -502,6 +544,193 @@ pub(super) async fn list_handler(
         Json(json!({ "items": items, "is_admin": session.is_admin })),
     )
         .into_response()
+}
+
+// BULLETIN_ATTACHMENT_V1（fix55）：公告附件代理端點。
+//
+// 為什麼一定要經過面板伺服器：附件的實際位址是 `/api/uploads/{id}/preview` 換來的
+// 限時簽章 URL（S3／MinIO），需要「已保存的 iClass session」才拿得到；而且 iClass
+// 對公告附件沒有穩定可分享的公開網址。所以流程與作業附件（fix43／fix47）完全相同：
+//   瀏覽器 → 面板（帶面板 session cookie）→ iClass API（帶保存的 session）
+//   → 簽章 URL → 串流回瀏覽器（支援 Range／206 邊下邊播）。
+#[derive(Debug, Deserialize)]
+pub(super) struct BulletinAttachmentQuery {
+    #[serde(default)]
+    token: String,
+    #[serde(default)]
+    account_id: Option<String>,
+    upload_id: u64,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    disposition: Option<String>,
+}
+
+// BULLETIN_ATTACHMENT_CACHE_V1（fix61）：公告附件的重看成本。
+//
+// 這個端點每次都要先問一次 iClass（`/api/uploads/{id}/preview` 拿簽章 URL）再從 MinIO
+// 串流；PDF 檢視器換頁、同一個人再打開同一則公告的附件，等於整條路重跑。教材側在
+// fix52 已經解過同一題（`PREVIEW_REVALIDATE_V1`：ETag ＋ `private, max-age=0,
+// must-revalidate`），公告附件照同一套做：
+//
+//   · ETag 直接用 iClass 的 upload id（附件是唯讀的，換一份就是一組新的 id）——
+//     所以「內容沒變」這件事不必問上游就知道，命中 `If-None-Match` 時**連上游都不打**。
+//   · `private`：附件要登入才看得到，不能被共享快取留存。
+//   · `max-age=0, must-revalidate`：每次仍會問伺服器，但內容沒變只回 304（沒有 body）。
+//
+// 有 `Range` 的分段請求不做 304（範圍內容不能用整檔標籤代替），與教材側一致。
+const BULLETIN_ATTACHMENT_CACHE_CONTROL: &str = "private, max-age=0, must-revalidate";
+
+/// 附件回應的 ETag（含引號的強標籤）。
+fn bulletin_attachment_etag(upload_id: u64) -> String {
+    format!("\"att-{upload_id:x}\"")
+}
+
+/// `If-None-Match` 是否命中這個標籤（支援逗號清單與 `*`），與教材側同一套判定。
+fn bulletin_attachment_not_modified(headers: &HeaderMap, tag: &str) -> bool {
+    headers
+        .get(axum::http::header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .map(|incoming| {
+            incoming
+                .split(',')
+                .any(|candidate| candidate.trim() == tag || candidate.trim() == "*")
+        })
+        .unwrap_or(false)
+}
+
+pub(super) async fn admin_bulletin_attachment_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<BulletinAttachmentQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize_any(&token).await else {
+        return unauthorized_response();
+    };
+    let account = match resolve_account(&state, &session, query.account_id.as_deref()).await {
+        Ok(account) => account,
+        Err(response) => return response,
+    };
+    let client = match get_client(&state, &account).await {
+        Ok(client) => client,
+        Err(response) => return response,
+    };
+    let base_url = account.base_url().to_string();
+    // 檔名只當顯示／副檔名推斷用（同樣過安全檢查）；真正來源是 upload id。
+    let file_name = query
+        .name
+        .as_deref()
+        .and_then(super::utils::safe_file_name)
+        .unwrap_or_else(|| format!("公告附件-{}", query.upload_id));
+    let inline = matches!(
+        query.disposition.as_deref().map(str::trim),
+        Some(value) if value.eq_ignore_ascii_case("inline")
+    );
+
+    // BULLETIN_ATTACHMENT_CACHE_V1（fix61）：標籤只由 upload id 決定（附件唯讀），
+    // 所以「已經有一份相同的內容」時可以立刻回 304，連 iClass 都不必問。
+    let etag = bulletin_attachment_etag(query.upload_id);
+    let has_range = headers.contains_key(axum::http::header::RANGE);
+    if !has_range && bulletin_attachment_not_modified(&headers, &etag) {
+        let tag = HeaderValue::from_str(&etag)
+            .unwrap_or_else(|_| HeaderValue::from_static("\"att\""));
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, tag)
+            .header(header::CACHE_CONTROL, BULLETIN_ATTACHMENT_CACHE_CONTROL)
+            .body(axum::body::Body::empty())
+            .unwrap_or_else(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("建立 304 回應失敗：{e}") })),
+                )
+                    .into_response()
+            });
+    }
+
+    let upload = json!({ "id": query.upload_id });
+    let mut urls = super::materials_import::resolve_download_urls(&client, &base_url, &upload).await;
+    // 只剩 `…/download/{key}` 備援、或完全沒有 → 多半是 iClass session 過期
+    // （preview 端點回登入頁）。重新登入再解一次，與作業附件同一套處置。
+    if !urls.iter().any(|url| !url.contains("/download/")) {
+        if let Ok(fresh) = super::homework::iclass_api_after_relogin(&account, &state.accounts_db).await
+        {
+            let retried = super::materials_import::resolve_download_urls(
+                &fresh.client,
+                &base_url,
+                &upload,
+            )
+            .await;
+            if retried.iter().any(|url| !url.contains("/download/")) || urls.is_empty() {
+                urls = retried;
+            }
+        }
+    }
+    if urls.is_empty() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "找不到這個附件（可能已被刪除，或 iClass session 已失效）" })),
+        )
+            .into_response();
+    }
+
+    // RANGE_STREAM_V1：原樣把瀏覽器的 Range 轉給上游，206／Content-Range 照傳回去。
+    let range = headers.get(axum::http::header::RANGE).cloned();
+    let mut attempt = super::homework::stream_iclass_upload(
+        &client,
+        &urls,
+        &file_name,
+        inline,
+        range.as_ref(),
+    )
+    .await;
+
+    // HOMEWORK_FILE_SANITY_V1（fix47）同一條防線：上游回 HTML 登入頁／JSON 錯誤時
+    // 不再當成檔案串出去（最常見成因是 session 過期），重登後再試一輪。
+    if attempt.response.is_none() && attempt.saw_page {
+        if let Ok(fresh) = super::homework::iclass_api_after_relogin(&account, &state.accounts_db).await
+        {
+            let retried_urls = super::materials_import::resolve_download_urls(
+                &fresh.client,
+                &base_url,
+                &upload,
+            )
+            .await;
+            if !retried_urls.is_empty() {
+                tracing::info!(account = %account.id, "公告附件疑似 session 過期：重新登入後重試");
+                attempt = super::homework::stream_iclass_upload(
+                    &fresh.client,
+                    &retried_urls,
+                    &file_name,
+                    inline,
+                    range.as_ref(),
+                )
+                .await;
+            }
+        }
+    }
+
+    match attempt.response {
+        Some(mut response) => {
+            // 成功串流時補上 ETag 與可驗證的快取政策：下一次重看同一個附件，
+            // 瀏覽器會帶 `If-None-Match` 回來，我們直接回 304（上面那段）——
+            // 既不必問 iClass、也不必再從 MinIO 傳一次位元組。
+            if let Ok(tag) = HeaderValue::from_str(&etag) {
+                response.headers_mut().insert(header::ETAG, tag);
+            }
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static(BULLETIN_ATTACHMENT_CACHE_CONTROL),
+            );
+            response
+        }
+        None => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({ "error": format!("讀取附件失敗：{}", attempt.last_error) })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]

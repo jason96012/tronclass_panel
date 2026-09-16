@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use super::{
     truncate_event_text, AccountsDb, EVENT_ACTION_MAX_BYTES, EVENT_DETAILS_MAX_BYTES,
     EVENT_IDENTITY_MAX_BYTES, EVENT_IP_MAX_BYTES, EVENT_PATH_MAX_BYTES, EVENT_PRUNE_INTERVAL,
-    EVENT_RESULT_MAX_BYTES,
+    EVENT_RESULT_MAX_BYTES, EVENT_USER_AGENT_MAX_BYTES,
 };
 
 #[derive(Debug, Clone)]
@@ -22,6 +22,9 @@ pub struct ActivityEventInput {
     pub result: String,
     pub details: String,
     pub ip: String,
+    /// BLACKLIST_UX_V1（fix58）：發起請求的 User-Agent（登入事件才有；其他事件留空）。
+    /// 舊資料列沒有這個欄位，讀出來是空字串。
+    pub user_agent: String,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]
@@ -39,6 +42,10 @@ pub struct ActivityEventRow {
     #[sqlx(default)]
     #[serde(default)]
     pub ip: String,
+    /// BLACKLIST_UX_V1（fix58）：裝置資訊（User-Agent）。舊資料列為空字串。
+    #[sqlx(default)]
+    #[serde(default)]
+    pub user_agent: String,
 }
 
 impl AccountsDb {
@@ -51,6 +58,7 @@ impl AccountsDb {
         event.result = truncate_event_text(event.result, EVENT_RESULT_MAX_BYTES);
         event.details = truncate_event_text(event.details, EVENT_DETAILS_MAX_BYTES);
         event.ip = truncate_event_text(event.ip, EVENT_IP_MAX_BYTES);
+        event.user_agent = truncate_event_text(event.user_agent, EVENT_USER_AGENT_MAX_BYTES);
 
         match self.activity_tx.try_send(event) {
             Ok(()) => Ok(()),
@@ -72,7 +80,7 @@ impl AccountsDb {
         let rows = if let Some(kind) = kind.map(str::trim).filter(|v| !v.is_empty() && *v != "all")
         {
             sqlx::query_as::<_, ActivityEventRow>(
-                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip
+                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent
                  FROM activity_events WHERE kind = ? ORDER BY id DESC LIMIT ?",
             )
             .bind(kind)
@@ -83,7 +91,7 @@ impl AccountsDb {
             .wrap_err("讀取 activity_events 失敗")?
         } else {
             sqlx::query_as::<_, ActivityEventRow>(
-                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip
+                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent
                  FROM activity_events ORDER BY id DESC LIMIT ?",
             )
             .bind(limit)
@@ -151,8 +159,8 @@ async fn insert_activity_events_batch(
 
     for event in entries {
         sqlx::query(
-            "INSERT INTO activity_events (timestamp, time, kind, actor, action, account_id, path, result, details, ip)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO activity_events (timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(timestamp)
         .bind(&time_str)
@@ -164,6 +172,7 @@ async fn insert_activity_events_batch(
         .bind(&event.result)
         .bind(&event.details)
         .bind(&event.ip)
+        .bind(&event.user_agent)
         .execute(&mut *tx)
         .await
         .into_diagnostic()
@@ -201,6 +210,7 @@ mod tests {
                 result: "success".to_string(),
                 details: format!("batch test {i}"),
                 ip: "127.0.0.1".to_string(),
+                user_agent: "Mozilla/5.0 (Macintosh) Chrome/120".to_string(),
             })
             .await
             .unwrap();

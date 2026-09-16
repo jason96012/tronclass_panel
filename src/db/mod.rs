@@ -15,6 +15,7 @@
 //! - [`web_push`]    Web Push 設定與訂閱
 //! - [`sessions`]    Dashboard 登入 session
 //! - [`homework`]    作業截止提醒去重與快照
+//! - [`rollcalls`]   點名送出紀錄（出席統計與送出者查詢的來源）
 //!
 //! 對外仍以 `crate::db::AccountsDb` 與既有型別使用，公開 API 不變；所有型別
 //! 透過下方的 `pub use` 再匯出，維持 `crate::db::Xxx` 路徑。
@@ -29,6 +30,8 @@ mod homework;
 mod materials;
 mod passkeys;
 mod preferences;
+// ROLLCALL_ATTENDANCE_V1（fix66）：點名送出紀錄（出席統計）。
+mod rollcalls;
 mod schema;
 mod sessions;
 mod timetable;
@@ -58,6 +61,8 @@ pub(crate) const EVENT_FILE_NAME_MAX_BYTES: usize = 255;
 pub(crate) const EVENT_RESULT_MAX_BYTES: usize = 64;
 pub(crate) const EVENT_DETAILS_MAX_BYTES: usize = 4 * 1024;
 pub(crate) const EVENT_IP_MAX_BYTES: usize = 64;
+/// USER_AGENT（登入事件的裝置資訊；`SessionOrigin` 會先截到 256 字元）。
+pub(crate) const EVENT_USER_AGENT_MAX_BYTES: usize = 512;
 pub(crate) const EVENT_TRUNCATED_SUFFIX: &str = "…[truncated]";
 /// 作業截止時間延後多久才算「顯著延期」，值得重新跑一輪倒數提醒。
 ///
@@ -97,6 +102,10 @@ pub use activity::{ActivityEventInput, ActivityEventRow};
 pub use blacklist::IpBlacklistRow;
 #[allow(unused_imports)]
 pub use materials::{MaterialEventInput, MaterialEventRow};
+pub use rollcalls::{
+    aggregate_courses, aggregate_senders, rollcall_success_rate, RollcallCourseStat,
+    RollcallEventInput, RollcallEventRow, RollcallSenderStat,
+};
 #[allow(unused_imports)]
 pub use preferences::{
     ClassReminderDueRow, ClassReminderPreferenceRow, DetectionSchedulePreferenceRow,

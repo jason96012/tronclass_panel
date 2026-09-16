@@ -791,11 +791,20 @@ fn range_starts_at_zero(value: &axum::http::HeaderValue) -> bool {
 }
 
 /// HOMEWORK_FILE_SANITY_V1（fix47）：一次「依序試候選網址」的串流結果。
-struct HomeworkFileAttempt {
-    response: Option<Response>,
-    last_error: String,
+///
+/// BULLETIN_ATTACHMENT_V1（fix55）：公告附件走完全相同的代理路徑，因此這個型別
+/// 與下面的 `stream_iclass_upload` 一起開放給同層模組（原本名稱為
+/// `HomeworkFileAttempt`／`stream_homework_file`，作業與公告共用後改名）。
+///
+/// 注意：Rust 的**欄位**預設是「模組私有」，struct 本身標了 `pub(super)` 並不會
+/// 連帶開放欄位——`bulletins.rs` 會讀 `response`／`saw_page`／`last_error` 這三個
+/// 欄位（判斷是否要重登重試、以及重試後仍失敗時的錯誤訊息），所以每個欄位都要
+/// 各別標 `pub(super)`，否則編譯會直接 E0616（field is private）。
+pub(super) struct IclassUploadAttempt {
+    pub(super) response: Option<Response>,
+    pub(super) last_error: String,
     /// 至少有一個候選網址回傳「明顯不是檔案」的內容（HTML／JSON）。
-    saw_page: bool,
+    pub(super) saw_page: bool,
 }
 
 /// 決定回給瀏覽器的 Content-Type。
@@ -911,7 +920,7 @@ async fn homework_file_response(
         .cloned();
 
     let mut attempt =
-        stream_homework_file(&api, &urls, &file_name, request.inline, range.as_ref()).await;
+        stream_iclass_upload(&api.client, &urls, &file_name, request.inline, range.as_ref()).await;
 
     // HOMEWORK_FILE_SANITY_V1（fix47）：上游回「HTML 登入頁／JSON 錯誤」時，
     // 以前會原封不動當成 .docx 串回瀏覽器，前端只看到「檔案內容與副檔名不符」。
@@ -928,8 +937,8 @@ async fn homework_file_response(
                 .await;
                 if !retried_urls.is_empty() {
                     info!(account = %target.raw.id, "作業檔案疑似 session 過期：重新登入後重試");
-                    attempt = stream_homework_file(
-                        &fresh,
+                    attempt = stream_iclass_upload(
+                        &fresh.client,
                         &retried_urls,
                         &file_name,
                         request.inline,
@@ -962,19 +971,21 @@ async fn homework_file_response(
 ///
 /// 已經讀進來的前綴會原樣接回串流前端，因此 Content-Length／Content-Range
 /// 與位元組內容都與上游一致（影音分段、PDF 分段照常運作）。
-async fn stream_homework_file(
-    api: &crate::api::ApiClient,
+/// BULLETIN_ATTACHMENT_V1（fix55）：公告附件（`bulletins.rs`）與作業附件／繳交檔
+/// 共用這支串流器——同一個上游（iClass 簽章 URL）、同一套嗅探與 Range 轉發，
+/// 兩邊行為才不會分岔。因此收 `reqwest::Client`（呼叫端自己決定帶哪個 session）。
+pub(super) async fn stream_iclass_upload(
+    client: &reqwest::Client,
     urls: &[String],
     file_name: &str,
     inline: bool,
     range: Option<&axum::http::HeaderValue>,
-) -> HomeworkFileAttempt {
+) -> IclassUploadAttempt {
     let mut last_error = String::from("沒有可用的下載位址");
     let mut saw_page = false;
 
     for url in urls {
-        let mut upstream_request = api
-            .client
+        let mut upstream_request = client
             .get(url)
             .timeout(std::time::Duration::from_secs(600))
             .header(reqwest::header::ACCEPT, "application/octet-stream, */*");
@@ -1083,14 +1094,14 @@ async fn stream_homework_file(
         let prefix_stream = futures::stream::iter(kept.into_iter().map(Ok::<_, reqwest::Error>));
         let body_stream = futures::StreamExt::chain(prefix_stream, stream);
         return match builder.body(axum::body::Body::from_stream(body_stream)) {
-            Ok(response) => HomeworkFileAttempt {
+            Ok(response) => IclassUploadAttempt {
                 response: Some(response),
                 last_error,
                 saw_page,
             },
             Err(error) => {
                 warn!(%error, "讀取作業檔案：回應組裝失敗");
-                HomeworkFileAttempt {
+                IclassUploadAttempt {
                     response: None,
                     last_error: "回應組裝失敗".to_string(),
                     saw_page,
@@ -1099,7 +1110,7 @@ async fn stream_homework_file(
         };
     }
 
-    HomeworkFileAttempt {
+    IclassUploadAttempt {
         response: None,
         last_error,
         saw_page,
@@ -1261,7 +1272,10 @@ pub(super) async fn admin_homework_complete_handler(
 /// 單次最多幾個檔案。
 pub(super) const HOMEWORK_SUBMIT_MAX_FILES: usize = 10;
 /// 單檔上限：沿用教材上傳的 50 MiB，使用者只要記一個數字。
-pub(super) const HOMEWORK_SUBMIT_MAX_FILE_BYTES: usize = MATERIALS_MAX_FILE_SIZE;
+// HOMEWORK_SUBMIT_MAX_FILE_BYTES：作業「繳交」的單檔上限（50 MiB）。
+// fix54 之前這裡共用教材的 MATERIALS_MAX_FILE_SIZE；教材改成不限單檔大小後，
+// 作業繳交維持原本的 50 MiB，因此拆成獨立常數（要調整作業上限不必動教材）。
+pub(super) const HOMEWORK_SUBMIT_MAX_FILE_BYTES: usize = 50 * 1024 * 1024;
 /// 單次繳交的總量上限（伺服器記憶體用量直接受此限制）。
 pub(super) const HOMEWORK_SUBMIT_MAX_TOTAL_BYTES: usize = 100 * 1024 * 1024;
 /// axum 的 body 上限：總量＋multipart 邊界／欄位名稱的餘裕。

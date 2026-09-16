@@ -119,12 +119,65 @@
   .blp-item:hover{background:var(--soft)}
   .blp-item.on{background:var(--soft);font-weight:800}
   .blp-item .d{color:var(--muted);font-size:11.5px;margin-left:6px;white-space:nowrap;font-weight:400}
+  /* BULLETIN_ATTACHMENT_V1（fix55）：公告附件列＋面板內預覽 */
+  .blp-att{margin-top:16px;border-top:1px dashed var(--line);padding-top:12px}
+  .blp-att-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line2);border-radius:10px;margin-top:6px;background:var(--card);flex-wrap:wrap}
+  .blp-att-ext{flex:0 0 auto;font-size:10px;font-weight:800;letter-spacing:.4px;color:var(--muted);border:1px solid var(--line);border-radius:6px;padding:3px 6px;min-width:44px;text-align:center}
+  .blp-att-name{flex:1 1 180px;min-width:0;font-size:13px;line-height:1.5;word-break:break-word;overflow-wrap:anywhere}
+  .blp-att-size{flex:0 0 auto;font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .blp-att-acts{flex:0 0 auto;display:flex;gap:6px;align-items:center}
+  .blp-att-btn{display:inline-flex;align-items:center;gap:4px;background:transparent;border:1px solid var(--line);color:var(--text);border-radius:9px;padding:5px 10px;font-size:12px;cursor:pointer;text-decoration:none;min-height:30px;font-family:inherit}
+  .blp-att-btn:hover{border-color:var(--primary);color:var(--primary)}
+  .blp-att-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+  /* BULLETIN_MOBILE_V1（fix56）：PDF 頁碼／翻頁。長文件在手機上不必一路滑到底，
+     捲動時頁碼會跟著更新（attSyncPdfPage），按鈕直接跳到目標頁開頭。 */
+  .blp-att-pager{display:flex;align-items:center;gap:8px;margin-left:auto}
+  .blp-att-pager .blp-att-btn{min-height:32px;padding:5px 12px}
+  .blp-att-info{font-size:12px;color:var(--muted);min-width:86px;text-align:center;white-space:nowrap}
+  .blp-pdf-page{display:flex;justify-content:center;width:100%}
+  .blp-att-status{font-size:12px;color:var(--muted);margin-bottom:8px;word-break:break-word}
+  .blp-att-img{max-width:100%;height:auto;display:block;margin:0 auto;border-radius:8px}
+  .blp-att-pre{margin:0;padding:12px;background:var(--bg);border:1px solid var(--line2);border-radius:10px;font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;max-height:60vh;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .blp-pdf{display:flex;flex-direction:column;align-items:center;gap:10px}
+  .blp-pdf canvas{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.35);border-radius:2px;max-width:100%}
   .blp-foot{display:flex;align-items:center;gap:8px;padding:12px 18px;border-top:1px solid var(--line2);background:var(--bg);flex-wrap:wrap}
   .blp-foot .spacer{flex:1}
+  /* BULLETIN_MOBILE_V1（fix56）：手機版公告面板／附件預覽。
+     背景（2026-09-16 回報截圖）：手機底部導覽列 #mobileNavFinalV2 是固定的浮動列，
+     z-index 高達 2147482500，而面板彈層只有 9999 —— 開著面板看 PDF 時，導覽列會
+     浮在內容上面把下半頁蓋掉。面板是模態，開啟期間就該蓋過它（關閉後導覽列照舊）。
+     其他一併處理：動態視埠高度（iOS 網址列）、底部安全區、黏著工具列、
+     手指尺寸的按鈕、以及「上一頁／下一頁」快跳。 */
   @media(max-width:640px){
-    .blp-back{padding:0;align-items:flex-end}
-    .blp-box{width:100%;max-height:92vh;border-radius:16px 16px 0 0}
-    .blp-foot{gap:6px}
+    .blp-back{padding:0;align-items:flex-end;z-index:2147483001}
+    .blp-box{width:100%;max-height:92vh;border-radius:16px 16px 0 0;border-bottom:0}
+    .blp-head{padding:12px 12px 10px}
+    .blp-title{font-size:15.5px;padding-right:66px}
+    .blp-meta{font-size:11.5px;margin-top:4px}
+    .blp-x{top:10px;right:10px;padding:6px 9px;min-height:34px}
+    .blp-body{padding:12px 10px;overscroll-behavior:contain}
+    /* 底部是系統手勢列，留安全區；兩顆按鈕各佔一半，拇指構得到。 */
+    .blp-foot{gap:8px;padding:10px 12px calc(10px + env(safe-area-inset-bottom,0px))}
+    .blp-foot .readbtn{flex:1;justify-content:center;min-height:42px;font-size:13px}
+    /* 附件列：檔名與大小一行、動作鈕獨占下一行並加大。 */
+    .blp-att-name{flex:1 1 140px;font-size:13px}
+    .blp-att-acts{flex:1 1 100%;gap:8px}
+    .blp-att-acts .blp-att-btn{flex:1;justify-content:center;min-height:42px;font-size:13px}
+    /* 檢視器工具列黏在頂端：捲到第 8 頁也還看得到「返回公告」與「下載」。 */
+    .blp-att-bar{position:-webkit-sticky;position:sticky;top:0;z-index:6;
+      margin:-12px -10px 10px;padding:8px 10px;
+      background:var(--card);border-bottom:1px solid var(--line2)}
+    .blp-att-bar .blp-att-name{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px}
+    .blp-att-bar .blp-att-btn{min-height:40px;padding:8px 12px;font-size:12.5px}
+    .blp-att-pager{flex:1 1 100%;margin-left:0;justify-content:center}
+    .blp-att-pager .blp-att-btn{min-height:38px}
+    .blp-pdf{gap:8px}
+    .blp-pdf-page{scroll-margin-top:62px}
+    .blp-att-pre{font-size:11.5px;max-height:64vh}
+  }
+  /* 動態視埠：iOS 的 100vh 比實際可見範圍高，彈層底部會被切掉。 */
+  @supports(height:100dvh){
+    @media(max-width:640px){ .blp-box{max-height:96dvh} }
   }
   .hidden-init{display:none}
 </style>
@@ -427,12 +480,18 @@
   }
   function closePanel(){
     var b=document.getElementById('blPanel');if(!b)return;
+    attCloseView();
     b.remove();
     panel.open=false;panel.key=null;panel.course='';
     document.body.style.overflow='';
     document.removeEventListener('keydown',panelEsc);
   }
-  function panelEsc(ev){if(ev.key==='Escape')closePanel();}
+  function panelEsc(ev){
+    if(ev.key!=='Escape')return;
+    // BULLETIN_ATTACHMENT_V1（fix55）：正在看附件時，Esc 先回到公告內容。
+    if(attView){attCloseView();renderPanel();return;}
+    closePanel();
+  }
   function togglePanelRead(){
     var it=panelById(panel.key);if(!it)return;
     if(it.read){renderPanel();return;}   // 已讀（含 admin 公告）→ 沒有「取消已讀」的端點，維持原狀
@@ -448,6 +507,13 @@
         sub=document.getElementById('blpSub'),read=document.getElementById('blpRead');
     if(!title||!body||!host)return;
     title.textContent=it.title||'(無標題)';
+    // BULLETIN_ATTACHMENT_V1（fix55）：正在預覽附件時，同一個面板換成檢視器。
+    if(attView){
+      host.innerHTML='';
+      body.scrollTop=0;
+      renderAttViewer(it,host,sub,read);
+      return;
+    }
     var m=[];
     if(it.course_name)m.push(it.course_name);
     if(it.author)m.push(it.author);
@@ -480,6 +546,11 @@
     });
     // 同一門課的其他公告：面板內就近切換，不必關掉再點一次。
     var same=panelSame(it.course_name).filter(function(x){return x.key!==it.key;});
+    // 附件（有的公告才有）：列出名稱／大小，可預覽或下載。
+    var atts=it.attachments||[];
+    if(atts.length){
+      host.appendChild(attSection(atts));
+    }
     sub.innerHTML='';
     if(same.length){
       var head=document.createElement('div');head.className='blp-subhead';
@@ -518,6 +589,9 @@
     var host=document.createElement('div');host.id='blpHost';host.className='blp-host';
     var sub=document.createElement('div');sub.className='blp-sub';sub.id='blpSub';
     body.appendChild(host);body.appendChild(sub);
+    // BULLETIN_MOBILE_V1（fix56）：頁碼跟著捲動更新。監聽器綁在面板自己的捲動
+    // 容器上——面板關閉時整個節點一起消失，不必（也不會漏）事後移除。
+    body.addEventListener('scroll', attOnBodyScroll, {passive:true});
     var dl=document.createElement('div');dl.className='blp-foot';
     var sp=document.createElement('span');sp.className='spacer';
     var rd=document.createElement('button');rd.type='button';rd.className='readbtn';rd.id='blpRead';
@@ -539,6 +613,408 @@
     document.body.style.overflow='hidden';
     document.addEventListener('keydown',panelEsc);
     renderPanel();
+  }
+  // ===== BULLETIN_ATTACHMENT_V1（fix55）：公告附件 =====
+  // 公告若有附件（iClass 的 `uploads`），在面板內直接列出名稱／大小，並可
+  //   預覽：PDF（PDF.js，與教材頁同一支按需載入器）、圖片、純文字／CSV
+  //   下載：走同一個代理端點（disposition=attachment）
+  // 位元組一律由面板伺服器用「已保存的 iClass session」代抓——瀏覽器不碰 iClass。
+  var PREVIEW_IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif'];
+  var PREVIEW_TEXT_EXTS = ['txt', 'log', 'md', 'json', 'xml', 'yaml', 'yml', 'ini', 'conf',
+                           'csv', 'tsv', 'html', 'htm', 'css', 'js', 'sh', 'py', 'rs', 'java', 'c', 'cpp'];
+  var PREVIEW_BYTES_MAX = 32 * 1024 * 1024;
+  var PDF_RENDER_CONCURRENCY = 2;
+  // BULLETIN_MOBILE_V1（fix56）：手機的裝置像素比常是 3，一頁 A4 畫布就要 ~8 MB，
+  // 十幾頁的 PDF 會把行動裝置的分頁記憶體吃爆（iOS 直接重新載入整頁）。
+  // 窄螢幕上限 2 倍——肉眼幾乎看不出差別，記憶體少一半以上。
+  var PDF_RATIO_MAX_MOBILE = 2;
+  // 窄螢幕先畫前面幾頁就好，其餘「捲到附近才畫」：長 PDF 不必一次畫完（桌機不變）。
+  var PDF_EAGER_PAGES_MOBILE = 3;
+  var PDF_LAZY_MARGIN = '700px 0px';
+  // 是不是手機（面板的 640px 斷點）。用函式而非常數：轉向或改視窗大小要跟著變。
+  function attNarrow(){
+    return !!(window.matchMedia && window.matchMedia('(max-width:640px)').matches);
+  }
+  var attView = null;     // 目前正在預覽的附件（null＝顯示公告內容）
+  var attToken = 0;       // 世代：離開預覽時 +1，舊的非同步工作即停手
+  var attPdfTasks = [];
+  var attPdfDoc = null;
+  var attPdfWrap = null;      // 目前的 .blp-pdf 容器（重畫時整塊換掉）
+  var attPdfSlots = [];       // 每頁一個插槽（頁碼／翻頁／延遲渲染都看這個）
+  var attPdfWidth = 0;        // 目前畫的目標寬度（轉向後寬度差太多就重畫）
+  var attPdfObserver = null;  // 延遲渲染用（捲到附近才畫那一頁）
+  var attPdfCur = 1;          // 目前看到第幾頁（給頁碼與翻頁用）
+
+  function attExt(name){
+    var m = /\.([A-Za-z0-9]+)$/.exec(String(name || ''));
+    return m ? m[1].toLowerCase() : '';
+  }
+  // 附件端點：cookie 帶面板 session；name 只當顯示與副檔名推斷用。
+  function attUrl(a, inline){
+    var u = '/admin/api/bulletins/attachment?upload_id=' + encodeURIComponent(a.id) +
+            '&name=' + encodeURIComponent(a.name || '');
+    return inline ? (u + '&disposition=inline') : u;
+  }
+  function attKind(a){
+    var e = attExt(a.name);
+    if (e === 'pdf') return 'pdf';
+    if (PREVIEW_IMAGE_EXTS.indexOf(e) >= 0) return 'image';
+    if (PREVIEW_TEXT_EXTS.indexOf(e) >= 0) return 'text';
+    return 'other';
+  }
+  function attStopPdf(){
+    attPdfTasks.forEach(function(t){ try { t.cancel(); } catch(_) {} });
+    attPdfTasks = [];
+    if (attPdfObserver){ try { attPdfObserver.disconnect(); } catch(_) {} attPdfObserver = null; }
+    attPdfSlots = [];
+    attPdfWrap = null;
+    attPdfWidth = 0;
+    attPdfCur = 1;
+    var pg = document.getElementById('blpAttPager');
+    if (pg) pg.style.display = 'none';
+    if (attPdfDoc){ try { attPdfDoc.destroy(); } catch(_) {} attPdfDoc = null; }
+  }
+  // 離開預覽：停掉渲染、釋放文件與畫布（與教材頁 PREVIEW_CANCEL_V1 同一套理由）。
+  function attCloseView(){
+    attToken++;
+    attStopPdf();
+    attView = null;
+  }
+  // 用 XHR 抓位元組：可以顯示進度，且與教材頁的取檔路徑語意一致。
+  function attFetchBytes(a, onProgress){
+    return new Promise(function(resolve, reject){
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', attUrl(a, true), true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onprogress = function(ev){
+        if (onProgress && ev && ev.lengthComputable) onProgress(ev.loaded, ev.total);
+      };
+      xhr.onload = function(){
+        if (xhr.status >= 200 && xhr.status < 300 && xhr.response){
+          resolve(new Uint8Array(xhr.response));
+        } else {
+          var msg = '';
+          try { msg = (JSON.parse(xhr.responseText || '{}').error) || ''; } catch(_) {}
+          reject(new Error(msg || ('HTTP ' + xhr.status)));
+        }
+      };
+      xhr.onerror = function(){ reject(new Error('網路連線中斷')); };
+      xhr.onabort = function(){ reject(new Error('已取消')); };
+      xhr.send();
+    });
+  }
+  function attSizeLabel(n){
+    n = Number(n || 0);
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+  // 逐頁渲染 PDF：先畫第一頁（使用者立刻看到內容），其餘 2 路並行背景補齊。
+  // BULLETIN_MOBILE_V1（fix56）：真正畫圖的部份拆成 attLayoutPdf —— 轉向或改視窗
+  // 大小時，用同一支以新寬度重畫（檔案不用重抓），兩邊不會各寫一套。
+  async function attRenderPdf(bytes, mine, host){
+    if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('pdf');
+    if (mine !== attToken) return;
+    if (!window.pdfjsLib) throw new Error('PDF 檢視器未載入');
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+    // PDF.js 會把 ArrayBuffer 轉移（detach）給 worker，因此傳副本。
+    var doc = await window.pdfjsLib.getDocument({ data: bytes.slice(), isEvalSupported: false }).promise;
+    if (mine !== attToken){ try { doc.destroy(); } catch(_) {} return; }
+    if (attPdfDoc){ try { attPdfDoc.destroy(); } catch(_) {} }
+    attPdfDoc = doc;
+    await attLayoutPdf(doc, host, mine);
+  }
+  // 以「目前的容器寬度」把每一頁畫成畫布。
+  //   · 首頁先畫（立刻看到內容）→ 其餘照原樣 2 路背景補齊
+  //   · 窄螢幕：先畫前 PDF_EAGER_PAGES_MOBILE 頁，剩下的捲到附近才畫
+  //   · 每頁一個插槽並先給佔位高度，捲軸與頁碼不會因為還沒畫而亂跳
+  async function attLayoutPdf(doc, host, mine){
+    if (attPdfObserver){ try { attPdfObserver.disconnect(); } catch(_) {} attPdfObserver = null; }
+    // 只換掉上一次的 PDF 區塊：host 裡還有工具列（返回公告／下載）與狀態列。
+    var oldWrap = host.querySelector('.blp-pdf');
+    if (oldWrap) oldWrap.remove();
+    var wrap = document.createElement('div'); wrap.className = 'blp-pdf';
+    host.appendChild(wrap);
+    var narrow = attNarrow();
+    // 手機把寬度讓給內容（面板左右只留 10px），桌機沿用原本的 24px 內縮。
+    var targetWidth = Math.max(narrow ? 240 : 280, (host.clientWidth || 640) - (narrow ? 0 : 24));
+    var ratio = window.devicePixelRatio || 1;
+    if (narrow) ratio = Math.min(ratio, PDF_RATIO_MAX_MOBILE);
+    // 每頁一個 display:flex 的插槽：canvas 置中，捲動與頁碼可以定到「某一頁」。
+    var slots = [];
+    for (var i = 0; i < doc.numPages; i++){
+      var slot = document.createElement('div'); slot.className = 'blp-pdf-page';
+      wrap.appendChild(slot); slots.push(slot);
+    }
+    attPdfWrap = wrap; attPdfSlots = slots; attPdfWidth = targetWidth;
+    var painted = [];
+    var paint = async function(pageNo){
+      var slot = slots[pageNo - 1];
+      if (mine !== attToken || painted[pageNo - 1] || !slot) return;
+      painted[pageNo - 1] = true;   // 同步先占位：同一頁不會被並行的兩路各畫一次
+      var page = await doc.getPage(pageNo);
+      if (mine !== attToken) return;
+      var base = page.getViewport({ scale: 1 });
+      var vp = page.getViewport({ scale: targetWidth / base.width });
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.floor(vp.width * ratio);
+      canvas.height = Math.floor(vp.height * ratio);
+      canvas.style.width = Math.floor(vp.width) + 'px';
+      canvas.style.height = 'auto';
+      slot.style.minHeight = Math.floor(vp.height) + 'px';
+      slot.appendChild(canvas);
+      var task = page.render({
+        canvasContext: canvas.getContext('2d'), viewport: vp,
+        transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null
+      });
+      attPdfTasks.push(task);
+      try { await task.promise; } finally {
+        attPdfTasks = attPdfTasks.filter(function(t){ return t !== task; });
+      }
+    };
+    await paint(1);
+    if (mine !== attToken) return;
+    // BULLETIN_MOBILE_V1（fix56）：還沒畫的頁面也要佔位 —— 先用第一頁量到的比例給
+    // 其他插槽估計高度（畫到那一頁時會被實際值覆蓋）。少了這一步，背景補頁會讓
+    // 整份文件的長度一直變長，捲軸位置與頁碼都會跟著跳。
+    var estSlotHeight = parseFloat(slots[0] && slots[0].style.minHeight) || 0;
+    if (estSlotHeight > 0){
+      for (var e = 1; e < slots.length; e++){
+        if (!slots[e].style.minHeight) slots[e].style.minHeight = Math.floor(estSlotHeight) + 'px';
+      }
+    }
+    var eagerEnd = doc.numPages;
+    if (narrow && PDF_EAGER_PAGES_MOBILE > 0) eagerEnd = Math.min(doc.numPages, PDF_EAGER_PAGES_MOBILE);
+    if (eagerEnd > 1){
+      var cursor = 2;
+      var fill = async function(){
+        while (mine === attToken && cursor <= eagerEnd){
+          var pageNo = cursor++;
+          try { await paint(pageNo); } catch(_) { if (mine !== attToken) return; }
+        }
+      };
+      var workers = [];
+      var count = Math.min(PDF_RENDER_CONCURRENCY, eagerEnd - 1);
+      for (var w = 0; w < count; w++) workers.push(fill());
+      Promise.all(workers).catch(function(){});
+    }
+    // 還沒畫的頁面：捲到附近才畫（沒有 IntersectionObserver 就照舊全部畫完）。
+    if (eagerEnd < doc.numPages){
+      if (window.IntersectionObserver){
+        var body = document.getElementById('blpBody');
+        attPdfObserver = new window.IntersectionObserver(function(entries){
+          entries.forEach(function(en){
+            if (!en.isIntersecting || mine !== attToken) return;
+            var idx = slots.indexOf(en.target);
+            if (idx < 0) return;
+            attPdfObserver.unobserve(en.target);
+            paint(idx + 1).catch(function(){});
+          });
+        }, { root: body || null, rootMargin: PDF_LAZY_MARGIN });
+        for (var k = eagerEnd; k < doc.numPages; k++) attPdfObserver.observe(slots[k]);
+      } else {
+        var rest = eagerEnd + 1;
+        var fillRest = async function(){
+          while (mine === attToken && rest <= doc.numPages){
+            var pageNo = rest++;
+            try { await paint(pageNo); } catch(_) { if (mine !== attToken) return; }
+          }
+        };
+        var rw = [], rc = Math.min(PDF_RENDER_CONCURRENCY, doc.numPages - eagerEnd);
+        for (var r = 0; r < rc; r++) rw.push(fillRest());
+        Promise.all(rw).catch(function(){});
+      }
+    }
+    attPdfCur = 1;
+    var pager = document.getElementById('blpAttPager');
+    if (pager) pager.style.display = '';
+    attSyncPdfPage();
+  }
+  // 捲動時更新「第 n / N 頁」：長 PDF 在手機上最需要的資訊（還有多長、現在在哪）。
+  function attSyncPdfPage(){
+    if (!attPdfSlots.length) return;
+    var info = document.getElementById('blpAttPage');
+    var body = document.getElementById('blpBody');
+    if (!info || !body) return;
+    // 黏著工具列（手機）會蓋住頂端約 56px，判定線往下挪才不會慢一頁。
+    var line = body.getBoundingClientRect().top + 60;
+    var cur = 1;
+    for (var i = 0; i < attPdfSlots.length; i++){
+      var el = attPdfSlots[i];
+      if (!el) continue;
+      if (el.getBoundingClientRect().top <= line) cur = i + 1;
+    }
+    attPdfCur = cur;
+    info.textContent = '第 ' + cur + ' / ' + attPdfSlots.length + ' 頁';
+  }
+  var attScrollTick = false;
+  function attOnBodyScroll(){
+    if (attScrollTick) return;   // 一格動畫最多更新一次（捲動事件非常密集）
+    attScrollTick = true;
+    var run = function(){ attScrollTick = false; attSyncPdfPage(); };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(run); else setTimeout(run, 60);
+  }
+  // 上一頁／下一頁：直接捲到目標頁開頭（面板底部被系統手勢區佔住時特別好用）。
+  function attStepPdf(delta){
+    if (!attPdfSlots.length) return;
+    attSyncPdfPage();
+    var target = attPdfCur + delta;
+    if (target < 1) target = 1;
+    if (target > attPdfSlots.length) target = attPdfSlots.length;
+    // 已經在第一頁／最後一頁：不做事（連按不要每次都白捲一次）。
+    if (target === attPdfCur) return;
+    var el = attPdfSlots[target - 1];
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+    attPdfCur = target;
+  }
+  // 轉向／改視窗大小：頁面寬度跟著變（手機橫放最明顯），用新寬度重畫同一份文件。
+  // 只有「寬度差超過 48px」才動 —— iOS 網址列伸縮造成的小幅變動不重畫。
+  var attReflowTimer = null;
+  function attReflowPdf(){
+    if (!attPdfDoc || !attPdfWrap) return;
+    if (attReflowTimer) clearTimeout(attReflowTimer);
+    attReflowTimer = setTimeout(function(){
+      attReflowTimer = null;
+      var host = document.getElementById('blpHost');
+      if (!attPdfDoc || !attPdfWrap || !host) return;
+      var want = Math.max(attNarrow() ? 240 : 280,
+                          (host.clientWidth || 640) - (attNarrow() ? 0 : 24));
+      if (Math.abs(want - attPdfWidth) < 48) return;
+      attRepaintPdf(host);
+    }, 260);
+  }
+  // 重畫（不重新下載檔案）：世代 +1 讓進行中的渲染全部作廢，再以目前寬度畫一次。
+  function attRepaintPdf(host){
+    var doc = attPdfDoc;
+    if (!doc || !host) return;
+    var mine = ++attToken;
+    attPdfTasks.forEach(function(t){ try { t.cancel(); } catch(_) {} });
+    attPdfTasks = [];
+    attLayoutPdf(doc, host, mine).catch(function(){});
+  }
+  // 轉向／改視窗大小都走同一支（沒有 PDF 在畫時直接返回，不會做白工）。
+  window.addEventListener('resize', attReflowPdf);
+  window.addEventListener('orientationchange', attReflowPdf);
+  // 在面板內預覽單一附件。
+  async function attOpenView(a){
+    if (!a) return;
+    attCloseView();
+    attView = a;
+    var mine = attToken;
+    var kind = attKind(a);
+    renderPanel();                       // 由 renderPanel 依 attView 畫出檢視器
+    var host = document.getElementById('blpHost');
+    var status = document.getElementById('blpAttStatus');
+    if (!host) return;
+    if (status) status.textContent = '';
+    try {
+      if (kind === 'image'){
+        var img = document.createElement('img');
+        img.className = 'blp-att-img';
+        img.alt = a.name || '';
+        img.src = attUrl(a, true);
+        if (status) status.textContent = '按 Esc 或「← 返回公告」回到公告內容';
+        host.appendChild(img);
+        return;
+      }
+      if (kind === 'text'){
+        if (status) status.textContent = '正在載入附件…';
+        var res = await fetch(attUrl(a, true), { credentials: 'same-origin' });
+        if (mine !== attToken) return;
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var text = await res.text();
+        if (mine !== attToken) return;
+        // 一律以純文字顯示（HTML／JS 也只看原始碼，不會被執行）。
+        var pre = document.createElement('pre');
+        pre.className = 'blp-att-pre';
+        pre.textContent = text;
+        host.appendChild(pre);
+        if (status) status.textContent = '';
+        return;
+      }
+      if (kind === 'pdf'){
+        var bytes = await attFetchBytes(a, function(loaded, total){
+          if (mine !== attToken || !status) return;
+          var pct = total ? Math.floor(loaded * 100 / total) : 0;
+          status.textContent = '正在載入 PDF… ' + pct + '%（' + attSizeLabel(loaded) +
+            (total ? ' / ' + attSizeLabel(total) : '') + '）';
+        });
+        if (mine !== attToken) return;
+        if (bytes.length > PREVIEW_BYTES_MAX) throw new Error('檔案過大，請按「下載」查看');
+        if (status) status.textContent = '正在顯示 PDF…';
+        await attRenderPdf(bytes, mine, host);
+        if (status && mine === attToken) status.textContent = '';
+        return;
+      }
+      // 其他格式：面板內無法解析，給明確說明＋下載（不開新分頁，維持面板內操作）。
+      if (status) status.textContent = '這種格式（.' + (attExt(a.name) || '?') + '）無法在面板內預覽，請按「下載」用本機程式開啟。';
+    } catch(err) {
+      if (mine !== attToken) return;
+      if (status) status.textContent = '無法預覽附件：' + ((err && err.message) || err);
+    }
+  }
+
+  // 附件列表（公告內文下方）：名稱／大小＋預覽／下載。沒有附件時整段不出現。
+  function attSection(atts){
+    var box=document.createElement('div');box.className='blp-att';
+    var head=document.createElement('div');head.className='blp-subhead';
+    head.textContent='附件（'+atts.length+'）';
+    box.appendChild(head);
+    atts.forEach(function(a){
+      var row=document.createElement('div');row.className='blp-att-row';
+      var ext=document.createElement('span');ext.className='blp-att-ext';
+      ext.textContent=(attExt(a.name)||'FILE').toUpperCase().slice(0,5);
+      var name=document.createElement('span');name.className='blp-att-name';
+      name.textContent=a.name||('附件-'+a.id);
+      var size=document.createElement('span');size.className='blp-att-size';
+      size.textContent=a.size_label||attSizeLabel(a.size);
+      var acts=document.createElement('span');acts.className='blp-att-acts';
+      // 面板內解析不了的格式就不給「預覽」按鈕（不給按了沒用的東西）。
+      if(attKind(a)!=='other'){
+        var pv=document.createElement('button');pv.type='button';pv.className='blp-att-btn';
+        pv.textContent='👁 預覽';pv.onclick=function(){attOpenView(a);};
+        acts.appendChild(pv);
+      }
+      var dl=document.createElement('a');dl.className='blp-att-btn';dl.textContent='⬇ 下載';
+      dl.href=attUrl(a,false);dl.setAttribute('download',a.name||'');dl.rel='noopener';
+      acts.appendChild(dl);
+      row.appendChild(ext);row.appendChild(name);row.appendChild(size);row.appendChild(acts);
+      box.appendChild(row);
+    });
+    return box;
+  }
+  // 附件檢視器：面板內換頁顯示（工具列：返回公告／檔名／下載），同課清單先收起。
+  function renderAttViewer(it, host, sub, read){
+    var a=attView;
+    if(!a){renderPanel();return;}
+    sub.innerHTML='';
+    var bar=document.createElement('div');bar.className='blp-att-bar';
+    var back=document.createElement('button');back.type='button';back.className='blp-att-btn';
+    back.textContent='← 返回公告';back.onclick=function(){attCloseView();renderPanel();};
+    var name=document.createElement('span');name.className='blp-att-name';name.textContent=a.name||'';
+    var dl=document.createElement('a');dl.className='blp-att-btn';dl.textContent='⬇ 下載';
+    dl.href=attUrl(a,false);dl.setAttribute('download',a.name||'');dl.rel='noopener';
+    bar.appendChild(back);bar.appendChild(name);bar.appendChild(dl);
+    // PDF 才給頁碼與翻頁（其他格式沒有「頁」的概念）；頁數要等文件載入才知道，
+    // 因此先建好、預設隱藏，attLayoutPdf 載入完成後再顯示。
+    if(attKind(a)==='pdf'){
+      var pager=document.createElement('span');pager.className='blp-att-pager';pager.id='blpAttPager';
+      pager.style.display='none';
+      var prev=document.createElement('button');prev.type='button';prev.className='blp-att-btn';
+      prev.textContent='↑ 上一頁';prev.onclick=function(){attStepPdf(-1);};
+      var info=document.createElement('span');info.className='blp-att-info';info.id='blpAttPage';
+      info.textContent='第 1 頁';
+      var next=document.createElement('button');next.type='button';next.className='blp-att-btn';
+      next.textContent='↓ 下一頁';next.onclick=function(){attStepPdf(1);};
+      pager.appendChild(prev);pager.appendChild(info);pager.appendChild(next);
+      bar.appendChild(pager);
+    }
+    host.appendChild(bar);
+    var st=document.createElement('div');st.className='blp-att-status';st.id='blpAttStatus';
+    st.textContent='正在載入附件…';
+    host.appendChild(st);
+    // 檢視附件時先把「已閱讀」停用：避免誤按造成畫面重畫、把檢視器蓋掉。
+    if(read){read.disabled=true;}
   }
   function card(it){
     var c=document.createElement('article');c.className='card'+(it.read?' read':'');

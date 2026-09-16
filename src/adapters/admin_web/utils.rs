@@ -10,7 +10,16 @@ use serde_json::json;
 
 // ─── Extracted from admin_web/mod.rs ────────────────────────────────────────
 
-pub(super) const MATERIALS_MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
+// UPLOAD_NO_FILE_CAP_V1（fix54）：教材（雲端硬碟）單檔不再有大小上限。
+//
+// 舊版這裡是 `MATERIALS_MAX_FILE_SIZE = 50 MiB`，上傳時逐片段比對。拿掉之後，
+// 單檔只受兩件事限制，兩者都不是「檔案大小條件」：
+//   1. 硬碟總容量 `MATERIALS_MAX_TOTAL_SIZE`（10 GiB）——仍在收檔迴圈裡逐片段檢查，
+//      所以配額不會被一個超大檔案繞過。
+//   2. 主機磁碟空間，以及外層反向代理的 body 上限（見 mod.rs 的 ADMIN_UPLOAD_BODY_LIMIT）。
+//
+// 作業繳交（homework.rs）有自己的 50 MiB 上限 `HOMEWORK_SUBMIT_MAX_FILE_BYTES`，
+// 與教材無關，fix54 起已拆成獨立常數。
 pub(super) const MATERIALS_MAX_LIST_ENTRIES: usize = 5000;
 
 // UPLOAD_ANY_TYPE_V1（fix39）：這裡原本是 `MATERIAL_ALLOWED_EXTENSIONS` 副檔名白名單

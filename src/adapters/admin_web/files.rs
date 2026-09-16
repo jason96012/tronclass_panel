@@ -45,12 +45,58 @@ const PREVIEW_CACHE_CONTROL: &str = "private, max-age=0, must-revalidate";
 const MAX_MULTIPART_FIELDS: usize = 32;
 const MAX_UPLOAD_FILES: usize = 16;
 const MAX_MATERIAL_FILENAME_BYTES: usize = 255;
-// Serialize uploads so the 10 GiB quota check cannot be bypassed by two
-// simultaneous requests observing the same pre-upload size.
-const MATERIAL_UPLOAD_CONCURRENCY: usize = 1;
+// MATERIAL_UPLOAD_PARALLEL_V1（fix61）：同時進行的上傳請求數。
+//
+// fix54 之所以序列化（=1），是因為「先掃描總容量、再寫入」的檢查會被兩個同時進來的
+// 請求繞過：兩個請求都看到同一個「上傳前」的容量，各自以為還有空間。放寬到 3 之後，
+// 配額改由**保留量**守住——每個請求在寫入每一片之前，先把這片的位元組加進全域
+// `MATERIALS_INFLIGHT_BYTES`，檢查時把這個值算進去，請求結束（成功、失敗、中斷都算）
+// 再由 guard 扣回。於是「磁碟上既有的容量 ＋ 所有正在寫入的位元組」永遠不會超過
+// `MATERIALS_MAX_TOTAL_SIZE`，而三條上傳可以真正同時跑。
+//
+// 註：教材 iClass 匯入是另一條路徑（直接寫磁碟、不經這裡），它自己的下載號誌仍獨立；
+// 併發上傳＋同時匯入的極端情況下，暫存位元組不列入這裡的保留量（見報告的限制說明）。
+const MATERIAL_UPLOAD_CONCURRENCY: usize = 3;
 
 static MATERIAL_UPLOAD_SEMAPHORE: once_cell::sync::Lazy<Semaphore> =
     once_cell::sync::Lazy::new(|| Semaphore::new(MATERIAL_UPLOAD_CONCURRENCY));
+
+/// 所有進行中上傳「已保留、還沒寫進正式檔名」的位元組總量。
+static MATERIALS_INFLIGHT_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// 目前全站保留中的上傳位元組（配額檢查用）。
+fn materials_inflight_bytes() -> u64 {
+    MATERIALS_INFLIGHT_BYTES.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 一次上傳請求的配額保留量；`Drop` 時把這個請求借走的位元組全部還回去，
+/// 所以「請求提早 return、暫存檔被刪掉」也不會漏還。
+struct MaterialsInflightReservation {
+    bytes: u64,
+}
+
+impl MaterialsInflightReservation {
+    fn new() -> Self {
+        Self { bytes: 0 }
+    }
+
+    /// 先保留 `n` 個位元組，回傳保留後的全站總量（＝配額檢查要用的值）。
+    fn reserve(&mut self, n: u64) -> u64 {
+        self.bytes = self.bytes.saturating_add(n);
+        MATERIALS_INFLIGHT_BYTES
+            .fetch_add(n, std::sync::atomic::Ordering::SeqCst)
+            .saturating_add(n)
+    }
+}
+
+impl Drop for MaterialsInflightReservation {
+    fn drop(&mut self) {
+        if self.bytes > 0 {
+            MATERIALS_INFLIGHT_BYTES.fetch_sub(self.bytes, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
 
 // UPLOAD_WRITE_BUFFER_V1（fix51）：上傳時的寫入合併緩衝。
 //
@@ -148,7 +194,11 @@ async fn store_materials_total_size(root: &std::path::Path, size: u64) {
     *cache = Some((root.to_path_buf(), Instant::now(), size));
 }
 
-async fn invalidate_materials_usage_cache() {
+/// IMPORT_INVALIDATE_CACHE_V1（fix61）：`pub(super)` 讓 iClass 匯入在結束時也能呼叫。
+///
+/// 匯入是繞過上傳端點直接寫磁碟的，以前只有 files.rs 內部的操作會清快取，於是匯入剛
+/// 跑完時，教材頁的「已使用容量」會有最多 60 秒的落差、列表最多 3 秒的落差。
+pub(super) async fn invalidate_materials_usage_cache() {
     *MATERIALS_USAGE_CACHE.lock().await = None;
 }
 
@@ -174,7 +224,8 @@ static MATERIALS_LIST_CACHE: once_cell::sync::Lazy<
     tokio::sync::Mutex<Option<MaterialsListSnapshot>>,
 > = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(None));
 
-async fn invalidate_materials_list_cache() {
+/// IMPORT_INVALIDATE_CACHE_V1（fix61）：理由同 `invalidate_materials_usage_cache`。
+pub(super) async fn invalidate_materials_list_cache() {
     *MATERIALS_LIST_CACHE.lock().await = None;
 }
 
@@ -665,10 +716,12 @@ pub(super) async fn admin_files_list_handler(
         StatusCode::OK,
         Json(json!({
             "is_admin": session.is_admin,
-            // UPLOAD_ANY_TYPE_V1（fix39）：允許清單改回 null＝「不限制格式」；
-            // 大小如實回報單檔上限（與 MATERIALS_MAX_FILE_SIZE 同步）。
-            "max_file_size_mb": MATERIALS_MAX_FILE_SIZE / (1024 * 1024),
-            "max_file_size_unlimited": false,
+            // UPLOAD_ANY_TYPE_V1（fix39）：允許清單改回 null＝「不限制格式」。
+            // UPLOAD_NO_FILE_CAP_V1（fix54）：單檔大小不限（unlimited＝true）；
+            // 另外回報硬碟總容量，前端才能說明「只受總容量限制」。
+            "max_file_size_mb": null,
+            "max_file_size_unlimited": true,
+            "max_total_size_mb": MATERIALS_MAX_TOTAL_SIZE / (1024 * 1024),
             "allowed_extensions": null,
             "folders": folders,
             "files": files,
@@ -1455,9 +1508,17 @@ pub(super) async fn admin_files_upload_handler(
     let _upload_permit = match MATERIAL_UPLOAD_SEMAPHORE.try_acquire() {
         Ok(permit) => permit,
         Err(_) => {
+            // MATERIAL_UPLOAD_PARALLEL_V1（fix61）：額度是 3 條並行上傳；滿了就回 429
+            // （前端會退避重試）。附上目前正在寫入的位元組，回報問題時看得出是「真的
+            // 有人在傳」還是「配額已經被保留光」。
             return (
                 StatusCode::TOO_MANY_REQUESTS,
-                Json(json!({ "error": "已有其他檔案正在上傳，請稍後再試" })),
+                Json(json!({
+                    "error": format!(
+                        "已有 {MATERIAL_UPLOAD_CONCURRENCY} 個檔案正在上傳（目前寫入中 {} 位元組），請稍後再試",
+                        materials_inflight_bytes()
+                    )
+                })),
             )
                 .into_response();
         }
@@ -1474,6 +1535,10 @@ pub(super) async fn admin_files_upload_handler(
     let mut folder = PathBuf::new();
     let mut saved_files = Vec::new();
     let mut current_materials_size: Option<u64> = None;
+    // MATERIAL_UPLOAD_PARALLEL_V1（fix61）：這個請求借走的位元組（Drop 時歸還）。
+    let mut reservation = MaterialsInflightReservation::new();
+    // 這個請求「已經落地的檔案」位元組（同一批多檔時，後面的檔案要把它算進配額）。
+    let mut session_committed: u64 = 0;
     let mut field_count = 0usize;
     let mut file_count = 0usize;
 
@@ -1645,17 +1710,12 @@ pub(super) async fn admin_files_upload_handler(
                 }
             };
             let chunk_len = chunk.len() as u64;
-            if written.saturating_add(chunk_len) > MATERIALS_MAX_FILE_SIZE as u64 {
-                let _ = tokio::fs::remove_file(&temp_path).await;
-                return (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    Json(json!({ "error": "單一教材檔案不可超過 50 MiB" })),
-                )
-                    .into_response();
-            }
-            if known_materials_size
-                .saturating_add(written)
-                .saturating_add(chunk_len)
+            // UPLOAD_NO_FILE_CAP_V1（fix54）：不再有單檔大小上限（原本這裡比對 50 MiB）。
+            // 仍然逐片段檢查「硬碟總容量」——超過就中止並刪掉暫存檔，所以一個超大
+            // 檔案也不可能把配額撐爆。
+            // 先把這一片「保留」下來，再檢查（先保留才不會有兩個請求同時看到還有空間）。
+            let inflight_after_reserve = reservation.reserve(chunk_len);
+            if known_materials_size.saturating_add(inflight_after_reserve)
                 > MATERIALS_MAX_TOTAL_SIZE as u64
             {
                 let _ = tokio::fs::remove_file(&temp_path).await;
@@ -1726,7 +1786,10 @@ pub(super) async fn admin_files_upload_handler(
             .unwrap_or(&dest)
             .to_string_lossy()
             .replace('\\', "/");
-        let total_after_write = known_materials_size.saturating_add(written);
+        session_committed = session_committed.saturating_add(written);
+        let total_after_write = known_materials_size
+            .saturating_add(session_committed)
+            .saturating_add(written);
         current_materials_size = Some(total_after_write);
         // MATERIALS_USAGE_CACHE_V1：把剛算好的準確值寫回快取，同批下一個檔案不用再掃。
         store_materials_total_size(&root, total_after_write).await;

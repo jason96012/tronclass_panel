@@ -104,6 +104,16 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_activity_events_kind_id ON activity_events(kind, id DESC)")
         .execute(pool).await.into_diagnostic().wrap_err("初始化 activity_events kind/id index 失敗")?;
     ensure_table_column(pool, "activity_events", "ip", "TEXT NOT NULL DEFAULT ''").await?;
+    // BLACKLIST_UX_V1（fix58）：登入事件加記 User-Agent —— 黑名單頁原本的「MAC 位址」
+    // 欄位永遠是「無法取得」（瀏覽器不會把 MAC 給伺服器），改成顯示真正拿得到的裝置
+    // 資訊。舊資料沒有這個欄位，一律空字串（前端顯示「未記錄」）。
+    ensure_table_column(
+        pool,
+        "activity_events",
+        "user_agent",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ip_blacklist (
@@ -691,6 +701,48 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .into_diagnostic()
     .wrap_err("初始化 credit_reports 資料表失敗")?;
+
+    // ROLLCALL_ATTENDANCE_V1（fix66）：點名送出紀錄。
+    // 出席統計要跨學期累計、也要回答「這次是誰送出的」，記憶體裡的 50 筆歷史不夠用，
+    // 因此在這裡落地。欄位刻意存「送出當下的姓名／帳號」快照：日後改帳號或換人用，
+    // 舊紀錄仍然看得出當時是誰送的。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS rollcall_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp       INTEGER NOT NULL DEFAULT 0,
+            account_id      TEXT NOT NULL DEFAULT '',
+            username        TEXT NOT NULL DEFAULT '',
+            user_name       TEXT NOT NULL DEFAULT '',
+            rollcall_id     INTEGER NOT NULL DEFAULT 0,
+            course_name     TEXT NOT NULL DEFAULT '',
+            attendance_type TEXT NOT NULL DEFAULT '',
+            success         INTEGER NOT NULL DEFAULT 0,
+            result          TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 rollcall_events 資料表失敗")?;
+
+    // 查詢一律「時間範圍 ＋（可選）帳號」，這兩個索引剛好對上。
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_rollcall_events_time
+         ON rollcall_events (timestamp DESC)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("建立 rollcall_events 時間索引失敗")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_rollcall_events_account_time
+         ON rollcall_events (account_id, timestamp DESC)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("建立 rollcall_events 帳號索引失敗")?;
 
     Ok(())
 }

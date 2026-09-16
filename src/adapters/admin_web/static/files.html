@@ -468,6 +468,55 @@
     .tron-slide{position:relative;width:100%;max-width:960px;margin:0 auto 16px auto;background:#fff;border:1px solid var(--line2);border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.10);overflow:hidden}
     .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
     .tron-slide-img{position:absolute}
+
+    /* MATERIALS_MOBILE_V1（fix57）：手機版預覽優化。
+       背景（2026-09-16 回報截圖）：預覽彈窗用 height:min(700px,88vh) 置中，而手機的
+       100vh 包含瀏覽器工具列底下的區域 —— 彈窗等於比畫面上看得到的地方還高，
+       標題列被推到瀏覽器網址列後面、底部也被 Safari 的工具列蓋住。
+       這一段讓手機的預覽變成「整個畫面」：動態視埠高度＋系統安全區，
+       標題列（檔名／下載／關閉）永遠在看得見的地方。 */
+    @media(max-width:820px){
+      .modal-backdrop{padding:0;align-items:stretch;justify-content:stretch}
+      .modal{width:100%;height:100vh;max-height:none;border-radius:0;border:0}
+      .modal-head{
+        padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;
+        gap:8px;background:var(--surface);
+      }
+      .preview-title{font-size:13px;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .modal-head .button,.modal-head .icon{min-height:40px;padding:0 14px;font-size:13px}
+      .modal-body{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+      .modal-body pre{padding:10px;font-size:11.5px;line-height:1.55}
+      /* 頁面用滿整個螢幕寬（桌機的 14px 內縮留給桌機） */
+      .modal-body .tron-pdf{padding:0;gap:8px}
+      .tron-pdf-page{scroll-margin-top:54px}   /* 翻頁時不被黏著工具列蓋住 */
+      .tron-pdf-bar{
+        display:flex;position:-webkit-sticky;position:sticky;top:0;z-index:6;
+        align-items:center;justify-content:center;gap:10px;width:100%;
+        padding:6px 10px;background:rgba(64,68,74,.96);backdrop-filter:blur(8px);
+        border-bottom:1px solid rgba(255,255,255,.12);
+      }
+      .tron-pdf-bar .tron-pdf-btn{
+        min-height:38px;min-width:88px;padding:0 12px;font-size:12.5px;font-weight:800;
+        border:1px solid rgba(255,255,255,.28);border-radius:10px;
+        background:rgba(255,255,255,.08);color:#eef2f7;font-family:inherit;cursor:pointer;
+      }
+      .tron-pdf-bar .tron-pdf-btn:active{transform:scale(.97);opacity:.9}
+      .tron-pdf-info{color:#e7ecf3;font-size:12px;font-weight:800;min-width:92px;text-align:center;white-space:nowrap}
+      /* Word／簡報／純文字：手機把留白縮小，內容才不會被擠成細細一條 */
+      .modal-body .tron-docx{padding:14px;font-size:13.5px}
+      .modal-body .tron-slides{padding:8px}
+      .tron-slide{max-width:100%}
+      .modal-body img,.modal-body video{max-height:calc(100vh - 96px)}
+      @supports(height:100dvh){
+        .modal{height:100dvh}
+        .modal-body img,.modal-body video{max-height:calc(100dvh - 96px)}
+      }
+    }
+    /* PDF 工具列只在手機尺寸出現（桌機維持原本只看頁面的樣子）。 */
+    .tron-pdf-bar{display:none}
+    .tron-pdf-info{color:var(--muted);font-size:12px;font-weight:700}
+    /* 每頁一個插槽：canvas 置中，捲動／翻頁都有可靠的定位點。 */
+    .tron-pdf-page{display:flex;justify-content:center;width:100%}
     .tron-office-error{padding:36px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px;background:var(--surface);font-size:13px}
     /* OFFICE_SNIFF_INFO_V1（fix47）：內容與副檔名不符時附上開頭位元組。 */
     .tron-office-diag{margin-top:10px;padding:8px 10px;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);background:rgba(148,163,184,.12);border-radius:8px;word-break:break-all;text-align:left}
@@ -1042,7 +1091,7 @@
 
     <!-- 拖曳上傳與進度列 -->
     <!-- UPLOAD_DESKTOP_FIX_V1（fix50）：桌機常駐且可點擊（＝選檔），手機版由 CSS 隱藏。 -->
-    <div id="dropzone" class="dropzone" role="button" tabindex="0" title="點擊選擇檔案，或直接把檔案拖進來">將檔案拖曳至此處，或點此選擇檔案（不限格式，單檔上限 50 MB）</div>
+    <div id="dropzone" class="dropzone" role="button" tabindex="0" title="點擊選擇檔案，或直接把檔案拖進來">將檔案拖曳至此處，或點此選擇檔案（不限格式、不限單檔大小）</div>
     <div id="uploadProgress" class="upload-progress">
       <div id="uploadProgressText" class="small">準備上傳...</div>
       <div class="progress-line"><span id="uploadProgressBar"></span></div>
@@ -1293,45 +1342,108 @@
 
   // MATERIALS_IMPORT_V1 + SHARED: 從 iClass 自動匯入當學期教材(共用雲端硬碟)。
   // 後端改為背景 job：這端立即發起，再輪詢 /import/status 顯示進度，避免 502。
+  //
+  // IMPORT_CONST_MSG_FIX_V1（fix64）：舊版在「完成訊息」用 `const msg` 卻又 `msg += …`
+  // 去附加錯誤清單——只要這次匯入有任何錯誤（例如有檔案的副檔名不被允許），
+  // 這行就丟出 TypeError: Assignment to constant variable，使用者看到的
+  // 就是「匯入失敗：Assignment to constant variable.」，摘要與清單全部不見、
+  // 也不會重新載入檔案列表。改成 let。
+  //
+  // IMPORT_ALL_TYPES_V1（fix64）：匯入時若遇到「不是許可的檔名（副檔名不在白名單）」，
+  // 以前是默默跳過；現在完成後會列出檔名並詢問使用者是否仍要匯入，確定就帶
+  // all_types=1 再跑一次（後端這次不套用白名單）。這個選擇會記在 localStorage，
+  // 之後的匯入直接沿用，不再每次問。
+  var LS_IMPORT_ALL_TYPES = 'tronclass_materials_import_all_types';
+
+  function importAllTypesRemembered(){
+    try { return localStorage.getItem(LS_IMPORT_ALL_TYPES) === '1'; } catch (_) { return false; }
+  }
+  function rememberImportAllTypes(){
+    try { localStorage.setItem(LS_IMPORT_ALL_TYPES, '1'); } catch (_) {}
+  }
+
+  // 跑一次匯入並輪詢到結束。回傳最後一次 status；逾時（仍在背景跑）回傳 null；失敗丟例外。
+  async function runImportOnce(allTypes, btn){
+    // 注意：這個端點在路由表是 GET（舊版就靠 GET 觸發），帶 method:'POST' 會 405。
+    const start = await api('/admin/api/files/import' + (allTypes ? '?all_types=1' : ''), {}, 60000);
+    if (!start.ok){ throw new Error(start.error || start.message || '匯入無法開始'); }
+    if (start.accepted === false){ throw new Error(start.error || start.message || '匯入無法開始'); }
+    // 輪詢進度(最多約 10 分鐘)。
+    const maxWait = 600000;
+    const began = Date.now();
+    let lastMsg = '';
+    while (Date.now() - began < maxWait) {
+      await new Promise(r => setTimeout(r, 2500));
+      const st = await api('/admin/api/files/import/status', {}, 60000);
+      if (st && st.message && st.message !== lastMsg) { lastMsg = st.message; if (btn) btn.textContent = st.message.slice(0, 24); }
+      if (st && st.done) return st;
+    }
+    return null;
+  }
+
+  function importSummary(st, allTypes){
+    let msg = '匯入完成' + (allTypes ? '（含所有檔案類型）' : '') + '：\n' +
+      '課程 ' + (st.courses_scanned||0) + ' 門\n' +
+      '教材 ' + (st.materials_found||0) + ' 項\n' +
+      '已儲存 ' + (st.files_saved||0) + '、已跳過 ' + (st.files_skipped||0) +
+      '、連結 ' + (st.links_created||0) + '、未開放 ' + (st.pending||0) +
+      '、失敗 ' + (st.failed||0);
+    if (st.disallowed){
+      msg += '\n\n非允許的檔案類型（本次未匯入）：' + st.disallowed + ' 個';
+      const sample = (Array.isArray(st.disallowed_files) ? st.disallowed_files : []).slice(0, 10);
+      if (sample.length){
+        msg += '\n' + sample.join('\n') +
+          (st.disallowed > sample.length ? ('\n…以及另外 ' + (st.disallowed - sample.length) + ' 個') : '');
+      }
+    }
+    if (Array.isArray(st.errors) && st.errors.length){
+      msg += '\n\n錯誤（最多顯示 10 筆）：\n' + st.errors.slice(0,10).join('\n');
+    }
+    return msg;
+  }
+
+  // 有被白名單擋下的檔案時詢問使用者；確定 → 記住選擇並立刻再匯入一次（含全部類型）。
+  async function askImportAllTypes(st, btn){
+    const blocked = Number(st && st.disallowed || 0);
+    if (blocked <= 0) return null;
+    const sample = (Array.isArray(st.disallowed_files) ? st.disallowed_files : []).slice(0, 10);
+    const rest = blocked > sample.length ? ('\n…以及另外 ' + (blocked - sample.length) + ' 個') : '';
+    const question =
+      '有 ' + blocked + ' 個教材的檔案不在預設允許清單（PDF／Word／PowerPoint／圖片以外的類型，例如影片、音檔、壓縮檔、Excel）：\n\n' +
+      (sample.length ? sample.join('\n') + rest + '\n\n' : '') +
+      '要把它們也一起匯入嗎？\n\n' +
+      '按「確定」= 立刻再匯入一次（含這些檔案），之後的匯入也會自動包含所有類型。\n' +
+      '按「取消」= 維持現狀（只匯入 PDF／Word／PowerPoint／圖片）。\n\n' +
+      '提醒：影片等大檔會花比較久，也會佔用雲端硬碟容量。';
+    if (!confirm(question)) return null;
+    rememberImportAllTypes();
+    if (btn) btn.textContent = '匯入全部類型…';
+    return await runImportOnce(true, btn);
+  }
+
   async function importMaterials(){
     const btn = q('importHere');
     const old = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = '匯入中…'; }
     try {
-      const start = await api('/admin/api/files/import', {}, 60000);
-      if (!start.ok){ alert(start.error || start.message || '匯入無法開始'); return; }
-      if (start.accepted === false){ alert(start.error || start.message || '匯入無法開始'); return; }
-      // 輪詢進度(最多約 10 分鐘)。
-      const maxWait = 600000;
-      const began = Date.now();
-      let lastMsg = '';
-      while (Date.now() - began < maxWait) {
-        await new Promise(r => setTimeout(r, 2500));
-        const st = await api('/admin/api/files/import/status', {}, 60000);
-        if (st && st.message && st.message !== lastMsg) { lastMsg = st.message; if (btn) btn.textContent = st.message.slice(0, 24); }
-        if (st && st.done) {
-          const msg = '匯入完成：\n' +
-            '課程 ' + (st.courses_scanned||0) + ' 門\n' +
-            '教材 ' + (st.materials_found||0) + ' 項\n' +
-            '已儲存 ' + (st.files_saved||0) + '、已跳過 ' + (st.files_skipped||0) +
-            '、連結 ' + (st.links_created||0) + '、未開放 ' + (st.pending||0) +
-            '、失敗 ' + (st.failed||0);
-          if (Array.isArray(st.errors) && st.errors.length){
-            msg += '\n\n錯誤：\n' + st.errors.slice(0,10).join('\n');
-          }
-          alert(msg);
-          loadFiles();
-          return;
-        }
+      const allTypes = importAllTypesRemembered();
+      let st = await runImportOnce(allTypes, btn);
+      if (!st){ alert('匯入仍在背景執行中，請稍後回到此頁查看「全部教材」'); return; }
+      alert(importSummary(st, allTypes));
+
+      // 只在使用者還沒選過「全部類型」時詢問一次。
+      if (!allTypes){
+        const again = await askImportAllTypes(st, btn);
+        if (again){ alert(importSummary(again, true)); }
+        else if (again === null && Number(st.disallowed || 0) > 0){ /* 使用者選擇維持現狀 */ }
       }
-      alert('匯入仍在背景執行中，請稍後回到此頁查看「全部教材」');
+      loadFiles();
     } catch (e) {
-      alert('匯入失敗：' + e.message);
+      alert('匯入失敗：' + (e && e.message ? e.message : e));
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = old; }
     }
   }
-
   function folderSet(){
     const set = new Set();
     folders.forEach(f => {
@@ -1614,7 +1726,7 @@
       403: '瀏覽器阻擋了這次上傳（來源驗證失敗），請用同一個網域重新整理後再試',
       404: '找不到上傳端點（伺服器版本可能過舊，請重新部署）',
       408: '伺服器等不到上傳資料（連線太慢或中途斷線）',
-      413: '檔案超過伺服器允許的大小上限',
+      413: '超過硬碟總容量（或外層反向代理的大小上限）',
       429: '已有其他檔案正在上傳，請稍後再試',
       500: '伺服器內部錯誤',
       502: '伺服器暫時無法處理（可能正在重新啟動）',
@@ -1639,8 +1751,13 @@
       watchActive: !!_pickWatchTimer,
       lastSig: _pickSig,
       uploading: _uploading,
+      // UPLOAD_PARALLEL_V1（fix61）：目前一次送幾個檔案（與後端
+      // MATERIAL_UPLOAD_CONCURRENCY 對齊）；回報「上傳卡住」時先看這個數字。
+      parallel: UPLOAD_PARALLEL,
       online: navigator.onLine !== false,
-      maxBytes: 50 * 1024 * 1024
+      // UPLOAD_NO_FILE_CAP_V1（fix54）：單檔不限大小，只受硬碟總容量限制。
+      maxBytes: null,
+      maxTotalBytes: 10 * 1024 * 1024 * 1024
     };
   };
 
@@ -1649,12 +1766,16 @@
   // 這一版把「一次一個檔案、任一檔失敗就整批停住」換成真正的佇列：
   //   1. 每個檔案一列，各自顯示進度、已傳／總量、速度（EMA 平滑）與預估剩餘時間；
   //      最上面另有整批的百分比、總速度與總預估。
-  //   2. 429（伺服器同一時間只處理一個上傳，用來守住 10 GB 配額）與 5xx、網路中斷
+  //   2. 429（伺服器同時只收 3 條上傳，配額以保留量守住）與 5xx、網路中斷
   //      會自動重試（0.9s／1.8s／3.6s 退避，最多 3 次），不再立刻判死。
   //   3. 單一檔案失敗不再中斷整批——舊版會 throw，後面還沒送的檔案就那樣消失。
   //   4. 失敗的檔案在列表下方集中成「重試失敗的檔案」一鍵重送。
   const UPLOAD_RETRY_LIMIT = 3;
   const UPLOAD_RETRY_BASE_MS = 900;
+  // UPLOAD_PARALLEL_V1（fix61）：伺服器端同時可收 3 條上傳（10 GiB 配額改以「保留量」
+  // 守住，不再靠序列化），前端就用 3 個 worker 把佇列送出去——選三個大檔的總時間
+  // 從「相加」變成「取最慢的那個」。上限與後端 MATERIAL_UPLOAD_CONCURRENCY 對齊。
+  const UPLOAD_PARALLEL = 3;
 
   let _uploadRows = [];
   // 進度事件的節流時間戳：事件可能每秒數十次，逐次重建 DOM 會拖慢上傳本身。
@@ -1708,12 +1829,16 @@
     const sentBytes = _uploadRows.reduce((s, r) => s + Math.min(r.sent || 0, r.total || (r.file && r.file.size) || 0), 0);
     const done = _uploadRows.filter(r => r.status === 'done').length;
     const failed = _uploadRows.filter(r => r.status === 'failed').length;
-    const active = _uploadRows.find(r => r.status === 'uploading');
+    const actives = _uploadRows.filter(r => r.status === 'uploading');
+    const active = actives[0];
     const speed = _uploadRows.reduce((s, r) => s + (r.status === 'uploading' ? (r.speed || 0) : 0), 0);
     const pct = totalBytes ? Math.min(100, Math.round(sentBytes * 100 / totalBytes)) : 0;
-    const idx = Math.min(_uploadRows.length, done + failed + (active ? 1 : 0));
+    const idx = Math.min(_uploadRows.length, done + failed + actives.length);
     let text = '上傳中 ' + idx + '/' + _uploadRows.length;
-    if (active) text = '上傳 ' + active.file.name + '（' + idx + '/' + _uploadRows.length + '）';
+    // UPLOAD_PARALLEL_V1（fix61）：一次可能有三個檔在同一時間跑，講「並行 N 個」比
+    // 只報第一個檔名誠實；只有一個在跑時仍然顯示檔名（原本的行為）。
+    if (actives.length > 1) text = '並行上傳 ' + actives.length + ' 個檔案（' + idx + '/' + _uploadRows.length + '）';
+    else if (active) text = '上傳 ' + active.file.name + '（' + idx + '/' + _uploadRows.length + '）';
     if (speed > 0) {
       text += ' · ' + sizeLabel(speed) + '/s';
       const eta = (totalBytes - sentBytes) / speed;
@@ -1786,7 +1911,8 @@
     return false;
   }
 
-  // 依序送完 pending（伺服器端一次只處理一個上傳，前端排隊才不會白撞 429）。
+  // 送完 pending：UPLOAD_PARALLEL 條並行（伺服器端同時收 3 條，超過會回 429 並自動退避）。
+  // 每個 worker 從共用索引取下一件，所以「有人失敗」不會拖住其他還在排隊的檔案。
   async function runUploadQueue(pending, label){
     if (_uploading) return pending.length;
     _uploading = true;
@@ -1795,11 +1921,22 @@
     renderUploadQueue();
     uploadAggregate();
     let failedNow = 0;
-    try {
-      for (let i = 0; i < pending.length; i++) {
-        const ok = await uploadRowWithRetry(pending[i], i + 1, pending.length);
+    let next = 0;
+    const worker = async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= pending.length) return;
+        const ok = await uploadRowWithRetry(pending[index], index + 1, pending.length);
         if (!ok) failedNow++;
+        uploadAggregate();
       }
+    };
+    try {
+      const workers = [];
+      const slots = Math.min(UPLOAD_PARALLEL, pending.length);
+      for (let i = 0; i < slots; i++) workers.push(worker());
+      await Promise.all(workers);
     } finally {
       _uploading = false;
       // UPLOAD_DESKTOP_FIX_V1（fix50）：不論成功失敗都要解鎖，否則之後選檔會被擋。
@@ -1831,7 +1968,7 @@
       };
       xhr.onerror = () => {
         console.warn('[upload] 網路錯誤', { name: file.name, size: file.size });
-        reject(new Error('網路連線中斷（檔案可能超過伺服器 50 MB 限制，或訊號不穩）'));
+        reject(new Error('網路連線中斷（訊號不穩或連線被中斷；大檔案請確認連線穩定後再試）'));
       };
       xhr.onabort = () => reject(new Error('上傳已取消'));
       xhr.onload = () => {
@@ -1854,13 +1991,13 @@
 
   // UPLOAD_ROBUST_V1: 上傳流程強化（手機白畫面/沒上傳修復）
   // 1) 立即清空 fileInput——失敗後重選同一個檔案仍會觸發 change
-  // 2) 用戶端預先檢查 50 MB 上限（與伺服器 MATERIALS_MAX_FILE_SIZE 一致），
-  //    避免手機大檔上傳到一半被重置（看起來像白畫面/沒反應）
-  // 3) 錯誤訊息停留在進度條 8 秒並標紅，不再一閃即逝
-  const UPLOAD_MAX_BYTES = 50 * 1024 * 1024;
+  // 2) 錯誤訊息停留在進度條 8 秒並標紅，不再一閃即逝
+  //（舊版還有一條「用戶端預先檢查 50 MB 上限」與 `UPLOAD_MAX_BYTES` 常數，
+  //  UPLOAD_NO_FILE_CAP_V1（fix54）之後已移除：教材單檔不限大小，容量由伺服器
+  //  在收檔迴圈裡逐片段檢查硬碟總量。）
   // UPLOAD_ANY_TYPE_V1（fix39）：不再有格式白名單，也不再做「無副檔名就依 MIME
   // 補副檔名」的改名行為——送出的檔名與使用者選的完全一致。伺服器同樣不檢查
-  // 副檔名，只檢查檔名安全性（長度／路徑字元）與單檔 50 MB 上限。
+  // 副檔名，只檢查檔名安全性（長度／路徑字元）與硬碟總容量。
   async function uploadFiles(fileList){
     // UPLOAD_DESKTOP_FIX_V1（fix50）：讀不到檔案也要講話，不再安靜結束。
     let arr = [];
@@ -1872,19 +2009,9 @@
     if (!arr.length) return;
     if (_uploading) { toast('已有檔案正在上傳，請等它跑完再選', false); return; }
     if (q('fileInput')) q('fileInput').value = '';
-    // UPLOAD_ANY_TYPE_V1（fix39）：不做格式預檢——所有檔案直接上傳，只擋單檔大小。
-    const tooBig = arr.filter(f => f.size > UPLOAD_MAX_BYTES);
-    const will = arr.filter(f => f.size <= UPLOAD_MAX_BYTES);
-    if (!will.length) {
-      if (!tooBig.length) progressError('沒有可上傳的檔案');
-      hideProgress(8000);
-      return;
-    }
-    if (tooBig.length) {
-      const names = tooBig.map(f => f.name).join('、');
-      progressError('未上傳（超過 50 MB 限制）：' + names);
-      toast('超過 50 MB 限制，未上傳：' + names, false);
-    }
+    // UPLOAD_NO_FILE_CAP_V1（fix54）：不做格式預檢，也不做大小預檢——多大的檔案都
+    // 直接送。能不能收下由伺服器依「硬碟總容量」逐片段決定（超過會回 413 並附原因）。
+    const will = arr;
     _uploadRows = will.map(f => ({ file: f, sent: 0, total: f.size, speed: 0, eta: 0, attempts: 0, status: 'waiting', error: '' }));
     // UPLOAD_DESKTOP_FIX_V1（fix50）：選到檔案就立刻顯示進度列與提示——
     // 之後不可能再出現「選完檔案卻看起來完全沒反應」的狀態。
@@ -1895,8 +2022,8 @@
       const failed = await runUploadQueue(_uploadRows.slice(), '已選擇 ' + _uploadRows.length + ' 個檔案，開始上傳…');
       if (!failed) {
         if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
-        showProgress(100, tooBig.length ? '上傳完成（部分檔案未上傳，詳見提示）' : '所有檔案上傳完成！');
-        toast(tooBig.length ? '上傳完成（部分檔案未上傳）' : '教材上傳完成');
+        showProgress(100, '所有檔案上傳完成！');
+        toast('教材上傳完成');
         hideProgress();
       } else {
         progressError('上傳失敗 ' + failed + ' 個檔案（可點下方「重試失敗的檔案」）');
@@ -1989,6 +2116,15 @@
   const PREVIEW_BYTES_MAX = 24 * 1024 * 1024; // 超過此大小不快取（不佔記憶體）
   const PREVIEW_CACHE_MAX = 6;                // 最多保留 6 份位元組
   const PDF_RENDER_CONCURRENCY = 2;           // 首頁之外的並行渲染頁數
+  // MATERIALS_MOBILE_V1（fix57）：手機版預覽（與公告附件預覽 fix56 同一套做法）。
+  //   · 手機的裝置像素比常是 3 → 一頁 A4 畫布 ~8 MB，十幾頁就讓 iOS 重新載入整頁
+  //   · 長講義先畫前幾頁就好，其餘捲到附近才畫（桌機完全不受影響）
+  const PDF_RATIO_MAX_MOBILE = 2;             // 窄螢幕畫布倍率上限
+  const PDF_EAGER_PAGES_MOBILE = 3;           // 窄螢幕先畫幾頁
+  const PDF_LAZY_MARGIN = '700px 0px';        // 捲到距頁面多近就開始畫
+  function previewNarrow(){
+    return !!(window.matchMedia && window.matchMedia('(max-width:820px)').matches);
+  }
   const PREVIEW_PREWARM_MS = 120;             // 滑過按鈕後多久才真的暖機
   const PREVIEW_RANGE_SNIFF_MIN = 3 * 1024 * 1024; // 大於此大小才用 Range 嗅探
   var _previewCache = [];        // [{ path, bytes }]，最近用過的排最後
@@ -1996,6 +2132,15 @@
   var _previewXhrs = [];         // 進行中的位元組下載（關閉時 abort）
   var _previewPdfTasks = [];     // 進行中的 PDF 頁面渲染（關閉時 cancel）
   var _previewPdf = null;        // 目前開啟中的 PDF 文件（關閉時 destroy）
+  // MATERIALS_MOBILE_V1（fix57）：PDF 版面狀態（頁碼／翻頁／延遲渲染／轉向重畫）
+  var _previewPdfWrap = null;    // 目前的 .tron-pdf 容器
+  var _previewPdfSlots = [];     // 每頁一個插槽（頁碼／翻頁／延遲渲染都看這個）
+  var _previewPdfWidth = 0;      // 目前畫的目標寬度（轉向後寬度差太多就重畫）
+  var _previewPdfCur = 1;        // 目前看到第幾頁
+  var _previewPdfObserver = null;// 延遲渲染用（捲到附近才畫那一頁）
+  var _previewPdfBytes = null;   // 這一份的位元組（轉向重畫用，不重新下載）
+  var _previewPdfTick = false;   // 捲動事件節流
+  var _previewReflowTimer = null;// 轉向／改大小的去抖動
   var _previewToken = 0;         // 換檔／關閉就 +1，舊的非同步工作看到不同值即停手
   var _pdfWorkerReady = false;   // workerSrc 只需設定一次
   var _previewWarmTimer = null;
@@ -2079,6 +2224,15 @@
     _previewPdfTasks.forEach(task => { try { task.cancel(); } catch(_) {} });
     _previewPdfTasks = [];
     if (_previewPdf){ try { _previewPdf.destroy(); } catch(_){} _previewPdf = null; }
+    // MATERIALS_MOBILE_V1（fix57）：版面狀態一起收乾淨（延遲渲染的觀察者、捲動監聽、
+    // 轉向重畫用的位元組），否則關掉彈窗後還留著工作與記憶體。
+    if (_previewPdfObserver){ try { _previewPdfObserver.disconnect(); } catch(_) {} _previewPdfObserver = null; }
+    if (_previewPdfWrap){ try { _previewPdfWrap.removeEventListener('scroll', pdfOnScroll); } catch(_) {} }
+    _previewPdfWrap = null;
+    _previewPdfSlots = [];
+    _previewPdfWidth = 0;
+    _previewPdfCur = 1;
+    _previewPdfBytes = null;
   }
   // 關閉彈窗：連下載一起停，並釋放畫布（大檔的 canvas 可能佔數百 MB）。
   function closePreviewTasks(){
@@ -2210,19 +2364,43 @@
     wrap.className = 'tron-pdf';
     body.innerHTML = '';
     body.appendChild(wrap);
-    const targetWidth = Math.max(320, (body.clientWidth || 800) - 28);
-    const ratio = window.devicePixelRatio || 1;
-    // 每頁一個 display:contents 插槽：空插槽不佔位，canvas 直接參與 .tron-pdf 的
-    // flex 排版，因此「哪一頁先畫完」都不會影響頁面順序。
+    // MATERIALS_MOBILE_V1（fix57）：留一份位元組 —— 轉向／改視窗大小時要用同一份
+    // 以新寬度重畫（不重新下載）。關閉或換檔時在 invalidatePreviewWork() 清掉。
+    _previewPdfBytes = data;
+    const narrow = previewNarrow();
+    // 手機把頁面用滿整個螢幕寬（桌機沿用原本的 28px 內縮）。
+    const targetWidth = Math.max(narrow ? 240 : 320, (body.clientWidth || 800) - (narrow ? 0 : 28));
+    let ratio = window.devicePixelRatio || 1;
+    if (narrow) ratio = Math.min(ratio, PDF_RATIO_MAX_MOBILE);
+    // 工具列（CSS 只在手機尺寸顯示）：頁碼＋上一頁／下一頁。
+    // 長講義在手機上捲到一半最需要知道「還有多長、怎麼跳」。
+    const bar = document.createElement('div');
+    bar.className = 'tron-pdf-bar';
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button'; prevBtn.className = 'tron-pdf-btn'; prevBtn.textContent = '↑ 上一頁';
+    prevBtn.addEventListener('click', () => pdfStep(-1));
+    const info = document.createElement('span');
+    info.className = 'tron-pdf-info'; info.id = 'tronPdfPage'; info.textContent = '第 1 頁';
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button'; nextBtn.className = 'tron-pdf-btn'; nextBtn.textContent = '↓ 下一頁';
+    nextBtn.addEventListener('click', () => pdfStep(1));
+    bar.appendChild(prevBtn); bar.appendChild(info); bar.appendChild(nextBtn);
+    wrap.appendChild(bar);
+    // 每頁一個插槽（真元素）：canvas 置中，且「捲到某一頁」有可靠的定位點——
+    // 之前的 display:contents 沒有自己的盒，翻頁與頁碼都無法定到特定頁。
     const slots = [];
     for (let i = 0; i < doc.numPages; i++){
       const slot = document.createElement('div');
-      slot.style.display = 'contents';
+      slot.className = 'tron-pdf-page';
       wrap.appendChild(slot);
       slots.push(slot);
     }
+    _previewPdfWrap = wrap; _previewPdfSlots = slots; _previewPdfWidth = targetWidth;
+    const painted = [];
     const paint = async (pageNo) => {
-      if (previewCancelled(mine) || !slots[pageNo - 1]) return;
+      const slot = slots[pageNo - 1];
+      if (previewCancelled(mine) || painted[pageNo - 1] || !slot) return;
+      painted[pageNo - 1] = true;   // 同步先占位：同一頁不會被並行的兩路各畫一次
       const page = await doc.getPage(pageNo);
       if (previewCancelled(mine)) return;
       const base = page.getViewport({ scale: 1 });
@@ -2232,7 +2410,9 @@
       canvas.height = Math.floor(vp.height * ratio);
       canvas.style.width = Math.floor(vp.width) + 'px';
       canvas.style.height = 'auto';
-      slots[pageNo - 1].appendChild(canvas);
+      // 還沒畫的頁面先佔好高度：捲軸長度與頁碼不會在背景補頁時跳動。
+      slot.style.minHeight = Math.floor(vp.height) + 'px';
+      slot.appendChild(canvas);
       const task = page.render({
         canvasContext: canvas.getContext('2d'),
         viewport: vp,
@@ -2243,21 +2423,124 @@
     };
     // 第一頁優先：使用者視線就在最上面，先給它內容，後面的頁面慢慢補。
     await paint(1);
+    // MATERIALS_MOBILE_V1（fix57）：**還沒畫的頁面也要佔位**。
+    // 先用第一頁量到的比例給其他插槽一個估計高度；真的畫到那一頁時會被實際值覆蓋。
+    // 少了這一步，背景補頁時整份文件的長度會一直變長 —— 捲軸位置與頁碼都會跳。
+    const estSlotHeight = parseFloat(slots[0] && slots[0].style.minHeight) || 0;
+    if (estSlotHeight > 0){
+      for (let i = 1; i < slots.length; i++){
+        if (!slots[i].style.minHeight) slots[i].style.minHeight = Math.floor(estSlotHeight) + 'px';
+      }
+    }
     if (doc.numPages > 1 && !previewCancelled(mine)){
+      // 手機：先畫到 PDF_EAGER_PAGES_MOBILE，其餘捲到附近才畫（長講義不必一次畫完）。
+      let eagerEnd = doc.numPages;
+      if (narrow && PDF_EAGER_PAGES_MOBILE > 0) eagerEnd = Math.min(doc.numPages, PDF_EAGER_PAGES_MOBILE);
       let cursor = 2;
       const fill = async () => {
-        while (!previewCancelled(mine) && cursor <= doc.numPages){
+        while (!previewCancelled(mine) && cursor <= eagerEnd){
           const pageNo = cursor++;
           try { await paint(pageNo); } catch(_) { if (previewCancelled(mine)) return; }
         }
       };
       const workers = [];
       const workerCount = Math.min(PDF_RENDER_CONCURRENCY, doc.numPages - 1);
-      for (let i = 0; i < workerCount; i++) workers.push(fill());
+      const eagerWorkers = (eagerEnd < doc.numPages)
+        ? Math.min(PDF_RENDER_CONCURRENCY, Math.max(0, eagerEnd - 1))
+        : workerCount;
+      for (let i = 0; i < eagerWorkers; i++) workers.push(fill());
       // 背景補頁不阻塞呼叫端（第一頁已經在畫面上），失敗也不影響已顯示的內容。
       Promise.all(workers).catch(() => {});
+      if (eagerEnd < doc.numPages) paintLazyPages(mine, slots, paint, eagerEnd);
     }
+    // 頁碼跟著捲動更新（.tron-pdf 自己就是捲動容器）。
+    _previewPdfCur = 1;
+    wrap.addEventListener('scroll', pdfOnScroll, { passive: true });
+    pdfSyncPage();
   }
+
+  // MATERIALS_MOBILE_V1（fix57）：手機上只先畫前幾頁，剩下的捲到附近才畫。
+  // 沒有 IntersectionObserver 就照舊全部補齊（不因新功能而少畫）。
+  function paintLazyPages(mine, slots, paint, from){
+    if (previewCancelled(mine)) return;
+    if (window.IntersectionObserver){
+      if (_previewPdfObserver){ try { _previewPdfObserver.disconnect(); } catch(_) {} }
+      _previewPdfObserver = new window.IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting || previewCancelled(mine)) return;
+          const idx = slots.indexOf(en.target);
+          if (idx < 0) return;
+          _previewPdfObserver.unobserve(en.target);
+          paint(idx + 1).catch(() => {});
+        });
+      }, { root: _previewPdfWrap || null, rootMargin: PDF_LAZY_MARGIN });
+      for (let i = from; i < slots.length; i++) _previewPdfObserver.observe(slots[i]);
+      return;
+    }
+    let rest = from + 1;
+    const fill = async () => {
+      while (!previewCancelled(mine) && rest <= slots.length){
+        const pageNo = rest++;
+        try { await paint(pageNo); } catch(_) { if (previewCancelled(mine)) return; }
+      }
+    };
+    const ws = [];
+    const count = Math.min(PDF_RENDER_CONCURRENCY, slots.length - from);
+    for (let i = 0; i < count; i++) ws.push(fill());
+    Promise.all(ws).catch(() => {});
+  }
+
+  // 捲動時更新「第 n / N 頁」：手機工具列顯示的就是這一行。
+  function pdfSyncPage(){
+    if (!_previewPdfSlots.length || !_previewPdfWrap) return;
+    const info = q('tronPdfPage');
+    if (!info) return;
+    // 黏著工具列會蓋住頂端約 54px，判定線往下挪才不會慢一頁。
+    const line = _previewPdfWrap.getBoundingClientRect().top + 56;
+    let cur = 1;
+    for (let i = 0; i < _previewPdfSlots.length; i++){
+      const el = _previewPdfSlots[i];
+      if (el && el.getBoundingClientRect().top <= line) cur = i + 1;
+    }
+    _previewPdfCur = cur;
+    info.textContent = '第 ' + cur + ' / ' + _previewPdfSlots.length + ' 頁';
+  }
+  function pdfOnScroll(){
+    if (_previewPdfTick) return;   // 捲動事件非常密集，一格動畫最多更新一次
+    _previewPdfTick = true;
+    const run = () => { _previewPdfTick = false; pdfSyncPage(); };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(run); else setTimeout(run, 60);
+  }
+  // 上一頁／下一頁：直接捲到目標頁開頭（首／末頁不越界、也不白捲一次）。
+  function pdfStep(delta){
+    if (!_previewPdfSlots.length) return;
+    pdfSyncPage();
+    let target = _previewPdfCur + delta;
+    if (target < 1) target = 1;
+    if (target > _previewPdfSlots.length) target = _previewPdfSlots.length;
+    if (target === _previewPdfCur) return;
+    const el = _previewPdfSlots[target - 1];
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+    _previewPdfCur = target;
+    pdfSyncPage();
+  }
+  // 轉向／改視窗大小：用同一份位元組以新寬度重畫（不重新下載）。
+  // 只有「寬度差超過 48px」才動 —— iOS 網址列伸縮造成的小幅變動不重畫。
+  function pdfReflowPreview(){
+    if (!_previewPdfBytes || !_previewPdfWrap) return;
+    if (_previewReflowTimer) clearTimeout(_previewReflowTimer);
+    _previewReflowTimer = setTimeout(() => {
+      _previewReflowTimer = null;
+      const body = q('previewBody');
+      if (!_previewPdfBytes || !_previewPdfWrap || !body) return;
+      const narrow = previewNarrow();
+      const want = Math.max(narrow ? 240 : 320, (body.clientWidth || 800) - (narrow ? 0 : 28));
+      if (Math.abs(want - _previewPdfWidth) < 48) return;
+      renderPdfData(_previewPdfBytes, { token: _previewToken }).catch(() => {});
+    }, 260);
+  }
+  window.addEventListener('resize', pdfReflowPreview);
+  window.addEventListener('orientationchange', pdfReflowPreview);
 
   async function renderPdfPreview(url, path, ext){
     const body = q('previewBody');

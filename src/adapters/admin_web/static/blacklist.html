@@ -43,6 +43,21 @@
     .card-head strong{font-size:16px;font-weight:850}.summary{color:var(--muted);font-size:13px}
     table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--line2);font-size:14px;vertical-align:middle}th{background:var(--soft);color:var(--muted);font-size:12px}tr:last-child td{border-bottom:0}.ip{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;color:var(--text)}.empty,.error{padding:34px 18px;text-align:center;color:var(--muted)}.error{color:var(--bad)}
     .recent-card{margin-top:18px}.card-head-copy{display:grid;gap:3px}.card-note{color:var(--muted);font-size:12px;line-height:1.4}.recent-table-wrap{overflow:auto}.recent-table{min-width:900px}.recent-table .account{font-weight:750}.recent-table .muted{color:var(--muted)}.recent-table .failure{color:var(--bad);font-weight:800}.recent-table .location{color:var(--muted);font-size:13px}.recent-table .action-cell{white-space:nowrap}.recent-table .action-cell button{min-height:34px;padding:0 11px;font-size:12px}
+    /* BLACKLIST_UX_V1（fix58）：已封鎖標籤、複製鈕、頁內提示 */
+    .tag{display:inline-flex;align-items:center;gap:4px;min-height:28px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:800;background:rgba(100,116,139,.14);color:var(--muted);border:1px solid var(--line2)}
+    .tag.done{background:rgba(16,185,129,.14);color:#047857;border-color:rgba(16,185,129,.32)}
+    @media(prefers-color-scheme:dark){.tag.done{color:#34d399}}
+    .ip-cell{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+    .copy-ip{min-height:26px;height:26px;padding:0 8px;border-radius:8px;font-size:11px;font-weight:800;background:transparent;color:var(--muted)}
+    .copy-ip:hover{color:var(--primary)}
+    .card-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .card-actions button{min-height:34px;font-size:12.5px}
+    .toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(8px);
+      max-width:min(520px,calc(100vw - 24px));padding:11px 16px;border-radius:14px;border:1px solid var(--line);
+      background:var(--card);color:var(--text);box-shadow:0 14px 40px rgba(15,23,42,.22);font-size:13px;font-weight:700;
+      opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease;z-index:200}
+    .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+    .toast.bad{border-color:rgba(248,113,113,.42);color:var(--bad)}
     @media(max-width:700px){
       .top{align-items:center;flex-direction:row;gap:10px;padding:14px 16px}
       .brand{width:auto;flex:1 1 auto}.brand-title{font-size:17px}.brand-sub{font-size:11px}
@@ -56,22 +71,21 @@
       #content table tbody,.recent-table tbody{display:grid;gap:10px;width:100%}
       #content table tr,.recent-table tr{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:13px 12px;border:1px solid var(--line2);border-radius:15px;background:var(--card);box-shadow:0 4px 14px rgba(15,23,42,.05)}
       #content table td,.recent-table td{display:flex;flex-direction:column;align-items:flex-start;gap:3px;padding:3px 0;border:0;min-width:0;line-height:1.35;overflow-wrap:anywhere}
-      #content table td::before,.recent-table td::before{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em}
-      #content table td:nth-child(1)::before{content:'IP 位址'}
-      #content table td:nth-child(2)::before{content:'封鎖時間'}
-      #content table td:nth-child(3)::before{content:'操作者'}
-      #content table td:nth-child(4)::before{content:'原因'}
-      #content table td:nth-child(5)::before{content:'操作'}
-      .recent-table td:nth-child(1)::before{content:'時間'}
-      .recent-table td:nth-child(2)::before{content:'帳號'}
-      .recent-table td:nth-child(3)::before{content:'IP 位址'}
-      .recent-table td:nth-child(4)::before{content:'MAC 位址'}
-      .recent-table td:nth-child(5)::before{content:'位置'}
-      .recent-table td:nth-child(6)::before{content:'結果'}
-      .recent-table td:nth-child(7)::before{content:'操作'}
+      /* BLACKLIST_UX_V1（fix58）：欄位標籤改由資料列自帶（data-label）。
+         原本用 nth-child 對應，只要表格多一欄／少一欄，標籤就會整體錯位
+         （「失敗次數」被標成「操作」就是這個原因）。 */
+      #content table td::before,.recent-table td::before{display:block;color:var(--muted);font-size:10px;font-weight:800;letter-spacing:.04em;content:attr(data-label)}
+      #content table td[data-label='']::before,.recent-table td[data-label='']::before{content:''}
       #content table td:last-child,.recent-table td:last-child{grid-column:1/-1;padding-top:8px;border-top:1px solid var(--line2)}
       #content table td:last-child button,.recent-table .action-cell button{width:100%;min-height:44px;padding:0 12px;font-size:13px}
       .recent-table .account,.recent-table .ip{font-size:14px}
+      /* 卡片標題列的動作鈕在手機上排成整行，比較好按 */
+      .card-head{flex-direction:column;align-items:stretch}
+      .card-actions{width:100%}
+      .card-actions button{flex:1;min-height:42px}
+      .copy-ip{min-height:32px;height:32px;padding:0 10px}
+      .tag{min-height:32px}
+      .toast{font-size:12.5px}
     }
   </style>
 <style id="SAFE_AREA_TOP_V1">
@@ -105,8 +119,14 @@
     </section>
     <section class="card recent-card">
       <div class="card-head">
-        <div class="card-head-copy"><strong>最近登入失敗</strong><span class="card-note">顯示最近的失敗帳號、來源 IP 與可辨識的裝置資訊。</span></div>
-        <span class="summary" id="recentSummary">載入中...</span>
+        <div class="card-head-copy">
+          <strong>最近登入失敗</strong>
+          <span class="card-note">顯示最近的失敗帳號、來源 IP、位置與裝置資訊。已在黑名單中的 IP 會標示「已封鎖」，不再提供重複的加入按鈕。（瀏覽器不會提供 MAC 位址，因此以裝置資訊取代。）</span>
+        </div>
+        <div class="card-actions">
+          <span class="summary" id="recentSummary">載入中...</span>
+          <button id="blockAll" class="danger" type="button" disabled>一鍵封鎖未封鎖的 IP</button>
+        </div>
       </div>
       <div id="recentContent"><div class="empty">載入中...</div></div>
     </section>
@@ -117,24 +137,168 @@
     function q(id){return document.getElementById(id)}
     function esc(value){return String(value==null?'':value).replace(/[&<>"']/g,function(ch){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch]})}
     function token(){return''}
+    // BLACKLIST_UX_V1（fix58）：已封鎖的 IP（來自上方那張表）——「最近登入失敗」
+    // 據此不再顯示「加入黑名單」按鈕。伺服器也會回 blocked 旗標，兩者取聯集。
+    var blockedIps={};
+    var recentItems=[];
+    var loading=false;
+    function toast(message,bad){
+      var el=document.getElementById('blToast');
+      if(!el){el=document.createElement('div');el.id='blToast';el.className='toast';document.body.appendChild(el)}
+      el.textContent=message;
+      el.className='toast show'+(bad?' bad':'');
+      clearTimeout(el._t);
+      el._t=setTimeout(function(){el.className='toast'},2600);
+    }
+    // 複製 IP：手機上要貼到別的地方（防火牆、回報）時特別好用。
+    // 沒有 clipboard API（或非 https）時退回 textarea + execCommand。
+    function copyIp(ip){
+      var done=function(){toast('已複製 '+ip)};
+      var fallback=function(){
+        var ta=document.createElement('textarea');ta.value=ip;ta.setAttribute('readonly','');
+        ta.style.cssText='position:fixed;left:-9999px';document.body.appendChild(ta);
+        ta.select();try{document.execCommand('copy');done()}catch(_){toast('無法複製，請長按選取',true)}
+        document.body.removeChild(ta);
+      };
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(ip).then(done,fallback);return}
+      fallback();
+    }
     function api(path,options){
       var u=new URL(path,location.origin); // F-03: token removed
       return fetch(u.pathname+u.search,Object.assign({credentials:'same-origin',cache:'no-store'},options||{})).then(function(res){return res.json().catch(function(){return {}}).then(function(body){if(res.status===401||res.status===403){location.replace('/admin');throw new Error('未授權')}if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body})})
     }
     function render(rows){
-      q('summary').textContent=rows.length+' 筆';
-      if(!rows.length){q('content').innerHTML='<div class="empty">目前沒有黑名單 IP。</div>';return}
-      q('content').innerHTML='<table><thead><tr><th>IP</th><th>封鎖時間</th><th>操作者</th><th>封鎖原因</th><th>失敗次數</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){var failures=Number(row.failure_count||0);var failureLabel=failures>0?failures+' 次':'-';return '<tr><td class="ip">'+esc(row.ip)+'</td><td>'+esc(row.blocked_time)+'</td><td>'+esc(row.blocked_by)+'</td><td>'+esc(row.reason||'未提供')+'</td><td>'+esc(failureLabel)+'</td><td><button class="danger" type="button" data-unblock="'+esc(row.ip)+'">解除封鎖</button></td></tr>'}).join('')+'</tbody></table>';
+      blockedIps={};
+      rows.forEach(function(row){if(row.ip)blockedIps[String(row.ip).trim()]=true});
+      q('summary').textContent=rows.length+' 個 IP';
+      if(!rows.length){
+        q('content').innerHTML='<div class="empty">目前沒有黑名單 IP。</div>';
+        renderRecent(recentItems);   // 黑名單變了 → 下方那張表的按鈕狀態要跟著更新
+        return;
+      }
+      q('content').innerHTML='<table><thead><tr><th>IP</th><th>位置</th><th>封鎖時間</th><th>操作者</th><th>封鎖原因</th><th>失敗次數</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){
+        var failures=Number(row.failure_count||0);var failureLabel=failures>0?failures+' 次':'-';
+        var ip=String(row.ip||'');
+        return '<tr>'
+          +'<td class="ip" data-label="IP 位址"><span class="ip-cell">'+esc(ip)+'<button class="copy-ip" type="button" data-copy="'+esc(ip)+'" title="複製 IP">複製</button></span></td>'
+          +'<td class="location" data-label="位置">'+esc(row.location||'未知位置')+'</td>'
+          +'<td data-label="封鎖時間">'+esc(row.blocked_time||'-')+'</td>'
+          +'<td data-label="操作者">'+esc(row.blocked_by||'-')+'</td>'
+          +'<td data-label="封鎖原因">'+esc(row.reason||'未提供')+'</td>'
+          +'<td data-label="失敗次數">'+esc(failureLabel)+'</td>'
+          +'<td data-label="操作"><button class="danger" type="button" data-unblock="'+esc(ip)+'">解除封鎖</button></td>'
+          +'</tr>'}).join('')+'</tbody></table>';
+      renderRecent(recentItems);   // 同上：讓「已封鎖」標籤即時反映
     }
-    function load(){q('content').innerHTML='<div class="empty">載入中...</div>';api('/admin/api/blacklist').then(function(body){render(body.items||[])}).catch(function(error){q('summary').textContent='';q('content').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'})}
-    function isFailure(row){var result=String(row.result||'').toLowerCase(),action=String(row.action||'').toLowerCase();return action==='login_failed'||result==='fail'||result==='failed'||result==='error'||result==='false'||(action==='login'&&result!=='success')}
+    function load(){
+      q('content').innerHTML='<div class="empty">載入中...</div>';
+      return api('/admin/api/blacklist').then(function(body){render(body.items||[])})
+        .catch(function(error){q('summary').textContent='';q('content').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'});
+    }
+    // BLACKLIST_UX_V1（fix58）：原本前端自己用 isFailure() 過濾失敗事件——判斷規則
+    // 已經搬到後端（admin_blacklist_recent_logins_handler），前端只負責顯示，
+    // 避免同一套規則在兩個地方各寫一份（也少下載全站活動事件）。
     function fmtTime(value){if(!value)return'-';if(typeof value==='string'&&!/^\\d+(?:\\.\\d+)?$/.test(value))return value;var n=Number(value),d=new Date(n<1e11?n*1000:n);return isNaN(d.getTime())?String(value):d.toLocaleString('zh-TW',{hour12:false})}
-    function renderRecent(events){var rows=(events||[]).filter(isFailure).slice(0,100);q('recentSummary').textContent=rows.length+' 筆';if(!rows.length){q('recentContent').innerHTML='<div class="empty">目前沒有登入失敗紀錄。</div>';return}q('recentContent').innerHTML='<div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>時間</th><th>帳號</th><th>IP 位址</th><th>MAC 位址</th><th>位置</th><th>結果</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){var account=row.account_id||row.actor||'未知帳號',ip=row.ip||'-',mac=row.mac||row.mac_address||'無法取得',location=row.location||'未提供';var action=ip==='-'?'<span class="muted">無 IP</span>':'<button class="danger" type="button" data-block-ip="'+esc(ip)+'">加入黑名單</button>';return '<tr><td>'+esc(row.time||fmtTime(row.timestamp))+'</td><td class="account">'+esc(account)+'</td><td class="ip">'+esc(ip)+'</td><td class="muted">'+esc(mac)+'</td><td class="location">'+esc(location)+'</td><td class="failure">登入失敗</td><td class="action-cell">'+action+'</td></tr>'}).join('')+'</tbody></table></div>'}
-    function loadRecent(){q('recentContent').innerHTML='<div class="empty">載入中...</div>';api('/admin/api/activity/login?limit=200').then(function(body){renderRecent(body.events||[])}).catch(function(error){q('recentSummary').textContent='';q('recentContent').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'})}
-    function loadAll(){load();loadRecent()}
+    function renderRecent(items){
+      var rows=(items||[]).slice(0,100);
+      recentItems=rows;
+      // 「一鍵封鎖」只針對：有 IP、且還沒被封鎖的列（去重後才顯示數量）。
+      var pending=[];
+      rows.forEach(function(row){var ip=String(row.ip||'').trim();if(ip&&ip!=='-'&&!(blockedIps[ip]||row.blocked)&&pending.indexOf(ip)<0)pending.push(ip)});
+      var btn=q('blockAll');
+      if(btn){btn.disabled=!pending.length;btn.textContent=pending.length?('一鍵封鎖未封鎖的 IP（'+pending.length+'）'):'一鍵封鎖未封鎖的 IP'}
+      q('recentSummary').textContent=rows.length+' 筆';
+      if(!rows.length){q('recentContent').innerHTML='<div class="empty">目前沒有登入失敗紀錄。</div>';return}
+      q('recentContent').innerHTML='<div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>時間</th><th>帳號</th><th>IP 位址</th><th>裝置</th><th>位置</th><th>結果</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){
+        var account=row.account||row.account_id||row.actor||'未知帳號';
+        var ip=String(row.ip||'-').trim()||'-';
+        var location=row.location||'未知位置';
+        var device=row.device||'未記錄';
+        var isBlocked=ip!=='-'&&!!(blockedIps[ip]||row.blocked);
+        // 已經在黑名單裡的 IP：只給狀態標籤，不再給「加入黑名單」按鈕
+        // （同一個畫面上方的表已經有「解除封鎖」，避免按了只得到「已在名單中」）。
+        var action=ip==='-'?'<span class="muted">無 IP</span>'
+          :(isBlocked?'<span class="tag done" title="這個 IP 已在黑名單中">已封鎖 ✓</span>'
+          :'<button class="danger" type="button" data-block-ip="'+esc(ip)+'">加入黑名單</button>');
+        return '<tr>'
+          +'<td data-label="時間">'+esc(row.time||fmtTime(row.timestamp))+'</td>'
+          +'<td class="account" data-label="帳號">'+esc(account)+'</td>'
+          +'<td class="ip" data-label="IP 位址">'+esc(ip)+'</td>'
+          +'<td class="muted" data-label="裝置">'+esc(device)+'</td>'
+          +'<td class="location" data-label="位置">'+esc(location)+'</td>'
+          +'<td class="failure" data-label="結果">登入失敗</td>'
+          +'<td class="action-cell" data-label="操作">'+action+'</td>'
+          +'</tr>'}).join('')+'</tbody></table></div>';
+    }
+    function loadRecent(){
+      q('recentContent').innerHTML='<div class="empty">載入中...</div>';
+      // BLACKLIST_UX_V1（fix58）：改用黑名單專用端點——它會附上位置（伺服器查 geoip，
+      // 24 小時快取）、裝置（User-Agent 摘要）以及「是否已封鎖」。
+      return api('/admin/api/blacklist/recent-logins?limit=300')
+        .then(function(body){renderRecent(body.items||[])})
+        .catch(function(error){q('recentSummary').textContent='';q('recentContent').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'});
+    }
+    function loadAll(){
+      var btn=q('reload');
+      if(loading)return;
+      loading=true;
+      if(btn){btn.disabled=true;btn.textContent='更新中…'}
+      var done=function(){loading=false;if(btn){btn.disabled=false;btn.textContent='重新整理'}};
+      // 兩支 API 平行抓；黑名單先回來就先畫（下方表格的按鈕狀態會跟著更新）。
+      Promise.all([load(),loadRecent()]).then(done,done);
+    }
     q('reload').addEventListener('click',loadAll);
-    q('content').addEventListener('click',function(event){var button=event.target.closest('[data-unblock]');if(!button)return;var ip=button.getAttribute('data-unblock');if(!confirm('確定解除 '+ip+' 的封鎖？'))return;button.disabled=true;api('/admin/api/blacklist/unblock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})}).then(loadAll).catch(function(error){button.disabled=false;alert(error.message||error)})});
-    q('recentContent').addEventListener('click',function(event){var button=event.target.closest('[data-block-ip]');if(!button)return;var ip=button.getAttribute('data-block-ip');if(!confirm('確定將 IP '+ip+' 加入黑名單？'))return;button.disabled=true;api('/admin/api/blacklist/block',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})}).then(function(){alert('已將 '+ip+' 加入黑名單');loadAll()}).catch(function(error){button.disabled=false;alert(error.message||error)})});
+    // 複製 IP（兩張表共用同一個委派監聽）。
+    document.addEventListener('click',function(event){
+      var copy=event.target.closest('[data-copy]');
+      if(copy){copyIp(copy.getAttribute('data-copy'));}
+    });
+    q('content').addEventListener('click',function(event){
+      var button=event.target.closest('[data-unblock]');if(!button)return;
+      var ip=button.getAttribute('data-unblock');
+      if(!confirm('確定解除 '+ip+' 的封鎖？'))return;
+      button.disabled=true;
+      api('/admin/api/blacklist/unblock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})})
+        .then(function(){toast('已解除 '+ip+' 的封鎖');return loadAll()})
+        .catch(function(error){button.disabled=false;toast(error.message||String(error),true)});
+    });
+    q('recentContent').addEventListener('click',function(event){
+      var button=event.target.closest('[data-block-ip]');if(!button)return;
+      var ip=button.getAttribute('data-block-ip');
+      if(!confirm('確定將 IP '+ip+' 加入黑名單？'))return;
+      button.disabled=true;
+      api('/admin/api/blacklist/block',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:ip})})
+        .then(function(){toast('已將 '+ip+' 加入黑名單');return loadAll()})
+        .catch(function(error){button.disabled=false;toast(error.message||String(error),true)});
+    });
+    // 一鍵封鎖：把「最近登入失敗」裡還沒封鎖的 IP 一次處理掉（現在得一列一列按）。
+    // 一定先列出要封鎖的 IP 讓使用者確認，且一個一個送（後端 API 是單筆語意），
+    // 中途失敗會回報還剩幾個沒成功。
+    q('blockAll').addEventListener('click',function(){
+      var targets=[];
+      recentItems.forEach(function(row){
+        var ip=String(row.ip||'').trim();
+        if(ip&&ip!=='-'&&!(blockedIps[ip]||row.blocked)&&targets.indexOf(ip)<0)targets.push(ip);
+      });
+      if(!targets.length)return;
+      var head=targets.slice(0,8).join('\n')+(targets.length>8?('\n…以及其他 '+(targets.length-8)+' 個'):'');
+      if(!confirm('確定封鎖以下 '+targets.length+' 個 IP？\n\n'+head))return;
+      var btn=q('blockAll');
+      btn.disabled=true;
+      var ok=0,failed=0;
+      btn.textContent='封鎖中…（0/'+targets.length+'）';
+      var step=function(index){
+        if(index>=targets.length){
+          loadAll();
+          toast(failed?('已封鎖 '+ok+' 個，'+failed+' 個失敗'):('已封鎖 '+ok+' 個 IP'),failed>0);
+          return;
+        }
+        api('/admin/api/blacklist/block',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({ip:targets[index]})})
+          .then(function(){ok++},function(){failed++})
+          .then(function(){btn.textContent='封鎖中…（'+(ok+failed)+'/'+targets.length+'）';step(index+1)});
+      };
+      step(0);
+    });
     loadAll();
   })();
   </script>

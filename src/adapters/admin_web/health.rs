@@ -2,16 +2,73 @@
 
 use super::*;
 
+/// HEALTHZ_DETAIL_TOKEN 的最短長度。
+///
+/// HEALTHZ_MINIMAL_PUBLIC_V1（fix62）：這個端點是公開的（Pterodactyl 看門狗、
+/// uptime 監控、Cloudflare health check 都要在未登入的情況下打得到），所以**不能再
+/// 把細節公開出去**：舊版會回版本號、資料庫延遲、監控總數與輪詢週期，等於免費告訴
+/// 任何掃描器「你在跑哪一版、有幾個帳號在監控」。現在未帶憑證一律只回
+/// `{"ok":…,"service":…}`，細節需要下列其中一種憑證：
+///
+///   1. 有效的面板 session（cookie 或 `?token=`）——你自己打開就能看；
+///   2. 環境變數 `HEALTHZ_DETAIL_TOKEN`（選用）——外部監控想記錄細節時設定，
+///      **不設定就沒有這條路**；比對走常數時間，且長度不足 16 字元一律視為沒設。
+///
+/// 狀態碼語意完全不變（健康 200、異常 503），所以看門狗與 uptime 監控的行為不受影響。
+const HEALTHZ_DETAIL_TOKEN_MIN_LEN: usize = 16;
+
+/// 公開版本的回應（只有健康與否，沒有任何內部數字）。
+fn healthz_public_body(ok: bool) -> serde_json::Value {
+    json!({
+        "ok": ok,
+        "service": "tronclass_dashboard",
+    })
+}
+
+/// 從環境變數取細節用 token；沒設、太短、非 UTF-8 一律當作沒設（不回退成預設值）。
+fn healthz_detail_token_from_env() -> Option<String> {
+    let value = std::env::var("HEALTHZ_DETAIL_TOKEN").ok()?;
+    if value.len() < HEALTHZ_DETAIL_TOKEN_MIN_LEN {
+        return None;
+    }
+    Some(value)
+}
+
+/// 這個請求可不可以看健康檢查的細節？
+async fn healthz_detail_allowed(
+    state: &AdminWebState,
+    headers: &HeaderMap,
+    query_token: &str,
+) -> bool {
+    // 1) 面板 session：與其他端點同一套（cookie 優先，`?token=` 為無 cookie 客戶端備援）。
+    let token = session_token(headers, query_token);
+    if state.authorize_any(&token).await.is_some() {
+        return true;
+    }
+    // 2) 專用 token（選用）：常數時間比對，避免用回應時間猜字元。
+    match healthz_detail_token_from_env() {
+        Some(expected) => crate::dashboard_auth::constant_time_eq(
+            query_token.as_bytes(),
+            expected.as_bytes(),
+        ),
+        None => false,
+    }
+}
+
 /// HEALTHZ_REAL_V1：真正的健康檢查（給 Pterodactyl／uptime 監測／Cloudflare health check 用）。
 ///
 /// 檢查項目：
 /// 1. SQLite 可寫可讀（寫入 `web_push_settings` 的 `system:healthz_probe` 再讀回；不動 schema）。
 /// 2. 每個「執行中」帳號的監控循環心跳是否在看門狗門檻內（MONITOR_WATCHDOG_V1）。
 ///
-/// 任一項失敗 → 503 + `ok:false` 與各項細節；全部正常 → 200。
-/// 不需登入（黑名單／同源／密碼中介層皆放行 /healthz），所以回應不含帳號識別以外的敏感資料，
-/// 帳號 id 也只在 503 時列出失聯者。
-pub(super) async fn healthz_handler(State(state): State<AdminWebState>) -> Response {
+/// 任一項失敗 → 503 + `ok:false`；全部正常 → 200。
+/// 回應內容依憑證分兩級（見 `HEALTHZ_MINIMAL_PUBLIC_V1` 的說明）：公開只有 ok／service，
+/// 細節（版本、資料庫延遲、監控統計、失聯帳號）要 session 或 `HEALTHZ_DETAIL_TOKEN`。
+pub(super) async fn healthz_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
     let started = std::time::Instant::now();
     let now = chrono::Local::now().timestamp();
 
@@ -81,30 +138,36 @@ pub(super) async fn healthz_handler(State(state): State<AdminWebState>) -> Respo
     let monitors_ok = stale.is_empty();
     let ok = db_ok && monitors_ok;
 
-    let body = json!({
-        "ok": ok,
-        "service": "tronclass_dashboard",
-        "version": env!("CARGO_PKG_VERSION"),
-        "time": now,
-        "checks": {
-            "database": {
-                "ok": db_ok,
-                "latency_ms": db_latency_ms,
-                "error": db_error,
+    // HEALTHZ_MINIMAL_PUBLIC_V1（fix62）：先決定這個請求能看多少，再組回應。
+    let detail_allowed = healthz_detail_allowed(&state, &headers, &query.token).await;
+    let body = if detail_allowed {
+        json!({
+            "ok": ok,
+            "service": "tronclass_dashboard",
+            "version": env!("CARGO_PKG_VERSION"),
+            "time": now,
+            "checks": {
+                "database": {
+                    "ok": db_ok,
+                    "latency_ms": db_latency_ms,
+                    "error": db_error,
+                },
+                "monitors": {
+                    "ok": monitors_ok,
+                    "total": accounts.len(),
+                    "running": running,
+                    "paused": paused,
+                    "starting": starting,
+                    "stale": stale,
+                    "poll_interval_secs": poll_interval_secs,
+                    "stale_after_secs": threshold_secs,
+                    "oldest_heartbeat_age_secs": oldest_heartbeat_age,
+                },
             },
-            "monitors": {
-                "ok": monitors_ok,
-                "total": accounts.len(),
-                "running": running,
-                "paused": paused,
-                "starting": starting,
-                "stale": stale,
-                "poll_interval_secs": poll_interval_secs,
-                "stale_after_secs": threshold_secs,
-                "oldest_heartbeat_age_secs": oldest_heartbeat_age,
-            },
-        },
-    });
+        })
+    } else {
+        healthz_public_body(ok)
+    };
     let status = if ok {
         StatusCode::OK
     } else {

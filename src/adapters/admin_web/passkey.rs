@@ -583,6 +583,8 @@ pub(super) async fn admin_passkey_login_finish_handler(
                 "fail",
                 "Web 管理頁通行密鑰驗證失敗",
                 &ip,
+                // BLACKLIST_UX_V1（fix58）：失敗事件記裝置資訊（黑名單頁顯示用）。
+                &SessionOrigin::from_request(&headers, &ip).user_agent,
             )
             .await;
             return (
@@ -627,6 +629,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
             "fail",
             "帳號已停用，通行密鑰登入遭拒",
             &ip,
+            &SessionOrigin::from_request(&headers, &ip).user_agent,
         )
         .await;
         return unauthorized_response();
@@ -684,6 +687,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
                 "success",
                 "Web 管理頁通行密鑰登入成功",
                 &ip,
+                &user_agent,
             )
             .await;
         });
