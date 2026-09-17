@@ -18,7 +18,8 @@ use tracing::{debug, error, info, warn};
 use crate::adapters::admin_web::{self, AdminWebState};
 use crate::adapters::requests::{self, AdapterRequest, RequestContent, RequestState};
 use crate::adapters::scanner::{
-    NumberCodeSubmission, QrScannerRegistry, ScannerStatusQuery, ScannerSubmission,
+    NumberCodeSubmission, QrScannerRegistry, RadarPointSubmission, ScannerStatusQuery,
+    ScannerSubmission,
 };
 
 use super::client::LineBotClient;
@@ -66,6 +67,10 @@ pub fn build_router(state: LineWebhookState, webhook_path: &str) -> Router {
         .route("/number", get(number_page_handler))
         .route("/number/status", get(number_status_handler))
         .route("/number/submit", post(number_submit_handler))
+        // RADAR_INPUT_PAGE_V1（fix71）：雷達點名輸入頁（與 scanner 伺服器同一個頁面）。
+        .route("/radar", get(radar_page_handler))
+        .route("/radar/status", get(radar_status_handler))
+        .route("/radar/submit", post(radar_submit_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -188,6 +193,15 @@ async fn number_page_handler() -> Response {
         .into_response()
 }
 
+/// RADAR_INPUT_PAGE_V1（fix71）：雷達點名輸入頁。
+async fn radar_page_handler() -> Response {
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Html(include_str!("radar.html")),
+    )
+        .into_response()
+}
+
 async fn scanner_status_handler(
     State(state): State<LineWebhookState>,
     Query(query): Query<ScannerStatusQuery>,
@@ -245,6 +259,50 @@ async fn number_submit_handler(
     };
 
     match scanner.submit_number(submission).await {
+        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn radar_status_handler(
+    State(state): State<LineWebhookState>,
+    Query(query): Query<ScannerStatusQuery>,
+) -> Response {
+    let Some(scanner) = state.scanner.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "scanner is not enabled" })),
+        )
+            .into_response();
+    };
+
+    match scanner.radar_status(query).await {
+        Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn radar_submit_handler(
+    State(state): State<LineWebhookState>,
+    Json(submission): Json<RadarPointSubmission>,
+) -> Response {
+    let Some(scanner) = state.scanner.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "scanner is not enabled" })),
+        )
+            .into_response();
+    };
+
+    match scanner.submit_radar(submission).await {
         Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,

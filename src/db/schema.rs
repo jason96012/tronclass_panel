@@ -744,5 +744,27 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("建立 rollcall_events 帳號索引失敗")?;
 
+    // RADAR_PANEL_V1（fix70）：雷達點名設定（每個 provider 一組）。
+    // coords 存 JSON 字串（有序清單）；device_* 是面板上「把我的位置列入考量」取得的座標。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS radar_preferences (
+            provider TEXT PRIMARY KEY NOT NULL,
+            coords TEXT NOT NULL DEFAULT '[]',
+            accuracy INTEGER NOT NULL DEFAULT 35,
+            altitude INTEGER NOT NULL DEFAULT 0,
+            use_device_location INTEGER NOT NULL DEFAULT 0,
+            device_latitude REAL,
+            device_longitude REAL,
+            device_label TEXT NOT NULL DEFAULT '',
+            device_updated_at INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            updated_time TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 radar_preferences 資料表失敗")?;
+
     Ok(())
 }

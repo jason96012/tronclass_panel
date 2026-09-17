@@ -84,6 +84,10 @@ mod tc_proxy;
 mod notifications;
 mod pages;
 mod passkey;
+// RADAR_PANEL_V1（fix70）：雷達點名頁（僅管理員；設定存 radar_preferences 表）。
+mod radar;
+// RADAR_INPUT_PAGE_V1（fix71）：雷達點名輸入頁（管理員手動輸入座標）。
+mod radar_input;
 // SEO_LANDING_V1（fix60）：公開介紹頁 ＋ robots.txt／sitemap.xml。
 mod seo;
 mod static_assets;
@@ -2528,6 +2532,22 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/detection-schedule",
             get(detection_schedule::page_handler),
         )
+        // RADAR_PANEL_V1（fix70）：雷達點名設定與狀態（僅管理員）。
+        .route("/admin/radar", get(radar::page_handler))
+        // RADAR_INPUT_PAGE_V1（fix71）：輸入座標的頁面（數字點名有 /number，雷達用這一頁）。
+        .route("/admin/radar/input", get(radar_input::page_handler))
+        .route(
+            "/admin/api/radar",
+            get(radar::get_handler)
+                .post(radar::post_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/radar/input",
+            get(radar_input::get_handler)
+                .post(radar_input::post_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         // REST_DAY_PAGE_V1：休息日與寒暑假（唯讀）。
         .route("/admin/rest-days", get(rest_days::page_handler))
         // LOGIN_DEVICES_V1：登入裝置管理（任何已登入帳號、只管自己的 session）
@@ -4243,6 +4263,12 @@ struct AdminActionRequest {
     /// GROUP_SUBMIT_RELAY_V1（fix67）：送出間隔的隨機上限（毫秒）。
     #[serde(default)]
     group_submit_jitter_ms: Option<u64>,
+    /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔基準（毫秒）。
+    #[serde(default)]
+    group_submit_qrcode_interval_ms: Option<u64>,
+    /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔隨機上限（毫秒）。
+    #[serde(default)]
+    group_submit_qrcode_jitter_ms: Option<u64>,
     #[serde(default)]
     auto_stop_time: Option<Option<String>>,
     #[serde(default)]

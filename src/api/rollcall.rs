@@ -300,6 +300,203 @@ impl NumberCodeLookup {
     }
 }
 
+// ─── AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）────────────────────────────────
+// 使用者需求：「只要班上超過 15% 的人點名成功，自動送出點名」。
+// 門檻 2026-09-17 由 25% 改成 15%（與 auto-rollcall-thu-tronclass 的 15% 到課率保險同一個數字）。
+// 這一區只負責「把班上進度讀出來」；要不要據此自動送出、要怎麼送，留給各點名流程決定
+// （數字＝自動讀碼送出、雷達＝用最新座標再試一次、QR＝只能靠掃碼所以只催人）。
+//
+// 讀不到、欄位長得不一樣、或只看到自己那一筆 → 一律回 `None`。
+// 這是刻意的：讀不到就維持原本行為，絕不亂猜一個比例去觸發送出。
+
+/// 班上點名進度。（分子／分母都確定時才會被建出來）
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RollcallProgress {
+    /// 已點名成功的人數
+    pub completed: usize,
+    /// 班上人數（這份 payload 裡看得到的學生數）
+    pub total: usize,
+    /// 分子／分母是從哪讀到的（診斷與日誌用）
+    pub source: String,
+}
+
+impl RollcallProgress {
+    /// 是否「**超過**」門檻（嚴格大於：剛好 15% 不算通過，與使用者說的「超過 15%」一致）。
+    pub fn passed(&self, percent: u32) -> bool {
+        self.total > 0
+            && self.completed.saturating_mul(100) > self.total.saturating_mul(percent as usize)
+    }
+
+    /// 顯示用的整數百分比。
+    pub fn percent_rounded(&self) -> usize {
+        if self.total == 0 {
+            0
+        } else {
+            (self.completed.saturating_mul(100) + self.total / 2) / self.total
+        }
+    }
+}
+
+/// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：班上**超過**這個百分比的人點名成功，
+/// 就不必再等使用者輸入——直接自動送出（使用者原話：「只要班上超過 15% 的人點名成功，自動送出點名」）。
+/// 放在這裡是因為它跟 [`RollcallProgress::passed`] 是同一個判斷的另一半。
+/// 15%：2026-09-17 使用者指定（原本 25%），與 auto-rollcall-thu-tronclass 的到課率保險一致。
+pub const AUTO_SUBMIT_PERCENT: u32 = 15;
+/// 至少要有這麼多筆「帶狀態的學生」才當成班級名單。
+/// 避免把「只有我自己那一筆」的 payload 誤讀成全班（1/1＝100% 會誤觸發）。
+const MIN_CLASS_PROGRESS_ROSTER: usize = 4;
+/// 可能代表「班上總人數」的欄位名。
+const PROGRESS_TOTAL_KEYS: &[&str] = &[
+    "total_count", "total_students", "student_count", "students_count", "total_num",
+    "student_num", "class_size", "total",
+];
+/// 可能代表「已點名成功人數」的欄位名。
+const PROGRESS_DONE_KEYS: &[&str] = &[
+    "signed_count", "finished_count", "completed_count", "attended_count", "present_count",
+    "checked_in_count", "on_call_fine_count", "signed_num", "signed_students",
+];
+/// 每一筆學生紀錄裡「狀態」可能長在這些欄位。
+const PROGRESS_STATUS_KEYS: &[&str] = &[
+    "status", "attendance_status", "attendanceStatus", "rollcall_status", "rollcallStatus",
+    "state", "result", "signed", "checked_in", "checkedIn", "attended", "finished",
+    "is_signed", "is_checked_in",
+];
+/// 學生名單可能放在這些 key 底下。
+const PROGRESS_LIST_KEYS: &[&str] = &["student_rollcalls", "students", "records", "list", "items"];
+
+/// 從 JSON 值取整數（接受數字與數字字串）。
+fn progress_number(value: &serde_json::Value) -> Option<usize> {
+    match value {
+        serde_json::Value::Number(number) => number
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .or_else(|| number.as_f64().filter(|f| *f >= 0.0).map(|f| f as usize)),
+        serde_json::Value::String(text) => text.trim().parse::<usize>().ok(),
+        _ => None,
+    }
+}
+
+/// 在一個物件裡找第一個命中的整數欄位。
+fn progress_number_in(
+    map: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<(usize, String)> {
+    for key in keys {
+        if let Some(value) = map.get(*key) {
+            if let Some(number) = progress_number(value) {
+                return Some((number, (*key).to_string()));
+            }
+        }
+    }
+    None
+}
+
+/// 把單筆學生的狀態值轉成「是否成功」。
+fn progress_status_success(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Bool(flag) => *flag,
+        serde_json::Value::Number(number) => number.as_u64() == Some(1),
+        serde_json::Value::String(text) => is_number_success_text(text),
+        _ => false,
+    }
+}
+
+/// 從 `student_rollcalls` payload 讀出班上進度。
+///
+/// 兩種長相都支援（先試統計欄位，再試學生名單）：
+/// 1. **統計欄位**：同一層物件裡同時有「總人數」與「已成功人數」欄位。
+/// 2. **學生名單**：某個 key 底下是陣列，每筆帶狀態欄位；總數＝有狀態的筆數。
+pub fn parse_rollcall_progress(payload: &serde_json::Value) -> Option<RollcallProgress> {
+    fn walk(value: &serde_json::Value, depth: usize) -> Option<RollcallProgress> {
+        if depth > 4 {
+            return None;
+        }
+        match value {
+            serde_json::Value::Object(map) => {
+                // (1) 統計欄位
+                if let (Some((total, total_key)), Some((completed, done_key))) = (
+                    progress_number_in(map, PROGRESS_TOTAL_KEYS),
+                    progress_number_in(map, PROGRESS_DONE_KEYS),
+                ) {
+                    if total >= MIN_CLASS_PROGRESS_ROSTER && completed <= total {
+                        return Some(RollcallProgress {
+                            completed,
+                            total,
+                            source: format!("aggregate:{total_key}/{done_key}"),
+                        });
+                    }
+                }
+                // (2) 學生名單：先看已知的 key，再看這一層所有陣列
+                for key in PROGRESS_LIST_KEYS {
+                    if let Some(items) = map.get(*key).and_then(|v| v.as_array()) {
+                        if let Some(progress) = from_students(items, key) {
+                            return Some(progress);
+                        }
+                    }
+                }
+                for (key, child) in map {
+                    if let Some(items) = child.as_array() {
+                        if let Some(progress) = from_students(items, key) {
+                            return Some(progress);
+                        }
+                    }
+                }
+                // (3) 往下鑽（例如 {"data": {...}}）
+                for child in map.values() {
+                    if let Some(progress) = walk(child, depth + 1) {
+                        return Some(progress);
+                    }
+                }
+                None
+            }
+            serde_json::Value::Array(items) => {
+                if let Some(progress) = from_students(items, "list[].status") {
+                    return Some(progress);
+                }
+                for child in items {
+                    if let Some(progress) = walk(child, depth + 1) {
+                        return Some(progress);
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// 把一個陣列當成「班級名單」數：總數＝有狀態欄位的筆數，成功＝狀態看起來成功。
+    fn from_students(items: &[serde_json::Value], key: &str) -> Option<RollcallProgress> {
+        let mut total = 0usize;
+        let mut completed = 0usize;
+        for item in items {
+            let Some(map) = item.as_object() else { continue };
+            let mut status: Option<&serde_json::Value> = None;
+            for status_key in PROGRESS_STATUS_KEYS {
+                if let Some(value) = map.get(*status_key) {
+                    status = Some(value);
+                    break;
+                }
+            }
+            let Some(status) = status else { continue };
+            total += 1;
+            if progress_status_success(status) {
+                completed += 1;
+            }
+        }
+        if total >= MIN_CLASS_PROGRESS_ROSTER && completed <= total {
+            Some(RollcallProgress {
+                completed,
+                total,
+                source: format!("list:{key}"),
+            })
+        } else {
+            None
+        }
+    }
+
+    walk(payload, 0)
+}
+
 fn coerce_number_code(value: Option<&serde_json::Value>) -> Option<String> {
     let value = value?;
     match value {
@@ -706,6 +903,121 @@ impl super::ApiClient {
             "student_rollcalls number_code lookup completed"
         );
         Ok(lookup)
+    }
+
+    /// `GET /api/rollcall/{id}/student_rollcalls` — 讀出「班上點名進度」（AUTO_SUBMIT_BY_CLASS_PROGRESS_V1）。
+    ///
+    /// 與數字碼查詢打同一個端點（學生看得到班上每一筆的狀態），但這裡只在乎「幾分之幾已成功」。
+    /// 讀不到可判讀的欄位（或只看到自己那一筆）就回 `Ok(None)`——呼叫端維持原本行為。
+    #[instrument(skip(self), fields(rollcall_id = rollcall_id))]
+    pub async fn get_rollcall_progress(
+        &self,
+        rollcall_id: u64,
+    ) -> Result<Option<RollcallProgress>> {
+        let url = format!(
+            "{}/api/rollcall/{}/student_rollcalls",
+            self.base_url, rollcall_id
+        );
+        debug!(url = %url, "GET student_rollcalls for class progress");
+
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| {
+                format!("GET /api/rollcall/{rollcall_id}/student_rollcalls failed")
+            })?;
+
+        let status = resp.status();
+        match status {
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                return Err(miette::miette!(ApiError::Unauthorized));
+            }
+            _ if !status.is_success() => {
+                let body = resp.text().await.unwrap_or_default();
+                return Err(miette::miette!(ApiError::ApiStatus {
+                    status: status.as_u16(),
+                    body,
+                }));
+            }
+            _ => {}
+        }
+
+        let body_bytes = resp
+            .bytes()
+            .await
+            .into_diagnostic()
+            .wrap_err("Failed to read student_rollcalls response body")?;
+        let payload = serde_json::from_slice::<serde_json::Value>(&body_bytes).map_err(|e| {
+            let body_str = String::from_utf8_lossy(&body_bytes);
+            miette::miette!(ApiError::Json(format!(
+                "{e}: body was `{}`",
+                crate::text_utils::truncate_chars(&body_str, 200)
+            )))
+        })?;
+
+        match parse_rollcall_progress(&payload) {
+            Some(progress) => {
+                debug!(
+                    rollcall_id = rollcall_id,
+                    completed = progress.completed,
+                    total = progress.total,
+                    source = %progress.source,
+                    "讀到班上點名進度"
+                );
+                Ok(Some(progress))
+            }
+            None => {
+                debug!(
+                    rollcall_id = rollcall_id,
+                    "student_rollcalls 沒有可判讀的班級進度（維持原本行為）"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// `PUT /api/rollcall/{id}/answer`（**空的答案**）— RADAR_EMPTY_ANSWER_V1。
+    ///
+    /// 抄自 auto-rollcall-thu-tronclass：對雷達點名送一個不帶座標的空物件 `{}`，
+    /// 若這台伺服器沒有驗證座標，會直接判到場（參考專案實測 100%）。我們只把它當「第一發」：
+    /// 沒被接受就照原本的座標流程走；每個帳號、每場點名只送一次（`radar.rs` 記錄）。
+    #[instrument(skip(self), fields(rollcall_id = rollcall_id))]
+    pub async fn answer_radar_rollcall_empty(
+        &self,
+        rollcall_id: u64,
+    ) -> Result<AttendanceResult> {
+        let url = format!("{}/api/rollcall/{}/answer", self.base_url, rollcall_id);
+        debug!(url = %url, "PUT answer (radar rollcall, empty payload)");
+
+        let resp = self
+            .client
+            .put(&url)
+            .json(&serde_json::json!({}))
+            .send()
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| format!("PUT /api/rollcall/{rollcall_id}/answer (empty) failed"))?;
+
+        let status = resp.status();
+        match status {
+            StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT => {
+                debug!("空答案被接受（這台伺服器沒有驗證座標）");
+                Ok(AttendanceResult::Success)
+            }
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+                Err(miette::miette!(ApiError::Unauthorized))
+            }
+            other => {
+                let body_text = resp.text().await.unwrap_or_default();
+                debug!(status = %other, body = %body_text, "空答案沒有被接受（改用座標送）");
+                Ok(AttendanceResult::Failed {
+                    reason: format!("HTTP {other}: {body_text}"),
+                })
+            }
+        }
     }
 
     /// `PUT /api/rollcall/{id}/answer_number_rollcall` — 數字簽到
@@ -1245,5 +1557,71 @@ mod tests {
             AttendanceResult::TransientFailure { .. } => {}
             other => panic!("expected TransientFailure, got {other:?}"),
         }
+    }
+
+    // ── AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）────────────────────────────
+    #[test]
+    fn test_rollcall_progress_strict_threshold() {
+        // 剛好 15%（6/40）→ 不算「超過」；15% 多一點點（7/40）才算。
+        let exact = RollcallProgress {
+            completed: 6,
+            total: 40,
+            source: "test".to_string(),
+        };
+        assert!(!exact.passed(15), "剛好 15% 不該觸發（要超過）");
+        assert!(exact.passed(14));
+        let over = RollcallProgress {
+            completed: 7,
+            total: 40,
+            source: "test".to_string(),
+        };
+        assert!(over.passed(15));
+        assert_eq!(over.percent_rounded(), 18);
+        // 門檻常數本身就是 15（頁面與訊息都照它顯示）。
+        assert_eq!(AUTO_SUBMIT_PERCENT, 15);
+    }
+
+    #[test]
+    fn test_parse_rollcall_progress_aggregate_counts() {
+        let payload = serde_json::json!({ "total_count": 40, "signed_count": 11 });
+        let progress = parse_rollcall_progress(&payload).expect("應該讀到統計欄位");
+        assert_eq!(progress.completed, 11);
+        assert_eq!(progress.total, 40);
+        assert!(progress.passed(25));
+        assert!(progress.source.contains("total_count"));
+    }
+
+    #[test]
+    fn test_parse_rollcall_progress_student_list() {
+        let payload = serde_json::json!({
+            "student_rollcalls": [
+                { "student_id": 1, "status": "on_call_fine" },
+                { "student_id": 2, "status": "absent" },
+                { "student_id": 3, "status": "on_call_fine" },
+                { "student_id": 4, "status": "absent" },
+                { "student_id": 5, "status": "absent" },
+                { "student_id": 6, "status": "absent" },
+                { "student_id": 7, "status": "on_call_fine" },
+                { "student_id": 8, "status": "absent" }
+            ]
+        });
+        let progress = parse_rollcall_progress(&payload).expect("應該讀到學生名單");
+        assert_eq!(progress.completed, 3);
+        assert_eq!(progress.total, 8);
+        assert!(!progress.passed(25));
+        assert!(progress.passed(30));
+    }
+
+    #[test]
+    fn test_parse_rollcall_progress_ignores_own_record_only() {
+        // 只有自己那一筆時 1/1＝100%，絕對不能當成「全班都完成了」
+        let payload = serde_json::json!({ "student_rollcalls": [{ "status": "on_call_fine" }] });
+        assert!(parse_rollcall_progress(&payload).is_none());
+    }
+
+    #[test]
+    fn test_parse_rollcall_progress_unknown_shape_is_none() {
+        let payload = serde_json::json!({ "data": { "number_code": "1234" }, "foo": [1, 2, 3] });
+        assert!(parse_rollcall_progress(&payload).is_none());
     }
 }

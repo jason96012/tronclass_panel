@@ -1,9 +1,11 @@
 //! 雷達簽到模組
 //!
 //! 實現雷達（地理位置）簽到邏輯：
-//! 1. 先依序嘗試 `config.radar.default_coords` 中的預設座標
+//! 0. RADAR_REFERENCE_PARITY_V1：先送一次「不帶座標的空答案」（抄 auto-rollcall-thu-tronclass）
+//! 1. 再依序嘗試 `config.radar.default_coords` 中的預設座標（輸入頁送來的座標最優先）
 //! 2. 若全部失敗，使用 API 回傳的 `distance` 值與圓交叉點/三邊測量算法計算候選座標
 //! 3. 依序嘗試計算出的候選座標
+//! 4. 最後用棋盤格從推估點一圈圈往外掃（同專案的「無界棋盤格」，我們加上半徑上限與節流）
 //!
 //! # 圓交叉點算法說明
 //!
@@ -20,10 +22,15 @@
 //! 詳細方程式可至 [Feature] 雷达签到 查看
 //! https://github.com/KrsMt-0113/XMU-Rollcall-Bot/issues/9
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use miette::Result;
 use tracing::{debug, info, instrument, warn};
+
+// RADAR_INPUT_PAGE_V1（fix71）：雷達點名輸入頁送來的座標通道。
+use crate::adapters::requests::{RadarPointInput, RadarPointReceiver};
 
 use crate::api::{is_auth_error, rollcall::AttendanceResult, ApiClient};
 use crate::config::RadarConfig;
@@ -101,6 +108,9 @@ pub enum RadarResult {
     /// 簽到成功，附帶成功的座標
     Success { coord: Coordinate },
 
+    /// RADAR_EMPTY_ANSWER_V1：空答案就被接受（這一輪完全沒有用到座標）
+    SuccessEmpty,
+
     /// 所有嘗試都失敗（含最後一次失敗的距離）
     Failed {
         last_distance: Option<f64>,
@@ -113,7 +123,10 @@ pub enum RadarResult {
 
 impl RadarResult {
     pub fn is_success(&self) -> bool {
-        matches!(self, RadarResult::Success { .. })
+        matches!(
+            self,
+            RadarResult::Success { .. } | RadarResult::SuccessEmpty
+        )
     }
 }
 
@@ -121,6 +134,7 @@ impl std::fmt::Display for RadarResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RadarResult::Success { coord } => write!(f, "雷達簽到成功，座標：{coord}"),
+            RadarResult::SuccessEmpty => write!(f, "雷達簽到成功（空答案，未帶座標）"),
             RadarResult::Failed {
                 last_distance,
                 tried_coords,
@@ -405,17 +419,25 @@ pub fn haversine_distance_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> 
 /// 對指定的 rollcall 執行雷達簽到
 ///
 /// # 策略
+/// 0. RADAR_INPUT_PAGE_V1（fix71）：**輸入頁送來的座標優先**——使用者按下「送出座標」就代表
+///    他知道自己（或教室）在哪，比任何推算都可靠，所以先試它（同一組不重複試）。
 /// 1. 依序嘗試 `config.default_coords` 中的預設座標
 /// 2. 若均失敗，收集各次失敗回傳的 `distance`，用圓交叉點算法計算候選座標
 /// 3. 嘗試計算出的候選座標（最多嘗試 3 個）
+/// 4. RADAR_REFERENCE_PARITY_V1：先試空答案（Phase -1）；座標都失敗再用棋盤格往外掃（Phase 3）
+///
+/// 每一段開始前都會再看一次輸入頁有沒有新座標（使用者可能在流程進行中才開頁面送出）。
 ///
 /// # 返回
 /// `RadarResult`，包含是否成功及成功的座標。
-#[instrument(skip(api, config), fields(rollcall_id = rollcall_id))]
+#[instrument(skip(api, config, manual_rx), fields(rollcall_id = rollcall_id))]
 pub async fn attempt_radar_rollcall(
     api: Arc<ApiClient>,
     rollcall_id: u64,
+    provider: &str,
+    account_id: &str,
     config: &RadarConfig,
+    manual_rx: Option<RadarPointReceiver>,
 ) -> RadarResult {
     let accuracy = config.accuracy;
     let altitude = config.altitude;
@@ -423,6 +445,56 @@ pub async fn attempt_radar_rollcall(
     let mut tried_coords: Vec<Coordinate> = Vec::new();
     // 量測資料：(座標, 距離) 用於後續圓交叉點計算
     let mut measurements: Vec<(Coordinate, f64)> = Vec::new();
+    // 輸入頁送來、已經試過的座標（同一組不重複試，避免使用者連按時多打學校）。
+    let mut manual_tried: Vec<Coordinate> = Vec::new();
+
+    // ── Phase -1: 空答案（RADAR_EMPTY_ANSWER_V1，抄 auto-rollcall-thu-tronclass）──
+    // 伺服器若沒驗證座標，`{}` 就會直接被判到場；沒被接受就照下面的座標流程走。
+    // 每個帳號、每場點名只送一次，避免每一輪重複花請求。
+    if RADAR_EMPTY_ANSWER_ENABLED && empty_answer_allowed(provider, rollcall_id, account_id) {
+        mark_empty_answer_tried(provider, rollcall_id, account_id);
+        match api.answer_radar_rollcall_empty(rollcall_id).await {
+            Ok(AttendanceResult::Success) => {
+                info!(
+                    rollcall_id = rollcall_id,
+                    account = %account_id,
+                    "✅ 雷達點名空答案直接被接受（未帶座標）"
+                );
+                return RadarResult::SuccessEmpty;
+            }
+            Ok(other) => {
+                debug!(
+                    rollcall_id = rollcall_id,
+                    result = ?other,
+                    "空答案沒有被接受，改走原本的座標流程"
+                );
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                if is_auth_error(&err_str) {
+                    warn!(error = %e, "空答案遇到認證錯誤");
+                    return RadarResult::Error(err_str);
+                }
+                debug!(error = %e, "空答案請求失敗，改走原本的座標流程");
+            }
+        }
+    }
+
+    // ── Phase 0: 輸入頁送來的座標（優先）──────────────────────────────────────
+    if let Some(outcome) = drain_and_try_manual_point(
+        &api,
+        rollcall_id,
+        accuracy,
+        altitude,
+        manual_rx.as_ref(),
+        &mut manual_tried,
+        &mut tried_coords,
+        &mut measurements,
+    )
+    .await
+    {
+        return outcome;
+    }
 
     // ── Phase 1: 嘗試預設座標 ─────────────────────────────────────────────────
     info!(
@@ -433,6 +505,22 @@ pub async fn attempt_radar_rollcall(
     );
 
     for (i, &[lat, lon]) in config.default_coords.iter().enumerate() {
+        // 每一輪開始前再看一次輸入頁：使用者可能在這段時間才送出座標。
+        if let Some(outcome) = drain_and_try_manual_point(
+            &api,
+            rollcall_id,
+            accuracy,
+            altitude,
+            manual_rx.as_ref(),
+            &mut manual_tried,
+            &mut tried_coords,
+            &mut measurements,
+        )
+        .await
+        {
+            return outcome;
+        }
+
         let coord = Coordinate::new(lat, lon);
         tried_coords.push(coord);
 
@@ -487,6 +575,21 @@ pub async fn attempt_radar_rollcall(
     }
 
     // ── Phase 2: 使用圓交叉點算法計算候選座標 ─────────────────────────────────
+    if let Some(outcome) = drain_and_try_manual_point(
+        &api,
+        rollcall_id,
+        accuracy,
+        altitude,
+        manual_rx.as_ref(),
+        &mut manual_tried,
+        &mut tried_coords,
+        &mut measurements,
+    )
+    .await
+    {
+        return outcome;
+    }
+
     if measurements.len() >= 2 {
         info!(
             measurements = measurements.len(),
@@ -566,6 +669,101 @@ pub async fn attempt_radar_rollcall(
         warn!("沒有任何距離量測資料，跳過圓交叉點計算");
     }
 
+    // ── Phase 3: 最後棋盤格（RADAR_GRID_FALLBACK_V1，抄 auto-rollcall-thu-tronclass）──
+    // 只有「手上有距離量測」時才有可信的中心點（推估點）；沒量測就別亂掃學校的伺服器。
+    // 同一場點名每 RADAR_GRID_MIN_INTERVAL_SECS 秒只放行一個帳號掃，跨回合續掃。
+    // 中心點：優先用距離量測推估出來的位置，推不出來才用最後一個量測座標。
+    // （先算好再進 if let：借用的生命週期不會跨進迴圈裡，後面才能 push 新的量測值。）
+    let grid_center = match estimate_location_from_distances(&measurements) {
+        Some(estimate) => Some(estimate),
+        None => measurements.last().map(|(coord, _)| *coord),
+    };
+    if let Some(center) = grid_center {
+        if grid_scan_allowed(provider, rollcall_id) && rollcall_still_open(&api, rollcall_id).await {
+            let mut next = grid_cursor_next(provider, rollcall_id, account_id, &center);
+            let mut scanned = 0usize;
+            while scanned < RADAR_GRID_ATTEMPTS_PER_ROUND {
+                let Some(candidate) = grid_candidate(next, &center, RADAR_GRID_STEP_METERS) else {
+                    info!(
+                        rollcall_id = rollcall_id,
+                        "棋盤格已掃到上限半徑，這一場不再往外掃"
+                    );
+                    break;
+                };
+                next += 1;
+                scanned += 1;
+                if tried_coords
+                    .iter()
+                    .any(|c| c.distance_meters(&candidate) < RADAR_GRID_DEDUP_METERS)
+                {
+                    continue;
+                }
+                tried_coords.push(candidate);
+                debug!(
+                    rollcall_id = rollcall_id,
+                    index = next - 1,
+                    lat = candidate.latitude,
+                    lon = candidate.longitude,
+                    "棋盤格第 {} 格",
+                    next - 1
+                );
+                match try_single_radar_coord(&api, rollcall_id, candidate, accuracy, altitude).await
+                {
+                    Ok(SingleRadarResult::Success) => {
+                        info!(
+                            lat = candidate.latitude,
+                            lon = candidate.longitude,
+                            index = next - 1,
+                            "✅ 雷達簽到成功（棋盤格第 {} 格）",
+                            next - 1
+                        );
+                        grid_cursor_store(provider, rollcall_id, account_id, &center, next);
+                        return RadarResult::Success { coord: candidate };
+                    }
+                    Ok(SingleRadarResult::TooFar { distance }) => {
+                        measurements.push((candidate, distance));
+                    }
+                    Ok(SingleRadarResult::OtherFailure { reason }) => {
+                        warn!(reason = %reason, "棋盤格第 {} 格失敗（非距離錯誤）", next - 1);
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        if is_auth_error(&err_str) {
+                            return RadarResult::Error(err_str);
+                        }
+                        warn!(error = %e, "棋盤格第 {} 格請求錯誤，跳過", next - 1);
+                    }
+                }
+            }
+            grid_cursor_store(provider, rollcall_id, account_id, &center, next);
+            if scanned > 0 {
+                info!(
+                    rollcall_id = rollcall_id,
+                    scanned = scanned,
+                    next = next,
+                    "棋盤格這一輪掃完，下一輪從第 {} 格繼續",
+                    next
+                );
+            }
+        }
+    }
+
+    // 最後再看一次輸入頁：這一輪才送出的座標不要白費（下一輪監控也會再取一次）。
+    if let Some(outcome) = drain_and_try_manual_point(
+        &api,
+        rollcall_id,
+        accuracy,
+        altitude,
+        manual_rx.as_ref(),
+        &mut manual_tried,
+        &mut tried_coords,
+        &mut measurements,
+    )
+    .await
+    {
+        return outcome;
+    }
+
     // ── 全部嘗試失敗 ──────────────────────────────────────────────────────────
     let last_distance = measurements.last().map(|(_, d)| *d);
     warn!(
@@ -589,6 +787,128 @@ enum SingleRadarResult {
     Success,
     TooFar { distance: f64 },
     OtherFailure { reason: String },
+}
+
+/// RADAR_INPUT_PAGE_V1（fix71）：同一組「輸入頁座標」的重複判定距離（公尺）。
+/// 使用者連按送出時，10 公尺內視為同一組，不重複打學校。
+const MANUAL_POINT_DEDUP_METERS: f64 = 10.0;
+
+/// 從輸入頁的通道取出「最新一組」座標（非阻塞；一次清空佇列，只留最後一筆）。
+///
+/// 為什麼只留最後一筆：使用者可能連按兩次（第一組打錯、第二組修正），
+/// 舊的那組已經沒有意義，只會多打一次學校。
+async fn take_manual_point(rx: Option<&RadarPointReceiver>) -> Option<RadarPointInput> {
+    let Some(rx) = rx else {
+        return None;
+    };
+    let mut guard = rx.lock().await;
+    let mut latest: Option<RadarPointInput> = None;
+    while let Ok(point) = guard.try_recv() {
+        latest = Some(point);
+    }
+    latest
+}
+
+/// 取出輸入頁座標並嘗試；回 `Some`＝流程該結束（成功或致命錯誤）。
+#[allow(clippy::too_many_arguments)]
+async fn drain_and_try_manual_point(
+    api: &ApiClient,
+    rollcall_id: u64,
+    accuracy: u32,
+    altitude: i32,
+    manual_rx: Option<&RadarPointReceiver>,
+    manual_tried: &mut Vec<Coordinate>,
+    tried_coords: &mut Vec<Coordinate>,
+    measurements: &mut Vec<(Coordinate, f64)>,
+) -> Option<RadarResult> {
+    let point = take_manual_point(manual_rx).await?;
+    if !point.is_valid() {
+        warn!(
+            rollcall_id = rollcall_id,
+            lat = point.latitude,
+            lon = point.longitude,
+            "輸入頁送來的座標不合法，忽略"
+        );
+        return None;
+    }
+    let coord = Coordinate::new(point.latitude, point.longitude);
+    if manual_tried
+        .iter()
+        .any(|c| c.distance_meters(&coord) < MANUAL_POINT_DEDUP_METERS)
+    {
+        debug!(rollcall_id = rollcall_id, "輸入頁座標與剛試過的重複，跳過");
+        return None;
+    }
+    manual_tried.push(coord);
+    info!(
+        rollcall_id = rollcall_id,
+        lat = point.latitude,
+        lon = point.longitude,
+        source = point.source_label(),
+        "使用雷達點名頁送來的座標（{}）",
+        point.source_label()
+    );
+    try_manual_coord(
+        api,
+        rollcall_id,
+        coord,
+        accuracy,
+        altitude,
+        tried_coords,
+        measurements,
+    )
+    .await
+}
+
+/// 嘗試輸入頁送來的座標：成功回 `Some(Success)`；距離不足回 `None`（並記下量測值）。
+async fn try_manual_coord(
+    api: &ApiClient,
+    rollcall_id: u64,
+    coord: Coordinate,
+    accuracy: u32,
+    altitude: i32,
+    tried_coords: &mut Vec<Coordinate>,
+    measurements: &mut Vec<(Coordinate, f64)>,
+) -> Option<RadarResult> {
+    tried_coords.push(coord);
+    match try_single_radar_coord(api, rollcall_id, coord, accuracy, altitude).await {
+        Ok(SingleRadarResult::Success) => {
+            info!(
+                lat = coord.latitude,
+                lon = coord.longitude,
+                "✅ 雷達簽到成功（輸入頁座標）"
+            );
+            Some(RadarResult::Success { coord })
+        }
+        Ok(SingleRadarResult::TooFar { distance }) => {
+            info!(
+                lat = coord.latitude,
+                lon = coord.longitude,
+                distance = distance,
+                "❌ 輸入頁座標失敗，距離 {distance:.2}m"
+            );
+            measurements.push((coord, distance));
+            None
+        }
+        Ok(SingleRadarResult::OtherFailure { reason }) => {
+            warn!(
+                lat = coord.latitude,
+                lon = coord.longitude,
+                reason = %reason,
+                "⚠️ 輸入頁座標失敗（非距離錯誤）"
+            );
+            None
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            if is_auth_error(&err_str) {
+                warn!(error = %e, "雷達簽到遇到認證錯誤（輸入頁座標）");
+                return Some(RadarResult::Error(err_str));
+            }
+            warn!(error = %e, "輸入頁座標請求錯誤，跳過");
+            None
+        }
+    }
 }
 
 /// 嘗試用單一座標進行雷達簽到
@@ -684,6 +1004,187 @@ fn dedup_coordinates(coords: Vec<Coordinate>, threshold_meters: f64) -> Vec<Coor
     }
 
     result
+}
+
+// ─── RADAR_REFERENCE_PARITY_V1（抄 auto-rollcall-thu-tronclass）───────────────
+//
+// ① 空答案（RADAR_EMPTY_ANSWER_V1）：先送一個不帶座標的 `{}`。伺服器沒驗證座標就
+//    直接判到場；失敗（含被補洞後回 400／422）就照原本的座標流程走。
+//    每個帳號、每場點名只送一次，記在 `RADAR_EMPTY_ANSWER_TRIED`。
+// ② 最後棋盤格（RADAR_GRID_FALLBACK_V1）：座標全失敗、而且手上有距離量測時，
+//    以推估點為中心、每格 100 公尺一圈圈往外掃；每輪只掃幾個點、跨回合續掃，
+//    直到命中、超出半徑或點名關閉——與參考專案的「無界棋盤格」同一個精神，
+//    差別只在我們設了半徑上限，並讓同一場點名每幾秒只有一個帳號掃（不讓 13 個帳號一起打）。
+
+/// RADAR_EMPTY_ANSWER_V1 的開關：設 `false` 就完全不試空答案，一律用座標送
+/// （例如學校補上定位驗證、或臨時不想用這條路時）。
+const RADAR_EMPTY_ANSWER_ENABLED: bool = true;
+/// 這些狀態最多留這麼久（點名早就結束了，留著只是長記憶體）。
+const RADAR_STATE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+/// 棋盤格每格幾公尺（參考專案 `final_grid_step_meters` 預設也是 100）。
+const RADAR_GRID_STEP_METERS: f64 = 100.0;
+/// 每一輪最多掃幾個點（跨回合續掃，不是一次掃完）。
+const RADAR_GRID_ATTEMPTS_PER_ROUND: usize = 4;
+/// 最遠掃到離中心幾公尺（參考專案是無界；我們設上限，避免無限打學校的伺服器）。
+const RADAR_GRID_MAX_RADIUS_METERS: f64 = 3000.0;
+/// 同一場點名兩次掃描至少間隔幾秒（多帳號共用，避免變成 13 倍請求）。
+const RADAR_GRID_MIN_INTERVAL_SECS: u64 = 10;
+/// 中心點移動超過這個距離就從中心重新掃起。
+const RADAR_GRID_CENTER_RESET_METERS: f64 = 50.0;
+/// 與已試座標視為同一格的重複距離（沿用主流程的 10 公尺）。
+const RADAR_GRID_DEDUP_METERS: f64 = 10.0;
+
+/// (provider, rollcall_id, account_id)：狀態以「哪個帳號在哪一場點名」為單位。
+type RadarStateKey = (String, u64, String);
+
+/// 棋盤格游標（中心點 + 下一格編號 + 更新時間）。
+#[derive(Clone, Copy)]
+struct GridCursorState {
+    lat: f64,
+    lon: f64,
+    next: usize,
+    at: Instant,
+}
+
+static RADAR_EMPTY_ANSWER_TRIED: OnceLock<Mutex<HashMap<RadarStateKey, Instant>>> =
+    OnceLock::new();
+static RADAR_GRID_CURSOR: OnceLock<Mutex<HashMap<RadarStateKey, GridCursorState>>> =
+    OnceLock::new();
+static RADAR_GRID_LAST_SCAN: OnceLock<Mutex<HashMap<(String, u64), Instant>>> = OnceLock::new();
+
+/// 這個帳號在這場點名還沒試過空答案嗎？（順手清掉過期項目）
+fn empty_answer_allowed(provider: &str, rollcall_id: u64, account_id: &str) -> bool {
+    let lock = RADAR_EMPTY_ANSWER_TRIED.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else {
+        // 鎖被前一次 panic 弄壞時當成「沒試過」：寧可多送一次，也不要白白放棄。
+        return true;
+    };
+    let now = Instant::now();
+    map.retain(|_, at| now.saturating_duration_since(*at) < RADAR_STATE_TTL);
+    !map.contains_key(&(provider.to_string(), rollcall_id, account_id.to_string()))
+}
+
+/// 記下「這個帳號在這場點名已經試過空答案」。
+fn mark_empty_answer_tried(provider: &str, rollcall_id: u64, account_id: &str) {
+    let lock = RADAR_EMPTY_ANSWER_TRIED.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else { return };
+    let now = Instant::now();
+    map.retain(|_, at| now.saturating_duration_since(*at) < RADAR_STATE_TTL);
+    map.insert((provider.to_string(), rollcall_id, account_id.to_string()), now);
+}
+
+/// 這一輪可以掃棋盤格嗎？（同一場點名每 [`RADAR_GRID_MIN_INTERVAL_SECS`] 秒只放行一次）
+fn grid_scan_allowed(provider: &str, rollcall_id: u64) -> bool {
+    let lock = RADAR_GRID_LAST_SCAN.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else { return false };
+    let now = Instant::now();
+    map.retain(|_, at| now.saturating_duration_since(*at) < RADAR_STATE_TTL);
+    let key = (provider.to_string(), rollcall_id);
+    if let Some(at) = map.get(&key) {
+        if now.saturating_duration_since(*at) < Duration::from_secs(RADAR_GRID_MIN_INTERVAL_SECS) {
+            return false;
+        }
+    }
+    map.insert(key, now);
+    true
+}
+
+/// 這一輪要從第幾格開始掃（中心點換了超過 [`RADAR_GRID_CENTER_RESET_METERS`] 就從頭）。
+fn grid_cursor_next(
+    provider: &str,
+    rollcall_id: u64,
+    account_id: &str,
+    center: &Coordinate,
+) -> usize {
+    let lock = RADAR_GRID_CURSOR.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else { return 0 };
+    let now = Instant::now();
+    map.retain(|_, state| now.saturating_duration_since(state.at) < RADAR_STATE_TTL);
+    match map.get(&(provider.to_string(), rollcall_id, account_id.to_string())) {
+        Some(state) => {
+            let moved = Coordinate::new(state.lat, state.lon).distance_meters(center);
+            if moved > RADAR_GRID_CENTER_RESET_METERS {
+                0
+            } else {
+                state.next
+            }
+        }
+        None => 0,
+    }
+}
+
+/// 記下棋盤格掃到哪裡（下一輪接著掃）。
+fn grid_cursor_store(
+    provider: &str,
+    rollcall_id: u64,
+    account_id: &str,
+    center: &Coordinate,
+    next: usize,
+) {
+    let lock = RADAR_GRID_CURSOR.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else { return };
+    let now = Instant::now();
+    map.retain(|_, state| now.saturating_duration_since(state.at) < RADAR_STATE_TTL);
+    map.insert(
+        (provider.to_string(), rollcall_id, account_id.to_string()),
+        GridCursorState {
+            lat: center.latitude,
+            lon: center.longitude,
+            next,
+            at: now,
+        },
+    );
+}
+
+/// 棋盤格第 `index` 格：0＝中心，之後一圈一圈往外（第 r 圈 8r 格）。
+/// 超過 [`RADAR_GRID_MAX_RADIUS_METERS`] 就回 `None`（＝這一場掃完了）。
+fn grid_candidate(index: usize, center: &Coordinate, step_meters: f64) -> Option<Coordinate> {
+    if index == 0 {
+        return Some(*center);
+    }
+    let target = index - 1;
+    let mut ring: usize = 1;
+    let mut passed: usize = 0;
+    loop {
+        let count = 8 * ring;
+        if target < passed + count {
+            let pos = target - passed;
+            let side = 2 * ring;
+            let offset = (pos % side) as i64;
+            let ring_i = ring as i64;
+            let (ix, iy) = match pos / side {
+                0 => (-ring_i + offset, -ring_i),
+                1 => (ring_i, -ring_i + offset),
+                2 => (ring_i - offset, ring_i),
+                _ => (-ring_i, ring_i - offset),
+            };
+            let candidate = Coordinate::from_cartesian_meters(
+                ix as f64 * step_meters,
+                iy as f64 * step_meters,
+                center,
+            );
+            if center.distance_meters(&candidate) > RADAR_GRID_MAX_RADIUS_METERS {
+                return None;
+            }
+            return Some(candidate);
+        }
+        passed += count;
+        ring += 1;
+        if (ring as f64) * step_meters > RADAR_GRID_MAX_RADIUS_METERS + step_meters {
+            return None;
+        }
+    }
+}
+
+/// 點名還開著嗎？（棋盤格掃描前確認一次，關掉就不要再掃）
+async fn rollcall_still_open(api: &ApiClient, rollcall_id: u64) -> bool {
+    match api.get_rollcalls().await {
+        Ok(list) => list.iter().any(|r| r.rollcall_id == rollcall_id),
+        Err(e) => {
+            debug!(error = %e, "確認點名狀態失敗（照樣繼續掃棋盤格）");
+            true
+        }
+    }
 }
 
 // ─── 測試 ─────────────────────────────────────────────────────────────────────
@@ -1010,13 +1511,107 @@ mod tests {
         };
         assert!(success.to_string().contains("成功"));
 
+        let empty = RadarResult::SuccessEmpty;
+        assert!(empty.to_string().contains("空答案"));
+        assert!(empty.is_success());
+
         let failed = RadarResult::Failed {
             last_distance: Some(42.5),
             tried_coords: vec![],
         };
         assert!(failed.to_string().contains("失敗"));
+        assert!(!failed.is_success());
 
         let err = RadarResult::Error("timeout".into());
         assert!(err.to_string().contains("timeout"));
+    }
+
+    // ── RADAR_REFERENCE_PARITY_V1：空答案只試一次 ─────────────────────────────
+
+    #[test]
+    fn test_empty_answer_allowed_only_once() {
+        // 用測試專屬的 key，不干擾其他測試或正式路徑。
+        let (provider, rollcall, account) = ("unittest-provider", 987_654_321_u64, "unittest-account");
+        assert!(empty_answer_allowed(provider, rollcall, account), "第一次應該可以試");
+        mark_empty_answer_tried(provider, rollcall, account);
+        assert!(
+            !empty_answer_allowed(provider, rollcall, account),
+            "試過之後同一個帳號在這場點名不該再試"
+        );
+        // 不同帳號是各自獨立的（每個人要自己簽到）。
+        assert!(empty_answer_allowed(provider, rollcall, "another-account"));
+        // 換一場點名也是新的。
+        assert!(empty_answer_allowed(provider, rollcall + 1, account));
+    }
+
+    // ── RADAR_REFERENCE_PARITY_V1：棋盤格 ─────────────────────────────────────
+
+    #[test]
+    fn test_grid_candidate_rings() {
+        let center = Coordinate::new(25.0330, 121.5654); // 台北
+        let step = RADAR_GRID_STEP_METERS;
+
+        // 第 0 格＝中心
+        let zero = grid_candidate(0, &center, step).expect("第 0 格是中心");
+        assert!(zero.distance_meters(&center) < 0.5);
+
+        // 1..=8 是第 1 圈：八個方向各一格，距離都接近 100 公尺
+        let mut ring1 = Vec::new();
+        for index in 1..=8usize {
+            let candidate = grid_candidate(index, &center, step).expect("第 1 圈應該都在半徑內");
+            let distance = center.distance_meters(&candidate);
+            assert!(
+                (distance - step).abs() < 5.0,
+                "第 1 圈的格子應該離中心約 {step} 公尺，實際 {distance:.1}"
+            );
+            ring1.push(candidate);
+        }
+        // 八格互不相同（沒有重複列舉）
+        for i in 0..ring1.len() {
+            for j in (i + 1)..ring1.len() {
+                assert!(
+                    ring1[i].distance_meters(&ring1[j]) > 1.0,
+                    "第 1 圈的第 {i} 格與第 {j} 格重疊"
+                );
+            }
+        }
+
+        // 第 2 圈（index 9..=24）距離應該落在 100～150 公尺之間（邊格 100、角格 ≈141）
+        for index in 9..=24usize {
+            let candidate = grid_candidate(index, &center, step).expect("第 2 圈應該都在半徑內");
+            let distance = center.distance_meters(&candidate);
+            assert!(
+                distance >= step - 5.0 && distance <= step * 1.5 + 5.0,
+                "第 2 圈距離應在 100～150 公尺之間，實際 {distance:.1}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_grid_candidate_stops_at_max_radius() {
+        let center = Coordinate::new(25.0330, 121.5654);
+        let step = RADAR_GRID_STEP_METERS;
+        let mut index = 0usize;
+        let mut last_inside = None;
+        // 上限半徑內一定有格子；掃到第一個 None 就停（避免測試自己無限迴圈）。
+        while index < 200_000 {
+            match grid_candidate(index, &center, step) {
+                Some(candidate) => {
+                    assert!(
+                        center.distance_meters(&candidate) <= RADAR_GRID_MAX_RADIUS_METERS + 1.0,
+                        "不該產生超過上限半徑的格子（index {index}）"
+                    );
+                    last_inside = Some(index);
+                    index += 1;
+                }
+                None => break,
+            }
+        }
+        assert!(index > 0, "至少要有中心那一格");
+        assert!(index < 200_000, "掃描必須會停在上限半徑（不能無限延伸）");
+        assert!(
+            last_inside.map(|i| i > 100).unwrap_or(false),
+            "上限半徑 3 公里內應該有上百格可掃"
+        );
     }
 }

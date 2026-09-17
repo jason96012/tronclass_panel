@@ -48,6 +48,8 @@ mod metrics_history;
 mod monitor;
 mod monitor_alerts;
 mod monitor_watchdog;
+// RADAR_PANEL_V1（fix70）：雷達設定的執行期有效值（設定檔基準值＋面板覆寫）。
+mod radar_settings;
 mod rollcalls;
 mod runtime_settings;
 mod secret_encryption;
@@ -1035,6 +1037,27 @@ async fn main() -> Result<()> {
             return Err(e);
         }
     };
+
+    // RADAR_PANEL_V1（fix70）：雷達設定＝設定檔當基準、面板（資料庫）當覆寫。
+    // 先把設定檔的每組雷達設定登記成基準值，再把面板存過的覆寫載入記憶體；
+    // 之後 monitor 每次雷達簽到都取用這一份，面板改設定即時生效、重啟也不會消失。
+    radar_settings::set_baselines(
+        &config
+            .providers
+            .iter()
+            .map(|(name, provider)| (name.clone(), provider.radar.clone()))
+            .collect(),
+    )
+    .await;
+    match radar_settings::load_from_db(&accounts_db).await {
+        Ok(count) if count > 0 => {
+            info!(providers = count, "已載入面板的雷達設定（覆寫設定檔預設值）");
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(error = %e, "載入面板的雷達設定失敗，本次啟動沿用設定檔預設值");
+        }
+    }
 
     if let Err(e) = logs::init_sqlite(&args.accounts_path).await {
         eprintln!("⚠️ 系統紀錄 SQLite 初始化失敗，暫時只使用記憶體紀錄：{e}");

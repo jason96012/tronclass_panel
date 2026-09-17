@@ -21,6 +21,13 @@ pub const DEFAULT_GROUP_SUBMIT_INTERVAL_MS: u64 = 600;
 pub const DEFAULT_GROUP_SUBMIT_JITTER_MS: u64 = 2000;
 /// 隨機上限的硬上限（面板／API 都不能超過）。
 pub const MAX_GROUP_SUBMIT_JITTER_MS: u64 = 5000;
+/// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔**基準**（毫秒）。
+pub const DEFAULT_GROUP_SUBMIT_QRCODE_INTERVAL_MS: u64 = 600;
+/// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔**隨機上限**（毫秒）。
+///
+/// 比數字點名小：課堂 QR 會輪換，等太久只是白白送出過期的碼
+/// （送出前會再抓一次最新 payload，這裡控制的是帳號之間的間距）。
+pub const DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS: u64 = 600;
 /// 基準的硬上限（沿用既有 10 秒上限）。
 pub const MAX_GROUP_SUBMIT_INTERVAL_MS: u64 = 10_000;
 pub const MAX_RUNTIME_REST_PERIODS: usize = 64;
@@ -40,6 +47,12 @@ pub struct RuntimeSettings {
     /// 0 ＝ 固定間隔。預設見 [`DEFAULT_GROUP_SUBMIT_JITTER_MS`]。
     #[serde(default = "default_group_submit_jitter_ms")]
     pub group_submit_jitter_ms: u64,
+    /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔基準（毫秒）。
+    #[serde(default = "default_group_submit_qrcode_interval_ms")]
+    pub group_submit_qrcode_interval_ms: u64,
+    /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔隨機上限（毫秒）。
+    #[serde(default = "default_group_submit_qrcode_jitter_ms")]
+    pub group_submit_qrcode_jitter_ms: u64,
     /// Local time HH:MM after which timer polling auto-pauses. None means disabled.
     ///
     /// Kept for backwards compatibility; new UI uses `rest_periods` instead.
@@ -109,12 +122,23 @@ fn default_group_submit_jitter_ms() -> u64 {
     DEFAULT_GROUP_SUBMIT_JITTER_MS
 }
 
+/// serde 預設值：舊的設定檔／請求沒有 QR 欄位時，補上 QR 專屬預設。
+fn default_group_submit_qrcode_interval_ms() -> u64 {
+    DEFAULT_GROUP_SUBMIT_QRCODE_INTERVAL_MS
+}
+
+fn default_group_submit_qrcode_jitter_ms() -> u64 {
+    DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS
+}
+
 impl Default for RuntimeSettings {
     fn default() -> Self {
         Self {
             poll_interval_secs: None,
             group_submit_interval_ms: DEFAULT_GROUP_SUBMIT_INTERVAL_MS,
             group_submit_jitter_ms: DEFAULT_GROUP_SUBMIT_JITTER_MS,
+            group_submit_qrcode_interval_ms: DEFAULT_GROUP_SUBMIT_QRCODE_INTERVAL_MS,
+            group_submit_qrcode_jitter_ms: DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS,
             auto_stop_time: None,
             rest_periods: Vec::new(),
             semester_override: None,
@@ -170,6 +194,16 @@ pub async fn group_submit_jitter_ms() -> u64 {
     SETTINGS.read().await.group_submit_jitter_ms
 }
 
+/// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔基準（毫秒）。
+pub async fn group_submit_qrcode_interval_ms() -> u64 {
+    SETTINGS.read().await.group_submit_qrcode_interval_ms
+}
+
+/// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔隨機上限（毫秒）。
+pub async fn group_submit_qrcode_jitter_ms() -> u64 {
+    SETTINGS.read().await.group_submit_qrcode_jitter_ms
+}
+
 pub async fn auto_stop_reached(now: NaiveTime) -> bool {
     let settings = SETTINGS.read().await;
     let Some(value) = settings.auto_stop_time.as_deref() else {
@@ -198,6 +232,12 @@ fn normalize(mut settings: RuntimeSettings) -> RuntimeSettings {
         .min(MAX_GROUP_SUBMIT_INTERVAL_MS);
     settings.group_submit_jitter_ms = settings
         .group_submit_jitter_ms
+        .min(MAX_GROUP_SUBMIT_JITTER_MS);
+    settings.group_submit_qrcode_interval_ms = settings
+        .group_submit_qrcode_interval_ms
+        .min(MAX_GROUP_SUBMIT_INTERVAL_MS);
+    settings.group_submit_qrcode_jitter_ms = settings
+        .group_submit_qrcode_jitter_ms
         .min(MAX_GROUP_SUBMIT_JITTER_MS);
     settings.auto_stop_time = settings.auto_stop_time.and_then(|value| {
         let value = value.trim().to_string();

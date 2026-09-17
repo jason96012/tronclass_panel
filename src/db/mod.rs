@@ -30,6 +30,7 @@ mod homework;
 mod materials;
 mod passkeys;
 mod preferences;
+mod radar;
 // ROLLCALL_ATTENDANCE_V1（fix66）：點名送出紀錄（出席統計）。
 mod rollcalls;
 mod schema;
@@ -102,6 +103,11 @@ pub use activity::{ActivityEventInput, ActivityEventRow};
 pub use blacklist::IpBlacklistRow;
 #[allow(unused_imports)]
 pub use materials::{MaterialEventInput, MaterialEventRow};
+// ROLLCALL_STATS_V1（fix66）：點名統計。函式與列型別在 API 層直接使用；兩個統計結構
+// （RollcallCourseStat／RollcallSenderStat）目前只有本模組內部在建構與序列化時用到值，
+// 對外沒有具名引用——依本檔慣例（同 TimetableSyncStateRow 等）明示 allow，
+// 保留 `crate::db::…` 這條取用路徑，同時不留編譯警告。
+#[allow(unused_imports)]
 pub use rollcalls::{
     aggregate_courses, aggregate_senders, rollcall_success_rate, RollcallCourseStat,
     RollcallEventInput, RollcallEventRow, RollcallSenderStat,
@@ -111,6 +117,9 @@ pub use preferences::{
     ClassReminderDueRow, ClassReminderPreferenceRow, DetectionSchedulePreferenceRow,
     NotificationPreferenceRow,
 };
+// RADAR_PANEL_V1（fix70）：雷達設定列（面板 API 只用欄位，不具名引用型別）。
+#[allow(unused_imports)]
+pub use radar::RadarPreferenceRow;
 // HOMEWORK_LADDER_V1：提醒引擎（homework_reminders）與通知頁 API 共用的預設階梯。
 pub(crate) use preferences::{
     DEFAULT_HOMEWORK_LADDER_HOURS, HOMEWORK_LADDER_MAX_HOURS, HOMEWORK_LADDER_MAX_STAGES,

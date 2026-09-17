@@ -42,8 +42,9 @@ use crate::adapters::events::{
     OutboundMessage, ReauthRecord, RollcallHistoryEntry, SystemStartedEvent,
 };
 use crate::adapters::requests::{
-    create_number_code_channel, create_qrcode_channel, AccountRegistry, NumberCodeReceiver,
-    NumberCodeSender, QrCodeReceiver, QrCodeSender, RequestAccountState,
+    create_number_code_channel, create_qrcode_channel, create_radar_point_channel, AccountRegistry,
+    NumberCodeReceiver, NumberCodeSender, QrCodeReceiver, QrCodeSender, RadarPointReceiver,
+    RadarPointSender, RequestAccountState,
 };
 use crate::adapters::scanner::QrScannerRegistry;
 use crate::api::{is_auth_error_report, ApiClient};
@@ -218,6 +219,9 @@ pub struct MonitorContext {
 
     /// 數字點名手動輸入通道傳送端（給 adapter 指令使用）
     pub number_tx: NumberCodeSender,
+    /// RADAR_INPUT_PAGE_V1（fix71）：雷達點名頁送出的座標。
+    pub radar_rx: RadarPointReceiver,
+    pub radar_tx: RadarPointSender,
 
     /// 共享 QR scanner registry（可選）
     pub scanner_registry: Option<Arc<QrScannerRegistry>>,
@@ -268,6 +272,8 @@ impl MonitorContext {
         // ── QR code / 數字點名手動輸入通道 ───────────────────────────────────
         let (qr_tx, qr_rx) = create_qrcode_channel(4);
         let (number_tx, number_rx) = create_number_code_channel(8);
+        // RADAR_INPUT_PAGE_V1（fix71）：雷達點名頁的座標通道（容量比照數字點名）。
+        let (radar_tx, radar_rx) = create_radar_point_channel(8);
 
         // ── 監控狀態 ──────────────────────────────────────────────────────────
         let started_at = current_unix_secs();
@@ -302,6 +308,7 @@ impl MonitorContext {
                 Arc::clone(&adapter_target),
                 qr_tx.clone(),
                 number_tx.clone(),
+                radar_tx.clone(),
                 Arc::clone(&status),
             ))
         } else {
@@ -321,6 +328,8 @@ impl MonitorContext {
             qr_tx,
             number_rx,
             number_tx,
+            radar_rx,
+            radar_tx,
             scanner_registry,
             force_cascade: None,
             status,
@@ -1169,6 +1178,10 @@ async fn do_poll_and_attend(
         ctx.request_account.as_ref().map(|_| ctx.number_tx.clone()),
         ctx.request_account.as_ref().map(|_| Arc::clone(&ctx.qr_rx)),
         ctx.request_account.as_ref().map(|_| ctx.qr_tx.clone()),
+        ctx.request_account.as_ref().map(|_| Arc::clone(&ctx.radar_rx)),
+        ctx.request_account
+            .as_ref()
+            .map(|_| ctx.radar_tx.clone()),
         ctx.scanner_registry.as_ref().map(Arc::clone),
     )
     .await;

@@ -5,8 +5,11 @@
 //!
 //! - 第一位帳號立即送出（游標還是空的）；送出前先把游標推到「現在 + 抽到的間隔」。
 //! - 之後每個帳號等到游標時間才送出；送出前再把游標往後推同樣的一個間隔。
-//! - 間隔 = `base + U(0, jitter)`，`base`／`jitter` 由 runtime settings 決定
-//!   （預設 base 600 ms、隨機上限 2000 ms；面板可調）。
+//! - 間隔 = `base + U(0, jitter)`；**數字與 QR Code 各有自己的參數**（面板可調）：
+//!   數字預設 base 600 / jitter 2000，QR 預設 base 600 / jitter 600（QR 較小，因為課堂 QR 會輪換）。
+//! - QR 的路徑在等到輪次後、送出前會再抓一次**最新** payload（QR_FRESH_PAYLOAD_V1）。
+//! - 等待本身有上限：呼叫端可用 [`wait_group_submit_turn`] 帶入預算（`max_wait`，
+//!   RELAY_DEADLINE_BUDGET_V1／fix69），避免等到學校的點名視窗都關了才送出。
 //!
 //! 兩個結構性保證（不靠參數大小巧合）：
 //! 1. **順序不亂**：游標只會往前走，後位的排定時間一定不早於前一位。
@@ -23,7 +26,7 @@ use std::time::{Duration, Instant};
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 const GROUP_SUBMIT_STATE_TTL: Duration = Duration::from_secs(30 * 60);
 
@@ -109,17 +112,33 @@ async fn reserve_turn(
     (planned, false, gap_ms)
 }
 
-/// 等待同一 provider + rollcall + 類型下輪到此帳號送出。
+/// 等待同一 provider + rollcall + 類型下輪到此帳號送出，並回傳**實際等待時間**。
 ///
 /// 第一位不等待；之後每位等到游標（＝前一位送出時間 + 抽到的間隔）才送出。
+///
+/// `max_wait` 是呼叫端給的等待預算（RELAY_DEADLINE_BUDGET_V1／fix69）：
+/// 通常是「本次點名的等待窗還剩多少時間 − 送出餘裕」。排到的時間超過預算時
+/// **不再等下去**，改成在預算用盡時送出，並記一筆 warn（`relay_wait_capped`）——
+/// 寧可提早送出，也不要送出時學校的點名視窗已經關了。傳 `None` ＝ 不設限。
 pub async fn wait_group_submit_turn(
     provider: &str,
     rollcall_id: u64,
     kind: GroupSubmitKind,
     account_id: &str,
-) {
-    let base_ms = crate::runtime_settings::group_submit_interval_ms().await;
-    let jitter_ms = crate::runtime_settings::group_submit_jitter_ms().await;
+    max_wait: Option<Duration>,
+) -> Duration {
+    // fix68：數字與 QR 各有自己的節奏參數。QR 預設較小（課堂 QR 會輪換），
+    // 且 QR 送出前會再抓一次最新 payload（見 rollcalls::handle_qrcode_rollcall）。
+    let (base_ms, jitter_ms) = match kind {
+        GroupSubmitKind::Number => (
+            crate::runtime_settings::group_submit_interval_ms().await,
+            crate::runtime_settings::group_submit_jitter_ms().await,
+        ),
+        GroupSubmitKind::QrCode => (
+            crate::runtime_settings::group_submit_qrcode_interval_ms().await,
+            crate::runtime_settings::group_submit_qrcode_jitter_ms().await,
+        ),
+    };
     let now = Instant::now();
     let key = GroupSubmitKey {
         provider: provider.to_string(),
@@ -128,7 +147,24 @@ pub async fn wait_group_submit_turn(
     };
 
     let (planned, reused, gap_ms) = reserve_turn(key, account_id, now, base_ms, jitter_ms).await;
-    let wait = planned.saturating_duration_since(Instant::now());
+    let planned_wait = planned.saturating_duration_since(Instant::now());
+    // RELAY_DEADLINE_BUDGET_V1（fix69）：最多只等到呼叫端給的預算用完為止。
+    let capped = matches!(max_wait, Some(budget) if planned_wait > budget);
+    let wait = match max_wait {
+        Some(budget) if planned_wait > budget => budget,
+        _ => planned_wait,
+    };
+    if capped {
+        warn!(
+            provider = %provider,
+            rollcall_id = rollcall_id,
+            kind = %kind,
+            account = %account_id,
+            planned_wait_ms = planned_wait.as_millis(),
+            budget_ms = max_wait.map(|budget| budget.as_millis()).unwrap_or(0),
+            "接力等待超出本次流程的等待預算，改為提早送出（relay_wait_capped）"
+        );
+    }
 
     if wait > Duration::ZERO {
         info!(
@@ -157,6 +193,7 @@ pub async fn wait_group_submit_turn(
             "多帳號點名立即送出（游標已到或第一位）"
         );
     }
+    wait
 }
 
 fn cleanup_submit_state(state: &mut HashMap<GroupSubmitKey, SubmitSequence>) {
@@ -228,7 +265,7 @@ mod tests {
     async fn consecutive_gaps_never_below_base() {
         let now = Instant::now();
         let mut previous: Option<Instant> = None;
-        for index in 0..12 {
+        for index in 0..13 {
             let account = format!("acc{index}");
             let (planned, _, _) = reserve_turn(key(104), &account, now, 600, 2000).await;
             if let Some(previous) = previous {
@@ -236,5 +273,32 @@ mod tests {
             }
             previous = Some(planned);
         }
+    }
+
+    /// 接力等待真的會等到輪次才回傳（不設預算＝等到底）。
+    #[tokio::test]
+    async fn waits_until_the_turn_arrives() {
+        let now = Instant::now();
+        let _ = reserve_turn(key(105), "acc1", now, 600, 2000).await;
+        let started = Instant::now();
+        let waited = wait_group_submit_turn("test", 105, GroupSubmitKind::Number, "acc2", None)
+            .await;
+        assert!(waited > Duration::ZERO);
+        // base 是 600ms；留一點時序餘裕，避免抽到的間隔剛好貼近 600ms 時誤判。
+        assert!(started.elapsed() >= Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn budget_caps_the_wait() {
+        let now = Instant::now();
+        let _ = reserve_turn(key(106), "acc1", now, 600, 2000).await;
+        let budget = Duration::from_millis(50);
+        let started = Instant::now();
+        let waited =
+            wait_group_submit_turn("test", 106, GroupSubmitKind::Number, "acc2", Some(budget))
+                .await;
+        // 排到的時間至少 600ms 之後，但預算只有 50ms → 必須提早送出。
+        assert!(waited <= budget);
+        assert!(started.elapsed() < Duration::from_millis(600));
     }
 }

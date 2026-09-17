@@ -32,6 +32,43 @@ pub enum NumberCodeInput {
 pub type NumberCodeSender = mpsc::Sender<NumberCodeInput>;
 pub type NumberCodeReceiver = Arc<Mutex<mpsc::Receiver<NumberCodeInput>>>;
 
+/// RADAR_INPUT_PAGE_V1（fix71）：雷達點名輸入頁送出的座標。
+///
+/// 雷達簽到需要的不是密碼而是「人在哪裡」——這個值只有使用者知道，所以比照數字點名
+/// 做一條回傳通道：輸入頁把座標送進來，監控流程就拿它當下一個要嘗試的座標。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RadarPointInput {
+    pub latitude: f64,
+    pub longitude: f64,
+    /// 瀏覽器回報的定位精確度（公尺）；手動輸入時為 `None`。
+    pub accuracy: Option<f64>,
+    /// 是否由「用我目前位置」按鈕取得（只用於訊息與日誌，不影響送出內容）。
+    pub from_device: bool,
+}
+
+impl RadarPointInput {
+    /// 合法經緯度才收（避免把打錯的座標送去學校）。
+    pub fn is_valid(&self) -> bool {
+        self.latitude.is_finite()
+            && self.longitude.is_finite()
+            && (-90.0..=90.0).contains(&self.latitude)
+            && (-180.0..=180.0).contains(&self.longitude)
+            && !(self.latitude == 0.0 && self.longitude == 0.0)
+    }
+
+    /// 顯示用來源說明。
+    pub fn source_label(&self) -> &'static str {
+        if self.from_device {
+            "裝置定位"
+        } else {
+            "手動輸入"
+        }
+    }
+}
+
+pub type RadarPointSender = mpsc::Sender<RadarPointInput>;
+pub type RadarPointReceiver = Arc<Mutex<mpsc::Receiver<RadarPointInput>>>;
+
 /// Which per-account platform binding a `RequestState` should use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdapterBindingKind {
@@ -44,11 +81,21 @@ pub enum AdapterBindingKind {
 pub struct RequestChannels {
     pub qr_tx: QrCodeSender,
     pub number_tx: NumberCodeSender,
+    /// RADAR_INPUT_PAGE_V1（fix71）：雷達點名頁送出的座標通道。
+    pub radar_tx: RadarPointSender,
 }
 
 impl RequestChannels {
-    pub fn new(qr_tx: QrCodeSender, number_tx: NumberCodeSender) -> Self {
-        Self { qr_tx, number_tx }
+    pub fn new(
+        qr_tx: QrCodeSender,
+        number_tx: NumberCodeSender,
+        radar_tx: RadarPointSender,
+    ) -> Self {
+        Self {
+            qr_tx,
+            number_tx,
+            radar_tx,
+        }
     }
 }
 
@@ -60,6 +107,12 @@ pub fn create_qrcode_channel(buffer: usize) -> (QrCodeSender, QrCodeReceiver) {
 
 /// Build a manual number-code input channel.
 pub fn create_number_code_channel(buffer: usize) -> (NumberCodeSender, NumberCodeReceiver) {
+    let (tx, rx) = mpsc::channel(buffer);
+    (tx, Arc::new(Mutex::new(rx)))
+}
+
+/// RADAR_INPUT_PAGE_V1（fix71）：建立雷達點名頁的座標輸入通道。
+pub fn create_radar_point_channel(buffer: usize) -> (RadarPointSender, RadarPointReceiver) {
     let (tx, rx) = mpsc::channel(buffer);
     (tx, Arc::new(Mutex::new(rx)))
 }
@@ -272,11 +325,13 @@ impl RequestAccountState {
         guard.take()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         account_id: impl Into<String>,
         user_id: impl Into<String>,
         qr_tx: QrCodeSender,
         number_tx: NumberCodeSender,
+        radar_tx: RadarPointSender,
         monitor_status: Arc<Mutex<MonitorStatus>>,
     ) -> Self {
         let account_id = account_id.into();
@@ -287,23 +342,26 @@ impl RequestAccountState {
             Arc::new(Mutex::new(target)),
             qr_tx,
             number_tx,
+            radar_tx,
             monitor_status,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_target(
         account_id: impl Into<String>,
         username: impl Into<String>,
         target: Arc<Mutex<AdapterAccountTarget>>,
         qr_tx: QrCodeSender,
         number_tx: NumberCodeSender,
+        radar_tx: RadarPointSender,
         monitor_status: Arc<Mutex<MonitorStatus>>,
     ) -> Self {
         Self {
             account_id: account_id.into(),
             username: username.into(),
             target,
-            requests: RequestChannels::new(qr_tx, number_tx),
+            requests: RequestChannels::new(qr_tx, number_tx, radar_tx),
             monitor_status,
             is_running: Arc::new(Mutex::new(true)),
             force_poll_tx: Arc::new(tokio::sync::Notify::new()),
@@ -1004,12 +1062,14 @@ mod tests {
     ) -> (RequestAccountState, tokio::sync::mpsc::Receiver<String>) {
         let (qr_tx, qr_rx) = tokio::sync::mpsc::channel(10);
         let (number_tx, _number_rx) = tokio::sync::mpsc::channel(10);
+        let (radar_tx, _radar_rx) = create_radar_point_channel(10);
         (
             RequestAccountState::new(
                 account_id,
                 user_id,
                 qr_tx,
                 number_tx,
+                radar_tx,
                 make_test_status(account_id, true),
             ),
             qr_rx,
@@ -1098,11 +1158,13 @@ mod tests {
     async fn test_number_code_command_sends_to_bound_account() {
         let (qr_tx, _qr_rx) = tokio::sync::mpsc::channel(10);
         let (number_tx, mut number_rx) = tokio::sync::mpsc::channel(10);
+        let (radar_tx, _radar_rx) = create_radar_point_channel(10);
         let account = RequestAccountState::new(
             "acc1",
             "Uuser1",
             qr_tx,
             number_tx,
+            radar_tx,
             make_test_status("acc1", true),
         );
         let state = make_state(vec![account]);

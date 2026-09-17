@@ -223,15 +223,23 @@
   <!-- GROUP_SUBMIT_RELAY_V1: 多帳號點名送出節奏（僅管理員；走 /admin/api/action runtime_settings） -->
   <section class="card" id="groupSubmitCard" hidden>
     <h1>多帳號點名送出節奏</h1>
-    <p class="hint">同一場點名由多個帳號送出時，用「下一個可送出時間」的游標把時間錯開：第一位立即送出，之後每位間隔 <b>基準 + 隨機(0～上限)</b> 毫秒。順序不會亂，且兩人至少間隔「基準」；若某人回應較慢，也不會卡住後面的人。設定即時生效，服務重啟後回到預設（基準 600、隨機上限 2000）。</p>
+    <p class="hint">同一場點名由多個帳號送出時，用「下一個可送出時間」的游標把時間錯開：第一位立即送出，之後每位間隔 <b>基準 + 隨機(0～上限)</b> 毫秒。順序不會亂，且兩人至少間隔「基準」；若某人回應較慢，也不會卡住後面的人。設定即時生效，服務重啟後回到預設。</p>
     <div class="test-row"><span><b>目前生效</b><i id="gsStatus">讀取中…</i></span></div>
     <div class="test-row">
-      <span><b>基準間隔（毫秒）</b><i>600 ＝ 0.6 秒；0 ＝ 不等待（多位會同時送出，僅建議單帳號）</i></span>
+      <span><b>數字點名：基準間隔（毫秒）</b><i>600 ＝ 0.6 秒；0 ＝ 不等待（多位會同時送出，僅建議單帳號）</i></span>
       <input id="gsBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
     </div>
     <div class="test-row">
-      <span><b>隨機上限（毫秒）</b><i>實際間隔會在「基準 ～ 基準＋此值」之間隨機；0 ＝ 固定間隔</i></span>
+      <span><b>數字點名：隨機上限（毫秒）</b><i>實際間隔會在「基準 ～ 基準＋此值」之間隨機；0 ＝ 固定間隔</i></span>
       <input id="gsJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="2000">
+    </div>
+    <div class="test-row">
+      <span><b>QR Code：基準間隔（毫秒）</b><i>QR 預設與數字相同（600），但隨機上限較小</i></span>
+      <input id="gsQrBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
+    </div>
+    <div class="test-row">
+      <span><b>QR Code：隨機上限（毫秒）</b><i>建議維持較小（例如 600）；送出前會自動改用<strong>最新的 QR payload</strong>，不會送過期的碼</i></span>
+      <input id="gsQrJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="600">
     </div>
     <div class="test-row wrap">
       <button id="gsApply" class="tbtn" type="button">套用</button>
@@ -425,12 +433,15 @@
 (function () {
   'use strict';
   var DEFAULT_BASE = 600, DEFAULT_JITTER = 2000, MAX_BASE = 10000, MAX_JITTER = 5000;
+  var DEFAULT_QR_BASE = 600, DEFAULT_QR_JITTER = 600;
   function init() {
     var card = document.getElementById('groupSubmitCard');
     if (!card) return;
     var statusEl = document.getElementById('gsStatus');
     var baseInput = document.getElementById('gsBaseInput');
     var jitterInput = document.getElementById('gsJitterInput');
+    var qrBaseInput = document.getElementById('gsQrBaseInput');
+    var qrJitterInput = document.getElementById('gsQrJitterInput');
     var msg = document.getElementById('gsMsg');
     function show(text, kind) {
       if (!msg) return;
@@ -448,13 +459,24 @@
       if (jitter <= 0) return '固定 ' + low + ' 秒';
       return low + ' ～ ' + high + ' 秒（隨機）';
     }
-    function render(base, jitter) {
+    /* fix69：預估改成依「實際帳號數」計算（拿不到數量時退回「每多一個帳號最多 +X 秒」）。 */
+    function estimate(base, jitter, count) {
+      if (count > 0) {
+        if (count <= 1) return '單一帳號：立即送出';
+        return count + ' 個帳號最壞約 ' + (((base + jitter) * (count - 1)) / 1000).toFixed(1) + ' 秒';
+      }
+      return '每多一個帳號最多 +' + ((base + jitter) / 1000).toFixed(2) + ' 秒';
+    }
+    function render(base, jitter, qrBase, qrJitter, accountCount) {
       if (baseInput) baseInput.value = String(base);
       if (jitterInput) jitterInput.value = String(jitter);
-      var worst = (((base + jitter) * 9) / 1000).toFixed(1);
+      if (qrBaseInput) qrBaseInput.value = String(qrBase);
+      if (qrJitterInput) qrJitterInput.value = String(qrJitter);
+      var count = (typeof accountCount === 'number' && accountCount > 0) ? accountCount : 0;
       if (statusEl) {
-        statusEl.textContent = '基準 ' + base + ' ms ＋ 隨機 0～' + jitter + ' ms｜實際間隔 '
-          + describe(base, jitter) + '｜10 個帳號最壞約 ' + worst + ' 秒';
+        statusEl.textContent = '數字 ' + describe(base, jitter) + '（' + estimate(base, jitter, count) + '）'
+          + '｜QR ' + describe(qrBase, qrJitter) + '（' + estimate(qrBase, qrJitter, count)
+          + '，送出前會取最新 payload）';
       }
     }
     async function loadStatus() {
@@ -470,23 +492,27 @@
         var s = body.settings || {};
         var base = (typeof s.group_submit_interval_ms === 'number') ? s.group_submit_interval_ms : DEFAULT_BASE;
         var jitter = (typeof s.group_submit_jitter_ms === 'number') ? s.group_submit_jitter_ms : DEFAULT_JITTER;
-        render(base, jitter);
+        var qrBase = (typeof s.group_submit_qrcode_interval_ms === 'number') ? s.group_submit_qrcode_interval_ms : DEFAULT_QR_BASE;
+        var qrJitter = (typeof s.group_submit_qrcode_jitter_ms === 'number') ? s.group_submit_qrcode_jitter_ms : DEFAULT_QR_JITTER;
+        // fix69：用實際帳號數算預估（管理員看到的 accounts 就是全部帳號）。
+        var accountCount = (body && Array.isArray(body.accounts)) ? body.accounts.length : 0;
+        render(base, jitter, qrBase, qrJitter, accountCount);
       } catch (e) {
         if (statusEl) statusEl.textContent = '讀取失敗：' + (e && e.message ? e.message : e);
       }
     }
-    async function apply(base, jitter) {
+    async function apply(base, jitter, qrBase, qrJitter) {
       show('套用中…');
       try {
         var res = await fetch('/admin/api/action', {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify({ action: 'runtime_settings', group_submit_interval_ms: base, group_submit_jitter_ms: jitter })
+          body: JSON.stringify({ action: 'runtime_settings', group_submit_interval_ms: base, group_submit_jitter_ms: jitter, group_submit_qrcode_interval_ms: qrBase, group_submit_qrcode_jitter_ms: qrJitter })
         });
         var body = await res.json().catch(function () { return {}; });
         if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
-        show('已套用：' + describe(base, jitter) + '（即時生效）', 'ok');
+        show('已套用：數字 ' + describe(base, jitter) + '、QR ' + describe(qrBase, qrJitter) + '（即時生效）', 'ok');
         loadStatus();
       } catch (e) {
         show('套用失敗：' + (e && e.message ? e.message : e), 'bad');
@@ -496,11 +522,13 @@
     if (applyBtn) applyBtn.addEventListener('click', function () {
       apply(
         clampInt(baseInput && baseInput.value, DEFAULT_BASE, MAX_BASE),
-        clampInt(jitterInput && jitterInput.value, DEFAULT_JITTER, MAX_JITTER)
+        clampInt(jitterInput && jitterInput.value, DEFAULT_JITTER, MAX_JITTER),
+        clampInt(qrBaseInput && qrBaseInput.value, DEFAULT_QR_BASE, MAX_BASE),
+        clampInt(qrJitterInput && qrJitterInput.value, DEFAULT_QR_JITTER, MAX_JITTER)
       );
     });
     var resetBtn = document.getElementById('gsReset');
-    if (resetBtn) resetBtn.addEventListener('click', function () { apply(DEFAULT_BASE, DEFAULT_JITTER); });
+    if (resetBtn) resetBtn.addEventListener('click', function () { apply(DEFAULT_BASE, DEFAULT_JITTER, DEFAULT_QR_BASE, DEFAULT_QR_JITTER); });
     loadStatus();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
