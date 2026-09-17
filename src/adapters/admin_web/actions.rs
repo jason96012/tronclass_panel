@@ -722,6 +722,13 @@ pub(super) async fn handle_admin_account_action(
                 group_submit_qrcode_jitter_ms: action
                     .group_submit_qrcode_jitter_ms
                     .unwrap_or(current.group_submit_qrcode_jitter_ms),
+                // GROUP_SUBMIT_RELAY_V1（fix67）：雷達也跟著「每位間隔」走。
+                group_submit_radar_interval_ms: action
+                    .group_submit_radar_interval_ms
+                    .unwrap_or(current.group_submit_radar_interval_ms),
+                group_submit_radar_jitter_ms: action
+                    .group_submit_radar_jitter_ms
+                    .unwrap_or(current.group_submit_radar_jitter_ms),
                 auto_stop_time: match action.auto_stop_time {
                     Some(value) => value,
                     None => current.auto_stop_time,

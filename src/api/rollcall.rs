@@ -310,7 +310,7 @@ impl NumberCodeLookup {
 // 這是刻意的：讀不到就維持原本行為，絕不亂猜一個比例去觸發送出。
 
 /// 班上點名進度。（分子／分母都確定時才會被建出來）
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RollcallProgress {
     /// 已點名成功的人數
     pub completed: usize,

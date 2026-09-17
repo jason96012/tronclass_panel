@@ -87,7 +87,7 @@ pub(super) struct RadarInputRequest {
     longitude: f64,
     #[serde(default)]
     coords: Option<String>,
-    /// 定位精確度（公尺；只有「用我目前位置」才有）。
+    /// 定位精確度（公尺；只有裝置定位送來的座標才有）。
     #[serde(default)]
     accuracy: Option<f64>,
     /// 是否由裝置定位取得（顯示用）。

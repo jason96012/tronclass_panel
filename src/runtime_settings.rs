@@ -28,6 +28,13 @@ pub const DEFAULT_GROUP_SUBMIT_QRCODE_INTERVAL_MS: u64 = 600;
 /// 比數字點名小：課堂 QR 會輪換，等太久只是白白送出過期的碼
 /// （送出前會再抓一次最新 payload，這裡控制的是帳號之間的間距）。
 pub const DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS: u64 = 600;
+/// GROUP_SUBMIT_RELAY_V1（fix67）：**雷達點名**的送出間隔基準（毫秒）。
+///
+/// 雷達也要跟著「每位間隔」走：同一個 provider 的同一場點名，多個帳號各自要送出座標時，
+/// 第一位立即送出，之後每位間隔 `base + U(0, jitter)`。預設與數字點名相同（600）。
+pub const DEFAULT_GROUP_SUBMIT_RADAR_INTERVAL_MS: u64 = 600;
+/// GROUP_SUBMIT_RELAY_V1（fix67）：**雷達點名**送出間隔的隨機上限（毫秒，預設 2000）。
+pub const DEFAULT_GROUP_SUBMIT_RADAR_JITTER_MS: u64 = 2_000;
 /// 基準的硬上限（沿用既有 10 秒上限）。
 pub const MAX_GROUP_SUBMIT_INTERVAL_MS: u64 = 10_000;
 pub const MAX_RUNTIME_REST_PERIODS: usize = 64;
@@ -53,6 +60,12 @@ pub struct RuntimeSettings {
     /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔隨機上限（毫秒）。
     #[serde(default = "default_group_submit_qrcode_jitter_ms")]
     pub group_submit_qrcode_jitter_ms: u64,
+    /// GROUP_SUBMIT_RELAY_V1（fix67）：**雷達點名**的送出間隔基準（毫秒）。
+    #[serde(default = "default_group_submit_radar_interval_ms")]
+    pub group_submit_radar_interval_ms: u64,
+    /// GROUP_SUBMIT_RELAY_V1（fix67）：**雷達點名**送出間隔的隨機上限（毫秒）。
+    #[serde(default = "default_group_submit_radar_jitter_ms")]
+    pub group_submit_radar_jitter_ms: u64,
     /// Local time HH:MM after which timer polling auto-pauses. None means disabled.
     ///
     /// Kept for backwards compatibility; new UI uses `rest_periods` instead.
@@ -131,6 +144,15 @@ fn default_group_submit_qrcode_jitter_ms() -> u64 {
     DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS
 }
 
+/// serde 預設值：舊的設定檔／請求沒有雷達欄位時，補上雷達預設（與數字點名相同）。
+fn default_group_submit_radar_interval_ms() -> u64 {
+    DEFAULT_GROUP_SUBMIT_RADAR_INTERVAL_MS
+}
+
+fn default_group_submit_radar_jitter_ms() -> u64 {
+    DEFAULT_GROUP_SUBMIT_RADAR_JITTER_MS
+}
+
 impl Default for RuntimeSettings {
     fn default() -> Self {
         Self {
@@ -139,6 +161,8 @@ impl Default for RuntimeSettings {
             group_submit_jitter_ms: DEFAULT_GROUP_SUBMIT_JITTER_MS,
             group_submit_qrcode_interval_ms: DEFAULT_GROUP_SUBMIT_QRCODE_INTERVAL_MS,
             group_submit_qrcode_jitter_ms: DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS,
+            group_submit_radar_interval_ms: DEFAULT_GROUP_SUBMIT_RADAR_INTERVAL_MS,
+            group_submit_radar_jitter_ms: DEFAULT_GROUP_SUBMIT_RADAR_JITTER_MS,
             auto_stop_time: None,
             rest_periods: Vec::new(),
             semester_override: None,
@@ -204,6 +228,16 @@ pub async fn group_submit_qrcode_jitter_ms() -> u64 {
     SETTINGS.read().await.group_submit_qrcode_jitter_ms
 }
 
+/// GROUP_SUBMIT_RELAY_V1（fix67）：雷達點名的送出間隔基準（毫秒）。
+pub async fn group_submit_radar_interval_ms() -> u64 {
+    SETTINGS.read().await.group_submit_radar_interval_ms
+}
+
+/// GROUP_SUBMIT_RELAY_V1（fix67）：雷達點名送出間隔的隨機上限（毫秒）。
+pub async fn group_submit_radar_jitter_ms() -> u64 {
+    SETTINGS.read().await.group_submit_radar_jitter_ms
+}
+
 pub async fn auto_stop_reached(now: NaiveTime) -> bool {
     let settings = SETTINGS.read().await;
     let Some(value) = settings.auto_stop_time.as_deref() else {
@@ -238,6 +272,12 @@ fn normalize(mut settings: RuntimeSettings) -> RuntimeSettings {
         .min(MAX_GROUP_SUBMIT_INTERVAL_MS);
     settings.group_submit_qrcode_jitter_ms = settings
         .group_submit_qrcode_jitter_ms
+        .min(MAX_GROUP_SUBMIT_JITTER_MS);
+    settings.group_submit_radar_interval_ms = settings
+        .group_submit_radar_interval_ms
+        .min(MAX_GROUP_SUBMIT_INTERVAL_MS);
+    settings.group_submit_radar_jitter_ms = settings
+        .group_submit_radar_jitter_ms
         .min(MAX_GROUP_SUBMIT_JITTER_MS);
     settings.auto_stop_time = settings.auto_stop_time.and_then(|value| {
         let value = value.trim().to_string();

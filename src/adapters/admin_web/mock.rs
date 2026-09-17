@@ -841,8 +841,7 @@ async fn start_mock_radar(
                     &target,
                     &OutboundMessage::Text(format!(
                         "🎯 需要雷達座標\n\n課程：{course_name}\n帳號：{}\n教師：Mock Admin\n點名 ID：{rollcall_id}\n\n\
-                         開這一頁送出你的位置——按「📍 送出自己目前位置」用手機定位、\
-                         或按「🧮 系統演算」讓系統用教室位置演算：{}",
+                         開這一頁按「🧮 系統演算」，系統就會用教室位置幫你送出點名：{}",
                         account.account_id, link.input_url
                     )),
                 )

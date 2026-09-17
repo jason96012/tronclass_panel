@@ -4269,6 +4269,12 @@ struct AdminActionRequest {
     /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔隨機上限（毫秒）。
     #[serde(default)]
     group_submit_qrcode_jitter_ms: Option<u64>,
+    /// GROUP_SUBMIT_RELAY_V1（fix67）：雷達點名的送出間隔基準（毫秒）。
+    #[serde(default)]
+    group_submit_radar_interval_ms: Option<u64>,
+    /// GROUP_SUBMIT_RELAY_V1（fix67）：雷達點名送出間隔的隨機上限（毫秒）。
+    #[serde(default)]
+    group_submit_radar_jitter_ms: Option<u64>,
     #[serde(default)]
     auto_stop_time: Option<Option<String>>,
     #[serde(default)]

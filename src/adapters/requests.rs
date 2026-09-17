@@ -42,7 +42,7 @@ pub struct RadarPointInput {
     pub longitude: f64,
     /// 瀏覽器回報的定位精確度（公尺）；手動輸入時為 `None`。
     pub accuracy: Option<f64>,
-    /// 是否由「用我目前位置」按鈕取得（只用於訊息與日誌，不影響送出內容）。
+    /// 是否由裝置定位取得（學生頁現在固定用系統演算送出；此欄位只用於訊息與日誌）。
     pub from_device: bool,
 }
 

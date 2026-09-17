@@ -314,7 +314,7 @@ impl QrScannerRegistry {
         let mut all_accounts = entry.all_accounts.iter().cloned().collect::<Vec<_>>();
         all_accounts.sort();
 
-        Ok(ScannerStatusResult {
+        let mut result = ScannerStatusResult {
             total_count: all_accounts.len(),
             completed_count: completed_accounts.len(),
             pending_count: pending_accounts.len(),
@@ -324,7 +324,13 @@ impl QrScannerRegistry {
             last_error: None,
             expires_in_secs: secs_until(entry.expires_at, now),
             submitted_code: None,
-        })
+            class_progress: None,
+            auto_submit_percent: AUTO_SUBMIT_PERCENT,
+        };
+        // CLASS_COUNT_ON_PAGES_V1：先把這一格的鎖放掉再讀快取（兩個 mutex 不重疊持有）。
+        drop(inner);
+        result.class_progress = self.cached_class_progress(provider, query.rollcall_id).await;
+        Ok(result)
     }
 
     /// Register one account as waiting for a number code.
@@ -484,6 +490,9 @@ impl QrScannerRegistry {
             NumberCodeInput::Code(code) => code.clone(),
             NumberCodeInput::AutoLookup => "auto".to_string(),
         });
+        // CLASS_COUNT_ON_PAGES_V1：先把這一格的鎖放掉再讀快取，頁面才有「目前班上已點人數」。
+        drop(inner);
+        status.class_progress = self.cached_class_progress(provider, query.rollcall_id).await;
         Ok(status)
     }
 
@@ -682,6 +691,30 @@ impl QrScannerRegistry {
         progress
     }
 
+    /// CLASS_COUNT_ON_PAGES_V1：**只讀快取、不打學校 API** 的班上進度。
+    ///
+    /// 點名頁（數字／QR）每一兩秒就輪詢一次狀態，不可能每次都去打學校；
+    /// 監控流程本來就每 [`CLASS_PROGRESS_TTL`] 秒會讀一次（見 [`Self::class_progress`]），
+    /// 這裡只是把那份結果拿出來給頁面顯示「目前班上已點人數」。
+    /// 沒讀過、或放太久（超過 [`CLASS_PROGRESS_CACHE_TTL`]）就回 `None`（頁面顯示讀取中）。
+    pub async fn cached_class_progress(
+        &self,
+        provider: &str,
+        rollcall_id: u64,
+    ) -> Option<RollcallProgress> {
+        let key = PendingNumberKey::new(provider, rollcall_id);
+        let now = Instant::now();
+        let cache = self.progress_cache.lock().await;
+        match cache.get(&key) {
+            Some((at, progress))
+                if now.saturating_duration_since(*at) < CLASS_PROGRESS_CACHE_TTL =>
+            {
+                progress.clone()
+            }
+            _ => None,
+        }
+    }
+
     /// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：把最新的班上進度記在等待中的雷達點名上，
     /// 讓點名頁面顯示「班上已點到幾分之幾、超過 15% 系統會自己送」。
     pub async fn set_radar_class_progress(
@@ -783,7 +816,7 @@ impl QrScannerRegistry {
         let mut all_accounts = entry.all_accounts.iter().cloned().collect::<Vec<_>>();
         all_accounts.sort();
 
-        Ok(RadarStatusResult {
+        let mut result = RadarStatusResult {
             total_count: all_accounts.len(),
             completed_count: completed_accounts.len(),
             pending_count: pending_accounts.len(),
@@ -797,7 +830,14 @@ impl QrScannerRegistry {
             course_name: entry.course_name.clone(),
             class_progress: entry.class_progress.clone(),
             auto_submit_percent: AUTO_SUBMIT_PERCENT,
-        })
+        };
+        // CLASS_COUNT_ON_PAGES_V1：這一場的處理流程還沒回報過進度時，退回共用快取
+        // （多帳號只會有其中一個帳號的流程在跑，頁面照樣看得到數字）。
+        drop(inner);
+        if result.class_progress.is_none() {
+            result.class_progress = self.cached_class_progress(provider, query.rollcall_id).await;
+        }
+        Ok(result)
     }
 
     /// RADAR_INPUT_PAGE_V1（fix71）：面板（已登入的管理員）直接把座標送給等待中的點名。
@@ -1360,6 +1400,8 @@ fn status_result_from_sets<'a>(
         last_error: None,
         expires_in_secs: 0,
         submitted_code: None,
+        class_progress: None,
+        auto_submit_percent: AUTO_SUBMIT_PERCENT,
     }
 }
 
@@ -1549,6 +1591,12 @@ pub struct ScannerStatusResult {
     /// 頁面用它在多裝置／重新整理後顯示「已送出 1234，等待結果」而不是「尚未送出」。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted_code: Option<String>,
+    /// CLASS_COUNT_ON_PAGES_V1：班上目前的點名進度（讀不到時沒有這個欄位）。
+    /// 點名頁上方的欄位用它顯示「目前班上已點人數」。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub class_progress: Option<RollcallProgress>,
+    /// CLASS_COUNT_ON_PAGES_V1：超過這個百分比系統就會自動送出（頁面文案用）。
+    pub auto_submit_percent: u32,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -5,8 +5,9 @@
 //!
 //! - 第一位帳號立即送出（游標還是空的）；送出前先把游標推到「現在 + 抽到的間隔」。
 //! - 之後每個帳號等到游標時間才送出；送出前再把游標往後推同樣的一個間隔。
-//! - 間隔 = `base + U(0, jitter)`；**數字與 QR Code 各有自己的參數**（面板可調）：
-//!   數字預設 base 600 / jitter 2000，QR 預設 base 600 / jitter 600（QR 較小，因為課堂 QR 會輪換）。
+//! - 間隔 = `base + U(0, jitter)`；**數字、QR Code、雷達各有自己的參數**（面板可調）：
+//!   數字預設 base 600 / jitter 2000，QR 預設 base 600 / jitter 600（QR 較小，因為課堂 QR 會輪換），
+//!   雷達預設與數字相同（600 / 2000）——雷達的實際送出也要跟著「每位間隔」走。
 //! - QR 的路徑在等到輪次後、送出前會再抓一次**最新** payload（QR_FRESH_PAYLOAD_V1）。
 //! - 等待本身有上限：呼叫端可用 [`wait_group_submit_turn`] 帶入預算（`max_wait`，
 //!   RELAY_DEADLINE_BUDGET_V1／fix69），避免等到學校的點名視窗都關了才送出。
@@ -34,6 +35,11 @@ const GROUP_SUBMIT_STATE_TTL: Duration = Duration::from_secs(30 * 60);
 pub enum GroupSubmitKind {
     Number,
     QrCode,
+    /// GROUP_SUBMIT_RELAY_V1：雷達點名（送出座標／空答案）也要錯開。
+    Radar,
+    /// SELF_REGISTRATION_RELAY_V1：自主報到（空的 PUT，不需要任何輸入）也要有間隔，
+    /// 否則多帳號會在同一毫秒一起打學校。節奏沿用數字點名的欄位（面板「數字點名」那組）。
+    SelfRegistration,
 }
 
 impl std::fmt::Display for GroupSubmitKind {
@@ -41,6 +47,8 @@ impl std::fmt::Display for GroupSubmitKind {
         match self {
             GroupSubmitKind::Number => write!(f, "number"),
             GroupSubmitKind::QrCode => write!(f, "qrcode"),
+            GroupSubmitKind::Radar => write!(f, "radar"),
+            GroupSubmitKind::SelfRegistration => write!(f, "self_registration"),
         }
     }
 }
@@ -137,6 +145,17 @@ pub async fn wait_group_submit_turn(
         GroupSubmitKind::QrCode => (
             crate::runtime_settings::group_submit_qrcode_interval_ms().await,
             crate::runtime_settings::group_submit_qrcode_jitter_ms().await,
+        ),
+        // RADAR_RELAY_V1：雷達（面板「多帳號點名送出節奏」的雷達欄位）。
+        GroupSubmitKind::Radar => (
+            crate::runtime_settings::group_submit_radar_interval_ms().await,
+            crate::runtime_settings::group_submit_radar_jitter_ms().await,
+        ),
+        // SELF_REGISTRATION_RELAY_V1：自主報到沿用數字點名那組節奏（兩者都是「沒有 payload
+        // 要等」的類型），但用獨立的游標，不會跟數字點名互相排隊。
+        GroupSubmitKind::SelfRegistration => (
+            crate::runtime_settings::group_submit_interval_ms().await,
+            crate::runtime_settings::group_submit_jitter_ms().await,
         ),
     };
     let now = Instant::now();

@@ -22,17 +22,20 @@
     #status.error { color:var(--error); }
     .error-box { margin-top:12px; padding:12px; border:1px solid rgba(185,28,28,.35); border-radius:8px; background:rgba(185,28,28,.08); color:var(--error); font-weight:650; }
     /* ROLLCALL_INPUT_COUNTDOWN_V1：等待輸入倒數 */
+    /* CLASS_COUNT_HEADER_V1：上方這一欄＝「目前班上已點人數」（大字）＋班上到課比例條；
+       原本的倒數縮成右下角一行小字（快到期／逾時一樣變色，逾時照樣鎖住輸入）。 */
     .countdown { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding:12px 14px; border:1px solid var(--border); border-radius:8px; background:var(--panel); }
     .countdown .label { color:var(--muted); font-size:14px; }
-    .countdown .time { font-size:28px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:1px; color:var(--ok); }
-    .countdown.warn .time { color:#b45309; }
-    .countdown.danger .time { color:var(--error); animation:cdPulse 1s ease-in-out infinite; }
+    .countdown .time { font-size:26px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:1px; color:var(--text); }
+    .countdown.pass .time { color:var(--ok); }
+    .countdown .sub { margin-top:2px; font-size:12px; color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }
+    .countdown.warn .sub { color:#b45309; font-weight:700; }
+    .countdown.danger .sub, .countdown.expired .sub { color:var(--error); font-weight:700; }
     .countdown.expired { border-color:rgba(185,28,28,.35); background:rgba(185,28,28,.08); }
-    .countdown.expired .time { color:var(--error); font-size:18px; animation:none; }
     .countdown .bar { position:relative; height:6px; margin-top:8px; border-radius:99px; background:var(--border); overflow:hidden; }
-    .countdown .bar > i { position:absolute; inset:0 auto 0 0; width:100%; background:var(--ok); transition:width .9s linear, background .3s; }
-    .countdown.warn .bar > i { background:#b45309; }
-    .countdown.danger .bar > i, .countdown.expired .bar > i { background:var(--error); }
+    .countdown .bar > i { position:absolute; inset:0 auto 0 0; width:0%; background:var(--ok); transition:width .4s ease; }
+    .countdown.pass .bar > i { background:#2563eb; }
+    .cd-right { text-align:right; white-space:nowrap; }
     @keyframes cdPulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
     .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:10px; }
     .metric { padding:12px; border:1px solid var(--border); border-radius:8px; text-align:center; }
@@ -86,13 +89,16 @@
   <main>
     <h1>Tronclass Number Rollcall</h1>
     <p>輸入 4 位數字點名碼，或選擇自動讀取。送出後會套用到同一個 rollcall 的所有等待帳號。</p>
-    <!-- ROLLCALL_INPUT_COUNTDOWN_V1 -->
+    <!-- CLASS_COUNT_HEADER_V1：頁面上方這一欄＝目前班上已點人數（大字）＋倒數小字 -->
     <div id="countdown" class="countdown" style="display:none">
       <div style="flex:1">
-        <div class="label" id="countdownLabel">剩餘輸入時間</div>
+        <div class="label" id="countdownLabel">班上已點人數</div>
         <div class="bar"><i id="countdownBar"></i></div>
       </div>
-      <div class="time" id="countdownTime">--</div>
+      <div class="cd-right">
+        <div class="time" id="countdownTime">--</div>
+        <div class="sub" id="countdownSub">讀取中…</div>
+      </div>
     </div>
 
     <section class="panel">
@@ -150,34 +156,60 @@
     function validParams() { return Boolean(provider && rollcallId && token && accountId); }
     function setStatus(text, kind) { statusEl.textContent = text; statusEl.className = kind || ""; }
 
-    /* ROLLCALL_INPUT_COUNTDOWN_V1：後端每次 /number/status 回 expires_in_secs；
-       本地每秒遞減、下一次輪詢再校正，避免 1.5 秒輪詢造成跳動。
-       總時長以第一次看到的值為準（用來畫進度條），之後只會校正剩餘秒數。 */
+    /* CLASS_COUNT_HEADER_V1：頁面上方那一欄＝「目前班上已點人數」（大字＋班上比例條），
+       原本的倒數縮成右下角一行小字（快到期／逾時一樣變色，逾時照樣鎖住輸入）。
+       人數來源＝/number/status 的 class_progress（後端每 10 秒讀一次學校的班上進度；
+       讀不到就顯示「讀取中…」，完全不影響輸入與送出）。 */
     const countdownEl = document.getElementById("countdown");
     const countdownTimeEl = document.getElementById("countdownTime");
     const countdownBarEl = document.getElementById("countdownBar");
     const countdownLabelEl = document.getElementById("countdownLabel");
-    let cdDeadlineMs = null, cdTotalSecs = null, cdExpiredNotified = false;
+    const countdownSubEl = document.getElementById("countdownSub");
+    let cdDeadlineMs = null, cdExpiredNotified = false;
+    let cdClassProgress = null, cdAutoPercent = 15;
     function fmtSecs(total) {
       total = Math.max(0, Math.floor(total));
       const m = Math.floor(total / 60), s = total % 60;
       return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s} 秒`;
     }
+    /* 班上已點人數：後端讀得到就照實顯示，讀不到只顯示「讀取中…」（不亂猜）。 */
+    function renderClassCount() {
+      const progress = cdClassProgress;
+      if (!progress || !progress.total) {
+        countdownTimeEl.textContent = "--";
+        countdownLabelEl.textContent = "班上已點人數（讀取中…）";
+        countdownBarEl.style.width = "0%";
+        countdownEl.classList.remove("pass");
+        return;
+      }
+      const pct = Math.max(0, Math.min(100, progress.completed / progress.total * 100));
+      const passed = progress.completed * 100 > progress.total * cdAutoPercent;
+      countdownTimeEl.textContent = progress.completed + " / " + progress.total;
+      countdownLabelEl.textContent = "班上已點人數（" + Math.round(pct) + "%）"
+        + (passed ? "・已過 " + cdAutoPercent + "%，系統會自動送出" : "");
+      countdownBarEl.style.width = pct.toFixed(1) + "%";
+      countdownEl.classList.toggle("pass", passed);
+    }
+    function syncClassProgress(body) {
+      if (body && typeof body.auto_submit_percent === "number" && body.auto_submit_percent > 0) {
+        cdAutoPercent = body.auto_submit_percent;
+      }
+      cdClassProgress = (body && body.class_progress) || null;
+      renderClassCount();
+    }
     function syncCountdown(expiresInSecs) {
       if (typeof expiresInSecs !== "number" || !isFinite(expiresInSecs)) return;
       cdDeadlineMs = Date.now() + expiresInSecs * 1000;
-      if (cdTotalSecs == null || expiresInSecs > cdTotalSecs) cdTotalSecs = Math.max(expiresInSecs, 1);
       countdownEl.style.display = "";
       tickCountdown();
     }
     function tickCountdown() {
+      renderClassCount();
       if (cdDeadlineMs == null) return;
       const remain = Math.max(0, (cdDeadlineMs - Date.now()) / 1000);
-      countdownTimeEl.textContent = remain > 0 ? fmtSecs(remain) : "已逾時";
-      const pct = cdTotalSecs ? Math.max(0, Math.min(100, remain / cdTotalSecs * 100)) : 0;
-      countdownBarEl.style.width = pct + "%";
-      countdownEl.className = "countdown " + (remain <= 0 ? "expired" : remain <= 10 ? "danger" : remain <= 30 ? "warn" : "");
-      countdownLabelEl.textContent = remain <= 0 ? "等待輸入已逾時，這次點名不會再接受代碼" : remain <= 30 ? "快到期了，請盡快送出" : "剩餘輸入時間";
+      countdownSubEl.textContent = remain > 0 ? ("剩餘輸入時間 " + fmtSecs(remain)) : "輸入時間已結束";
+      countdownEl.className = "countdown" + (countdownEl.classList.contains("pass") ? " pass" : "")
+        + (remain <= 0 ? " expired" : remain <= 10 ? " danger" : remain <= 30 ? " warn" : "");
       if (remain <= 0 && !cdExpiredNotified) {
         cdExpiredNotified = true;
         codeInput.disabled = true;
@@ -307,6 +339,7 @@
         pendingCountEl.textContent = String(body.pending_count || 0);
         renderList(doneListEl, body.completed_accounts || []);
         renderList(pendingListEl, body.pending_accounts || []);
+        syncClassProgress(body);
         syncCountdown(body.expires_in_secs);
         reconcileResult(body);
         if (body.last_error) {

@@ -289,7 +289,8 @@ pub async fn process_rollcall(
             .await
         }
         AttendanceType::SelfRegistration => {
-            handle_self_registration_rollcall(Arc::clone(&api), &rollcall).await
+            // SELF_REGISTRATION_RELAY_V1：要 provider／帳號 id 才能排隊，所以把 config 傳進去。
+            handle_self_registration_rollcall(Arc::clone(&api), &rollcall, config).await
         }
         AttendanceType::QrCode => {
             handle_qrcode_rollcall(
@@ -863,6 +864,11 @@ fn relay_budget(deadline: tokio::time::Instant) -> Option<Duration> {
     Some(remaining.saturating_sub(RELAY_DEADLINE_MARGIN))
 }
 
+/// SELF_REGISTRATION_RELAY_V1：自主報到排隊的等待上限。
+/// 與雷達同一個精神（見 `radar::RADAR_RELAY_MAX_WAIT`）：寧可提早送出，
+/// 也不要等到學校的點名視窗關了。
+const SELF_REG_RELAY_MAX_WAIT: Duration = Duration::from_secs(30);
+
 /// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：檢查班上進度的間隔（秒）。
 /// 多帳號共用 registry 裡的同一份快取（見 `QrScannerRegistry::class_progress`），
 /// 所以不管有幾個帳號，同一個點名最多就是每 10 秒讀一次。
@@ -1157,8 +1163,8 @@ async fn handle_radar_rollcall(
         };
         let msg = OutboundMessage::Text(format!(
             "🎯 需要雷達座標\n\n課程：{}\n帳號：{}\n教師：{}\n點名 ID：{}\n\n\
-             不知道教室在哪、或設定的座標一直被回報距離不足時，\
-             開這一頁輸入你的座標（或按「用我目前位置」）就會用那組座標簽到。{}",
+             開這一頁按「🧮 系統演算」就會用教室座標送出點名；\
+             如果一直被回報距離不足，請到面板「雷達」頁把教室座標改成正確的。{}",
             rollcall.course_title,
             account_label,
             rollcall.created_by_name,
@@ -1239,7 +1245,7 @@ async fn handle_radar_rollcall(
                 let tail = if input_url.is_empty() {
                     String::new()
                 } else {
-                    format!("\n🎯 打開頁面用目前位置再送一次：{input_url}")
+                    format!("\n🎯 打開頁面按「🧮 系統演算」再送一次：{input_url}")
                 };
                 let target = adapter_target.lock().await.clone();
                 let _ = bot
@@ -1316,8 +1322,21 @@ async fn handle_radar_rollcall(
 async fn handle_self_registration_rollcall(
     api: Arc<ApiClient>,
     rollcall: &Rollcall,
+    config: &AccountConfig,
 ) -> RollcallResult {
     info!(rollcall_id = rollcall.rollcall_id, "開始自主報到");
+
+    // SELF_REGISTRATION_RELAY_V1：自主報到是「空的 PUT、立刻會成功」，但多帳號同時打學校
+    // 一樣會擠在同一毫秒。所以它也要排隊：第一位立即送出，之後每位間隔 base + U(0, jitter)
+    // （面板「數字點名」那組節奏）。等待有上限，不會因為帳號多就拖過點名視窗。
+    let _ = wait_group_submit_turn(
+        &config.provider,
+        rollcall.rollcall_id,
+        GroupSubmitKind::SelfRegistration,
+        &config.id,
+        Some(SELF_REG_RELAY_MAX_WAIT),
+    )
+    .await;
 
     match api
         .answer_self_registration_rollcall(rollcall.rollcall_id)
@@ -1531,16 +1550,19 @@ async fn handle_qrcode_rollcall(
                 Err(_) if progress_at.is_some() => {
                     next_progress_check =
                         tokio::time::Instant::now() + Duration::from_secs(AUTO_SUBMIT_POLL_SECS);
+                    // CLASS_COUNT_ON_PAGES_V1：先讀一次班上進度（共用快取，10 秒內不重複讀），
+                    // 讀到的數字會被點名頁拿去顯示「目前班上已點人數」。
+                    let progress = class_progress_over_threshold(
+                        &api,
+                        scanner_registry.as_ref(),
+                        &config.provider,
+                        rollcall.rollcall_id,
+                        account_label,
+                    )
+                    .await;
+                    // 催人只催一次；但上面的讀取每一輪都做，畫面才會跟著更新。
                     if !progress_nudged {
-                        if let Some(progress) = class_progress_over_threshold(
-                            &api,
-                            scanner_registry.as_ref(),
-                            &config.provider,
-                            rollcall.rollcall_id,
-                            account_label,
-                        )
-                        .await
-                        {
+                        if let Some(progress) = progress {
                             progress_nudged = true;
                             warn!(
                                 rollcall_id = rollcall.rollcall_id,

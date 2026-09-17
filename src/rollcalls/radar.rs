@@ -35,6 +35,33 @@ use crate::adapters::requests::{RadarPointInput, RadarPointReceiver};
 use crate::api::{is_auth_error, rollcall::AttendanceResult, ApiClient};
 use crate::config::RadarConfig;
 
+// RADAR_RELAY_V1：雷達的實際送出也要跟著「每位間隔」走（與數字／QR 同一套游標）。
+use super::group_submit::{wait_group_submit_turn, GroupSubmitKind};
+
+/// RADAR_RELAY_V1：雷達接力等待的上限（秒）。
+///
+/// 與 RELAY_DEADLINE_BUDGET_V1 同一個精神：就算帳號很多、排到很後面，也不會等超過這個
+/// 秒數才送出——寧可早點把座標送到學校，也不要等太久讓點名視窗關了。
+const RADAR_RELAY_MAX_WAIT_SECS: u64 = 30;
+const RADAR_RELAY_MAX_WAIT: Duration = Duration::from_secs(RADAR_RELAY_MAX_WAIT_SECS);
+
+/// RADAR_RELAY_V1：真正打學校 API 之前先排隊（面板「多帳號點名送出節奏」的雷達欄位）。
+///
+/// 同一場點名**第一位立即送出**，之後每位間隔 `base + U(0, jitter)` 毫秒；同一個帳號在
+/// 同一場點名的後續嘗試（重試、棋盤格往下一格）**沿用原本的排定時間**，所以不會每格都再等
+/// 一輪，總等待時間有限（見 [`RADAR_RELAY_MAX_WAIT`]）。等待本身不影響成功與否，只是把送出的
+/// 時間錯開，避免多帳號同時打學校。
+async fn await_radar_submit_turn(provider: &str, rollcall_id: u64, account_id: &str) {
+    let _ = wait_group_submit_turn(
+        provider,
+        rollcall_id,
+        GroupSubmitKind::Radar,
+        account_id,
+        Some(RADAR_RELAY_MAX_WAIT),
+    )
+    .await;
+}
+
 // ─── 地理座標型別 ──────────────────────────────────────────────────────────────
 
 /// 地理座標（緯度、經度），使用十進位度數（decimal degrees）
@@ -453,6 +480,8 @@ pub async fn attempt_radar_rollcall(
     // 每個帳號、每場點名只送一次，避免每一輪重複花請求。
     if RADAR_EMPTY_ANSWER_ENABLED && empty_answer_allowed(provider, rollcall_id, account_id) {
         mark_empty_answer_tried(provider, rollcall_id, account_id);
+        // RADAR_RELAY_V1：空答案也是一次真的送出，一樣跟著「每位間隔」排隊。
+        await_radar_submit_turn(provider, rollcall_id, account_id).await;
         match api.answer_radar_rollcall_empty(rollcall_id).await {
             Ok(AttendanceResult::Success) => {
                 info!(
@@ -483,7 +512,9 @@ pub async fn attempt_radar_rollcall(
     // ── Phase 0: 輸入頁送來的座標（優先）──────────────────────────────────────
     if let Some(outcome) = drain_and_try_manual_point(
         &api,
+        provider,
         rollcall_id,
+        account_id,
         accuracy,
         altitude,
         manual_rx.as_ref(),
@@ -508,7 +539,9 @@ pub async fn attempt_radar_rollcall(
         // 每一輪開始前再看一次輸入頁：使用者可能在這段時間才送出座標。
         if let Some(outcome) = drain_and_try_manual_point(
             &api,
+            provider,
             rollcall_id,
+            account_id,
             accuracy,
             altitude,
             manual_rx.as_ref(),
@@ -533,7 +566,7 @@ pub async fn attempt_radar_rollcall(
             config.default_coords.len()
         );
 
-        match try_single_radar_coord(&api, rollcall_id, coord, accuracy, altitude).await {
+        match try_single_radar_coord(&api, provider, rollcall_id, account_id, coord, accuracy, altitude).await {
             Ok(SingleRadarResult::Success) => {
                 info!(
                     lat = lat,
@@ -577,7 +610,9 @@ pub async fn attempt_radar_rollcall(
     // ── Phase 2: 使用圓交叉點算法計算候選座標 ─────────────────────────────────
     if let Some(outcome) = drain_and_try_manual_point(
         &api,
+        provider,
         rollcall_id,
+        account_id,
         accuracy,
         altitude,
         manual_rx.as_ref(),
@@ -629,7 +664,7 @@ pub async fn attempt_radar_rollcall(
                     candidates.len()
                 );
 
-                match try_single_radar_coord(&api, rollcall_id, candidate, accuracy, altitude).await
+                match try_single_radar_coord(&api, provider, rollcall_id, account_id, candidate, accuracy, altitude).await
                 {
                     Ok(SingleRadarResult::Success) => {
                         info!(
@@ -707,7 +742,7 @@ pub async fn attempt_radar_rollcall(
                     "棋盤格第 {} 格",
                     next - 1
                 );
-                match try_single_radar_coord(&api, rollcall_id, candidate, accuracy, altitude).await
+                match try_single_radar_coord(&api, provider, rollcall_id, account_id, candidate, accuracy, altitude).await
                 {
                     Ok(SingleRadarResult::Success) => {
                         info!(
@@ -751,7 +786,9 @@ pub async fn attempt_radar_rollcall(
     // 最後再看一次輸入頁：這一輪才送出的座標不要白費（下一輪監控也會再取一次）。
     if let Some(outcome) = drain_and_try_manual_point(
         &api,
+        provider,
         rollcall_id,
+        account_id,
         accuracy,
         altitude,
         manual_rx.as_ref(),
@@ -813,7 +850,9 @@ async fn take_manual_point(rx: Option<&RadarPointReceiver>) -> Option<RadarPoint
 #[allow(clippy::too_many_arguments)]
 async fn drain_and_try_manual_point(
     api: &ApiClient,
+    provider: &str,
     rollcall_id: u64,
+    account_id: &str,
     accuracy: u32,
     altitude: i32,
     manual_rx: Option<&RadarPointReceiver>,
@@ -850,7 +889,9 @@ async fn drain_and_try_manual_point(
     );
     try_manual_coord(
         api,
+        provider,
         rollcall_id,
+        account_id,
         coord,
         accuracy,
         altitude,
@@ -861,9 +902,12 @@ async fn drain_and_try_manual_point(
 }
 
 /// 嘗試輸入頁送來的座標：成功回 `Some(Success)`；距離不足回 `None`（並記下量測值）。
+#[allow(clippy::too_many_arguments)]
 async fn try_manual_coord(
     api: &ApiClient,
+    provider: &str,
     rollcall_id: u64,
+    account_id: &str,
     coord: Coordinate,
     accuracy: u32,
     altitude: i32,
@@ -871,7 +915,7 @@ async fn try_manual_coord(
     measurements: &mut Vec<(Coordinate, f64)>,
 ) -> Option<RadarResult> {
     tried_coords.push(coord);
-    match try_single_radar_coord(api, rollcall_id, coord, accuracy, altitude).await {
+    match try_single_radar_coord(api, provider, rollcall_id, account_id, coord, accuracy, altitude).await {
         Ok(SingleRadarResult::Success) => {
             info!(
                 lat = coord.latitude,
@@ -912,13 +956,19 @@ async fn try_manual_coord(
 }
 
 /// 嘗試用單一座標進行雷達簽到
+///
+/// RADAR_RELAY_V1：所有座標送出都經過這裡，所以在這裡排隊——雷達就跟數字／QR 一樣，
+/// 「同一場點名第一位立即送出、之後每位間隔 base + U(0, jitter) 毫秒」。
 async fn try_single_radar_coord(
     api: &ApiClient,
+    provider: &str,
     rollcall_id: u64,
+    account_id: &str,
     coord: Coordinate,
     accuracy: u32,
     altitude: i32,
 ) -> Result<SingleRadarResult> {
+    await_radar_submit_turn(provider, rollcall_id, account_id).await;
     let result = api
         .answer_radar_rollcall(
             rollcall_id,
