@@ -4,6 +4,27 @@
 set -uo pipefail
 cd /home/container 2>/dev/null || cd "$(dirname "$0")"
 
+# ─── TOOLCHAIN_FILE_GUARD_V1：清掉會讓編譯在「進入 rustc 之前」就失敗的檔案 ───────
+# 症狀（2026-09-18 實際發生）：
+#   info: syncing channel updates for 'stable-x86_64-unknown-linux-gnu'
+#   error: could not create temp file /usr/local/rustup/tmp/..._file: Read-only file system (os error 30)
+#   → 啟動路徑直接 exit 1（服務離線）；熱重編則是每次重試都失敗、一直維持舊 binary。
+#
+# 原因：容器裡的 cargo 是 rustup 的 proxy。專案根目錄只要存在 rust-toolchain.toml，
+#   rustup 就會去「同步／安裝」它指定的通道與元件（rustfmt、clippy…），
+#   這需要寫入 RUSTUP_HOME（本映像為 /usr/local/rustup，**唯讀**）→ 必定失敗。
+#   與專案原始碼完全無關，是環境面問題。
+#
+# 處置：這個檔案不屬於本專案（本專案的編譯參數寫在下方環境變數），殘留時一律清掉，
+#   讓 cargo 直接用容器內既有工具鏈編譯。要恢復預設行為就把這一段拿掉即可。
+for _tc_file in rust-toolchain.toml rust-toolchain; do
+  if [ -f "$_tc_file" ]; then
+    echo "[ptero-start] 移除殘留的 $_tc_file（會使 rustup 嘗試寫入唯讀的 RUSTUP_HOME，導致編譯失敗）"
+    rm -f "$_tc_file" 2>/dev/null || true
+  fi
+done
+unset _tc_file
+
 # ─── 測試模式（面板沒有 shell，用這個開關在 console 跑測試）───────────────
 # 用法：在面板「Startup」把啟動命令改成 `RUN_MODE=test ./ptero-start.sh`，
 #       或在環境變數加 RUN_MODE=test，然後 Restart。跑完看 console 即可。
