@@ -529,6 +529,35 @@ pub fn notify_class_reminder(
     });
 }
 
+/// RADAR_SCHOOL_BLOCK_V1（fix77）：雷達送出被學校端擋下（429／403）時的推播。
+///
+/// 與 [`notify_admin_alert`] 的差別：雷達流程是在背景跑（手上沒有 `AccountsDb`），
+/// 所以這裡自己從服務的資料庫挑出管理員帳號，再走同一條推播路徑（含
+/// `notification_preferences` 的 monitor_alert 開關）。
+pub fn notify_admins_school_block(title: String, body: String, tag: String) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let admins: Vec<String> = match service.db.list().await {
+            Ok(accounts) => accounts
+                .into_iter()
+                .filter(|account| account.is_admin)
+                .map(|account| account.id)
+                .collect(),
+            Err(error) => {
+                warn!(error = %error, "學校端擋下告警：讀取管理員清單失敗");
+                return;
+            }
+        };
+        if admins.is_empty() {
+            return;
+        }
+        warn!(admins = admins.len(), tag = %tag, "學校端擋下：已推播管理員");
+        notify_admin_alert(admins, title, body, tag);
+    });
+}
+
 /// MONITOR_ALERT_GRADING_V1：把監控警示／恢復訊息推到所有管理員帳號的裝置。
 /// tag 以帳號為後綴，同一帳號的警示→恢復會覆蓋同一則通知，不會洗版。
 /// 呼叫端已做節流，這裡不再去重。

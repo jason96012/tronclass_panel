@@ -148,6 +148,66 @@ pub fn build_http_client(cookie_jar: Arc<Jar>, timeout_secs: u64) -> reqwest::Re
 
 // ─── 輔助函式 ─────────────────────────────────────────────────────────────────
 
+// ─── RADAR_SCHOOL_BLOCK_V1（fix77）：學校端明確拒絕（429／403）─────────────────
+//
+// 使用者拍板：學校端回 429（限流）或 403（禁止）時要「停手＋推播」——
+// 不要再一輪一輪打學校，也不要讓它被誤判成「session 過期」。
+//
+// 作法：API 層把這兩種狀態包成帶固定標記的失敗訊息（下面兩個 MARK），
+// 雷達流程用 `school_block_of()` 認出標記 → 停手 + 推播管理員（見 rollcalls/radar.rs）。
+
+/// 學校端擋下：HTTP 429（限流）。訊息格式為 `…學校端擋下（429 限流）：<學校回覆>…`。
+pub(crate) const SCHOOL_BLOCK_429_MARK: &str = "學校端擋下（429 限流）：";
+/// 學校端擋下：HTTP 403（禁止／WAF 封鎖）。
+pub(crate) const SCHOOL_BLOCK_403_MARK: &str = "學校端擋下（403 禁止）：";
+/// 學校回覆只留這麼多字（日誌／推播要看得懂，不要把整個 HTML 錯誤頁塞進來）。
+const SCHOOL_BLOCK_BODY_CHARS: usize = 200;
+
+/// 組出「學校端擋下」的失敗訊息。`detail` 後面可以再接 Retry-After 說明，
+/// 例如 `（學校要求等 30 秒）`——[`school_block_retry_after`] 讀得出來。
+pub(crate) fn school_block_reason(status: u16, body_preview: &str) -> String {
+    let mark = if status == 429 {
+        SCHOOL_BLOCK_429_MARK
+    } else {
+        SCHOOL_BLOCK_403_MARK
+    };
+    let preview: String = body_preview
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(SCHOOL_BLOCK_BODY_CHARS)
+        .collect();
+    if preview.is_empty() {
+        mark.to_string()
+    } else {
+        format!("{mark}{preview}")
+    }
+}
+
+/// 判斷失敗訊息是不是「學校端擋下」；是的話回傳 `(HTTP 狀態碼, 學校回覆)`。
+///
+/// **順序很重要**：這個判斷要在 [`is_auth_error`] 之前做——403 的訊息本來就會
+/// 出現 403 字樣，先問是不是「學校端擋下」才不會被當成 session 過期。
+pub(crate) fn school_block_of(reason: &str) -> Option<(u16, String)> {
+    for (mark, status) in [
+        (SCHOOL_BLOCK_429_MARK, 429_u16),
+        (SCHOOL_BLOCK_403_MARK, 403_u16),
+    ] {
+        if let Some((_, rest)) = reason.split_once(mark) {
+            return Some((status, rest.trim().to_string()));
+        }
+    }
+    None
+}
+
+/// 從「學校端擋下」的訊息裡讀出學校要求的等待秒數（`Retry-After`），沒有就是 `None`。
+pub(crate) fn school_block_retry_after(detail: &str) -> Option<u64> {
+    let (_, rest) = detail.split_once("學校要求等 ")?;
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse::<u64>().ok().filter(|secs| *secs > 0)
+}
+
 /// 判斷錯誤字串是否為「需要重新登錄」的認證錯誤。
 ///
 /// AUTH_ERROR_TYPED_V1
@@ -167,6 +227,11 @@ pub fn build_http_client(cookie_jar: Arc<Jar>, timeout_secs: u64) -> reqwest::Re
 /// 錯誤鏈，`wrap_err` 的外層訊息（如「取得簽到列表失敗」）不會掩蓋內層
 /// 真正的 `ApiError::Unauthorized`。
 pub(crate) fn is_auth_error(err: &str) -> bool {
+    // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下的訊息（429／403）不是 session 問題，
+    // 先排除，免得被下面的 `http 403` 標記誤判成「需要重新登錄」。
+    if school_block_of(err).is_some() {
+        return false;
+    }
     // 統一轉小寫比對，避免大小寫差異漏接（Unauthorized / unauthorized）。
     let lower = err.to_ascii_lowercase();
     lower.contains("unauthorized")
@@ -317,5 +382,51 @@ mod tests {
         // 未被包裝的 Unauthorized（API 方法直接回傳的路徑）。
         let report = miette::miette!(ApiError::Unauthorized);
         assert!(is_auth_error_report(&report));
+    }
+
+    // ── RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下的判定 ──────────────────────
+
+    #[test]
+    fn test_school_block_of_detects_429_and_403() {
+        let limited = school_block_reason(429, "Too Many Requests");
+        assert_eq!(school_block_of(&limited).map(|(s, _)| s), Some(429));
+        assert!(limited.contains("Too Many Requests"));
+
+        let forbidden = school_block_reason(403, "Forbidden");
+        assert_eq!(school_block_of(&forbidden).map(|(s, _)| s), Some(403));
+
+        // 普通失敗訊息不該被認成學校端擋下。
+        assert!(school_block_of("HTTP 500: Internal Server Error").is_none());
+        assert!(school_block_of("最後距離 403.52 公尺").is_none());
+        assert!(school_block_of("rollcall 1740341 已過期").is_none());
+    }
+
+    #[test]
+    fn test_school_block_is_not_auth_error() {
+        // 403 的訊息裡有「403」字樣，但那是學校端擋下、不是 session 過期。
+        let reason = school_block_reason(403, "Forbidden");
+        assert!(school_block_of(&reason).is_some());
+        assert!(!is_auth_error(&reason), "學校端擋下不該被當成需要重新登錄");
+        // 真正的認證錯誤還是要認得出來。
+        assert!(is_auth_error(&ApiError::Unauthorized.to_string()));
+    }
+
+    #[test]
+    fn test_school_block_reason_truncates_body() {
+        let long = "x".repeat(500);
+        let reason = school_block_reason(429, &long);
+        assert!(reason.chars().count() <= SCHOOL_BLOCK_BODY_CHARS + SCHOOL_BLOCK_429_MARK.chars().count());
+        // 學校回覆是空的也要能組出訊息。
+        assert_eq!(school_block_reason(429, "  "), SCHOOL_BLOCK_429_MARK);
+    }
+
+    #[test]
+    fn test_school_block_retry_after() {
+        let reason = school_block_reason(429, "Too Many Requests（學校要求等 30 秒）");
+        let (status, detail) = school_block_of(&reason).expect("應判定為學校端擋下");
+        assert_eq!(status, 429);
+        assert_eq!(school_block_retry_after(&detail), Some(30));
+        assert_eq!(school_block_retry_after("沒有寫秒數"), None);
+        assert_eq!(school_block_retry_after("學校要求等 0 秒"), None);
     }
 }

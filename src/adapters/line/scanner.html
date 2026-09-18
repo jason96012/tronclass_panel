@@ -97,14 +97,36 @@
       background: transparent;
       resize: vertical;
     }
+    /* QR_ZOOM_V1（fix78）：放大拉桿一律顯示。
+       以前只有鏡頭回報支援 zoom 才顯示那一塊（setZoomUiVisible），iPhone 等多數裝置
+       等於沒有拉桿可用；現在改成「鏡頭變焦優先、沒支援就用數位裁切」，人人都有拉桿。 */
+    .stage {
+      position: relative;
+      overflow: hidden;
+      border-radius: 8px;
+      background: #000;
+    }
+    #preview {
+      transform-origin: center center;
+      transition: transform .12s ease-out;
+    }
+    #scanHint {
+      margin-top: 10px;
+      font-size: 15px;
+      font-weight: 650;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    #scanHint.ok { color: var(--ok); }
+    #scanHint.warn { color: #b45309; }
+    #scanHint.error { color: var(--error); }
     .zoom-controls {
-      display: none;
+      display: block;
       margin-top: 12px;
       padding: 12px;
       border: 1px solid var(--border);
       border-radius: 8px;
     }
-    .zoom-controls.visible { display: block; }
     .zoom-controls label {
       display: flex;
       justify-content: space-between;
@@ -116,6 +138,41 @@
     input[type="range"] {
       width: 100%;
       margin-top: 10px;
+      min-height: 44px;
+    }
+    .zoom-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .zoom-row button.zbtn {
+      min-width: 58px;
+      min-height: 48px;
+      font-size: 22px;
+      line-height: 1;
+    }
+    .zoom-mode {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      max-width: 46%;
+    }
+    .zoom-hint {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .cam-info {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.5;
     }
     #status {
       margin-top: 12px;
@@ -197,19 +254,30 @@
     <p>掃描課堂 QR Code 後會自動回傳給本機，並套用到同一個 rollcall 的所有等待帳號。</p>
 
     <section class="panel">
-      <video id="preview" playsinline muted></video>
-      <canvas id="canvas"></canvas>
+      <div class="stage">
+        <video id="preview" playsinline muted></video>
+        <canvas id="canvas"></canvas>
+      </div>
+      <div id="scanHint">尚未開始掃描</div>
       <div class="actions">
         <button id="start" type="button">開啟相機</button>
         <button id="stop" type="button" class="secondary">停止</button>
       </div>
       <div id="zoomControls" class="zoom-controls">
         <label for="zoom">
-          <span>鏡頭縮放</span>
-          <span id="zoomValue">1.0x</span>
+          <span>放大（坐遠也能掃）</span>
+          <span id="zoomValue">2.0x</span>
         </label>
-        <input id="zoom" type="range" min="1" max="1" step="0.1" value="1">
+        <input id="zoom" type="range" min="1" max="8" step="0.5" value="2">
+        <div class="zoom-row">
+          <button id="zoomOut" type="button" class="secondary zbtn" aria-label="縮小">−</button>
+          <button id="zoomIn" type="button" class="zbtn" aria-label="放大">＋</button>
+          <button id="zoomReset" type="button" class="secondary">回到 1x</button>
+          <span id="zoomMode" class="zoom-mode">數位放大 2.0x</span>
+        </div>
+        <div class="zoom-hint">往右拉＝放大。畫面裡看到的就是實際送去解碼的範圍，把 QR 放進畫面中央即可。</div>
       </div>
+      <div id="camInfo" class="cam-info"></div>
       <div id="status">尚未掃描</div>
       <!-- CLASS_COUNT_HEADER_V1：頁面上方這一欄＝目前班上已點人數（大字）＋倒數小字 -->
       <div id="countdown" class="countdown" style="display:none">
@@ -252,7 +320,9 @@
     </section>
   </main>
 
-  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+  <!-- QR_DECODER_LOCAL_V1（fix78）：改用本機的 jsQR（伺服器自己就有 /scanner/jsqr.js，
+       與 CDN 那份 sha256 完全相同）。校園網路擋外網或 CDN 掛掉時仍然掃得動。 -->
+  <script src="/scanner/jsqr.js"></script>
   <script>
     const params = new URLSearchParams(window.location.search);
     const provider = params.get("provider") || "";
@@ -260,12 +330,15 @@
     const token = params.get("token") || "";
     const accountId = params.get("account_id") || "";
     const statusEl = document.getElementById("status");
+    const scanHintEl = document.getElementById("scanHint");
+    const camInfoEl = document.getElementById("camInfo");
     const video = document.getElementById("preview");
     const canvas = document.getElementById("canvas");
     const context = canvas.getContext("2d", { willReadFrequently: true });
     const zoomControls = document.getElementById("zoomControls");
     const zoomSlider = document.getElementById("zoom");
     const zoomValue = document.getElementById("zoomValue");
+    const zoomModeEl = document.getElementById("zoomMode");
     const totalCountEl = document.getElementById("totalCount");
     const doneCountEl = document.getElementById("doneCount");
     const pendingCountEl = document.getElementById("pendingCount");
@@ -284,6 +357,64 @@
     function setStatus(text, kind) {
       statusEl.textContent = text;
       statusEl.className = kind || "";
+    }
+
+    /* ─────────── QR_ZOOM_V1（fix78）：放大拉桿 ───────────────────────────────
+       目的：坐得遠也掃得到。放大分兩段——
+         ① 鏡頭變焦（硬體）：相機支援 zoom 能力時優先使用，畫質最好（真正的光學／感光變焦）。
+         ② 數位變焦（裁切）：一律可用。只把畫面中央 1/倍率 的區域送進解碼器，
+            QR 在解碼輸入裡佔的比例變大，也讓預覽「所見即所解」。
+       拉桿＝想要的總倍率；實際＝鏡頭倍率 × 數位倍率，兩者相乘等於拉桿值。
+       位置會記在 localStorage，下一堂課不用重調。                              */
+    const ZOOM_MIN = 1;
+    const ZOOM_MAX = 8;
+    const ZOOM_STEP = 0.5;
+    const ZOOM_DEFAULT = 2;
+    const ZOOM_KEY = "tronclassScannerZoom";
+    /* 每幀最多解一次；預覽照常用 requestAnimationFrame 更新。 */
+    const DECODE_INTERVAL_MS = 150;
+    /* 送出（POST /scanner/submit）最多等幾毫秒，逾時就放棄那一次並解鎖。 */
+    const SUBMIT_TIMEOUT_MS = 8000;
+    /* 連續多久沒解到碼就提示使用者（秒）。 */
+    const NO_QR_HINT_SECS = 2.5;
+
+    let targetZoom = ZOOM_DEFAULT;
+    let hwZoomRange = null;   // 鏡頭支援的 {min,max}；不支援＝null
+    let hwZoomApplied = 1;    // 目前套用的鏡頭倍率
+    let digitalZoom = ZOOM_DEFAULT; // 目前套用的數位裁切倍率
+
+    function nowMs() {
+      try {
+        if (typeof performance !== "undefined" && performance && performance.now) return performance.now();
+      } catch (err) { /* 沙箱環境沒有 performance */ }
+      return Date.now();
+    }
+    function readStoredZoom() {
+      try {
+        const v = window.localStorage && window.localStorage.getItem(ZOOM_KEY);
+        const n = Number(v);
+        if (isFinite(n) && n > 0) return n;
+      } catch (err) { /* 無 localStorage（無痕模式等）就用預設值 */ }
+      return ZOOM_DEFAULT;
+    }
+    function storeZoom(value) {
+      try {
+        if (window.localStorage) window.localStorage.setItem(ZOOM_KEY, String(value));
+      } catch (err) { /* 存不了不影響功能 */ }
+    }
+    function clampZoom(value) {
+      const n = Number(value);
+      if (!isFinite(n) || n <= 0) return ZOOM_DEFAULT;
+      return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(n / ZOOM_STEP) * ZOOM_STEP));
+    }
+
+    /* 掃描狀態列：這是「有沒有解到 QR」唯一的即時回饋。
+       以前解不到碼時整頁完全沒有反應，使用者無法分辨「沒對到」與「有對到但送不出去」。 */
+    function setScanHint(text, kind) {
+      if (!scanHintEl) return;
+      if (scanHintEl.textContent === text) return;
+      scanHintEl.textContent = text;
+      scanHintEl.className = kind || "";
     }
 
     function validScannerParams() {
@@ -398,11 +529,22 @@
       }
     }
 
+    /* QR_SUBMIT_TIMEOUT_V1（fix78）：送出一定要有逾時。
+       以前 fetch 沒有逾時，手機切換網路／休眠時 promise 可能不結束 → submitInFlight
+       永遠是 true → 之後每一次掃到的碼都被丢掉，而且畫面一句話都不說。 */
     async function submitQr(qrData) {
       const now = Date.now();
-      if (!qrData || !validScannerParams()) return;
-      if (submitInFlight) return;
+      if (!qrData) return;
+      if (!validScannerParams()) {
+        setScanHint("掃描連結缺少必要參數，無法回傳（請重新開啟點名頁產生的連結）", "error");
+        return;
+      }
+      if (submitInFlight) {
+        setScanHint("上一次回傳還在進行中，請稍等…", "warn");
+        return;
+      }
       if (qrData === lastSubmittedData && now - lastSubmittedAt < RESUBMIT_SAME_QR_MS) {
+        setScanHint("同一個 QR 剛送過（3 秒內不重複），等課堂換下一個碼", "");
         return;
       }
 
@@ -411,8 +553,12 @@
       lastSubmittedAt = now;
       setStatus("正在回傳 QR Code...", "");
 
+      const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+      const timer = controller
+        ? setTimeout(() => { try { controller.abort(); } catch (err) {} }, SUBMIT_TIMEOUT_MS)
+        : null;
       try {
-        const res = await fetch("/scanner/submit", {
+        const init = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -422,114 +568,239 @@
             token,
             qr_data: qrData
           })
-        });
+        };
+        if (controller) init.signal = controller.signal;
+        const res = await fetch("/scanner/submit", init);
         const body = await res.json().catch(() => ({}));
         if (!res.ok) {
-          throw new Error(body.error || "回傳失敗");
+          throw new Error(body.error || `回傳失敗（HTTP ${res.status}）`);
         }
         successfulSubmits += 1;
+        /* 送出結果只寫在狀態列，不要蓋掉掃描列的「已解出 QR」（兩行各司其職：
+           掃描列＝有沒有解到碼，狀態列＝送出結果）。 */
         setStatus(
           `已送出第 ${successfulSubmits} 次，${body.delivered_count || 0} 個帳號收到 QR Code。持續掃描中...`,
           "ok"
         );
         refreshAttendanceStatus();
       } catch (err) {
-        setStatus((err && err.message) || "回傳失敗，仍會持續掃描。", "error");
+        const aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
+        setStatus(
+          aborted
+            ? `回傳卡住超過 ${Math.round(SUBMIT_TIMEOUT_MS / 1000)} 秒，已放棄這一次（仍會持續掃描）`
+            : ((err && err.message) || "回傳失敗，仍會持續掃描。"),
+          "error"
+        );
       } finally {
-        submitInFlight = false;
+        if (timer) clearTimeout(timer);
+        submitInFlight = false;   // ← 一定會解鎖，不會再永久卡住
       }
     }
 
-    function tick() {
-      if (!scanning) return;
-      if (video.readyState !== video.HAVE_ENOUGH_DATA) {
-        requestAnimationFrame(tick);
-        return;
-      }
+    /* QR_ZOOM_V1：解碼迴圈。
+       - 只解「畫面中央 1/digitalZoom」那一塊（＝拉桿放大後看到的那一塊），
+         QR 在解碼輸入裡佔的比例變大 → 坐得遠也解得動。
+       - 最多每 DECODE_INTERVAL_MS 解一次、同一時間只有一個解碼在跑，
+         預覽不會被解碼卡住（以前每一幀都解整張 1920×1080，手機上像當掉）。
+       - 一秒一次走完整模式（含反相 QR），平常走快速模式。 */
+    let lastDecodeAt = 0;
+    let lastThoroughAt = 0;
+    let decoding = false;
+    let lastSeenAt = 0;
+    let seenCount = 0;
 
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-      const code = window.jsQR && window.jsQR(imageData.data, imageData.width, imageData.height);
-      if (code && code.data) {
-        submitQr(code.data);
-      }
-      requestAnimationFrame(tick);
-    }
+    async function decodeOnce() {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return null;
 
-    function setZoomUiVisible(visible) {
-      zoomControls.classList.toggle("visible", Boolean(visible));
-    }
+      const cw = Math.max(64, Math.round(vw / digitalZoom));
+      const ch = Math.max(64, Math.round(vh / digitalZoom));
+      const sx = Math.max(0, Math.round((vw - cw) / 2));
+      const sy = Math.max(0, Math.round((vh - ch) / 2));
 
-    function formatZoom(value) {
-      const n = Number(value);
-      return Number.isFinite(n) ? `${n.toFixed(1)}x` : "不支援";
-    }
+      canvas.width = cw;
+      canvas.height = ch;
+      context.drawImage(video, sx, sy, cw, ch, 0, 0, cw, ch);
 
-    async function setupZoomControl(track) {
-      if (!track || !track.getCapabilities) {
-        setZoomUiVisible(false);
-        return;
-      }
-
-      const capabilities = track.getCapabilities();
-      if (!capabilities || typeof capabilities.zoom === "undefined") {
-        setZoomUiVisible(false);
-        return;
-      }
-
-      const settings = track.getSettings ? track.getSettings() : {};
-      const min = Number(capabilities.zoom.min ?? 1);
-      const max = Number(capabilities.zoom.max ?? min);
-      const step = Number(capabilities.zoom.step ?? 0.1);
-      const current = Number(settings.zoom ?? min);
-
-      zoomSlider.min = String(min);
-      zoomSlider.max = String(max);
-      zoomSlider.step = String(step || 0.1);
-      zoomSlider.value = String(Math.min(Math.max(current, min), max));
-      zoomValue.textContent = formatZoom(zoomSlider.value);
-      setZoomUiVisible(max > min);
-
-      zoomSlider.oninput = async () => {
-        const zoom = Number(zoomSlider.value);
-        zoomValue.textContent = formatZoom(zoom);
+      if (barcodeDetector) {
         try {
-          await track.applyConstraints({ advanced: [{ zoom }] });
+          const codes = await barcodeDetector.detect(canvas);
+          if (codes && codes.length && codes[0].rawValue) return codes[0].rawValue;
         } catch (err) {
-          setStatus("此瀏覽器或鏡頭不允許調整縮放。", "error");
+          /* 單次失敗不影響下一幀；下面還有 jsQR 這條路。 */
         }
-      };
+      }
+      if (window.jsQR) {
+        const thorough = nowMs() - lastThoroughAt > 1000;
+        if (thorough) lastThoroughAt = nowMs();
+        const imageData = context.getImageData(0, 0, cw, ch);
+        const opts = thorough ? undefined : { inversionAttempts: "dontInvert" };
+        const code = window.jsQR(imageData.data, imageData.width, imageData.height, opts);
+        if (code && code.data) return code.data;
+      }
+      return null;
+    }
+
+    async function tick() {
+      if (!scanning) return;
+      requestAnimationFrame(tick);
+      const at = nowMs();
+      if (decoding || at - lastDecodeAt < DECODE_INTERVAL_MS) return;
+      if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+      decoding = true;
+      lastDecodeAt = at;
+      try {
+        const data = await decodeOnce();
+        if (data) {
+          lastSeenAt = nowMs();
+          seenCount += 1;
+          setScanHint(`✅ 已解出 QR（第 ${seenCount} 次，${data.length} 字元）`, "ok");
+          submitQr(data);
+        } else if (!lastSeenAt || (nowMs() - lastSeenAt) / 1000 > NO_QR_HINT_SECS) {
+          setScanHint(
+            targetZoom <= ZOOM_MIN + 0.001
+              ? "還沒看到 QR：往右拉「放大」拉桿，或靠近一點"
+              : `還沒看到 QR（目前 ${targetZoom.toFixed(1)}x）：把 QR 放進畫面正中央，太遠就再往右拉`,
+            "warn"
+          );
+        }
+        updateCamInfo();
+      } finally {
+        decoding = false;
+      }
+    }
+
+    /* QR_ZOOM_V1：偵測鏡頭變焦能力（不支援就純數位裁切，拉桿一樣可用）。 */
+    async function detectHwZoom(track) {
+      hwZoomRange = null;
+      hwZoomApplied = 1;
+      try {
+        if (!track || !track.getCapabilities) return;
+        const caps = track.getCapabilities();
+        if (!caps || typeof caps.zoom === "undefined") return;
+        const min = Number(caps.zoom.min ?? 1);
+        const max = Number(caps.zoom.max ?? min);
+        if (isFinite(min) && isFinite(max) && max > min) hwZoomRange = { min, max };
+      } catch (err) {
+        hwZoomRange = null;
+      }
+    }
+
+    /* QR_ZOOM_V1：套用拉桿值 —— 鏡頭變焦優先，不足的倍率用數位裁切補。
+       預覽同步做 CSS scale，所以「畫面上看到的範圍」＝「實際送去解碼的範圍」。 */
+    async function applyZoom() {
+      hwZoomApplied = 1;
+      if (videoTrack && hwZoomRange) {
+        const hw = Math.min(hwZoomRange.max, Math.max(hwZoomRange.min, targetZoom));
+        try {
+          await videoTrack.applyConstraints({ advanced: [{ zoom: hw }] });
+          hwZoomApplied = hw;
+        } catch (err) {
+          hwZoomRange = null;   // 這個鏡頭其實不給調 → 退回純數位
+          hwZoomApplied = 1;
+        }
+      }
+      digitalZoom = Math.max(1, targetZoom / (hwZoomApplied || 1));
+      if (video && video.style) {
+        video.style.transform = digitalZoom > 1.001 ? `scale(${digitalZoom.toFixed(3)})` : "";
+      }
+      if (zoomSlider) zoomSlider.value = String(targetZoom);
+      if (zoomValue) zoomValue.textContent = targetZoom.toFixed(1) + "x";
+      if (zoomModeEl) {
+        zoomModeEl.textContent = hwZoomRange
+          ? `鏡頭 ${hwZoomApplied.toFixed(1)}x × 數位 ${digitalZoom.toFixed(1)}x`
+          : `數位放大 ${digitalZoom.toFixed(1)}x（此鏡頭不支援變焦）`;
+      }
+      storeZoom(targetZoom);
+      updateCamInfo();
+    }
+
+    /* QR_ZOOM_V1：顯示相機解析度／解碼區大小／用哪個解碼器。
+       使用者才知道自己離得夠不夠近、拉桿還要不要往右。 */
+    function updateCamInfo() {
+      if (!camInfoEl) return;
+      const vw = video ? video.videoWidth : 0;
+      const vh = video ? video.videoHeight : 0;
+      if (!vw || !vh) {
+        camInfoEl.textContent = "";
+        return;
+      }
+      const cw = Math.max(1, Math.round(vw / digitalZoom));
+      const ch = Math.max(1, Math.round(vh / digitalZoom));
+      camInfoEl.textContent = `相機 ${vw}×${vh}・解碼區 ${cw}×${ch}・${decoderName}`;
+    }
+
+    function setZoomValue(next) {
+      targetZoom = clampZoom(next);
+      applyZoom();
+    }
+
+    /* QR_ZOOM_V1：解碼器選擇 —— 原生 BarcodeDetector（Android Chrome 內建，對小碼與模糊的
+       容忍度比純 JS 實作好）優先；沒有就退回本機 jsQR。 */
+    let barcodeDetector = null;
+    let decoderName = "jsQR";
+    async function initDecoder() {
+      barcodeDetector = null;
+      try {
+        if (typeof BarcodeDetector !== "undefined" && BarcodeDetector.getSupportedFormats) {
+          const formats = await BarcodeDetector.getSupportedFormats();
+          if (formats && formats.indexOf("qr_code") >= 0) {
+            barcodeDetector = new BarcodeDetector({ formats: ["qr_code"] });
+            decoderName = "內建解碼器";
+          }
+        }
+      } catch (err) {
+        barcodeDetector = null;
+      }
+      if (!barcodeDetector) {
+        decoderName = (typeof window !== "undefined" && window.jsQR) ? "jsQR" : "解碼器未載入";
+      }
+      return decoderName;
     }
 
     async function startCamera() {
       if (!validScannerParams()) {
         setStatus("掃描連結缺少必要參數", "error");
+        setScanHint("這個連結沒有帶到必要的參數，請重新開啟點名頁產生的掃碼連結", "error");
         return;
       }
-      if (!window.jsQR) {
-        setStatus("QR 解碼器尚未載入，請稍後再試或改用手動貼上。", "error");
+      await initDecoder();
+      if (!barcodeDetector && !window.jsQR) {
+        setStatus("QR 解碼器尚未載入", "error");
+        setScanHint("解碼器沒有載入：請重新整理頁面；若一直失敗請回報（伺服器 /scanner/jsqr.js 讀不到）", "error");
         return;
       }
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "environment",
-            width: { ideal: 1920 },
-            height: { ideal: 1080 }
+            /* QR_ZOOM_V1：要求更高的解析度 —— 這是「坐遠」最關鍵的一項，
+               感光元件實際拍到的像素變多，裁切後 QR 才有足夠的像素被解出來。 */
+            width: { ideal: 3840 },
+            height: { ideal: 2160 }
           },
           audio: false
         });
         videoTrack = stream.getVideoTracks()[0] || null;
         video.srcObject = stream;
         await video.play();
-        await setupZoomControl(videoTrack);
+        /* 遠距離時有沒有對到焦，影響比解析度還大；支援就要求連續自動對焦。 */
+        try {
+          if (videoTrack && videoTrack.applyConstraints) {
+            await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+          }
+        } catch (err) { /* 不支援就維持相機預設 */ }
+        await detectHwZoom(videoTrack);
+        targetZoom = clampZoom(readStoredZoom());
+        await applyZoom();
         scanning = true;
         setStatus("正在掃描並持續回傳 QR Code...", "");
+        setScanHint("開始找 QR：把 QR 放進畫面，太遠就往右拉「放大」拉桿", "");
         requestAnimationFrame(tick);
       } catch (err) {
         setStatus("無法開啟相機，請確認瀏覽器權限或使用 HTTPS。", "error");
+        setScanHint("相機打不開：請確認已允許相機權限（或用瀏覽器開啟，不要在 App 內建瀏覽器）", "error");
       }
     }
 
@@ -541,8 +812,9 @@
       }
       videoTrack = null;
       video.srcObject = null;
-      setZoomUiVisible(false);
+      if (video && video.style) video.style.transform = "";
       setStatus("已停止掃描", "");
+      setScanHint("已停止掃描（可按「開啟相機」重新開始）", "");
     }
 
     document.getElementById("start").addEventListener("click", startCamera);
@@ -553,13 +825,23 @@
         setStatus("請先貼上 QR Code 內容", "error");
         return;
       }
+      setScanHint("手動送出：直接把你貼上的內容交給系統（不經過相機解碼）", "");
       submitQr(value);
     });
+
+    /* QR_ZOOM_V1：拉桿與加減鈕（手機上一根手指就能操作），位置會記住。 */
+    zoomSlider.addEventListener("input", () => setZoomValue(Number(zoomSlider.value)));
+    document.getElementById("zoomIn").addEventListener("click", () => setZoomValue(targetZoom + ZOOM_STEP));
+    document.getElementById("zoomOut").addEventListener("click", () => setZoomValue(targetZoom - ZOOM_STEP));
+    document.getElementById("zoomReset").addEventListener("click", () => setZoomValue(ZOOM_MIN));
+    targetZoom = clampZoom(readStoredZoom());
+    if (zoomSlider) zoomSlider.value = String(targetZoom);
+    if (zoomValue) zoomValue.textContent = targetZoom.toFixed(1) + "x";
 
     refreshAttendanceStatus();
     setInterval(refreshAttendanceStatus, 1500);
     startCamera();
   </script>
-<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a183d92dae1b4a3f',t:'MTc4MzU2MzYxNA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script><script defer src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+
 </body>
 </html>

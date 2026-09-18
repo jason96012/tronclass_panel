@@ -830,6 +830,12 @@ impl QrScannerRegistry {
             course_name: entry.course_name.clone(),
             class_progress: entry.class_progress.clone(),
             auto_submit_percent: AUTO_SUBMIT_PERCENT,
+            // RADAR_DEDUCE_TRACE_V1（fix75）：推估過程記在 rollcalls/radar.rs 的模組狀態裡
+            //（監控流程與這個 HTTP 服務是同一個行程），這裡照實帶出去給頁面畫。
+            probe: crate::rollcalls::radar::probe_trace(provider, query.rollcall_id),
+            // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）時的停手狀態
+            //（停手時間過了自己會消失，不會卡住整場點名）。
+            school_block: crate::rollcalls::radar::school_block(provider, query.rollcall_id),
         };
         // CLASS_COUNT_ON_PAGES_V1：這一場的處理流程還沒回報過進度時，退回共用快取
         // （多帳號只會有其中一個帳號的流程在跑，頁面照樣看得到數字）。
@@ -1535,6 +1541,14 @@ pub struct RadarStatusResult {
     pub class_progress: Option<RollcallProgress>,
     /// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1：超過這個百分比系統就會自動送出（頁面文案用）。
     pub auto_submit_percent: u32,
+    /// RADAR_DEDUCE_TRACE_V1（fix75）：系統「怎麼推估教室位置」的過程
+    /// （量測圓／兩圓交會候選／最小平方推估點／棋盤格掃描點；沒有紀錄時沒有這個欄位）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe: Option<crate::rollcalls::radar::RadarProbeTrace>,
+    /// RADAR_SCHOOL_BLOCK_V1（fix77）：學校端正在擋我們（429 限流／403 禁止）時，
+    /// 這裡帶出「停手到什麼時候」的資訊（頁面顯示紅字橫幅；沒被擋時沒有這個欄位）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub school_block: Option<crate::rollcalls::radar::RadarSchoolBlock>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

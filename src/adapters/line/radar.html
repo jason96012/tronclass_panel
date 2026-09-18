@@ -25,6 +25,9 @@
     #status.ok { color:var(--ok); }
     #status.error { color:var(--error); }
     .error-box { margin-top:12px; padding:12px; border:1px solid rgba(185,28,28,.35); border-radius:8px; background:rgba(185,28,28,.08); color:var(--error); font-weight:650; }
+    /* RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）→ 系統停手，用琥珀色橫幅說明。 */
+    .block-box { margin-top:12px; padding:12px; border:1px solid rgba(180,83,9,.38); border-radius:8px; background:rgba(245,158,11,.12); color:#b45309; font-weight:650; line-height:1.55; }
+    @media (prefers-color-scheme: dark) { .block-box { color:#fcd34d; } }
     /* CLASS_COUNT_HEADER_V1：上方這一欄＝「目前班上已點人數」（大字）＋班上到課比例條；
        原本的倒數縮成右下角一行小字（快到期／逾時一樣變色，逾時照樣鎖住輸入）。
        資料來源＝/radar/status 的 class_progress（後端每 10 秒讀一次學校的班上進度）。 */
@@ -118,6 +121,10 @@
     .legend { display:flex; flex-wrap:wrap; gap:12px; margin-top:10px; font-size:12px; color:var(--muted); }
     .legend i { display:inline-block; width:10px; height:10px; margin-right:5px; border-radius:50%; vertical-align:-1px; }
     .legend i.hollow { background:transparent; border:2px dashed var(--accent); width:12px; height:12px; }
+    /* RADAR_DEDUCE_TRACE_V1（fix75）：推估過程的圖例與說明（一行一步，用 pre-line） */
+    .legend i.probe-ring { background:transparent; border:2px dashed #7c3aed; width:12px; height:12px; }
+    .legend i.square { border-radius:2px; }
+    #probeHint { white-space:pre-line; }
     @media (max-width:560px) { .summary,.lists,.choice { grid-template-columns:1fr; } .advice .advice-main { font-size:16px; } .bar-label { min-width:56px; font-size:12px; } .progress-row { gap:8px; } }
     @media (prefers-reduced-motion: reduce) { .spinner { animation-duration:1.5s; } .countdown.danger .time { animation:none; } .geo-state.good .ping { animation:none; } }
   </style>
@@ -177,6 +184,7 @@
       <div id="status">尚未送出</div>
       <div id="result" class="result" role="status" aria-live="polite"></div>
       <div id="lastError" class="error-box" style="display:none"></div>
+      <div id="schoolBlock" class="block-box" style="display:none"></div>
     </section>
 
     <section class="panel">
@@ -187,10 +195,15 @@
         <span><i class="hollow"></i>定位誤差範圍</span>
         <span><i style="background:#15803d"></i>已送出的座標</span>
         <span><i style="background:#b45309"></i>教室位置（系統設定）</span>
+        <!-- RADAR_DEDUCE_TRACE_V1（fix75）：推估過程的圖例（有紀錄才會顯示） -->
+        <span id="legendMeasure" style="display:none"><i class="probe-ring"></i>量測圓（教室一定在這個圓上）</span>
+        <span id="legendEstimate" style="display:none"><i style="background:#7c3aed"></i>系統推估的教室位置</span>
+        <span id="legendGrid" style="display:none"><i class="square" style="background:#94a3b8"></i>棋盤格掃過的格子</span>
       </div>
       <div class="actions">
         <button id="recenter" class="secondary" type="button">回到我的位置</button>
-        <button id="toggleTiles" class="secondary" type="button" aria-pressed="false">🗺 一般地圖</button>
+        <button id="toggleProbe" class="secondary" type="button" aria-pressed="true">🧭 推估過程</button>
+        <button id="toggleTiles" class="secondary" type="button" aria-pressed="true">🗺 關閉一般地圖</button>
         <button id="toggleSatellite" class="secondary" type="button" aria-pressed="false">🛰 衛星影像</button>
       </div>
       <div class="progress-row">
@@ -205,6 +218,8 @@
         <span class="ptext wrap" id="classText">班上進度：讀取中…</span>
       </div>
       <div id="classHint" class="auto-hint">全班超過 15% 的人點名成功後，系統會自動送出點名——你不按也沒關係。</div>
+      <!-- RADAR_DEDUCE_TRACE_V1（fix75）：系統是怎麼推算出教室位置的（逐步照實寫） -->
+      <div id="probeHint" class="auto-hint">🧭 還沒有推估紀錄：第一次送出就成功的話，系統不需要推估教室位置。</div>
       <div id="mapHint" class="auto-hint">地圖以教室座標為中心，格線每一格是固定的實際距離（左下角有比例尺）。</div>
     </section>
 
@@ -234,6 +249,8 @@
     const statusEl = document.getElementById("status");
     const resultEl = document.getElementById("result");
     const lastErrorEl = document.getElementById("lastError");
+    /* RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）時，這一條橫幅說明「系統已停手」。 */
+    const schoolBlockEl = document.getElementById("schoolBlock");
     const geoStateEl = document.getElementById("geoState");
     const geoMainEl = document.getElementById("geoMain");
     const geoSubEl = document.getElementById("geoSub");
@@ -262,6 +279,11 @@
     const classHintEl = document.getElementById("classHint");
     const recenterBtn = document.getElementById("recenter");
     const toggleTilesBtn = document.getElementById("toggleTiles");
+    const toggleProbeBtn = document.getElementById("toggleProbe");
+    const probeHintEl = document.getElementById("probeHint");
+    const legendMeasureEl = document.getElementById("legendMeasure");
+    const legendEstimateEl = document.getElementById("legendEstimate");
+    const legendGridEl = document.getElementById("legendGrid");
     const toggleSatelliteBtn = document.getElementById("toggleSatellite");
     const mapHintEl = document.getElementById("mapHint");
     const countdownEl = document.getElementById("countdown");
@@ -328,10 +350,16 @@
       autoPercent: 15,       // 超過這個百分比系統就會自動送出（後端 auto_submit_percent 會覆寫）
       courseName: "",
       lastError: null,
+      schoolBlock: null,     // 學校端擋下（429／403）的停手資訊（後端 school_block 帶的）
       me: null,              // 目前為止最準的一次定位
       meNow: null,           // 最新一次回報（畫圖用）
-      tiles: false,
+      /* RADAR_BASEMAP_DEFAULT_STREET_V1（fix75）：預設就載入「一般地圖」（OpenStreetMap）。
+         只向圖磚伺服器要「教室附近那幾格」的圖（不會傳送你的 GPS 座標）；
+         讀不到就自動回到格線圖並說明原因（#48 的安全網不變）。 */
+      tiles: true,
       basemap: BASEMAP_STREET,   // 外部底圖種類（tiles=false 時不載入）
+      probe: null,               // RADAR_DEDUCE_TRACE_V1：後端的推估過程紀錄
+      probeOn: true,             // 推估過程要不要畫在地圖上（預設畫）
       tileFails: 0,              // 連續讀不到的圖磚數（到門檻就回格線圖）
       basemapHint: "",           // 底圖相關的提示（例如讀不到時的原因）
       locked: false,
@@ -406,10 +434,33 @@
         return;
       }
       const first = state.configured[0];
-      useClassroomBtn.disabled = state.locked;
+      // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下、停手中 → 先鎖住送出（後端也會直接拒絕）。
+      useClassroomBtn.disabled = state.locked || Boolean(state.schoolBlock);
       classroomHintEl.textContent = "教室座標 " + fmtCoord(first[0], first[1]) +
         (state.configured.length > 1 ? "（共 " + state.configured.length + " 組）" : "");
       show(classroomCoordsEl, classroomDistanceText());
+    }
+    /* RADAR_SCHOOL_BLOCK_V1（fix77）：學校端回 429（限流）／403（禁止）時，後端會停手一段時間、
+       並推播管理員。頁面要把「現在不會再送」講清楚，免得使用者一直按送出卻沒反應。 */
+    function renderSchoolBlock() {
+      if (!schoolBlockEl) return;
+      const block = state.schoolBlock;
+      if (!block) {
+        schoolBlockEl.style.display = "none";
+        schoolBlockEl.textContent = "";
+        return;
+      }
+      const status = Number(block.status) || 0;
+      const label = status === 429 ? "429 限流" : (status === 403 ? "403 禁止" : ("HTTP " + status));
+      const secs = Number(block.stop_secs) || 0;
+      const wait = secs >= 60 ? (Math.round(secs / 60) + " 分鐘") : (secs + " 秒");
+      const detail = String(block.detail || "").trim();
+      schoolBlockEl.style.display = "block";
+      schoolBlockEl.textContent = "🚫 學校端擋下送出（" + label + "）：系統已停手約 " + wait +
+        "，這段時間不會再送出（時間到會自動再試一次）。" +
+        (detail ? "學校回覆：" + detail : "") +
+        (status === 403 ? " 若一直發生，請確認學校網站是否正常、或這個帳號是否需要重新登入。" : "");
+      classroomHintEl.textContent = "學校端擋下中，暫停送出（等停手時間過）";
     }
     /* RADAR_SYSTEM_ONLY_V1：定位只拿來顯示（地圖與距離參考），沒有「用自己的位置送出」這條路。 */
     function updateDeviceInfo() {
@@ -661,6 +712,13 @@
       renderMap(true);
       vibrate(8);
     }
+    toggleProbeBtn.addEventListener("click", () => {
+      state.probeOn = !state.probeOn;
+      toggleProbeBtn.setAttribute("aria-pressed", state.probeOn ? "true" : "false");
+      renderProbeInfo();
+      renderMap(true);
+      vibrate(8);
+    });
     toggleTilesBtn.addEventListener("click", () => toggleBasemap(BASEMAP_STREET));
     toggleSatelliteBtn.addEventListener("click", () => toggleBasemap(BASEMAP_SATELLITE));
 
@@ -779,6 +837,8 @@
     function mapSignature(list) {
       const parts = list.map((m) => m.kind + ":" + m.latitude.toFixed(6) + ":" + m.longitude.toFixed(6) + ":" + (m.accuracy == null ? "-" : Math.round(m.accuracy)));
       parts.push("focus:" + mapFocus, "tiles:" + (state.tiles ? state.basemap : "off"), "err:" + (state.lastError || ""));
+      // RADAR_DEDUCE_TRACE_V1：推估紀錄變了（例如又多了一個距離量測）就要重畫。
+      parts.push("probe:" + (state.probeOn && state.probe ? probeSignature() : "off"));
       return parts.join("|");
     }
     /* GRID_STEP_LADDER_V1：每一格至少要有 GRID_MIN_CELL_SVG 個 SVG 單位，不然線會擠成一片。
@@ -793,6 +853,151 @@
     /* 底圖圖磚：先挑一個「圖磚大約占 BASEMAP_TARGET_TILE_SVG 個單位」的縮放；
        若這樣需要的張數超過 MAP_MAX_TILES，就把縮放再降一級（圖磚變大、張數變少），
        最多降幾級就停——保證底圖一定蓋滿畫面，而且請求數有上限。 */
+    /* ── RADAR_DEDUCE_TRACE_V1（fix75）：把「教室位置是怎麼推出來的」畫在地圖上 ──
+       後端（rollcalls/radar.rs）真的跑過什麼，這裡就畫什麼，不會無中生有：
+         measurements＝每一次送出後學校回報「還差幾公尺」的量測
+           → 以那個座標為圓心、那個距離為半徑畫圓：教室一定在這個圓上
+         candidates ＝兩圓交會算出來的候選座標（紫菱形）
+         estimate    ＝多個距離做最小平方（三邊測量）的推估點（紫星）
+         grid        ＝以推估點為中心的棋盤格掃描，每 100 公尺一格（灰點）
+       沒有紀錄時整層不畫（頁面只顯示位置與進度）。 */
+    const PROBE_COLOR = "#7c3aed";
+    const PROBE_GRID_COLOR = "#94a3b8";
+    /* 量測圓最多讓地圖拉到 PROBE_EXTENT_MAX_METERS：一個「還差 3 公里」的圓若把整張圖
+       拉遠，反而看不到教室附近；超出的圓只會看到一段弧（誠實：教室在那個大圓上）。 */
+    const PROBE_EXTENT_MAX_METERS = 2000;
+    function probeSignature() {
+      const t = state.probe;
+      if (!t) return "none";
+      return [
+        "m" + (t.measurements || []).length,
+        "c" + (t.candidates || []).length,
+        "e" + (t.estimate ? 1 : 0),
+        "g" + (t.grid && t.grid.cells ? t.grid.cells.length : -1),
+        "s" + (t.success ? 1 : 0),
+        "a" + (t.account_id || "")
+      ].join(",");
+    }
+    /* 五角星（純 SVG path，不用外部圖庫）。 */
+    function starPath(cx, cy, outer, inner) {
+      let d = "";
+      for (let i = 0; i < 10; i += 1) {
+        const r = i % 2 === 0 ? outer : inner;
+        const a = -Math.PI / 2 + i * Math.PI / 5;
+        d += (i === 0 ? "M " : "L ") + (cx + r * Math.cos(a)).toFixed(2) + " " + (cy + r * Math.sin(a)).toFixed(2) + " ";
+      }
+      return d + "Z";
+    }
+    /* 推估過程佔的範圍（給地圖縮放用；單一項最多只放大到 PROBE_EXTENT_MAX_METERS）。 */
+    function probeExtentMeters(origin) {
+      if (!probeShown()) return 0;
+      const t = state.probe;
+      let need = 0;
+      const add = (lat, lon, extra) => {
+        const d = distanceMeters(origin.latitude, origin.longitude, Number(lat), Number(lon)) + (Number(extra) || 0);
+        need = Math.max(need, Math.min(d, PROBE_EXTENT_MAX_METERS));
+      };
+      for (const m of (t.measurements || [])) add(m.latitude, m.longitude, m.distance_m);
+      for (const c of (t.candidates || [])) add(c[0], c[1], 0);
+      if (t.estimate) add(t.estimate[0], t.estimate[1], 0);
+      if (t.grid && Array.isArray(t.grid.cells)) for (const cell of t.grid.cells) add(cell[0], cell[1], 0);
+      if (t.success) add(t.success[0], t.success[1], 0);
+      return need;
+    }
+    function probeShown() { return Boolean(state.probeOn && state.probe); }
+    function renderProbeLayer(toSvg, scale) {
+      if (!probeShown()) return;
+      const t = state.probe;
+      const layer = svgEl("g", {});
+      /* ① 棋盤格掃過的格子（先畫，才不會蓋住圓與標記）。 */
+      const grid = t.grid;
+      if (grid && Array.isArray(grid.cells)) {
+        for (const cell of grid.cells) {
+          const p = toSvg(Number(cell[0]), Number(cell[1]));
+          layer.appendChild(svgEl("rect", { x: p.x - 2.4, y: p.y - 2.4, width: 4.8, height: 4.8, fill: PROBE_GRID_COLOR, opacity: "0.9" }));
+        }
+      }
+      /* ② 量測圓：圓心＝試過的座標、半徑＝學校回報的距離。 */
+      (t.measurements || []).forEach((m, i) => {
+        const lat = Number(m.latitude), lon = Number(m.longitude), d = Number(m.distance_m);
+        if (!isFinite(lat) || !isFinite(lon) || !isFinite(d) || d <= 0) return;
+        const p = toSvg(lat, lon);
+        layer.appendChild(svgEl("circle", {
+          cx: p.x, cy: p.y, r: Math.max(6, d * scale), fill: "none", stroke: PROBE_COLOR,
+          "stroke-width": 1.6, "stroke-dasharray": "7 6", opacity: "0.8"
+        }));
+        layer.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 3.2, fill: PROBE_COLOR, opacity: "0.9" }));
+        const label = "圓心=" + (i + 1) + "、半徑=" + fmtMeters(d);
+        layer.appendChild(svgText(Math.min(Math.max(p.x + 6, 6), MAP_W - 150), p.y + 15, label,
+          { fill: PROBE_COLOR, "font-size": 11, "font-weight": 600 }));
+      });
+      /* ③ 兩圓交會的候選座標。 */
+      (t.candidates || []).forEach((c) => {
+        const p = toSvg(Number(c[0]), Number(c[1]));
+        layer.appendChild(svgEl("path", {
+          d: "M " + p.x + " " + (p.y - 5) + " l 5 5 l -5 5 l -5 -5 z",
+          fill: "#ffffff", stroke: PROBE_COLOR, "stroke-width": 2
+        }));
+      });
+      /* ④ 最小平方（三邊測量）推估出來的教室位置。 */
+      if (t.estimate) {
+        const p = toSvg(Number(t.estimate[0]), Number(t.estimate[1]));
+        layer.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 9, fill: "none", stroke: PROBE_COLOR, "stroke-width": 2, opacity: "0.9" }));
+        layer.appendChild(svgEl("path", { d: starPath(p.x, p.y, 10, 4.4), fill: PROBE_COLOR }));
+        layer.appendChild(svgText(Math.min(Math.max(p.x + 12, 6), MAP_W - 170), Math.max(p.y - 12, 12),
+          "系統推估的教室位置", { fill: PROBE_COLOR, "font-size": 12, "font-weight": 700 }));
+      }
+      mapEl.appendChild(layer);
+    }
+
+    /* 推估過程的逐步說明（照後端紀錄寫，沒有發生的步驟就不寫）。 */
+    function renderProbeInfo() {
+      const t = state.probe;
+      const showLegend = (el, on) => { if (el) el.style.display = on ? "" : "none"; };
+      if (!state.probeOn) {
+        show(probeHintEl, "🧭 推估過程已隱藏（只顯示位置與進度）。按「🧭 推估過程」可以再看。");
+        showLegend(legendMeasureEl, false); showLegend(legendEstimateEl, false); showLegend(legendGridEl, false);
+        return;
+      }
+      if (!t) {
+        show(probeHintEl, "🧭 還沒有推估紀錄：第一次送出就成功的話，系統不需要推估教室位置。");
+        showLegend(legendMeasureEl, false); showLegend(legendEstimateEl, false); showLegend(legendGridEl, false);
+        return;
+      }
+      const lines = ["🧭 教室位置是怎麼推出來的（最近一次推估：" + (t.account_id || "這個帳號") + "）"];
+      const measurements = t.measurements || [];
+      if (measurements.length === 0) {
+        lines.push("1. 第一次送出的座標就被學校接受，沒有產生距離量測（不需要推估）。");
+      } else {
+        measurements.slice(0, 6).forEach((m, i) => {
+          lines.push((i + 1) + ". 送出 " + fmtCoord(m.latitude, m.longitude) + " → 學校回「還差 " +
+            fmtMeters(m.distance_m) + "」（圖上第 " + (i + 1) + " 個紫圈＝教室一定在這個圓上）");
+        });
+        if (measurements.length > 6) lines.push("…還有 " + (measurements.length - 6) + " 個量測（圖上都有畫）");
+      }
+      const n = measurements.length + 1;
+      if ((t.candidates || []).length > 0) {
+        lines.push(n + ". 兩圓交會 → " + t.candidates.length + " 個候選座標（圖上的紫菱形）");
+      }
+      if (t.estimate) {
+        lines.push(n + ". 用 " + Math.max(2, measurements.length) + " 個距離做最小平方（三邊測量）→ 推估教室在 " +
+          fmtCoord(t.estimate[0], t.estimate[1]) + "（圖上的紫星）");
+      }
+      if (t.grid && t.grid.cells && t.grid.cells.length > 0) {
+        lines.push(n + ". 以推估點為中心、每 " + Math.round(t.grid.step_m || 100) + " 公尺往外掃，已掃 " +
+          t.grid.cells.length + " 格（圖上的灰點；上限 " + fmtMeters(t.grid.max_radius_m || 3000) + "）");
+      }
+      if (t.success) {
+        lines.push("✅ 最後成功送出：" + fmtCoord(t.success[0], t.success[1]));
+      } else if (measurements.length > 0) {
+        lines.push("⏳ 這一輪還在試（學校目前還沒接受任何座標）。");
+      }
+      show(probeHintEl, lines.join("\n"));
+      showLegend(legendMeasureEl, measurements.length > 0);
+      showLegend(legendEstimateEl, Boolean(t.estimate));
+      showLegend(legendGridEl, Boolean(t.grid && t.grid.cells && t.grid.cells.length > 0));
+    }
+
     function renderTiles(group, origin, scale) {
       if (!state.tiles) return 0;
       try {
@@ -866,6 +1071,8 @@
         maxMeters = Math.max(maxMeters, distanceMeters(origin.latitude, origin.longitude, m.latitude, m.longitude) + (m.accuracy || 0));
       }
       maxMeters = Math.max(maxMeters, (origin.accuracy || 0) + MAP_MIN_SPAN_METERS / 2);
+      // RADAR_DEDUCE_TRACE_V1：量測圓／推估點／棋盤格也要在畫面裡（單項最多放大到 2 公里）。
+      maxMeters = Math.max(maxMeters, probeExtentMeters(origin));
       const scale = Math.min(MAP_W / 2 - MAP_PAD, MAP_H / 2 - MAP_PAD) / maxMeters;
       const cx = MAP_W / 2, cy = MAP_H / 2;
       const toSvg = (lat, lon) => {
@@ -904,6 +1111,9 @@
         mapEl.appendChild(svgEl("line", { x1: 0, y1: cy, x2: MAP_W, y2: cy, stroke: "#cbd5e1", "stroke-width": 1 }));
         mapEl.appendChild(svgEl("line", { x1: cx, y1: 0, x2: cx, y2: MAP_H, stroke: "#cbd5e1", "stroke-width": 1 }));
       }
+
+      // RADAR_DEDUCE_TRACE_V1：推估過程畫在底圖／格線之上、標記之下。
+      renderProbeLayer(toSvg, scale);
 
       // 你 ↔ 教室的連線與距離（判斷「離教室多遠」最直接）
       const me = list.find((m) => m.kind === "me");
@@ -1034,6 +1244,10 @@
         state.lastError = body.last_error || null;
         state.courseName = body.course_name || "";
         state.classProgress = body.class_progress || null;
+        // RADAR_DEDUCE_TRACE_V1：後端記錄的「怎麼推估教室位置」（沒有紀錄時是 null）。
+        state.probe = body.probe || null;
+        // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下時的停手資訊（沒有被擋就是 null）。
+        state.schoolBlock = body.school_block || null;
         state.autoPercent = Number(body.auto_submit_percent) > 0 ? Number(body.auto_submit_percent) : 15;
         totalCountEl.textContent = String(state.total);
         doneCountEl.textContent = String(state.completed);
@@ -1043,7 +1257,9 @@
         syncCountdown(body.expires_in_secs);
         renderProgress();
         renderClassProgress();
+        renderProbeInfo();
         updateClassroomButton();
+        renderSchoolBlock();
         updateIndoorAdvice();
         renderMap();
         show(pendingNoteEl, state.courseName ? ("這一場： " + state.courseName + "（點名 ID " + rollcallId + "）") : "", "pending-note");
@@ -1061,6 +1277,10 @@
         setStatus(msg, "error");
       }
     }
+
+    /* 預設底圖＝一般地圖（RADAR_BASEMAP_DEFAULT_STREET_V1），開頁就先同步按鈕狀態與推估說明。 */
+    syncBasemapButtons();
+    renderProbeInfo();
 
     if (!validParams()) {
       setStatus("連結缺少必要參數", "error");

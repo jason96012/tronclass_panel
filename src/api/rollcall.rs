@@ -279,6 +279,18 @@ impl AttendanceResult {
     pub fn is_success(&self) -> bool {
         matches!(self, AttendanceResult::Success)
     }
+
+    /// RADAR_SCHOOL_BLOCK_V1（fix77）：這次失敗是不是「學校端擋下」（429／403）？
+    ///
+    /// 是的話回傳 `(HTTP 狀態碼, 學校回覆)`，呼叫端（雷達流程）會停手＋推播管理員。
+    /// 判斷一律走 [`crate::api::school_block_of`]，不要自己比對字串。
+    pub fn school_block(&self) -> Option<(u16, String)> {
+        match self {
+            AttendanceResult::Failed { reason }
+            | AttendanceResult::TransientFailure { reason } => crate::api::school_block_of(reason),
+            _ => None,
+        }
+    }
 }
 
 /// 從 `/api/rollcall/{id}/student_rollcalls` 讀到的數字點名碼。
@@ -827,6 +839,28 @@ fn response_body_preview(body: &str) -> String {
 
 // ─── ApiClient 簽到方法 ───────────────────────────────────────────────────────
 
+/// RADAR_SCHOOL_BLOCK_V1（fix77）：讀出學校在 429／403 給的 `Retry-After`（秒）。
+///
+/// **必須在 `resp.text()` 之前呼叫**——`text()` 會把 `reqwest::Response` 消耗掉。
+fn school_block_retry_after_header(resp: &reqwest::Response) -> Option<u64> {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+}
+
+/// 組出「學校端擋下」的失敗訊息；學校有指定等待秒數時一併寫進去
+/// （雷達流程會用它決定要停手多久，見 `rollcalls/radar.rs`）。
+fn school_block_detail(status: u16, retry_after_secs: Option<u64>, body_text: &str) -> String {
+    let mut detail = crate::api::school_block_reason(status, body_text);
+    if let Some(secs) = retry_after_secs {
+        detail.push_str(&format!("（學校要求等 {secs} 秒）"));
+    }
+    detail
+}
+
+
 impl super::ApiClient {
     /// `GET /api/radar/rollcalls` — 輪詢獲取簽到列表
     #[instrument(skip(self))]
@@ -979,6 +1013,7 @@ impl super::ApiClient {
         }
     }
 
+
     /// `PUT /api/rollcall/{id}/answer`（**空的答案**）— RADAR_EMPTY_ANSWER_V1。
     ///
     /// 抄自 auto-rollcall-thu-tronclass：對雷達點名送一個不帶座標的空物件 `{}`，
@@ -1007,8 +1042,24 @@ impl super::ApiClient {
                 debug!("空答案被接受（這台伺服器沒有驗證座標）");
                 Ok(AttendanceResult::Success)
             }
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                Err(miette::miette!(ApiError::Unauthorized))
+            StatusCode::UNAUTHORIZED => Err(miette::miette!(ApiError::Unauthorized)),
+            // RADAR_SCHOOL_BLOCK_V1（fix77）：429／403 是「學校端擋下」，不是 session 問題——
+            // 雷達流程看到標記就會停手並推播管理員（不要在這裡當成認證錯誤）。
+            StatusCode::TOO_MANY_REQUESTS => {
+                let retry_after = school_block_retry_after_header(&resp);
+                let body_text = resp.text().await.unwrap_or_default();
+                warn!(status = %status, body = %body_text, "空答案被學校端限流（429）");
+                Ok(AttendanceResult::TransientFailure {
+                    reason: school_block_detail(429, retry_after, &body_text),
+                })
+            }
+            StatusCode::FORBIDDEN => {
+                let retry_after = school_block_retry_after_header(&resp);
+                let body_text = resp.text().await.unwrap_or_default();
+                warn!(status = %status, body = %body_text, "空答案被學校端拒絕（403）");
+                Ok(AttendanceResult::TransientFailure {
+                    reason: school_block_detail(403, retry_after, &body_text),
+                })
             }
             other => {
                 let body_text = resp.text().await.unwrap_or_default();
@@ -1147,8 +1198,24 @@ impl super::ApiClient {
                 debug!(lat = latitude, lon = longitude, "雷達簽到成功");
                 Ok(AttendanceResult::Success)
             }
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                Err(miette::miette!(ApiError::Unauthorized))
+            StatusCode::UNAUTHORIZED => Err(miette::miette!(ApiError::Unauthorized)),
+            // RADAR_SCHOOL_BLOCK_V1（fix77）：429／403 ＝ 學校端擋下（不是 session 問題，
+            // 也不是「距離不足」）。包上固定標記讓雷達流程停手＋推播。
+            StatusCode::TOO_MANY_REQUESTS => {
+                let retry_after = school_block_retry_after_header(&resp);
+                let body_text = resp.text().await.unwrap_or_default();
+                warn!(status = %status, body = %body_text, "雷達簽到被學校端限流（429）");
+                Ok(AttendanceResult::TransientFailure {
+                    reason: school_block_detail(429, retry_after, &body_text),
+                })
+            }
+            StatusCode::FORBIDDEN => {
+                let retry_after = school_block_retry_after_header(&resp);
+                let body_text = resp.text().await.unwrap_or_default();
+                warn!(status = %status, body = %body_text, "雷達簽到被學校端拒絕（403）");
+                Ok(AttendanceResult::TransientFailure {
+                    reason: school_block_detail(403, retry_after, &body_text),
+                })
             }
             StatusCode::BAD_REQUEST
             | StatusCode::UNPROCESSABLE_ENTITY

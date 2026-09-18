@@ -24,7 +24,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use miette::Result;
 use tracing::{debug, info, instrument, warn};
@@ -469,11 +469,27 @@ pub async fn attempt_radar_rollcall(
     let accuracy = config.accuracy;
     let altitude = config.altitude;
 
+    // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端正在擋我們（429／403）→ 停手，這一輪完全不碰學校。
+    // 停手時間到會自動失效（見 [`school_block`]），不需要人工恢復。
+    if let Some(block) = school_block(provider, rollcall_id) {
+        warn!(
+            status = block.status,
+            stop_secs = block.stop_secs,
+            "學校端擋下中，這一輪停手（不送出、不掃棋盤格）"
+        );
+        return RadarResult::Error(block.message());
+    }
+
     let mut tried_coords: Vec<Coordinate> = Vec::new();
     // 量測資料：(座標, 距離) 用於後續圓交叉點計算
     let mut measurements: Vec<(Coordinate, f64)> = Vec::new();
     // 輸入頁送來、已經試過的座標（同一組不重複試，避免使用者連按時多打學校）。
     let mut manual_tried: Vec<Coordinate> = Vec::new();
+    // RADAR_DEDUCE_TRACE_V1：這一輪的推估過程（頁面要畫，所以逐階段留下來）。
+    let mut candidates_acc: Vec<Coordinate> = Vec::new();
+    let mut estimate_acc: Option<Coordinate> = None;
+    let mut grid_cells: Vec<Coordinate> = Vec::new();
+    let mut grid_scanned = 0usize;
 
     // ── Phase -1: 空答案（RADAR_EMPTY_ANSWER_V1，抄 auto-rollcall-thu-tronclass）──
     // 伺服器若沒驗證座標，`{}` 就會直接被判到場；沒被接受就照下面的座標流程走。
@@ -492,6 +508,17 @@ pub async fn attempt_radar_rollcall(
                 return RadarResult::SuccessEmpty;
             }
             Ok(other) => {
+                // RADAR_SCHOOL_BLOCK_V1（fix77）：空答案若被學校端擋下（429／403），一樣停手。
+                if let Some((status, detail)) = other.school_block() {
+                    warn!(status = status, "空答案被學校端擋下 → 這一場停手");
+                    return RadarResult::Error(note_school_block(
+                        provider,
+                        rollcall_id,
+                        account_id,
+                        status,
+                        &detail,
+                    ));
+                }
                 debug!(
                     rollcall_id = rollcall_id,
                     result = ?other,
@@ -596,6 +623,11 @@ pub async fn attempt_radar_rollcall(
                 );
                 // 非距離錯誤不加入量測資料（距離未知）
             }
+            // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下 → 這一場停手，不再打學校。
+            Ok(SingleRadarResult::Blocked { message, .. }) => {
+                warn!(reason = %message, "預設座標 {} 被學校端擋下，這一場停手", i + 1);
+                return RadarResult::Error(message);
+            }
             Err(e) => {
                 let err_str = e.to_string();
                 if is_auth_error(&err_str) {
@@ -605,6 +637,15 @@ pub async fn attempt_radar_rollcall(
                 warn!(error = %e, "預設座標 {} 請求錯誤，跳過", i + 1);
             }
         }
+    }
+
+    // RADAR_DEDUCE_TRACE_V1：Phase 1 結束——先把「試過哪些座標、學校各回報多遠」記下來。
+    if !measurements.is_empty() {
+        store_probe(
+            provider,
+            rollcall_id,
+            build_probe(account_id, &measurements, &candidates_acc, estimate_acc, None, None),
+        );
     }
 
     // ── Phase 2: 使用圓交叉點算法計算候選座標 ─────────────────────────────────
@@ -625,6 +666,124 @@ pub async fn attempt_radar_rollcall(
         return outcome;
     }
 
+    // ── Phase 2.5: 距離探測（RADAR_DISTANCE_PROBE_V1，fix77／S9）────────────────
+    // 只有 1 筆量測時圓交會解不出來（兩圓才有交點），棋盤格又得掃上千格。
+    // 這裡以那一筆量測為圓心、往三個方位各送一個探測點：每個探測點回報一個新距離，
+    // 手上就有 4 筆量測 → 下面的 Phase 2 用圓交會／最小平方直接解出教室。
+    // 限制：整場點名每個帳號只做一輪、探測點之間隔 1.2 秒、已試過的座標不重複送。
+    if measurements.len() == 1
+        && school_block(provider, rollcall_id).is_none()
+        && distance_probe_allowed(provider, rollcall_id, account_id)
+    {
+        mark_distance_probed(provider, rollcall_id, account_id);
+        let anchor = measurements[0].0;
+        let anchor_distance = measurements[0].1;
+        info!(
+            rollcall_id = rollcall_id,
+            anchor_distance = anchor_distance,
+            points = RADAR_PROBE_BEARINGS.len(),
+            distance_m = RADAR_PROBE_METERS,
+            "Phase 2.5：只有 1 筆量測，先做 {} 個距離探測點（每個 {} 公尺）",
+            RADAR_PROBE_BEARINGS.len(),
+            RADAR_PROBE_METERS
+        );
+        for (i, bearing) in RADAR_PROBE_BEARINGS.iter().enumerate() {
+            // 每個探測點前都再看一次停手狀態：第一個探測點就可能撞到 429。
+            if school_block(provider, rollcall_id).is_some() {
+                warn!("距離探測中途偵測到學校端擋下，停止探測");
+                break;
+            }
+            let point = bearing_point(&anchor, RADAR_PROBE_METERS, *bearing);
+            if tried_coords
+                .iter()
+                .any(|c| c.distance_meters(&point) < RADAR_PROBE_DEDUP_METERS)
+            {
+                debug!(bearing = bearing, "探測點與試過的座標重複，跳過");
+                continue;
+            }
+            // 同一帳號連續探測要留間隔（第一位已經過 relay 排隊，這裡是後面幾個）。
+            if i > 0 {
+                tokio::time::sleep(Duration::from_millis(RADAR_PROBE_GAP_MS)).await;
+            }
+            tried_coords.push(point);
+            debug!(
+                bearing = bearing,
+                lat = point.latitude,
+                lon = point.longitude,
+                "距離探測點 {}",
+                i + 1
+            );
+            match try_single_radar_coord(
+                &api, provider, rollcall_id, account_id, point, accuracy, altitude,
+            )
+            .await
+            {
+                Ok(SingleRadarResult::Success) => {
+                    info!(
+                        lat = point.latitude,
+                        lon = point.longitude,
+                        "✅ 雷達簽到成功（距離探測點 {}）",
+                        i + 1
+                    );
+                    store_probe(
+                        provider,
+                        rollcall_id,
+                        build_probe(
+                            account_id,
+                            &measurements,
+                            &candidates_acc,
+                            estimate_acc,
+                            None,
+                            Some(point),
+                        ),
+                    );
+                    return RadarResult::Success { coord: point };
+                }
+                Ok(SingleRadarResult::TooFar { distance }) => {
+                    info!(
+                        bearing = bearing,
+                        distance = distance,
+                        "距離探測點 {} 回報距離 {distance:.2} 公尺",
+                        i + 1
+                    );
+                    measurements.push((point, distance));
+                }
+                Ok(SingleRadarResult::OtherFailure { reason }) => {
+                    warn!(reason = %reason, "距離探測點 {} 失敗（非距離錯誤）", i + 1);
+                }
+                Ok(SingleRadarResult::Blocked { message, .. }) => {
+                    warn!(reason = %message, "距離探測點 {} 被學校端擋下，這一場停手", i + 1);
+                    return RadarResult::Error(message);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if is_auth_error(&err_str) {
+                        warn!(error = %e, "距離探測遇到認證錯誤");
+                        return RadarResult::Error(err_str);
+                    }
+                    warn!(error = %e, "距離探測點 {} 請求錯誤，跳過", i + 1);
+                }
+            }
+        }
+        store_probe(
+            provider,
+            rollcall_id,
+            build_probe(
+                account_id,
+                &measurements,
+                &candidates_acc,
+                estimate_acc,
+                None,
+                None,
+            ),
+        );
+        info!(
+            measurements = measurements.len(),
+            "距離探測結束：目前有 {} 筆量測",
+            measurements.len()
+        );
+    }
+
     if measurements.len() >= 2 {
         info!(
             measurements = measurements.len(),
@@ -633,6 +792,21 @@ pub async fn attempt_radar_rollcall(
         );
 
         let candidates = compute_radar_candidates(&measurements);
+        // RADAR_DEDUCE_TRACE_V1：候選座標＝兩圓交會；推估點＝多個距離的最小平方。
+        candidates_acc = candidates.clone();
+        estimate_acc = estimate_location_from_distances(&measurements);
+        store_probe(
+            provider,
+            rollcall_id,
+            build_probe(
+                account_id,
+                &measurements,
+                &candidates_acc,
+                estimate_acc,
+                None,
+                None,
+            ),
+        );
 
         if candidates.is_empty() {
             warn!("圓交叉點算法未產生任何候選座標");
@@ -673,6 +847,18 @@ pub async fn attempt_radar_rollcall(
                             "✅ 雷達簽到成功（計算座標 {}）",
                             i + 1
                         );
+                        store_probe(
+                            provider,
+                            rollcall_id,
+                            build_probe(
+                                account_id,
+                                &measurements,
+                                &candidates_acc,
+                                estimate_acc,
+                                None,
+                                Some(candidate),
+                            ),
+                        );
                         return RadarResult::Success { coord: candidate };
                     }
                     Ok(SingleRadarResult::TooFar { distance }) => {
@@ -688,6 +874,10 @@ pub async fn attempt_radar_rollcall(
                     Ok(SingleRadarResult::OtherFailure { reason }) => {
                         warn!(reason = %reason, "計算座標 {} 失敗（非距離錯誤）", i + 1);
                     }
+                    Ok(SingleRadarResult::Blocked { message, .. }) => {
+                        warn!(reason = %message, "計算座標 {} 被學校端擋下，這一場停手", i + 1);
+                        return RadarResult::Error(message);
+                    }
                     Err(e) => {
                         let err_str = e.to_string();
                         if is_auth_error(&err_str) {
@@ -698,6 +888,18 @@ pub async fn attempt_radar_rollcall(
                 }
             }
         }
+        store_probe(
+            provider,
+            rollcall_id,
+            build_probe(
+                account_id,
+                &measurements,
+                &candidates_acc,
+                estimate_acc,
+                None,
+                None,
+            ),
+        );
     } else if measurements.len() == 1 {
         warn!("只有一個距離量測點，無法使用圓交叉點算法（至少需要 2 個）");
     } else {
@@ -717,6 +919,20 @@ pub async fn attempt_radar_rollcall(
         if grid_scan_allowed(provider, rollcall_id) && rollcall_still_open(&api, rollcall_id).await {
             let mut next = grid_cursor_next(provider, rollcall_id, account_id, &center);
             let mut scanned = 0usize;
+            // RADAR_DEDUCE_TRACE_V1：先記下棋盤格中心（＝推估點），頁面才知道掃描是從哪裡開始。
+            let grid_now = grid_probe(center, &grid_cells, grid_scanned);
+            store_probe(
+                provider,
+                rollcall_id,
+                build_probe(
+                    account_id,
+                    &measurements,
+                    &candidates_acc,
+                    estimate_acc,
+                    Some(&grid_now),
+                    None,
+                ),
+            );
             while scanned < RADAR_GRID_ATTEMPTS_PER_ROUND {
                 let Some(candidate) = grid_candidate(next, &center, RADAR_GRID_STEP_METERS) else {
                     info!(
@@ -734,6 +950,8 @@ pub async fn attempt_radar_rollcall(
                     continue;
                 }
                 tried_coords.push(candidate);
+                grid_cells.push(candidate);
+                grid_scanned += 1;
                 debug!(
                     rollcall_id = rollcall_id,
                     index = next - 1,
@@ -752,6 +970,19 @@ pub async fn attempt_radar_rollcall(
                             "✅ 雷達簽到成功（棋盤格第 {} 格）",
                             next - 1
                         );
+                        let grid_now = grid_probe(center, &grid_cells, grid_scanned);
+                        store_probe(
+                            provider,
+                            rollcall_id,
+                            build_probe(
+                                account_id,
+                                &measurements,
+                                &candidates_acc,
+                                estimate_acc,
+                                Some(&grid_now),
+                                Some(candidate),
+                            ),
+                        );
                         grid_cursor_store(provider, rollcall_id, account_id, &center, next);
                         return RadarResult::Success { coord: candidate };
                     }
@@ -760,6 +991,10 @@ pub async fn attempt_radar_rollcall(
                     }
                     Ok(SingleRadarResult::OtherFailure { reason }) => {
                         warn!(reason = %reason, "棋盤格第 {} 格失敗（非距離錯誤）", next - 1);
+                    }
+                    Ok(SingleRadarResult::Blocked { message, .. }) => {
+                        warn!(reason = %message, "棋盤格第 {} 格被學校端擋下，這一場停手", next - 1);
+                        return RadarResult::Error(message);
                     }
                     Err(e) => {
                         let err_str = e.to_string();
@@ -771,6 +1006,19 @@ pub async fn attempt_radar_rollcall(
                 }
             }
             grid_cursor_store(provider, rollcall_id, account_id, &center, next);
+            let grid_now = grid_probe(center, &grid_cells, grid_scanned);
+            store_probe(
+                provider,
+                rollcall_id,
+                build_probe(
+                    account_id,
+                    &measurements,
+                    &candidates_acc,
+                    estimate_acc,
+                    Some(&grid_now),
+                    None,
+                ),
+            );
             if scanned > 0 {
                 info!(
                     rollcall_id = rollcall_id,
@@ -810,6 +1058,23 @@ pub async fn attempt_radar_rollcall(
         tried_coords.len()
     );
 
+    // 棋盤格只有在「真的掃過」時才留紀錄（沒掃過就不要讓頁面畫一個空棋盤）。
+    let grid_final = grid_center
+        .filter(|_| grid_scanned > 0)
+        .map(|center| grid_probe(center, &grid_cells, grid_scanned));
+    store_probe(
+        provider,
+        rollcall_id,
+        build_probe(
+            account_id,
+            &measurements,
+            &candidates_acc,
+            estimate_acc,
+            grid_final.as_ref(),
+            None,
+        ),
+    );
+
     RadarResult::Failed {
         last_distance,
         tried_coords,
@@ -824,6 +1089,9 @@ enum SingleRadarResult {
     Success,
     TooFar { distance: f64 },
     OtherFailure { reason: String },
+    /// RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）——這一場停手。
+    /// `message` 是已經記好停手狀態、也推播過管理員之後給日誌用的一句話。
+    Blocked { status: u16, message: String },
 }
 
 /// RADAR_INPUT_PAGE_V1（fix71）：同一組「輸入頁座標」的重複判定距離（公尺）。
@@ -943,6 +1211,15 @@ async fn try_manual_coord(
             );
             None
         }
+        Ok(SingleRadarResult::Blocked { message, .. }) => {
+            warn!(
+                lat = coord.latitude,
+                lon = coord.longitude,
+                reason = %message,
+                "⚠️ 輸入頁座標被學校端擋下，這一場停手"
+            );
+            Some(RadarResult::Error(message))
+        }
         Err(e) => {
             let err_str = e.to_string();
             if is_auth_error(&err_str) {
@@ -982,10 +1259,19 @@ async fn try_single_radar_coord(
     match result {
         AttendanceResult::Success => Ok(SingleRadarResult::Success),
         AttendanceResult::RadarTooFar { distance } => Ok(SingleRadarResult::TooFar { distance }),
-        AttendanceResult::TransientFailure { reason } => {
-            Ok(SingleRadarResult::OtherFailure { reason })
-        }
-        AttendanceResult::Failed { reason } => Ok(SingleRadarResult::OtherFailure { reason }),
+        // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）→ 記下來（停手＋推播）。
+        AttendanceResult::TransientFailure { reason } => Ok(classify_single_failure(
+            provider,
+            rollcall_id,
+            account_id,
+            reason,
+        )),
+        AttendanceResult::Failed { reason } => Ok(classify_single_failure(
+            provider,
+            rollcall_id,
+            account_id,
+            reason,
+        )),
     }
 }
 
@@ -1071,6 +1357,19 @@ fn dedup_coordinates(coords: Vec<Coordinate>, threshold_meters: f64) -> Vec<Coor
 const RADAR_EMPTY_ANSWER_ENABLED: bool = true;
 /// 這些狀態最多留這麼久（點名早就結束了，留著只是長記憶體）。
 const RADAR_STATE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+/// RADAR_DISTANCE_PROBE_V1（fix77，S9）：距離探測。
+///
+/// 只有一筆量測時圓交會解不出來（兩圓才有交點），棋盤格又得掃上千格
+/// （模擬：目標 1.8 公里外要 1186 個請求／39 分鐘）。這裡改成以那一筆量測為圓心、
+/// 往三個方位各送一個「探測點」：每個探測點回報一個新距離，手上就有 4 筆量測，
+/// 圓交會／最小平方可以直接解出教室（模擬：8 個請求、約 12 秒）。
+const RADAR_PROBE_METERS: f64 = 150.0;
+/// 探測方位（度；0＝正北、順時針 90＝正東）：三個方向均勻分開，量測三角形最漂亮。
+const RADAR_PROBE_BEARINGS: [f64; 3] = [0.0, 120.0, 240.0];
+/// 探測點之間的間隔（毫秒）：同一帳號不要連發，免得被學校當成攻擊（也讓 429 更難發生）。
+const RADAR_PROBE_GAP_MS: u64 = 1200;
+/// 與已試座標視為同一點的距離（沿用主流程的 10 公尺）。
+const RADAR_PROBE_DEDUP_METERS: f64 = 10.0;
 /// 棋盤格每格幾公尺（參考專案 `final_grid_step_meters` 預設也是 100）。
 const RADAR_GRID_STEP_METERS: f64 = 100.0;
 /// 每一輪最多掃幾個點（跨回合續掃，不是一次掃完）。
@@ -1096,11 +1395,141 @@ struct GridCursorState {
     at: Instant,
 }
 
+// ─── RADAR_DEDUCE_TRACE_V1：把「教室位置是怎麼推出來的」記下來 ────────────────
+//
+// 點名頁要畫給使用者看：**系統不是隨便猜一個座標**，而是
+//   ① 先送出手上的座標（輸入頁送的／設定的教室座標）→ 學校回報「還差幾公尺」
+//   ② 兩個以上的「還差幾公尺」＝教室一定同時在這兩個圓上 → 兩圓交會＝候選座標
+//   ③ 多個距離做最小平方（三邊測量）→ 推估點
+//   ④ 以推估點為中心、每 100 公尺往外掃（棋盤格），找到就送出
+// 這裡只記錄「真的發生過」的事；沒有量測就沒有紀錄（頁面不會編故事）。
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct RadarProbeMeasurement {
+    pub latitude: f64,
+    pub longitude: f64,
+    /// 學校回報的距離（公尺）：這個點離教室還差多遠。
+    pub distance_m: f64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct RadarProbeGrid {
+    /// 棋盤格中心（＝距離推估點；推不出來時是最後一個量測點）。
+    pub center: [f64; 2],
+    pub step_m: f64,
+    pub max_radius_m: f64,
+    /// 目前為止已經掃過幾格。
+    pub scanned: usize,
+    /// 這一場掃過的格子座標（頁面畫成小灰點）。
+    pub cells: Vec<[f64; 2]>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct RadarProbeTrace {
+    /// 這份紀錄是哪個帳號跑出來的（多帳號時取最近一次）。
+    pub account_id: String,
+    /// 最後成功的座標（成功才有）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub success: Option<[f64; 2]>,
+    pub measurements: Vec<RadarProbeMeasurement>,
+    /// 兩圓交會算出來的候選座標。
+    pub candidates: Vec<[f64; 2]>,
+    /// 最小平方（三邊測量）推估出來的教室位置。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimate: Option<[f64; 2]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub grid: Option<RadarProbeGrid>,
+}
+
+/// 推估紀錄的保存時間與筆數上限（避免長時間跑下來無限成長）。
+const RADAR_PROBE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+const RADAR_PROBE_MAX_ENTRIES: usize = 64;
+
+static RADAR_PROBE_TRACES: OnceLock<Mutex<HashMap<(String, u64), (Instant, RadarProbeTrace)>>> =
+    OnceLock::new();
+
+fn probe_key(provider: &str, rollcall_id: u64) -> (String, u64) {
+    (provider.to_string(), rollcall_id)
+}
+
+/// 記下一次推估紀錄（同一場點名保留最近一次；太舊或太多筆就清掉）。
+fn store_probe(provider: &str, rollcall_id: u64, trace: RadarProbeTrace) {
+    let lock = RADAR_PROBE_TRACES.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else {
+        return; // 取不到鎖就不要寫（KB §4：不 panic）
+    };
+    let now = Instant::now();
+    map.retain(|_, (at, _)| now.saturating_duration_since(*at) < RADAR_PROBE_TTL);
+    let key = probe_key(provider, rollcall_id);
+    if map.len() >= RADAR_PROBE_MAX_ENTRIES && !map.contains_key(&key) {
+        if let Some(oldest) = map
+            .iter()
+            .min_by_key(|(_, (at, _))| *at)
+            .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest);
+        }
+    }
+    map.insert(key, (now, trace));
+}
+
+/// 狀態端點用：讀出這一場點名的推估紀錄（沒有就 None）。
+pub fn probe_trace(provider: &str, rollcall_id: u64) -> Option<RadarProbeTrace> {
+    let lock = RADAR_PROBE_TRACES.get_or_init(|| Mutex::new(HashMap::new()));
+    let map = lock.lock().ok()?;
+    map.get(&probe_key(provider, rollcall_id))
+        .map(|(_, t)| t.clone())
+}
+
+/// 棋盤格紀錄（給頁面畫掃過的格子）。
+fn grid_probe(center: Coordinate, cells: &[Coordinate], scanned: usize) -> RadarProbeGrid {
+    RadarProbeGrid {
+        center: [center.latitude, center.longitude],
+        step_m: RADAR_GRID_STEP_METERS,
+        max_radius_m: RADAR_GRID_MAX_RADIUS_METERS,
+        scanned,
+        cells: cells
+            .iter()
+            .map(|c| [c.latitude, c.longitude])
+            .collect(),
+    }
+}
+
+/// 把目前的量測／候選／推估／棋盤格整理成一份紀錄。
+fn build_probe(
+    account_id: &str,
+    measurements: &[(Coordinate, f64)],
+    candidates: &[Coordinate],
+    estimate: Option<Coordinate>,
+    grid: Option<&RadarProbeGrid>,
+    success: Option<Coordinate>,
+) -> RadarProbeTrace {
+    RadarProbeTrace {
+        account_id: account_id.to_string(),
+        success: success.map(|c| [c.latitude, c.longitude]),
+        measurements: measurements
+            .iter()
+            .map(|(c, d)| RadarProbeMeasurement {
+                latitude: c.latitude,
+                longitude: c.longitude,
+                distance_m: *d,
+            })
+            .collect(),
+        candidates: candidates
+            .iter()
+            .map(|c| [c.latitude, c.longitude])
+            .collect(),
+        estimate: estimate.map(|c| [c.latitude, c.longitude]),
+        grid: grid.cloned(),
+    }
+}
+
 static RADAR_EMPTY_ANSWER_TRIED: OnceLock<Mutex<HashMap<RadarStateKey, Instant>>> =
     OnceLock::new();
 static RADAR_GRID_CURSOR: OnceLock<Mutex<HashMap<RadarStateKey, GridCursorState>>> =
     OnceLock::new();
 static RADAR_GRID_LAST_SCAN: OnceLock<Mutex<HashMap<(String, u64), Instant>>> = OnceLock::new();
+/// RADAR_DISTANCE_PROBE_V1（fix77）：這個帳號在這場點名做過距離探測了嗎？
+static RADAR_DISTANCE_PROBED: OnceLock<Mutex<HashMap<RadarStateKey, Instant>>> = OnceLock::new();
 
 /// 這個帳號在這場點名還沒試過空答案嗎？（順手清掉過期項目）
 fn empty_answer_allowed(provider: &str, rollcall_id: u64, account_id: &str) -> bool {
@@ -1224,6 +1653,190 @@ fn grid_candidate(index: usize, center: &Coordinate, step_meters: f64) -> Option
             return None;
         }
     }
+}
+
+// ─── RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）就停手＋推播 ────────
+//
+// 使用者拍板：「429／403 停手＋推播」。
+//   ① 偵測：API 層把 429（限流）／403（禁止）包成帶固定標記的失敗訊息，
+//      雷達流程用 `AttendanceResult::school_block()` / `crate::api::school_block_of()` 認出來。
+//   ② 停手：同一場點名**所有帳號**都不再打學校，預設 30 分鐘；學校有給 `Retry-After`
+//      就用它（界在 60–3600 秒）。停手期間 [`attempt_radar_rollcall`] 直接回傳錯誤、不發請求。
+//   ③ 推播：同一場點名、同一個狀態碼只推一次給所有管理員（`notify_admins_school_block`）。
+
+/// 沒有 `Retry-After` 時，學校端擋下後要停手多久。
+const RADAR_SCHOOL_BLOCK_STOP_SECS: u64 = 30 * 60;
+/// 學校指定秒數時的上下限（太短沒意義、太長怕點名早就結束）。
+const RADAR_SCHOOL_BLOCK_MIN_STOP_SECS: u64 = 60;
+const RADAR_SCHOOL_BLOCK_MAX_STOP_SECS: u64 = 60 * 60;
+/// 學校回覆留在紀錄裡的長度上限（頁面／推播要看得懂就好）。
+const RADAR_SCHOOL_BLOCK_DETAIL_CHARS: usize = 300;
+
+/// 學校端擋下的紀錄（給頁面畫橫幅、給日誌與推播說明）。一律走 JSON 回應，
+/// 欄位名稱就是頁面看到的欄位。
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+pub struct RadarSchoolBlock {
+    /// 學校回的 HTTP 狀態碼（429 或 403）。
+    pub status: u16,
+    /// 是哪個帳號撞到的（多帳號時看得出來）。
+    pub account_id: String,
+    /// 學校的回覆摘要（截短）。
+    pub detail: String,
+    /// 什麼時候看到的（Unix 秒）。
+    pub at_unix_secs: u64,
+    /// 停手到什麼時候（Unix 秒）。
+    pub stop_until_unix_secs: u64,
+    /// 這次停手幾秒。
+    pub stop_secs: u64,
+}
+
+impl RadarSchoolBlock {
+    /// 給日誌／`RadarResult::Error` 用的一句話（頁面另外用自己的文案）。
+    pub fn message(&self) -> String {
+        format!(
+            "🚫 學校端擋下送出（HTTP {}）：系統已停手 {} 秒（到 Unix {}），最後回覆：{}",
+            self.status, self.stop_secs, self.stop_until_unix_secs, self.detail
+        )
+    }
+}
+
+/// (provider, rollcall_id) → 停手紀錄（含開始時間，用來判斷停手結束了沒）。
+static RADAR_SCHOOL_BLOCKS: OnceLock<Mutex<HashMap<(String, u64), (Instant, RadarSchoolBlock)>>> =
+    OnceLock::new();
+/// (provider, rollcall_id, 狀態碼) → 已經推播過的時間（同一場同一個狀態碼只推一次）。
+static RADAR_SCHOOL_BLOCK_NOTIFIED: OnceLock<Mutex<HashMap<(String, u64, u16), Instant>>> =
+    OnceLock::new();
+
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
+}
+
+/// 這一場點名現在是不是「被學校端擋下、停手中」？是的話回傳紀錄（頁面也讀這個）。
+pub fn school_block(provider: &str, rollcall_id: u64) -> Option<RadarSchoolBlock> {
+    let lock = RADAR_SCHOOL_BLOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let map = lock.lock().ok()?;
+    let (at, block) = map.get(&(provider.to_string(), rollcall_id))?;
+    // 停手時間過了就當作沒這回事（會自動再試一次；再被擋就再記一次）。
+    if at.elapsed().as_secs() >= block.stop_secs {
+        return None;
+    }
+    Some(block.clone())
+}
+
+/// 記下「學校端擋下」並（必要時）推播管理員；回傳給日誌用的一句話。
+fn note_school_block(
+    provider: &str,
+    rollcall_id: u64,
+    account_id: &str,
+    status: u16,
+    detail: &str,
+) -> String {
+    let stop_secs = crate::api::school_block_retry_after(detail)
+        .map(|secs| secs.clamp(RADAR_SCHOOL_BLOCK_MIN_STOP_SECS, RADAR_SCHOOL_BLOCK_MAX_STOP_SECS))
+        .unwrap_or(RADAR_SCHOOL_BLOCK_STOP_SECS);
+    let now = Instant::now();
+    let block = RadarSchoolBlock {
+        status,
+        account_id: account_id.to_string(),
+        detail: detail.chars().take(RADAR_SCHOOL_BLOCK_DETAIL_CHARS).collect(),
+        at_unix_secs: now_unix_secs(),
+        stop_until_unix_secs: now_unix_secs().saturating_add(stop_secs),
+        stop_secs,
+    };
+    let lock = RADAR_SCHOOL_BLOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut map) = lock.lock() {
+        map.retain(|_, (at, _)| now.saturating_duration_since(*at) < RADAR_STATE_TTL);
+        map.insert((provider.to_string(), rollcall_id), (now, block.clone()));
+    }
+    notify_school_block_once(provider, rollcall_id, &block);
+    block.message()
+}
+
+/// 推播管理員——同一場點名、同一個狀態碼只推一次（避免每個帳號各推一則）。
+fn notify_school_block_once(provider: &str, rollcall_id: u64, block: &RadarSchoolBlock) {
+    let lock = RADAR_SCHOOL_BLOCK_NOTIFIED.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else {
+        return; // 取不到鎖就不要推（KB §4：不 panic）
+    };
+    let now = Instant::now();
+    map.retain(|_, at| now.saturating_duration_since(*at) < RADAR_STATE_TTL);
+    let key = (provider.to_string(), rollcall_id, block.status);
+    if map.contains_key(&key) {
+        return;
+    }
+    map.insert(key, now);
+    drop(map);
+
+    let label = if block.status == 429 {
+        "429 限流"
+    } else {
+        "403 禁止"
+    };
+    warn!(
+        status = block.status,
+        rollcall_id = rollcall_id,
+        account = %block.account_id,
+        stop_secs = block.stop_secs,
+        "學校端擋下送出：已停手並推播管理員"
+    );
+    crate::web_push_notifications::notify_admins_school_block(
+        format!("🚫 雷達點名被學校擋下（HTTP {label}）"),
+        format!(
+            "點名 ID {rollcall_id} 的送出被學校端擋下，系統已停手 {stop_secs} 秒、不會再打學校。帳號：{account}。學校回覆：{detail}。若是 403，請確認學校網站是否正常、或該帳號是否要重新登入。",
+            stop_secs = block.stop_secs,
+            account = block.account_id,
+            detail = block.detail
+        ),
+        format!("tronclass-radar-block-{provider}-{rollcall_id}"),
+    );
+}
+
+/// 把一次失敗分類：學校端擋下（429／403）→ 記下來並回 [`SingleRadarResult::Blocked`]；
+/// 其餘照舊回「非距離錯誤」。
+fn classify_single_failure(
+    provider: &str,
+    rollcall_id: u64,
+    account_id: &str,
+    reason: String,
+) -> SingleRadarResult {
+    if let Some((status, detail)) = crate::api::school_block_of(&reason) {
+        let message = note_school_block(provider, rollcall_id, account_id, status, &detail);
+        return SingleRadarResult::Blocked { status, message };
+    }
+    SingleRadarResult::OtherFailure { reason }
+}
+
+/// 從錨點往 `bearing_deg` 方位走 `distance_m` 公尺的座標（距離探測點的算法）。
+fn bearing_point(anchor: &Coordinate, distance_m: f64, bearing_deg: f64) -> Coordinate {
+    let rad = bearing_deg.to_radians();
+    let north = distance_m * rad.cos();
+    let east = distance_m * rad.sin();
+    Coordinate::from_cartesian_meters(east, north, anchor)
+}
+
+/// 這個帳號在這場點名做過距離探測了嗎？（整場只做一輪，避免每輪都多打三次學校）
+fn distance_probe_allowed(provider: &str, rollcall_id: u64, account_id: &str) -> bool {
+    let lock = RADAR_DISTANCE_PROBED.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else {
+        return false; // 取不到鎖＝先不要探測（寧可少打學校）
+    };
+    let now = Instant::now();
+    map.retain(|_, at| now.saturating_duration_since(*at) < RADAR_STATE_TTL);
+    !map.contains_key(&(provider.to_string(), rollcall_id, account_id.to_string()))
+}
+
+fn mark_distance_probed(provider: &str, rollcall_id: u64, account_id: &str) {
+    let lock = RADAR_DISTANCE_PROBED.get_or_init(|| Mutex::new(HashMap::new()));
+    let Ok(mut map) = lock.lock() else {
+        return;
+    };
+    map.insert(
+        (provider.to_string(), rollcall_id, account_id.to_string()),
+        Instant::now(),
+    );
 }
 
 /// 點名還開著嗎？（棋盤格掃描前確認一次，關掉就不要再掃）

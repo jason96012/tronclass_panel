@@ -761,6 +761,7 @@ mod tests {
                 dept_name: "資工英語一".into(),
                 course_code: "A1376".into(),
                 name: "中國語文能力表達".into(),
+                is_english: false,
                 term_seq: "0".into(),
                 group_code: String::new(),
                 required: true,
