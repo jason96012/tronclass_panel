@@ -97,9 +97,8 @@
       background: transparent;
       resize: vertical;
     }
-    /* QR_ZOOM_V1（fix78）：放大拉桿一律顯示。
-       以前只有鏡頭回報支援 zoom 才顯示那一塊（setZoomUiVisible），iPhone 等多數裝置
-       等於沒有拉桿可用；現在改成「鏡頭變焦優先、沒支援就用數位裁切」，人人都有拉桿。 */
+    /* QR_MULTISCALE_V1（fix80）：放大拉桿一律顯示，但只放大「畫面」（幫你對準）。
+       fix78 曾讓鏡頭變焦優先，實測反而讓畫面變糊、讀不到（見 scanner.html 內說明）。 */
     .stage {
       position: relative;
       overflow: hidden;
@@ -173,6 +172,31 @@
       font-size: 12px;
       font-variant-numeric: tabular-nums;
       line-height: 1.5;
+    }
+    /* QR_CAMERA_PICKER_V1（fix82）：鏡頭選擇 —— iPhone Pro 的「望遠」是真光學變焦，
+       可讀距離比主鏡頭遠 2～3 倍；這是 Safari 上唯一能真正「坐很遠」的手段。 */
+    .cam-pick {
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .cam-pick label {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 650;
+    }
+    .cam-pick select {
+      width: 100%;
+      min-height: 44px;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
     }
     #status {
       margin-top: 12px;
@@ -259,13 +283,19 @@
         <canvas id="canvas"></canvas>
       </div>
       <div id="scanHint">尚未開始掃描</div>
+      <div id="camPick" class="cam-pick" style="display:none">
+        <label for="camSelect">鏡頭（Pro 機型選「望遠」可坐更遠）</label>
+        <select id="camSelect">
+          <option value="">自動（預設後鏡頭）</option>
+        </select>
+      </div>
       <div class="actions">
         <button id="start" type="button">開啟相機</button>
         <button id="stop" type="button" class="secondary">停止</button>
       </div>
       <div id="zoomControls" class="zoom-controls">
         <label for="zoom">
-          <span>放大（坐遠也能掃）</span>
+          <span>畫面放大（幫你對準）</span>
           <span id="zoomValue">2.0x</span>
         </label>
         <input id="zoom" type="range" min="1" max="8" step="0.5" value="2">
@@ -275,7 +305,7 @@
           <button id="zoomReset" type="button" class="secondary">回到 1x</button>
           <span id="zoomMode" class="zoom-mode">數位放大 2.0x</span>
         </div>
-        <div class="zoom-hint">往右拉＝放大。畫面裡看到的就是實際送去解碼的範圍，把 QR 放進畫面中央即可。</div>
+        <div class="zoom-hint">往右拉＝把畫面放大，方便你把 QR 對到正中央。解碼會自動嘗試 全幅／2x／4x／8x 多個倍率（相機本身的變焦已停用：實測放大反而變糊、讀不到）。</div>
       </div>
       <div id="camInfo" class="cam-info"></div>
       <div id="status">尚未掃描</div>
@@ -359,29 +389,46 @@
       statusEl.className = kind || "";
     }
 
-    /* ─────────── QR_ZOOM_V1（fix78）：放大拉桿 ───────────────────────────────
-       目的：坐得遠也掃得到。放大分兩段——
-         ① 鏡頭變焦（硬體）：相機支援 zoom 能力時優先使用，畫質最好（真正的光學／感光變焦）。
-         ② 數位變焦（裁切）：一律可用。只把畫面中央 1/倍率 的區域送進解碼器，
-            QR 在解碼輸入裡佔的比例變大，也讓預覽「所見即所解」。
-       拉桿＝想要的總倍率；實際＝鏡頭倍率 × 數位倍率，兩者相乘等於拉桿值。
+    /* ─────────── QR_MULTISCALE_V1（fix80）：多尺度自動解碼＋畫面放大 ──────────
+       為什麼改（2026-09-18 實機回報 + 量測）：
+         使用者發現「同一距離下 1x 讀得到、拉大反而讀不到」。量測（直式 4K
+         2160×3840、Mock QR、桌機中位數）證實：
+           鏡頭變焦 8x（相機把中央 1/8 放大回 4K）：150/200/340px 全部失敗 → 放大＝變糊
+           1x 原生 4K 全幅：4/4 成功（343-442ms）
+           全幅降到長邊 1920：4/4 成功，只要 86-125ms
+           中央裁切 1/4（540×960）：4/4 成功、28-31ms
+           中央裁切 1/8（270×480）：小 QR 成功、9-19ms
+       因此改成：
+         ① 不再使用鏡頭變焦（那只會把畫面糊掉、手震也被放大）。
+         ② 每一輪依序試多個尺度，便宜的先試、任一成功就停 —— 不管 QR 大或小、
+            遠或近，都會被某一個尺度涵蓋到。
+         ③ 拉桿只控制「畫面放大」（幫你對準），不再影響解碼品質。
        位置會記在 localStorage，下一堂課不用重調。                              */
     const ZOOM_MIN = 1;
     const ZOOM_MAX = 8;
     const ZOOM_STEP = 0.5;
     const ZOOM_DEFAULT = 2;
     const ZOOM_KEY = "tronclassScannerZoom";
-    /* 每幀最多解一次；預覽照常用 requestAnimationFrame 更新。 */
+    /* 解碼尺度：k=1 全幅、k=2 中央 1/2、k=4 中央 1/4、k=8 中央 1/8。
+       便宜的（k 大）每一輪都試；貴的（k 小）只在每秒一次的完整輪試，控制耗時。 */
+    const LADDER = [
+      { k: 4, thoroughOnly: false },
+      { k: 8, thoroughOnly: false },
+      { k: 2, thoroughOnly: true },
+      { k: 1, thoroughOnly: true },
+    ];
+    /* 解碼輸入的長邊上限：實測 1920 與 4K 全幅命中率相同，但快 3-4 倍。 */
+    const DECODE_MAX_SIDE = 1920;
+    /* 每輪最多每 DECODE_INTERVAL_MS 一次；預覽照常用 requestAnimationFrame 更新。 */
     const DECODE_INTERVAL_MS = 150;
     /* 送出（POST /scanner/submit）最多等幾毫秒，逾時就放棄那一次並解鎖。 */
     const SUBMIT_TIMEOUT_MS = 8000;
     /* 連續多久沒解到碼就提示使用者（秒）。 */
     const NO_QR_HINT_SECS = 2.5;
 
-    let targetZoom = ZOOM_DEFAULT;
-    let hwZoomRange = null;   // 鏡頭支援的 {min,max}；不支援＝null
-    let hwZoomApplied = 1;    // 目前套用的鏡頭倍率
-    let digitalZoom = ZOOM_DEFAULT; // 目前套用的數位裁切倍率
+    let targetZoom = ZOOM_DEFAULT;   // 只影響預覽（畫面放大）
+    let lastHitScale = 0;            // 上一次成功解碼用的尺度（顯示在相機資訊列）
+    let cameraStarting = false;      // QR_CAMERA_SINGLETON_V1：開啟流程互斥
 
     function nowMs() {
       try {
@@ -597,49 +644,108 @@
       }
     }
 
-    /* QR_ZOOM_V1：解碼迴圈。
-       - 只解「畫面中央 1/digitalZoom」那一塊（＝拉桿放大後看到的那一塊），
-         QR 在解碼輸入裡佔的比例變大 → 坐得遠也解得動。
-       - 最多每 DECODE_INTERVAL_MS 解一次、同一時間只有一個解碼在跑，
+    /* QR_MULTISCALE_V1：解碼迴圈。
+       - 每一輪依序試 LADDER 裡的尺度（便宜的先試），任一成功就停。
+       - 「全幅」那一輪會把畫面降到長邊 ≤ DECODE_MAX_SIDE（1920）再解 ——
+         實測命中率與 4K 原生相同、但快 3-4 倍。
+       - 最多每 DECODE_INTERVAL_MS 一次、同一時間只有一個解碼在跑，
          預覽不會被解碼卡住（以前每一幀都解整張 1920×1080，手機上像當掉）。
-       - 一秒一次走完整模式（含反相 QR），平常走快速模式。 */
+       - 一秒一次走完整模式（含反相 QR 與較貴的 k=1／k=2），平常只試便宜的。 */
     let lastDecodeAt = 0;
     let lastThoroughAt = 0;
     let decoding = false;
     let lastSeenAt = 0;
     let seenCount = 0;
 
+    /* 依「是否完整輪」決定這一輪要試哪些尺度，以及解碼選項。 */
+    function decodePasses() {
+      const thorough = nowMs() - lastThoroughAt > 1000;
+      if (thorough) lastThoroughAt = nowMs();
+      const opts = thorough ? undefined : { inversionAttempts: "dontInvert" };
+      const passes = [];
+      for (const pass of LADDER) {
+        if (!pass.thoroughOnly || thorough) passes.push(pass);
+      }
+      return { passes, opts };
+    }
+
+    /* QR_SHARPEN_V1（fix82）：解碼前的 3×3 銳化。
+       為什麼：實測「遠處小 QR」情境下，銳化讓 90px 清楚與 150px 略糊這兩個原本
+       失敗的案例變成解得動，而且在其他情境從不扣分（局部對比拉伸則沒用又會弄壞）。
+       成本與畫素成正比（1080×1920 約 37ms、桌機），所以只在小張裁切上做。 */
+    const SHARPEN_MAX_PX = 700 * 1000;
+
+    function sharpenInPlace(data, w, h) {
+      const src = new Uint8ClampedArray(data);   // 先複製，避免讀到已改的值
+      for (let y = 1; y < h - 1; y++) {
+        for (let x = 1; x < w - 1; x++) {
+          const i = (y * w + x) * 4;
+          const up = i - w * 4;
+          const down = i + w * 4;
+          for (let c = 0; c < 3; c++) {
+            const v = 5 * src[i + c] - src[i - 4 + c] - src[i + 4 + c] - src[up + c] - src[down + c];
+            data[i + c] = v < 0 ? 0 : v > 255 ? 255 : v;
+          }
+        }
+      }
+    }
+
+    /* 在目前 canvas 上跑一次解碼（原生解碼器優先，其次 jsQR）。 */
+    async function readCanvas(k, opts) {
+      if (barcodeDetector) {
+        try {
+          const codes = await barcodeDetector.detect(canvas);
+          if (codes && codes.length && codes[0].rawValue) {
+            return { data: codes[0].rawValue, scale: k };
+          }
+        } catch (err) {
+          /* 單次失敗不影響其他尺度；下面還有 jsQR 這條路。 */
+        }
+      }
+      if (window.jsQR) {
+        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+        const code = window.jsQR(imageData.data, imageData.width, imageData.height, opts);
+        if (code && code.data) return { data: code.data, scale: k };
+      }
+      return null;
+    }
+
     async function decodeOnce() {
       const vw = video.videoWidth;
       const vh = video.videoHeight;
       if (!vw || !vh) return null;
 
-      const cw = Math.max(64, Math.round(vw / digitalZoom));
-      const ch = Math.max(64, Math.round(vh / digitalZoom));
-      const sx = Math.max(0, Math.round((vw - cw) / 2));
-      const sy = Math.max(0, Math.round((vh - ch) / 2));
+      const { passes, opts } = decodePasses();
+      for (const pass of passes) {
+        const cw = Math.max(64, Math.round(vw / pass.k));
+        const ch = Math.max(64, Math.round(vh / pass.k));
+        const sx = Math.max(0, Math.round((vw - cw) / 2));
+        const sy = Math.max(0, Math.round((vh - ch) / 2));
+        const longSide = Math.max(cw, ch);
+        const fit = longSide > DECODE_MAX_SIDE ? DECODE_MAX_SIDE / longSide : 1;
+        const dw = Math.max(1, Math.round(cw * fit));
+        const dh = Math.max(1, Math.round(ch * fit));
 
-      canvas.width = cw;
-      canvas.height = ch;
-      context.drawImage(video, sx, sy, cw, ch, 0, 0, cw, ch);
+        canvas.width = dw;
+        canvas.height = dh;
+        context.drawImage(video, sx, sy, cw, ch, 0, 0, dw, dh);
 
-      if (barcodeDetector) {
-        try {
-          const codes = await barcodeDetector.detect(canvas);
-          if (codes && codes.length && codes[0].rawValue) return codes[0].rawValue;
-        } catch (err) {
-          /* 單次失敗不影響下一幀；下面還有 jsQR 這條路。 */
+        const plain = await readCanvas(pass.k, opts);
+        if (plain) return plain;
+
+        /* 小張裁切再試一次「銳化後」——遠處的小 QR 常常就差這一點。 */
+        if (window.jsQR && dw * dh <= SHARPEN_MAX_PX) {
+          const imageData = context.getImageData(0, 0, dw, dh);
+          sharpenInPlace(imageData.data, dw, dh);
+          const code = window.jsQR(imageData.data, dw, dh, opts);
+          if (code && code.data) return { data: code.data, scale: pass.k, sharpened: true };
         }
       }
-      if (window.jsQR) {
-        const thorough = nowMs() - lastThoroughAt > 1000;
-        if (thorough) lastThoroughAt = nowMs();
-        const imageData = context.getImageData(0, 0, cw, ch);
-        const opts = thorough ? undefined : { inversionAttempts: "dontInvert" };
-        const code = window.jsQR(imageData.data, imageData.width, imageData.height, opts);
-        if (code && code.data) return code.data;
-      }
       return null;
+    }
+
+    function scaleLabel(k) {
+      return k <= 1 ? "全幅" : k + "x";
     }
 
     async function tick() {
@@ -651,17 +757,22 @@
       decoding = true;
       lastDecodeAt = at;
       try {
-        const data = await decodeOnce();
-        if (data) {
+        const found = await decodeOnce();
+        if (found) {
           lastSeenAt = nowMs();
           seenCount += 1;
-          setScanHint(`✅ 已解出 QR（第 ${seenCount} 次，${data.length} 字元）`, "ok");
-          submitQr(data);
+          lastHitScale = found.scale;
+          setScanHint(
+            `✅ 已解出 QR（第 ${seenCount} 次，${found.data.length} 字元，用 ${scaleLabel(found.scale)}` +
+              `${found.sharpened ? "＋銳化" : ""} 解到）`,
+            "ok"
+          );
+          submitQr(found.data);
         } else if (!lastSeenAt || (nowMs() - lastSeenAt) / 1000 > NO_QR_HINT_SECS) {
           setScanHint(
-            targetZoom <= ZOOM_MIN + 0.001
-              ? "還沒看到 QR：往右拉「放大」拉桿，或靠近一點"
-              : `還沒看到 QR（目前 ${targetZoom.toFixed(1)}x）：把 QR 放進畫面正中央，太遠就再往右拉`,
+            `還沒看到 QR：請把 QR 移到畫面正中央（畫面放大 ${targetZoom.toFixed(1)}x 只影響你看到的畫面；` +
+              "若拉很大反而讀不到，往左退一點再試）" +
+              (hasTelephoto() ? "・坐很遠可改選上方鏡頭的「望遠」" : ""),
             "warn"
           );
         }
@@ -671,53 +782,91 @@
       }
     }
 
-    /* QR_ZOOM_V1：偵測鏡頭變焦能力（不支援就純數位裁切，拉桿一樣可用）。 */
-    async function detectHwZoom(track) {
-      hwZoomRange = null;
-      hwZoomApplied = 1;
+    /* ─────────── QR_CAMERA_PICKER_V1（fix82）：鏡頭選擇 ─────────────────────
+       iPhone Safari 不支援 ImageCapture（拍照模式）與 BarcodeDetector，
+       但**支援用 deviceId 選鏡頭** —— Pro 機型的「後置望遠相機」是真光學變焦，
+       可讀距離是主鏡頭的 2～3 倍。這是 Safari 上唯一能真正「坐很遠」的手段。
+       （fix78 用過的 zoom 是數位放大、會糊，已在 fix81 移除。）                    */
+    const CAM_KEY = "tronclassScannerCam";
+    let activeCamId = "";
+    let camList = [];
+
+    function readSavedCam() {
       try {
-        if (!track || !track.getCapabilities) return;
-        const caps = track.getCapabilities();
-        if (!caps || typeof caps.zoom === "undefined") return;
-        const min = Number(caps.zoom.min ?? 1);
-        const max = Number(caps.zoom.max ?? min);
-        if (isFinite(min) && isFinite(max) && max > min) hwZoomRange = { min, max };
-      } catch (err) {
-        hwZoomRange = null;
-      }
+        return (window.localStorage && window.localStorage.getItem(CAM_KEY)) || "";
+      } catch (err) { return ""; }
+    }
+    function storeCam(id) {
+      try {
+        if (window.localStorage) window.localStorage.setItem(CAM_KEY, String(id || ""));
+      } catch (err) { /* 存不了不影響功能 */ }
+    }
+    /* 相機名稱加上用途提示（iPhone 的標籤是中文：「後置望遠相機」等）。 */
+    function camLabel(label, index) {
+      const text = String(label || "");
+      if (/望遠|tele/i.test(text)) return text + "（最遠・推薦）";
+      if (/超廣角|ultra\s*wide/i.test(text)) return text + "（最廣・不適合遠距離）";
+      if (/前置|front/i.test(text)) return text + "（前鏡頭）";
+      return text || "相機 " + (index + 1);
+    }
+    function camNameOf(deviceId) {
+      const hit = camList.find((d) => d.deviceId === deviceId);
+      if (hit) return camLabel(hit.label, camList.indexOf(hit)).replace(/（.*）$/, "");
+      return deviceId ? "已選鏡頭" : "預設後鏡頭";
+    }
+    function hasTelephoto() {
+      return camList.some((d) => /望遠|tele/i.test(String(d.label || "")));
     }
 
-    /* QR_ZOOM_V1：套用拉桿值 —— 鏡頭變焦優先，不足的倍率用數位裁切補。
-       預覽同步做 CSS scale，所以「畫面上看到的範圍」＝「實際送去解碼的範圍」。 */
-    async function applyZoom() {
-      hwZoomApplied = 1;
-      if (videoTrack && hwZoomRange) {
-        const hw = Math.min(hwZoomRange.max, Math.max(hwZoomRange.min, targetZoom));
-        try {
-          await videoTrack.applyConstraints({ advanced: [{ zoom: hw }] });
-          hwZoomApplied = hw;
-        } catch (err) {
-          hwZoomRange = null;   // 這個鏡頭其實不給調 → 退回純數位
-          hwZoomApplied = 1;
-        }
-      }
-      digitalZoom = Math.max(1, targetZoom / (hwZoomApplied || 1));
+    /* 列出可用鏡頭。iOS 要等權限給了才拿得到名稱，所以在相機開起來之後才呼叫。 */
+    async function refreshCamList(activeId) {
+      const md = navigator.mediaDevices;
+      if (!md || !md.enumerateDevices) return;
+      let devices = [];
+      try {
+        devices = await md.enumerateDevices();
+      } catch (err) { return; }
+      camList = devices.filter((d) => d && d.kind === "videoinput");
+      const sel = document.getElementById("camSelect");
+      const pick = document.getElementById("camPick");
+      if (!sel) return;
+      sel.innerHTML = "";
+      const auto = document.createElement("option");
+      auto.value = "";
+      auto.textContent = "自動（預設後鏡頭）";
+      sel.appendChild(auto);
+      camList.forEach((d, i) => {
+        const opt = document.createElement("option");
+        opt.value = d.deviceId || "";
+        opt.textContent = camLabel(d.label, i);
+        sel.appendChild(opt);
+      });
+      const want = activeId || readSavedCam();
+      if (want && camList.some((d) => d.deviceId === want)) sel.value = want;
+      if (pick && camList.length > 1) pick.style.display = "";
+      updateCamInfo();
+    }
+
+    function camSettings() {
+      const base = { width: { ideal: 3840 }, height: { ideal: 2160 } };
+      return base;
+    }
+
+    function applyZoom() {
       if (video && video.style) {
-        video.style.transform = digitalZoom > 1.001 ? `scale(${digitalZoom.toFixed(3)})` : "";
+        video.style.transform = targetZoom > 1.001 ? `scale(${targetZoom.toFixed(3)})` : "";
       }
       if (zoomSlider) zoomSlider.value = String(targetZoom);
       if (zoomValue) zoomValue.textContent = targetZoom.toFixed(1) + "x";
       if (zoomModeEl) {
-        zoomModeEl.textContent = hwZoomRange
-          ? `鏡頭 ${hwZoomApplied.toFixed(1)}x × 數位 ${digitalZoom.toFixed(1)}x`
-          : `數位放大 ${digitalZoom.toFixed(1)}x（此鏡頭不支援變焦）`;
+        zoomModeEl.textContent = `畫面放大 ${targetZoom.toFixed(1)}x（解碼會自動試多個倍率）`;
       }
       storeZoom(targetZoom);
       updateCamInfo();
     }
 
-    /* QR_ZOOM_V1：顯示相機解析度／解碼區大小／用哪個解碼器。
-       使用者才知道自己離得夠不夠近、拉桿還要不要往右。 */
+    /* QR_MULTISCALE_V1：顯示相機解析度／解碼尺度／上次命中的尺度／用哪個解碼器。
+       使用者才知道自己離得夠不夠近、以及系統是用哪個尺度解到的。 */
     function updateCamInfo() {
       if (!camInfoEl) return;
       const vw = video ? video.videoWidth : 0;
@@ -726,9 +875,9 @@
         camInfoEl.textContent = "";
         return;
       }
-      const cw = Math.max(1, Math.round(vw / digitalZoom));
-      const ch = Math.max(1, Math.round(vh / digitalZoom));
-      camInfoEl.textContent = `相機 ${vw}×${vh}・解碼區 ${cw}×${ch}・${decoderName}`;
+      const hit = lastHitScale ? `・上次命中 ${scaleLabel(lastHitScale)}` : "";
+      const cam = `・鏡頭 ${camNameOf(activeCamId)}`;
+      camInfoEl.textContent = `相機 ${vw}×${vh}${cam}・解碼尺度 全幅/2x/4x/8x${hit}・${decoderName}`;
     }
 
     function setZoomValue(next) {
@@ -759,29 +908,51 @@
       return decoderName;
     }
 
-    async function startCamera() {
-      if (!validScannerParams()) {
-        setStatus("掃描連結缺少必要參數", "error");
-        setScanHint("這個連結沒有帶到必要的參數，請重新開啟點名頁產生的掃碼連結", "error");
-        return;
-      }
-      await initDecoder();
-      if (!barcodeDetector && !window.jsQR) {
-        setStatus("QR 解碼器尚未載入", "error");
-        setScanHint("解碼器沒有載入：請重新整理頁面；若一直失敗請回報（伺服器 /scanner/jsqr.js 讀不到）", "error");
-        return;
-      }
+    /* 開啟相機串流：有指定 deviceId 就用它（＝使用者選的鏡頭），否則用預設後鏡頭。 */
+    async function openCamera(deviceId) {
+      const constraints = Object.assign({}, camSettings());
+      if (deviceId) constraints.deviceId = { exact: deviceId };
+      else constraints.facingMode = "environment";
+      return navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
+    }
+
+    async function startCamera(deviceId) {
+      /* QR_CAMERA_SINGLETON_V1（fix80）：同時只允許一個開啟流程。
+         頁面載入時會自動開相機，使用者若在那之前又按「開啟相機」，
+         兩條 getUserMedia 會互相搶：後開的覆蓋 videoTrack，先開的 stream
+         沒人關（手機上會出現「相機被佔住／畫面卡住」）。 */
+      if (cameraStarting) return;
+      cameraStarting = true;
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "environment",
-            /* QR_ZOOM_V1：要求更高的解析度 —— 這是「坐遠」最關鍵的一項，
-               感光元件實際拍到的像素變多，裁切後 QR 才有足夠的像素被解出來。 */
-            width: { ideal: 3840 },
-            height: { ideal: 2160 }
-          },
-          audio: false
-        });
+        if (!validScannerParams()) {
+          setStatus("掃描連結缺少必要參數", "error");
+          setScanHint("這個連結沒有帶到必要的參數，請重新開啟點名頁產生的掃碼連結", "error");
+          return;
+        }
+        await initDecoder();
+        if (!barcodeDetector && !window.jsQR) {
+          setStatus("QR 解碼器尚未載入", "error");
+          setScanHint("解碼器沒有載入：請重新整理頁面；若一直失敗請回報（伺服器 /scanner/jsqr.js 讀不到）", "error");
+          return;
+        }
+        /* 重新開啟前先關掉舊的 stream，避免手機鏡頭被前一條佔住。 */
+        if (stream) {
+          try { stream.getTracks().forEach((track) => track.stop()); } catch (err) { /* 已停止 */ }
+          stream = null;
+          videoTrack = null;
+        }
+        /* QR_MULTISCALE_V1：要求高解析度 —— 感光元件拍到的像素越多，
+           遠處的 QR 才有足夠像素被解出來（實測 4K 擷取是「坐遠」的關鍵）。
+           QR_CAMERA_PICKER_V1：有指定就用指定的鏡頭（望遠＝真光學變焦）。 */
+        const wantId = deviceId || readSavedCam() || "";
+        try {
+          stream = await openCamera(wantId);
+        } catch (err) {
+          if (!wantId) throw err;
+          storeCam("");                       // 選定的鏡頭已不在（iOS 的 deviceId 會輪替）
+          setScanHint("選定的鏡頭打不開，改用預設後鏡頭", "warn");
+          stream = await openCamera("");
+        }
         videoTrack = stream.getVideoTracks()[0] || null;
         video.srcObject = stream;
         await video.play();
@@ -791,16 +962,20 @@
             await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
           }
         } catch (err) { /* 不支援就維持相機預設 */ }
-        await detectHwZoom(videoTrack);
+        const applied = (videoTrack && videoTrack.getSettings) ? videoTrack.getSettings() : {};
+        activeCamId = applied.deviceId || wantId || "";
         targetZoom = clampZoom(readStoredZoom());
-        await applyZoom();
+        applyZoom();
+        await refreshCamList(activeCamId);
         scanning = true;
         setStatus("正在掃描並持續回傳 QR Code...", "");
-        setScanHint("開始找 QR：把 QR 放進畫面，太遠就往右拉「放大」拉桿", "");
+        setScanHint("開始找 QR：把 QR 放進畫面，太遠就往右拉「畫面放大」拉桿", "");
         requestAnimationFrame(tick);
       } catch (err) {
         setStatus("無法開啟相機，請確認瀏覽器權限或使用 HTTPS。", "error");
         setScanHint("相機打不開：請確認已允許相機權限（或用瀏覽器開啟，不要在 App 內建瀏覽器）", "error");
+      } finally {
+        cameraStarting = false;
       }
     }
 
@@ -837,6 +1012,19 @@
     targetZoom = clampZoom(readStoredZoom());
     if (zoomSlider) zoomSlider.value = String(targetZoom);
     if (zoomValue) zoomValue.textContent = targetZoom.toFixed(1) + "x";
+
+    /* QR_CAMERA_PICKER_V1：選鏡頭（iPhone Pro 選「望遠」＝真光學變焦，可讀距離 ×2～3）。 */
+    const camSel = document.getElementById("camSelect");
+    if (camSel) {
+      camSel.addEventListener("change", () => {
+        storeCam(camSel.value);
+        setScanHint(camSel.value ? "切換鏡頭中…（望遠鏡頭可以坐更遠）" : "切回預設後鏡頭…", "");
+        startCamera(camSel.value || undefined);
+      });
+    }
+    if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", () => { refreshCamList(activeCamId); });
+    }
 
     refreshAttendanceStatus();
     setInterval(refreshAttendanceStatus, 1500);
