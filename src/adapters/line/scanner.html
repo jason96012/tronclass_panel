@@ -109,6 +109,121 @@
       transform-origin: center center;
       transition: transform .12s ease-out;
     }
+    /* QR_PINCH_ZOOM_V1（fix90）：手指捏合要縮放「畫面」，不是縮放「網頁」。
+       touch-action: pan-y ＝允許單指上下捲動，但**不允許瀏覽器自己做雙指縮放**
+       （iOS Safari 另外靠 gesturestart 事件擋，見 JS）。 */
+    .stage { touch-action: pan-y; }
+    /* 捏合中不要 transition，畫面才會即時跟手。 */
+    .stage.pinching #preview { transition: none; }
+    /* 高倍率時把預覽「提味」：對比／飽和／亮度微調，抵掉數位放大的灰糊感。
+       這只影響「你看到的畫面」，解碼用的仍是相機原始像素。 */
+    #preview.crisp { image-rendering: -webkit-optimize-contrast; }
+    /* QR_PREVIEW_SHARPEN_V1（fix92）：預覽銳化層 —— 把相機畫面在 GPU 上重新取樣（縮小先預濾波）
+       再銳化（AMD FidelityFX CAS 演算法，MIT），只影響「你看到的畫面」，
+       解碼用的仍是相機原始像素。沒有 WebGL2 或 shader 失敗 → 這一層不顯示，自動退回 <video>。 */
+    .gl-preview {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: none;          /* canvas 全域是 display:none，這裡要明確控制 */
+      pointer-events: none;
+      z-index: 0;             /* 蓋住 video，但在準心框（2）／綠框（2）／膠囊（3）之下 */
+      background: #000;
+    }
+    .stage.gl-on .gl-preview { display: block; }
+    /* fix93d：銳化層蓋上時**不要**把影片藏起來（舊版 visibility:hidden）——
+       iOS 在影片 display:none／visibility:hidden 時會停送解碼帧，texImage2D 間歇抓到黑帧
+       （真機實測症狀：預覽「有時黑有時有畫面」）。銳化畫布 alpha:false 本來就完全不透明，
+       影片留在底下正常渲染、GPU 貼圖才抓得到帧。 */
+    .gl-preview.crisp { image-rendering: -webkit-optimize-contrast; }
+    /* QR_AIM_BOX_V1（fix88）：準心框 —— QR 對進來就幾乎立刻命中（快路徑先掃中央）。
+       框外壓暗是為了讓使用者一眼知道「要放哪裡」，這也是 LINE 掃碼很快的原因之一。 */
+    .aim-box {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 54%;
+      height: 54%;
+      max-width: 300px;
+      max-height: 300px;
+      transform: translate(-50%, -50%);
+      border: 2px solid rgba(126, 231, 176, .9);
+      border-radius: 14px;
+      box-shadow: 0 0 0 9999px rgba(0, 0, 0, .32);
+      pointer-events: none;
+      z-index: 2;     /* fix93c：明確壓在銳化層（z-index:0）之上 —— 銳化層蓋掉影片也不能蓋掉對準框 */
+    }
+    /* QR_PREVIEW_FEEDBACK_V1（fix91）：讓使用者「看著預覽」就知道掃到了沒 ——
+       ① 掃描光線：框內有一條上下跑的光線＝正在掃
+       ② 看到 QR：框變亮綠＋文字變「✓ 看到 QR 了」＋在 QR 位置畫出綠框（解碼器回報的座標）
+       ③ 狀態膠囊：預覽左上角顯示 掃描中／已掃描到／已送出／送出失敗
+       這些都只畫在預覽上，不影響解碼。 */
+    .hit-box {
+      /* QR_PREVIEW_SHARPEN_V1（fix92）修 bug：全域 `canvas { display: none; }` 會把這層也藏起來
+         （fix91 的綠框在真機上因此看不到），這裡明確打開。 */
+      display: block;
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 2;
+      transform-origin: center center;
+      transition: transform .12s ease-out;
+    }
+    .stage.pinching .hit-box { transition: none; }
+    .preview-badge {
+      position: absolute;
+      left: 10px;
+      top: 10px;
+      z-index: 3;
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      max-width: calc(100% - 20px);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: rgba(20, 26, 36, .74);
+      color: #d7dfec;
+      border: 1px solid rgba(255, 255, 255, .16);
+      pointer-events: none;
+    }
+    .preview-badge.ok { background: #57c98a; color: #07130c; border-color: #57c98a; }
+    .preview-badge.err { background: #e5484d; color: #fff; border-color: #e5484d; }
+    .preview-badge.working { background: rgba(47, 111, 237, .9); color: #fff; border-color: #2f6fed; }
+    .aim-box .sweep {
+      position: absolute;
+      left: 6%;
+      right: 6%;
+      height: 2px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, rgba(126, 231, 176, 0), rgba(126, 231, 176, .95), rgba(126, 231, 176, 0));
+      animation: scanSweep 1.8s linear infinite;
+    }
+    @keyframes scanSweep {
+      0% { top: 6%; opacity: 0; }
+      12% { opacity: .95; }
+      50% { top: 92%; opacity: .95; }
+      62% { opacity: 0; }
+      100% { top: 6%; opacity: 0; }
+    }
+    .aim-box.found { border-color: #6df5a3; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .32), 0 0 18px rgba(109, 245, 163, .55); }
+    .aim-box.found .sweep { display: none; }
+    .aim-box.found #aimText { color: #6df5a3; }
+    .aim-box span {
+      position: absolute;
+      left: 50%;
+      bottom: -28px;
+      transform: translateX(-50%);
+      font-size: 13px;
+      font-weight: 650;
+      color: #8ee6b0;
+      white-space: nowrap;
+      text-shadow: 0 1px 4px #000;
+    }
     #scanHint {
       margin-top: 10px;
       font-size: 15px;
@@ -134,11 +249,92 @@
       font-size: 14px;
       font-weight: 650;
     }
+    /* QR_ZOOM_MOBILE_V1（fix89）：手機放大要好按、好懂。
+       ①拉桿加粗（手指好拖）②按鈕在手機上變 2 欄大顆 ③倍率快捷 ④說明可收合 ⑤可雙指縮放。 */
     input[type="range"] {
       width: 100%;
       margin-top: 10px;
-      min-height: 44px;
+      min-height: 48px;
+      height: 48px;
+      -webkit-appearance: none;
+      appearance: none;
+      background: transparent;
+      touch-action: manipulation;
     }
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 10px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2f6fed, #57c98a);
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 30px;
+      height: 30px;
+      margin-top: -10px;
+      border-radius: 50%;
+      background: #fff;
+      border: 3px solid #2f6fed;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, .35);
+    }
+    input[type="range"]::-moz-range-track {
+      height: 10px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2f6fed, #57c98a);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: #fff;
+      border: 3px solid #2f6fed;
+    }
+    .zoom-presets {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .zoom-presets button {
+      flex: 1 1 0;
+      min-width: 64px;
+      min-height: 46px;
+      font-size: 15px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .zoom-presets button.active {
+      background: #2f6fed;
+      color: #fff;
+      border-color: #2f6fed;
+    }
+    .zoom-hint {
+      display: none;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .zoom-hint.open { display: block; }
+    @media (max-width: 560px) {
+      .zoom-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .zoom-row button { min-height: 52px; font-size: 16px; }
+      .zoom-row button.zbtn { min-width: 0; font-size: 26px; }
+      .zoom-row .zoom-mode {
+        grid-column: 1 / -1;
+        max-width: none;
+        margin-left: 0;
+        text-align: center;
+      }
+    }
+    #zoom { touch-action: pan-y; }
     .zoom-row {
       display: flex;
       flex-wrap: wrap;
@@ -159,12 +355,6 @@
       font-variant-numeric: tabular-nums;
       text-align: right;
       max-width: 46%;
-    }
-    .zoom-hint {
-      margin-top: 8px;
-      color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
     }
     .cam-info {
       margin-top: 8px;
@@ -280,15 +470,16 @@
     <section class="panel">
       <div class="stage">
         <video id="preview" playsinline muted></video>
+        <!-- QR_PREVIEW_SHARPEN_V1（fix92）：預覽銳化層（WebGL2；失敗時自動隱藏）。 -->
+        <canvas id="glPreview" class="gl-preview" aria-hidden="true"></canvas>
         <canvas id="canvas"></canvas>
+        <!-- QR_AIM_BOX_V1（fix88）：把 QR 放進這個框，掃描速度最快。 -->
+        <div id="aimBox" class="aim-box"><div class="sweep"></div><span id="aimText">把 QR 放進框內・可雙指縮放</span></div>
+        <!-- QR_PREVIEW_FEEDBACK_V1（fix91）：解碼器回報的 QR 位置（綠框）＋狀態膠囊。 -->
+        <canvas id="hitBox" class="hit-box"></canvas>
+        <div id="previewBadge" class="preview-badge">掃描中…</div>
       </div>
       <div id="scanHint">尚未開始掃描</div>
-      <div id="camPick" class="cam-pick" style="display:none">
-        <label for="camSelect">鏡頭（Pro 機型選「望遠」可坐更遠）</label>
-        <select id="camSelect">
-          <option value="">自動（預設後鏡頭）</option>
-        </select>
-      </div>
       <div class="actions">
         <button id="start" type="button">開啟相機</button>
         <button id="stop" type="button" class="secondary">停止</button>
@@ -299,13 +490,28 @@
           <span id="zoomValue">2.0x</span>
         </label>
         <input id="zoom" type="range" min="1" max="8" step="0.5" value="2">
+        <!-- QR_ZOOM_MOBILE_V1（fix89）：一鍵跳到常用倍率（比拖拉桿更直觀） -->
+        <div class="zoom-presets" id="zoomPresets">
+          <button type="button" class="secondary" data-zoom="1">1x</button>
+          <button type="button" class="secondary" data-zoom="2">2x</button>
+          <button type="button" class="secondary" data-zoom="4">4x</button>
+          <button type="button" class="secondary" data-zoom="8">8x</button>
+        </div>
         <div class="zoom-row">
           <button id="zoomOut" type="button" class="secondary zbtn" aria-label="縮小">−</button>
           <button id="zoomIn" type="button" class="zbtn" aria-label="放大">＋</button>
           <button id="zoomReset" type="button" class="secondary">回到 1x</button>
+          <button id="refocusBtn" type="button" class="secondary">重新對焦</button>
+          <button id="screenBtn" type="button" class="secondary">螢幕強化：開</button>
+          <button id="hintToggle" type="button" class="secondary" aria-expanded="false">說明 ▾</button>
           <span id="zoomMode" class="zoom-mode">數位放大 2.0x</span>
         </div>
-        <div class="zoom-hint">往右拉＝把畫面放大，方便你把 QR 對到正中央。解碼會自動嘗試 全幅／2x／4x／8x 多個倍率（相機本身的變焦已停用：實測放大反而變糊、讀不到）。</div>
+        <div class="zoom-hint" id="zoomHint">往右拉＝把畫面放大對準 QR。<b>鏡頭、對焦、掃描範圍都會自動處理，你只要把 QR 放進框裡。</b><br>
+          ・放大後會自動重新對焦；拉的倍率愈大，會自動改用望遠鏡頭（有多顆鏡頭時）<br>
+          ・解碼會自動掃畫面每個角落（4×5 分區）＋多個倍率，並自動挑最好的解碼器（zxing-wasm／微信引擎）<br>
+          ・「螢幕強化」＝對著螢幕／投影幕時連續 3 張畫面平均（把螢幕摩爾紋洗掉）<br>
+          ・連續幾秒掃不到會自動進入「深度掃描」，不用自己按任何東西<br>
+          ・<b>把 QR 放進框內會最快</b>（系統先掃框內）；畫面不清楚時會自動重新對焦並告訴你怎麼改善</div>
       </div>
       <div id="camInfo" class="cam-info"></div>
       <div id="status">尚未掃描</div>
@@ -353,6 +559,11 @@
   <!-- QR_DECODER_LOCAL_V1（fix78）：改用本機的 jsQR（伺服器自己就有 /scanner/jsqr.js，
        與 CDN 那份 sha256 完全相同）。校園網路擋外網或 CDN 掛掉時仍然掃得動。 -->
   <script src="/scanner/jsqr.js"></script>
+  <!-- QR_ZXING_V1（fix86）：zxing-wasm（zxing-cpp 編成 WebAssembly）＝主要解碼器。
+       實測「手機拍螢幕」情境：jsQR 單框 0/5、zxing-wasm 單框 5/5，速度還快一個數量級。
+       wasm 由本機供應（/scanner/zxing_reader.wasm），這個檔案內建的 CDN 備援已被改成
+       永遠指向本機，所以校園網路擋外網也照樣能用。jsQR 留著當後備（zxing 載入失敗時）。 -->
+  <script src="/scanner/zxing.js"></script>
   <script>
     const params = new URLSearchParams(window.location.search);
     const provider = params.get("provider") || "";
@@ -410,7 +621,8 @@
     const ZOOM_DEFAULT = 2;
     const ZOOM_KEY = "tronclassScannerZoom";
     /* 解碼尺度：k=1 全幅、k=2 中央 1/2、k=4 中央 1/4、k=8 中央 1/8。
-       便宜的（k 大）每一輪都試；貴的（k 小）只在每秒一次的完整輪試，控制耗時。 */
+       fix84 之後這一組只當「中央尺度」用（配合 QR_TILE_SCAN_V1 的分區掃描），
+       k=1（全幅）與 k=2（中央 1/2）只在完整輪跑，因為分區掃描本來就會蓋到那些範圍。 */
     const LADDER = [
       { k: 4, thoroughOnly: false },
       { k: 8, thoroughOnly: false },
@@ -419,15 +631,21 @@
     ];
     /* 解碼輸入的長邊上限：實測 1920 與 4K 全幅命中率相同，但快 3-4 倍。 */
     const DECODE_MAX_SIDE = 1920;
-    /* 每輪最多每 DECODE_INTERVAL_MS 一次；預覽照常用 requestAnimationFrame 更新。 */
-    const DECODE_INTERVAL_MS = 150;
+    /* QR_TURBO_V1（fix88）：不再固定等 150ms —— 一輪解完就接著下一輪（有 in-flight 保護，
+       不會重疊），並用「每輪最多花幾毫秒」控制工作量，主執行緒才不會頓。
+       以前固定 150ms＋一輪試很多區域＋每個區域再跑 jsQR（55ms/次），實際一秒只掃 1-2 次；
+       現在快路徑只跑 zxing（4ms/次），一秒可以掃十幾輪。 */
+    const DECODE_INTERVAL_MS = 0;        // 0＝做完就繼續（真正的節流是 ROUND_BUDGET_MS）
+    const ROUND_BUDGET_MS = 120;         // 每輪最多花 120ms 解碼，超過就留給下一輪（畫面保持滑順）
+    const FAST_TILES = 2;                // 快路徑每輪掃幾塊分區（少而準；深度掃描才掃滿）
     /* 送出（POST /scanner/submit）最多等幾毫秒，逾時就放棄那一次並解鎖。 */
     const SUBMIT_TIMEOUT_MS = 8000;
     /* 連續多久沒解到碼就提示使用者（秒）。 */
     const NO_QR_HINT_SECS = 2.5;
 
     let targetZoom = ZOOM_DEFAULT;   // 只影響預覽（畫面放大）
-    let lastHitScale = 0;            // 上一次成功解碼用的尺度（顯示在相機資訊列）
+    let lastHitLabel = "";          // 上一次成功解碼用的尺度／分區（顯示在相機資訊列）
+    let lastHitVia = "";            // QR_ZXING_V1：上一次是用哪個解碼器解到的（zxing／jsQR）
     let cameraStarting = false;      // QR_CAMERA_SINGLETON_V1：開啟流程互斥
 
     function nowMs() {
@@ -629,6 +847,7 @@
           `已送出第 ${successfulSubmits} 次，${body.delivered_count || 0} 個帳號收到 QR Code。持續掃描中...`,
           "ok"
         );
+        reportSubmitOnPreview(true, `✅ 已送出（${body.delivered_count || 0} 個帳號）`);
         refreshAttendanceStatus();
       } catch (err) {
         const aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
@@ -638,14 +857,719 @@
             : ((err && err.message) || "回傳失敗，仍會持續掃描。"),
           "error"
         );
+        reportSubmitOnPreview(false, aborted ? "❌ 送出逾時（仍持續掃描）" : "❌ 送出失敗（仍持續掃描）");
       } finally {
         if (timer) clearTimeout(timer);
         submitInFlight = false;   // ← 一定會解鎖，不會再永久卡住
       }
     }
 
-    /* QR_MULTISCALE_V1：解碼迴圈。
-       - 每一輪依序試 LADDER 裡的尺度（便宜的先試），任一成功就停。
+    /* ─────────── QR_PREVIEW_FEEDBACK_V1（fix91）：在預覽上直接給回饋 ──────────
+       使用者需求：「讓使用者看著預覽畫面就知道是否有掃描到」。
+       ① 狀態膠囊（預覽左上角）：掃描中…／✓ 已掃描到 QR／✅ 已送出／❌ 送出失敗／已停止。
+       ② 掃到的位置框：用解碼器回報的座標（zxing 的 position、jsQR 的 location、
+          微信的 rect）在原畫面座標畫出綠色四邊形 —— 一眼看出「它真的看到那個 QR 了」。
+       ③ 準心框文字：掃到時變「✓ 看到 QR 了」並亮綠。
+       以上都只是畫在預覽上，不影響解碼與送出。                                      */
+    const hitBoxEl = document.getElementById("hitBox");
+    const previewBadgeEl = document.getElementById("previewBadge");
+    const aimBoxEl = document.getElementById("aimBox");
+    const aimTextEl = document.getElementById("aimText");
+    const AIM_TEXT_DEFAULT = "把 QR 放進框內・可雙指縮放";
+    let hitOverlayCtx = null;
+    let hitOverlayScale = 0;          // 畫面像素 → 重疊層像素的縮放
+    let lastOverlayCorners = null;
+    let badgeTimer = null;
+    let aimTimer = null;
+
+    function overlayCtx() {
+      if (hitOverlayCtx || !hitBoxEl || typeof hitBoxEl.getContext !== "function") return hitOverlayCtx;
+      try { hitOverlayCtx = hitBoxEl.getContext("2d", { willReadFrequently: false }); } catch (err) { hitOverlayCtx = null; }
+      return hitOverlayCtx;
+    }
+    /* 重疊層尺寸跟著預覽走（devicePixelRatio 也考慮進去，框線才不會糊）。 */
+    function sizeHitOverlay() {
+      if (!hitBoxEl || !video) return;
+      const cssW = video.clientWidth || 360;
+      const cssH = video.clientHeight || 480;
+      const dpr = (typeof window !== "undefined" && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+      const w = Math.max(1, Math.round(cssW * dpr));
+      const h = Math.max(1, Math.round(cssH * dpr));
+      if (hitBoxEl.width !== w) hitBoxEl.width = w;
+      if (hitBoxEl.height !== h) hitBoxEl.height = h;
+      const vw = video.videoWidth || cssW;
+      hitOverlayScale = w / vw;
+    }
+    function clearHitOverlay() {
+      lastOverlayCorners = null;
+      const ctx = overlayCtx();
+      if (ctx && hitBoxEl) ctx.clearRect(0, 0, hitBoxEl.width, hitBoxEl.height);
+    }
+    /* 在 QR 的位置畫綠框（座標是「相機畫面像素」，這裡換算成重疊層像素）。 */
+    function drawHitOverlay(corners) {
+      const ctx = overlayCtx();
+      if (!ctx || !hitBoxEl) return;
+      if (!hitOverlayScale) sizeHitOverlay();
+      if (!corners || corners.length < 4 || !hitOverlayScale) return;
+      const pts = corners.map((p) => ({
+        x: Math.max(0, Math.min(hitBoxEl.width, p.x * hitOverlayScale)),
+        y: Math.max(0, Math.min(hitBoxEl.height, p.y * hitOverlayScale)),
+      }));
+      ctx.clearRect(0, 0, hitBoxEl.width, hitBoxEl.height);
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(109, 245, 163, .18)";
+      ctx.fill();
+      ctx.lineWidth = Math.max(3, Math.round(hitBoxEl.width / 160));
+      ctx.strokeStyle = "#6df5a3";
+      ctx.stroke();
+      lastOverlayCorners = corners;
+    }
+    /* ═══ QR_PREVIEW_SHARPEN_V1（fix92）：預覽銳化（GPU，只影響顯示）═══════════════
+       問題：數位放大 4–8x 後畫面一定軟（fix90 已加對比／飽和「提味」，但細節還是糊）。
+       做法：把相機畫面透過 WebGL2 重新取樣到「螢幕實際解析度」再銳化 ——
+         ① 縮小（例如 1x 看全幅）時先做 2×2 預濾波 → 減少 QR 模組的摩爾紋／鋸齒。
+         ② 銳化＝AMD FidelityFX CAS 演算法（MIT；移植自官方 ffx_cas.h 的 soft min/max
+            ＋對比自適應權重＋5-tap 濾波），另外補一點邊緣提味（USM）—— CAS 對「已經滿對比
+            的邊」刻意不動，QR 的模組邊界正好是這種邊，所以要補。
+       安全：① 解碼用的仍是相機原始像素（drawImage(video)），這層只改變顯示。
+             ② 任何一步失敗（沒有 WebGL2、shader 編不過、視訊還沒就緒）→ 自動退回原本的
+                <video> 顯示，功能與 fix91 完全相同。
+             ③ iPhone：Safari 15+ 皆有 WebGL2（iOS 26 另有 WebGPU，但這裡用不到）。 */
+    const GL_VERT_SRC = `#version 300 es
+in vec2 aPos;
+out vec2 vUv;
+void main() {
+  vUv = aPos * 0.5 + 0.5;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+    const GL_FRAG_SRC = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uTex;
+uniform vec2 uScale;     // 輸出 uv → 來源 uv 的倍率（＝1／(倍率×畫面佔比)）
+uniform vec2 uVis;       // 畫面（扣掉黑邊）在輸出 uv 的半徑
+uniform vec2 uOut;       // 輸出像素尺寸
+uniform vec2 uSrcTexel;  // 1／相機畫面尺寸
+uniform vec2 uPre;       // 每個輸出像素覆蓋幾個來源 texel（>1 才做預濾波）
+uniform float uPeak;     // CAS 銳化量（負值：-1/8＝溫和、-1/5＝最強）
+uniform float uBoost;    // 額外的邊緣提味（USM）
+vec3 samp(vec2 duv) {
+  vec2 suv = 0.5 + (vUv + duv - 0.5) * uScale;
+  vec3 c = texture(uTex, clamp(suv, vec2(0.0), vec2(1.0))).rgb;
+  if (max(uPre.x, uPre.y) > 1.15) {
+    vec2 ox = vec2(0.5 * min(uPre.x, 2.0) * uSrcTexel.x, 0.0);
+    vec2 oy = vec2(0.0, 0.5 * min(uPre.y, 2.0) * uSrcTexel.y);
+    c = c * 0.5
+      + (texture(uTex, clamp(suv + ox, vec2(0.0), vec2(1.0))).rgb
+       + texture(uTex, clamp(suv - ox, vec2(0.0), vec2(1.0))).rgb
+       + texture(uTex, clamp(suv + oy, vec2(0.0), vec2(1.0))).rgb
+       + texture(uTex, clamp(suv - oy, vec2(0.0), vec2(1.0))).rgb) * 0.125;
+  }
+  return c;
+}
+void main() {
+  vec2 d = vUv - 0.5;
+  if (abs(d.x) > uVis.x || abs(d.y) > uVis.y) { outColor = vec4(0.0, 0.0, 0.0, 1.0); return; }
+  vec2 t = 1.0 / uOut;
+  vec3 e  = samp(vec2(0.0, 0.0));
+  vec3 b  = samp(vec2(0.0, -t.y));
+  vec3 h  = samp(vec2(0.0,  t.y));
+  vec3 l  = samp(vec2(-t.x, 0.0));
+  vec3 r  = samp(vec2( t.x, 0.0));
+  vec3 tl = samp(vec2(-t.x, -t.y));
+  vec3 tr = samp(vec2( t.x, -t.y));
+  vec3 bl = samp(vec2(-t.x,  t.y));
+  vec3 br = samp(vec2( t.x,  t.y));
+  /* AMD FidelityFX CAS：soft min/max（含對角，官方已把係數 2 倍化）→ 對比自適應銳化。 */
+  vec3 mnB = min(min(min(l, e), r), min(b, h));
+  vec3 mxB = max(max(max(l, e), r), max(b, h));
+  vec3 mn2 = min(min(min(mnB, tl), tr), min(bl, br));
+  vec3 mx2 = max(max(max(mxB, tl), tr), max(bl, br));
+  vec3 mn = mnB + mn2;
+  vec3 mx = mxB + mx2;
+  vec3 amp = sqrt(clamp(min(mn, vec3(2.0) - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+  float w = amp.g * uPeak;
+  vec3 cas = clamp(((b + l + r + h) * w + e) / (1.0 + 4.0 * w), 0.0, 1.0);
+  /* 邊緣提味（USM）：CAS 不動滿對比的邊，這裡補一點，QR 模組邊界才夠利。 */
+  vec3 blur5 = (e + b + l + r + h) * 0.2;
+  outColor = vec4(clamp(cas + uBoost * (cas - blur5), 0.0, 1.0), 1.0);
+}`;
+    const glPreviewEl = document.getElementById("glPreview");
+    let glCtx = null;
+    let glProg = null;
+    let glTex = null;
+    let glUni = null;
+    /* QR_PREVIEW_SHARPEN_V2（fix93c 黑屏自救）：三段式 —— armed（管線就緒等首帧）→
+       首帧抽樣驗證真的有內容 → glOn 才把 .gl-on 掛上蓋掉影片。
+       以前 init 成功立刻蓋上：真機若「GPU 說畫成功其實全黑」（iOS 影片貼圖怪癖），
+       使用者就只剩黑畫面；現在每 3 帧 readPixels 驗明正身，連續黑帧就永久退回原生影片。 */
+    const SHARPEN_KEY = "tronclassScannerSharpen";   // localStorage："1" 開（預設）／"0" 關（黑帧自救或手動）
+    let glOn = false;        /* 首帧驗證成功才 true（才把 .gl-on 掛上 .stage） */
+    let glArmed = false;     /* 管線就緒、等首帧（這段期間畫面仍是原生 <video>） */
+    let glFailed = false;    /* 失敗過就不再試（除非使用者手動開回來） */
+    let glReadyShot = false;
+    let glRaf = 0;
+    let glLastDraw = 0;
+    let glArmAt = 0;         /* 開始等首帧的時間（3.5s 還沒拿到影片資料＝放棄，退回） */
+    let glDrawN = 0;         /* 已畫帧數（每 3 帧抽樣一次像素） */
+    let glDarkN = 0;         /* 連續黑帧次數（達 GL_DARK_LIMIT → GPU 黑帧，退回並記住） */
+    let glWinN = 0;          /* 黑帧窗口：本輪已驗次數（間歇黑帧的偵測用） */
+    let glWinDark = 0;       /* 黑帧窗口：本輪的黑帧次數 */
+    let glWhy = "";          /* 退回原因：顯示在資訊列，回報時截圖就看得到 */
+    const GL_DARK_LIMIT = 50;        /* 連續黑帧上限（每 3 帧驗一次 ≈ 3.7 秒＠40fps） */
+    const GL_ARM_TIMEOUT_MS = 3500;  /* 管線就緒後等影片資料的上限 */
+    const GL_WIN = 32;               /* 黑帧窗口大小（次）：每 32 次驗證結算一次比例 */
+    function sharpenStore() {
+      /* 與頁面其他儲存一致走 window.localStorage；無痕／取用失敗就回 null。 */
+      try {
+        if (typeof window !== "undefined" && window.localStorage) return window.localStorage;
+        if (typeof localStorage !== "undefined") return localStorage;
+      } catch (err) { /* 取用本身也可能丟例外 */ }
+      return null;
+    }
+    function sharpenSavedOn() {
+      const st = sharpenStore();
+      if (!st) return true;
+      try { return st.getItem(SHARPEN_KEY) !== "0"; } catch (err) { return true; }
+    }
+    function sharpenPersist(on) {
+      const st = sharpenStore();
+      if (!st) return;
+      try { st.setItem(SHARPEN_KEY, on ? "1" : "0"); } catch (err) { /* 私密模式就沒記住 */ }
+    }
+
+    /* 銳化量：1x 不銳化（那時畫面是縮小的，銳化只會放大雜訊）；倍率越高越強（上限 1.0）。 */
+    function previewSharpenAmount() {
+      if (targetZoom <= 1.05) return 0;
+      const q = Math.min(1, Math.max(0, (targetZoom - 1) / 5));
+      return 0.3 + 0.7 * q;
+    }
+    /* 官方 CasSetup：peak ＝ -1／mix(8, 5, sharpness)。 */
+    function previewSharpenPeak(amount) {
+      const a = Math.min(1, Math.max(0, amount));
+      return -1 / (8 - 3 * a);
+    }
+    /* 幾何映射（純函式，方便測試）：輸出像素 outW×outH、相機畫面 vw×vh、倍率 zoom。
+       回傳 scale＝輸出 uv→來源 uv、vis＝放大後畫面（扣黑邊）在輸出 uv 的半徑、pre＝來源 texel／輸出像素。
+       fix93c：vis 改「滿版」語義（min(0.5, z×pic/2)）——與 CSS <video> scale(z) 外觀一致；
+       舊版是「中央小窗」（0.5/z），高倍率時畫面縮成中央一塊、四周全黑。 */
+    function previewSharpenMap(outW, outH, vw, vh, zoom) {
+      if (!outW || !outH || !vw || !vh || !zoom) return null;
+      const fit = Math.min(outW / vw, outH / vh);       /* 等同 object-fit: contain */
+      const picX = (vw * fit) / outW;                   /* 畫面在輸出上的佔比（≤1，其餘是黑邊） */
+      const picY = (vh * fit) / outH;
+      const z = Math.max(1, zoom);
+      return {
+        scale: { x: 1 / (z * picX), y: 1 / (z * picY) },
+        vis: { x: Math.min(0.5, z * picX / 2), y: Math.min(0.5, z * picY / 2) },
+        pre: { x: (vw / outW) / (z * picX), y: (vh / outH) / (z * picY) },
+      };
+    }
+    function previewSharpenActive() { return glOn; }
+
+    /* 建立 WebGL2 管線（開相機時呼叫；任何錯誤都只是「不啟用」，不會影響掃描）。
+       fix93c：這裡只「上膛」（glArmed）——首帧真的驗出內容才把銳化層蓋上（見 drawPreviewSharpen）。 */
+    function startPreviewSharpen() {
+      glOn = false; glArmed = false; glFailed = false; glReadyShot = false;
+      glDrawN = 0; glDarkN = 0; glWinN = 0; glWinDark = 0; glWhy = ""; glArmAt = 0; glLastDraw = 0;
+      if (!sharpenSavedOn()) { glFailed = true; glWhy = "關閉"; updateCamInfo(); return false; }
+      if (!glPreviewEl || typeof glPreviewEl.getContext !== "function") { glFailed = true; glWhy = "無 WebGL2"; updateCamInfo(); return false; }
+      let g = null;
+      try {
+        g = glPreviewEl.getContext("webgl2", { alpha: false, antialias: false, depth: false, stencil: false });
+      } catch (err) { g = null; }
+      if (!g || typeof g.createShader !== "function") { glFailed = true; glWhy = "無 WebGL2"; updateCamInfo(); return false; }
+      try {
+        const mk = (type, src) => {
+          const sh = g.createShader(type);
+          g.shaderSource(sh, src);
+          g.compileShader(sh);
+          if (!g.getShaderParameter(sh, g.COMPILE_STATUS)) throw new Error("shader 編譯失敗");
+          return sh;
+        };
+        const prog = g.createProgram();
+        g.attachShader(prog, mk(g.VERTEX_SHADER, GL_VERT_SRC));
+        g.attachShader(prog, mk(g.FRAGMENT_SHADER, GL_FRAG_SRC));
+        g.linkProgram(prog);
+        if (!g.getProgramParameter(prog, g.LINK_STATUS)) throw new Error("program 連結失敗");
+        const buf = g.createBuffer();
+        g.bindBuffer(g.ARRAY_BUFFER, buf);
+        g.bufferData(g.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), g.STATIC_DRAW);
+        g.useProgram(prog);
+        const loc = g.getAttribLocation(prog, "aPos");
+        g.enableVertexAttribArray(loc);
+        g.vertexAttribPointer(loc, 2, g.FLOAT, false, 0, 0);
+        const tex = g.createTexture();
+        g.bindTexture(g.TEXTURE_2D, tex);
+        g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
+        g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
+        g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
+        g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
+        g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, true);   /* 影片上傳要翻轉，畫面才不會上下顛倒 */
+        g.uniform1i(g.getUniformLocation(prog, "uTex"), 0);
+        glCtx = g;
+        glProg = prog;
+        glTex = tex;
+        glUni = {
+          scale: g.getUniformLocation(prog, "uScale"),
+          vis: g.getUniformLocation(prog, "uVis"),
+          out: g.getUniformLocation(prog, "uOut"),
+          srcTexel: g.getUniformLocation(prog, "uSrcTexel"),
+          pre: g.getUniformLocation(prog, "uPre"),
+          peak: g.getUniformLocation(prog, "uPeak"),
+          boost: g.getUniformLocation(prog, "uBoost"),
+        };
+        glArmed = true;                     /* 上膛：等第一帧驗證（首帧成功才蓋上，見 drawPreviewSharpen） */
+        glArmAt = nowMs();
+        if (typeof requestAnimationFrame === "function") glRaf = requestAnimationFrame(previewSharpenLoop);
+        return true;
+      } catch (err) {
+        glOn = false;
+        glArmed = false;
+        glFailed = true;
+        glWhy = "初始化失敗";
+        glCtx = null;
+        if (stageEl && stageEl.classList) stageEl.classList.remove("gl-on");
+        updateCamInfo();
+        return false;
+      }
+    }
+
+    /* 預覽要跟相機一樣順 → 自己一條 rAF（解碼很重時，掛在解碼節奏上會抽格）。
+       只有真的啟用（glOn）才會排程；上限約 40fps，省電也省 GPU。 */
+    function previewSharpenLoop() {
+      if ((!glArmed && !glOn) || glFailed) { glRaf = 0; return; }
+      glRaf = requestAnimationFrame(previewSharpenLoop);
+      const at = nowMs();
+      if (at - glLastDraw < 25) return;
+      glLastDraw = at;
+      drawPreviewSharpen();
+    }
+
+    /* 畫一帧：把相機畫面重新取樣到螢幕解析度並銳化。
+       fix93c 黑屏自救：
+       ① 影片一直沒資料（3.5s）→ 退回原生 <video>（不記住，下次開相機再試）；
+       ② 首帧抽樣驗證有內容才把銳化層蓋上（以前 init 成功就蓋，黑帧怪癖時＝全黑）；
+       ③ 每 3 帧 readPixels 驗「不是全黑」，連續黑帧 → 退回並記住（這台不再自動開）。 */
+    function drawPreviewSharpen() {
+      if ((!glArmed && !glOn) || glFailed || !glCtx || !scanning) return;
+      if (!video || !video.videoWidth) return;
+      if (video.readyState < 2) {
+        if (glArmAt && nowMs() - glArmAt > GL_ARM_TIMEOUT_MS) glRevoke("無畫面資料", false);
+        return;
+      }
+      const cssW = video.clientWidth || 360;
+      const cssH = video.clientHeight || 270;
+      const dpr = (typeof window !== "undefined" && window.devicePixelRatio) ? window.devicePixelRatio : 1;
+      const w = Math.max(1, Math.round(cssW * dpr));
+      const h = Math.max(1, Math.round(cssH * dpr));
+      if (glPreviewEl.width !== w) glPreviewEl.width = w;
+      if (glPreviewEl.height !== h) glPreviewEl.height = h;
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const map = previewSharpenMap(w, h, vw, vh, targetZoom);
+      if (!map) return;
+      const amount = previewSharpenAmount();
+      try {
+        glCtx.viewport(0, 0, w, h);
+        glCtx.bindTexture(glCtx.TEXTURE_2D, glTex);
+        glCtx.texImage2D(glCtx.TEXTURE_2D, 0, glCtx.RGBA, glCtx.RGBA, glCtx.UNSIGNED_BYTE, video);
+        glCtx.uniform2f(glUni.scale, map.scale.x, map.scale.y);
+        glCtx.uniform2f(glUni.vis, map.vis.x, map.vis.y);
+        glCtx.uniform2f(glUni.out, w, h);
+        glCtx.uniform2f(glUni.srcTexel, 1 / vw, 1 / vh);
+        glCtx.uniform2f(glUni.pre, map.pre.x, map.pre.y);
+        glCtx.uniform1f(glUni.peak, previewSharpenPeak(amount));
+        glCtx.uniform1f(glUni.boost, 0.22 * amount);
+        glCtx.drawArrays(glCtx.TRIANGLE_STRIP, 0, 4);
+        glDrawN += 1;
+        let okShot = true;
+        if (!glReadyShot || glDrawN % 3 === 0) okShot = glVerifyPixels();   /* 首帧必驗、之後每 3 帧驗 */
+        if (!glFailed && !glReadyShot && okShot) {
+          /* 首帧驗出真的有內容 → 這一刻才把銳化層蓋上影片（黑帧時絕不蓋） */
+          glReadyShot = true;
+          glOn = true;
+          if (stageEl && stageEl.classList) stageEl.classList.add("gl-on");
+          applyPreviewTuning();       /* 提味改套在銳化層上 */
+          updateCamInfo();            /* 資訊列出現「預覽銳化 NN%」 */
+        }
+      } catch (err) {
+        /* 畫到一半失敗（例如 GPU 重置）→ 立刻退回原本的 <video>，別讓使用者的畫面黑掉。 */
+        glRevoke("繪製失敗", false);
+      }
+    }
+
+    /* 抽樣讀回 8×8 中心像素：亮度幾乎為 0 ＝黑帧（GPU 說畫成功，不代表真的上了螢幕）。
+       回傳 true＝這帧有內容；false＝黑帧（蓋上前要求 true 才能蓋；蓋上後給 50 次容忍）。 */
+    function glVerifyPixels() {
+      try {
+        const px = new Uint8Array(8 * 8 * 4);
+        const x = Math.max(0, (glPreviewEl.width >> 1) - 4);
+        const y = Math.max(0, (glPreviewEl.height >> 1) - 4);
+        glCtx.readPixels(x, y, 8, 8, glCtx.RGBA, glCtx.UNSIGNED_BYTE, px);
+        let sum = 0;
+        for (let i = 0; i < px.length; i += 4) sum += (px[i] * 3 + px[i + 1] * 4 + px[i + 2]) >> 3;
+        const dark = (sum / 64 < 4);
+        if (dark) {
+          glDarkN += 1;
+          if (glDarkN >= GL_DARK_LIMIT) { glRevoke("黑帧", true); return false; }   /* 連續全黑：退回並記住 */
+        } else {
+          glDarkN = 0;
+        }
+        /* fix93d 窗口比例：真機故障多半是「間歇黑帧」（有時黑有時亮），連續計數會被偶爾的
+           亮帧洗掉而永遠抓不到 —— 每 32 次驗證統計一次，黑帧超過七成＝GPU 貼圖管線已壞，退回並記住。 */
+        glWinN += 1;
+        if (dark) glWinDark += 1;
+        if (glWinN >= GL_WIN) {
+          const tooDark = glWinDark * 10 > glWinN * 7;
+          glWinN = 0; glWinDark = 0;
+          if (tooDark) { glRevoke("黑帧", true); return false; }
+        }
+        return !dark;
+      } catch (err) {
+        glRevoke("繪製失敗", false);
+        return false;
+      }
+    }
+
+    /* 停用銳化層、回到原生 <video>。persist=true 時記住「這台裝置不要再自動開」（黑帧自救）。 */
+    function glRevoke(why, persist) {
+      glWhy = why;
+      glOn = false; glArmed = false; glFailed = true; glReadyShot = false;
+      glDarkN = 0; glWinN = 0; glWinDark = 0; glArmAt = 0;
+      if (persist) sharpenPersist(false);
+      if (glRaf && typeof cancelAnimationFrame === "function") { try { cancelAnimationFrame(glRaf); } catch (err) { /* 已取消 */ } }
+      glRaf = 0;
+      if (stageEl && stageEl.classList) stageEl.classList.remove("gl-on");
+      try { if (glCtx) glCtx.clear(glCtx.COLOR_BUFFER_BIT); } catch (err) { /* 清不掉也不影響 */ }
+      applyPreviewTuning();   /* 提味改回套影片（跟 fix91 一樣） */
+      updateCamInfo();        /* 資訊列顯示退回原因 */
+    }
+
+    function stopPreviewSharpen() {
+      glOn = false;
+      glArmed = false;
+      glReadyShot = false;
+      glDarkN = 0;
+      glWinN = 0;
+      glWinDark = 0;
+      glArmAt = 0;
+      glWhy = "";
+      if (glRaf && typeof cancelAnimationFrame === "function") cancelAnimationFrame(glRaf);
+      glRaf = 0;
+      if (stageEl && stageEl.classList) stageEl.classList.remove("gl-on");
+      try { if (glCtx) glCtx.clear(glCtx.COLOR_BUFFER_BIT); } catch (err) { /* 清不掉也不影響 */ }
+      applyPreviewTuning();     /* 交還給 <video>（回 1x／停止時的行為跟 fix91 一樣） */
+    }
+
+    /* fix93c 現場逃生口：連點資訊列三下 → 手動開／關預覽銳化（會記住）。
+       萬一這台的 GPU ／瀏覽器不合，使用者一個動作就回到原生影片，不用等看門狗。 */
+    function toggleSharpenManual() {
+      const next = !sharpenSavedOn();
+      if (next) {
+        sharpenPersist(true);
+        glWhy = "";
+        setScanHint("預覽銳化：已開啟（高倍率更利）", "");
+        if (scanning && !glOn) startPreviewSharpen();
+      } else {
+        glRevoke("關閉", true);
+        setScanHint("預覽銳化：已關閉（會記住；連點資訊列三下可再開）", "");
+      }
+      updateCamInfo();
+    }
+    /* fix93d：GPU context 被系統回收（iOS 記憶體壓力常見）→ 退回原生影片（不記住，下次再試）。 */
+    if (glPreviewEl && glPreviewEl.addEventListener) {
+      glPreviewEl.addEventListener("webglcontextlost", (ev) => {
+        if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
+        if (glOn || glArmed) glRevoke("GPU 重置", false);
+      }, false);
+    }
+    let sharpenTapN = 0;
+    let sharpenTapAt = 0;
+    if (camInfoEl && camInfoEl.addEventListener) {
+      camInfoEl.addEventListener("click", () => {
+        const at = nowMs();
+        sharpenTapN = (at - sharpenTapAt < 700) ? sharpenTapN + 1 : 1;
+        sharpenTapAt = at;
+        /* 不立刻執行：等靜止 0.75s 才結算（3 下或 4 下是兩個不同手勢）——見 settleCamInfoTaps */
+      });
+    }
+    /* 3 下＝預覽銳化開關；4 下＝4K⇄1080p 切換（重開相機）。在 tick 裡結算（不用計時器）。 */
+    function settleCamInfoTaps() {
+      if (sharpenTapN < 3) return;
+      if (nowMs() - sharpenTapAt < 750) return;
+      const n = sharpenTapN;
+      sharpenTapN = 0;
+      if (n >= 4) toggleHiResManual();
+      else toggleSharpenManual();
+    }
+    function toggleHiResManual() {
+      const next = !capHiResOn();
+      persistCapMode(next);
+      const note = next
+        ? "解析度：已切回 4K（重開相機；坐遠掃碼看這個）"
+        : "解析度：已降到 1080p（重開相機；畫面穩定優先）";
+      if (scanning) {
+        const r = restartCameraForCaptureMode(note);
+        if (r && r.catch) r.catch(() => {});
+      } else {
+        setScanHint(note, "");
+      }
+    }
+
+    /* ═══ QR_AI_SR_V1（fix93）：AI 超分救援（深度掃描的最後一擊）══════════════════
+       量測依據（/home/user/qr_sr_lab/B_ml_superres_measurement.md，實測非推測）：
+        ① 實拍投影幕照片（QR 模組已經低於可解極限）→ 超分救不回，所以這裡有「有內容」門檻，
+           不會在空畫面或全糊畫面上白花時間。
+        ② 「差一點點」的案例（每模組約 3.6px、原本三個引擎全 ❌）→ Swin2SR ×2 之後
+           zxing 與微信都解出來了（jsQR 仍不行）。
+        ③ 本來就解得到的案例 → 超分後仍然解得到（不會把好畫面弄壞）。
+       成本與做法：模型 6.75MB＋runtime 10.2MB，只在「深度掃描且一直沒解到」時下載一次
+        （瀏覽器會快取）；推論整段丟進 Web Worker，預覽與掃描節奏完全不受影響 ——
+        這裡只「放出去跑」，結果由下一個 tick 撿回來。
+       安全：任何一步失敗（不支援 Worker／下載失敗／推論出錯／逾時）→ srFailed 永久停用，
+        其他三層解碼、螢幕平均、對焦守衛全部照舊。 */
+    const SR_WORKER_URL = "/scanner/sr/worker.mjs";
+    const SR_AFTER_MS = 3500;       /* 深度掃描超過這麼久還沒解到 → 開始 AI 救援 */
+    const SR_RETRY_MS = 9000;       /* 兩次 AI 之間至少隔這麼久（很貴，不連發） */
+    const SR_MAX_EDGE = 224;        /* 送進模型的裁切邊長上限（控制推論時間；手機約 1.5–3 秒） */
+    const SR_TIMEOUT_MS = 25000;    /* 等 worker 的上限（第一次含下載 17MB，給寬一點） */
+    let srWorker = null;
+    let srFailed = false;
+    let srBusy = false;
+    let srPending = null;
+    let srLastAt = 0;
+    let srTries = 0;
+    let srRescues = 0;
+    let srNoticed = false;
+    let srFound = null;             /* 救援成功 → 下一個 tick 取用 */
+    let srWorkCanvas = null;
+
+    /* 裁切區域＝「準心框」在影片座標裡實際涵蓋的範圍（不是整張畫面的一小角）。
+       為什麼要這樣算：準心框請使用者把 QR 對進來，框在畫面上是固定的 CSS 尺寸，
+       但拉桿（數位放大）會改變「框底下對應到多少相機像素」——
+       例如預覽寬 360、影片寬 2160（fit 0.167）、4x 時，框底約是 291 個相機像素。
+       這裡刻意**不縮放**（直接取原生像素）：先降採樣再超分會把要救的細節先丟掉。
+       上方為對稱裁切，所以「框的中心＝畫面中心」時才對得準（提示也一直要求放正中央）。 */
+    function srCropRect() {
+      const vw = video ? video.videoWidth : 0;
+      const vh = video ? video.videoHeight : 0;
+      if (!vw || !vh) return null;
+      const cssW = (video && video.clientWidth) ? video.clientWidth : 360;
+      const cssH = (video && video.clientHeight) ? video.clientHeight : 480;
+      const fit = Math.min(cssW / vw, cssH / vh);                 // 等同 object-fit: contain
+      const boxCss = Math.min(Math.min(cssW, cssH) * 0.54, 300);  // 準心框邊長（CSS px）
+      const z = Math.max(1, targetZoom);
+      const boxVideoPx = boxCss / Math.max(0.0001, fit * z);      // 框底下涵蓋幾個相機像素
+      const side = Math.max(64, Math.min(Math.round(boxVideoPx), Math.min(SR_MAX_EDGE, vw, vh)));
+      return {
+        sx: Math.max(0, Math.round((vw - side) / 2)),
+        sy: Math.max(0, Math.round((vh - side) / 2)),
+        cw: side,
+        ch: side,
+      };
+    }
+    function srCanvas() {
+      if (srWorkCanvas) return srWorkCanvas;
+      if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
+      try {
+        const c = document.createElement("canvas");
+        if (c && typeof c.getContext === "function") srWorkCanvas = c;
+      } catch (err) { srWorkCanvas = null; }
+      return srWorkCanvas;
+    }
+    /* 取出裁切（一般情況 k=1：直接取原生像素，不縮放）。 */
+    function srExtract() {
+      const r = srCropRect();
+      if (!r || !r.cw || !r.ch || !video) return null;
+      const c = srCanvas();
+      if (!c) return null;
+      try {
+        /* QR_AI_SR_V1：直接取原生像素，**不縮放**（先縮小再超分等於先把要救的細節丟掉）。 */
+        c.width = r.cw;
+        c.height = r.ch;
+        const g = c.getContext("2d");
+        if (!g) return null;
+        g.drawImage(video, r.sx, r.sy, r.cw, r.ch, 0, 0, r.cw, r.ch);
+        return { img: g.getImageData(0, 0, r.cw, r.ch), rect: r, dw: r.cw, dh: r.ch };
+      } catch (err) { return null; }
+    }
+    function srFail(why) {
+      srFailed = true;
+      srBusy = false;
+      srPending = null;
+      if (srWorker) { try { srWorker.terminate(); } catch (err) { /* 已經沒了就算了 */ } srWorker = null; }
+      if (!srNoticed) {
+        srNoticed = true;
+        setScanHint(`AI 超分救援不可用（${why}）→ 仍會用原有三層解碼持續掃描`, "");
+      }
+    }
+    function ensureSrWorker() {
+      if (srFailed) return null;
+      if (srWorker) return srWorker;
+      if (typeof Worker !== "function") { srFail("這個瀏覽器不支援 Worker"); return null; }
+      try {
+        const w = new Worker(SR_WORKER_URL, { type: "module" });
+        w.onmessage = (ev) => {
+          const d = ev.data || {};
+          const done = srPending;
+          if (!done) return;
+          if (d.type === "result") {
+            done.resolve({ w: d.w, h: d.h, buf: new Uint8ClampedArray(d.buf) });
+          } else if (d.type === "error") {
+            done.reject(new Error(d.message || "AI 超分失敗"));
+          } else if (d.type === "ready") {
+            done.resolve(null);
+          }
+        };
+        w.onerror = () => srFail("AI 超分模組載入失敗");
+        srWorker = w;
+        return srWorker;
+      } catch (err) { srFail("Worker 無法建立"); return null; }
+    }
+    function srPost(payload, transfer) {
+      const w = ensureSrWorker();
+      if (!w) return Promise.reject(new Error("沒有 worker"));
+      return new Promise((resolve, reject) => {
+        /* 逾時用「截止時間」在 tick 裡檢查，不靠計時器：這樣真機與測試沙箱行為一致，
+           也不會因為瀏覽器凍結背景分頁而永遠卡住。 */
+        srPending = {
+          resolve: (v) => { srPending = null; resolve(v); },
+          reject: (e) => { srPending = null; reject(e); },
+          deadline: nowMs() + SR_TIMEOUT_MS,
+        };
+        try { w.postMessage(payload, transfer || []); }
+        catch (err) { srPending = null; reject(err); }
+      });
+    }
+    /* 每個 tick 檢查：等太久就放棄這一次（避免 srBusy 卡住讓救援永遠不再嘗試）。 */
+    function srWatchdog() {
+      if (!srPending) return;
+      if (nowMs() <= srPending.deadline) return;
+      const p = srPending;
+      srPending = null;
+      p.reject(new Error("AI 超分逾時"));
+    }
+    /* 拿超分後的圖解碼：zxing → jsQR → 微信（實測微信對模糊最強，所以留著當第三關）。 */
+    async function srDecode(imgData, rect) {
+      const m = { sx: rect.sx, sy: rect.sy, cw: rect.cw, ch: rect.ch, dw: imgData.width, dh: imgData.height };
+      let hit = await readImageData(imgData, "AI 超分 2x", undefined, true);
+      if (hit) return { data: hit.data, scale: hit.scale, via: hit.via, imgLoc: hit.imgLoc, corners: mapLocToVideo(hit.imgLoc, m) };
+      const wxRes = await wechatScanRaw(imgData);
+      if (wxRes && wxRes.text) {
+        const pts = rectToPts(wxRes.rect);
+        const loc = pts ? { pts, w: imgData.width, h: imgData.height } : null;
+        return { data: wxRes.text, scale: "AI 超分 2x", via: "微信", imgLoc: loc, corners: loc ? mapLocToVideo(loc, m) : null };
+      }
+      return null;
+    }
+    /* 背景跑一次 AI 救援（不阻塞 tick；成功就放進 srFound 等下一個 tick 取用）。 */
+    async function srRun() {
+      const ext = srExtract();
+      if (!ext) throw new Error("取不到畫面");
+      const copy = new Uint8ClampedArray(ext.img.data);
+      const up = await srPost({ type: "upscale", w: ext.img.width, h: ext.img.height, buf: copy }, [copy.buffer]);
+      if (!up || !up.w) throw new Error("超分沒有結果");
+      const c = srCanvas();
+      if (!c) throw new Error("沒有畫布");
+      c.width = up.w;
+      c.height = up.h;
+      const g = c.getContext("2d");
+      const imgData = g.createImageData ? g.createImageData(up.w, up.h) : null;
+      const target = imgData || { data: new Uint8ClampedArray(up.w * up.h * 4), width: up.w, height: up.h };
+      target.data.set(up.buf.subarray(0, target.data.length));
+      target.width = up.w;
+      target.height = up.h;
+      return await srDecode(target, ext.rect);
+    }
+    /* 預熱：進入深度掃描（＝已經掃了一陣子都沒中）就先在背景把 runtime 與模型載好。
+       載入含 wasm 編譯與量化模型初始化（實測這一段跟推論同一個數量級），
+       先載好可以讓第一次真正救援少等好幾秒。只做一次，失敗就當作不可用。 */
+    function srWarmup() {
+      if (srFailed || srTries > 0) return;
+      if (typeof Worker !== "function") return;
+      if (!hardModeOn()) return;
+      /* 跟真正救援一樣要有「畫面裡有東西」才值得下載 17MB。 */
+      const score = lastScore || sharpnessNow();
+      if (score <= BLUR_CONTENT_FLOOR) return;
+      const w = ensureSrWorker();
+      if (!w) return;
+      if (srPending) return;
+      srPost({ type: "warmup" }, null).catch((err) => srFail(String((err && err.message) || err)));
+    }
+
+    /* tick 每個循環呼叫：條件到了就放出去跑；跑完的結果由下一個 tick 撿。 */
+    function srKick() {
+      srWatchdog();      /* 先看看上一次是不是等太久了（不靠計時器） */
+      if (srFailed || srBusy || srFound || !scanning) return;
+      const at = nowMs();
+      if (!hardModeOn()) return;
+      if (lastSeenAt && at - lastSeenAt < SR_AFTER_MS) return;
+      if (at - srLastAt < SR_RETRY_MS) return;
+      /* 有內容才值得跑（空白／全糊的畫面超分也救不了，別浪費 17MB 與時間）。 */
+      const score = lastScore || sharpnessNow();
+      if (score <= BLUR_CONTENT_FLOOR) return;
+      srLastAt = at;
+      srTries += 1;
+      srBusy = true;
+      if (!srNoticed) {
+        srNoticed = true;
+        setScanHint("AI 超分救援：用超解析度重看畫面中央（首次會下載約 17MB，之後會快取）…", "");
+      }
+      srRun()
+        .then((hit) => { if (hit) { srRescues += 1; srFound = hit; } })
+        .catch((err) => { srFail(String((err && err.message) || err)); })
+        .then(() => { srBusy = false; updateCamInfo(); });
+    }
+    function srSummary() {
+      if (srFailed) return "・AI 超分 不可用";
+      if (srTries <= 0) return "";
+      return `・AI 超分 ${srTries} 次（救回 ${srRescues}）`;
+    }
+    function stopAiSuperRes() {
+      if (srWorker) { try { srWorker.terminate(); } catch (err) { /* 已終止 */ } srWorker = null; }
+      srPending = null;
+      srBusy = false;
+      srFound = null;
+    }
+
+    function setPreviewBadge(text, kind) {
+      if (!previewBadgeEl) return;
+      previewBadgeEl.textContent = text;
+      previewBadgeEl.className = "preview-badge" + (kind ? " " + kind : "");
+    }
+    /* 掃到 QR：膠囊變綠、準心框亮起來、QR 位置畫框；2.5 秒後回到「掃描中…」。 */
+    function reportScanOnPreview(found) {
+      const bits = `✓ 已掃描到 QR（第 ${seenCount} 次・${found.scale}${found.via ? "・" + found.via : ""}）`;
+      setPreviewBadge(bits, "ok");
+      if (aimBoxEl) aimBoxEl.classList.add("found");
+      if (aimTextEl) aimTextEl.textContent = "✓ 看到 QR 了";
+      if (found.corners && found.corners.length >= 4) drawHitOverlay(found.corners);
+      if (badgeTimer) clearTimeout(badgeTimer);
+      badgeTimer = setTimeout(() => {
+        setPreviewBadge(scanning ? "掃描中…" : "已停止", scanning ? "" : "");
+      }, 2500);
+      if (aimTimer) clearTimeout(aimTimer);
+      aimTimer = setTimeout(() => {
+        if (aimBoxEl) aimBoxEl.classList.remove("found");
+        if (aimTextEl) aimTextEl.textContent = AIM_TEXT_DEFAULT;
+      }, 2500);
+      /* QR 位置框留久一點（看得出「它抓到哪裡」），6 秒後清掉。 */
+      setTimeout(() => { clearHitOverlay(); }, 6000);
+    }
+    /* 送出結果也顯示在預覽上（使用者不用往下找狀態列）。 */
+    function reportSubmitOnPreview(ok, text) {
+      setPreviewBadge(text, ok ? "ok" : "err");
+      if (badgeTimer) clearTimeout(badgeTimer);
+      badgeTimer = setTimeout(() => { setPreviewBadge(scanning ? "掃描中…" : "已停止", ""); }, 3000);
+    }
+
+    /* QR_MULTISCALE_V1／QR_TILE_SCAN_V1：解碼迴圈。
+       - 每一輪依序試 decodeRegions() 排好的區域（便宜的先試），任一成功就停。
        - 「全幅」那一輪會把畫面降到長邊 ≤ DECODE_MAX_SIDE（1920）再解 ——
          實測命中率與 4K 原生相同、但快 3-4 倍。
        - 最多每 DECODE_INTERVAL_MS 一次、同一時間只有一個解碼在跑，
@@ -655,18 +1579,147 @@
     let lastThoroughAt = 0;
     let decoding = false;
     let lastSeenAt = 0;
+    let lastQrAt = 0;          // QR_FOCUS_AUTO_RETRY：上一次解到碼的時間（沒解到會自動重新對焦）
     let seenCount = 0;
 
-    /* 依「是否完整輪」決定這一輪要試哪些尺度，以及解碼選項。 */
-    function decodePasses() {
-      const thorough = nowMs() - lastThoroughAt > 1000;
-      if (thorough) lastThoroughAt = nowMs();
-      const opts = thorough ? undefined : { inversionAttempts: "dontInvert" };
-      const passes = [];
-      for (const pass of LADDER) {
-        if (!pass.thoroughOnly || thorough) passes.push(pass);
+    /* ─────────── QR_TILE_SCAN_V1（fix84）：全畫面分區掃描 ────────────────────
+       為什麼要改（2026-09-19 使用者第三次回報「放大後還是讀不到」）：
+         「放大」只放大你看到的手機畫面，相機拍到的還是整張 —— 所以 QR 只要不在
+         畫面正中央，舊版只掃中央 1/8、1/4、1/2 的那幾輪永遠碰不到它。
+       量測（2160×3840、模擬「拍投影幕」、QR 只有 80～180px、桌機）：
+         中央 1/4（540×960）＋銳化：80/120/180px **全部解得動**（90～140ms）
+         把同樣的磚鋪滿整張畫面（4×5＝20 塊、相鄰重疊 2 成）：整張都掃得到
+         偏心 QR（畫面 20%,30%）：只掃中央 ❌；分區輪到那一塊就 ✅
+         純放大裁切（把中心裁到 1/8 再放大 3 倍）＝全敗 → 放大模糊沒有用，不要做
+       成本（桌機 V8、2160×3840、手機約 2-4 倍）：中央 1/8 43ms、中央 1/4 210ms、
+         中央 1/2 168ms、全幅→1920 245ms、一塊分區（原圖＋銳化）163ms；
+         便宜輪（中央 1/4＋中央 1/8＋2 塊分區）650ms、完整輪 1.6s、解到之後那輪 0.35s。
+         20 塊分區整圈 ≈ 桌機 4s／iPhone 8-16s（最壞情況：QR 在角落且剛開始掃）。
+         命中後靠「上次那一塊」優先，之後每一輪只花 0.3-1.4s（iPhone）。
+       因此：
+         ① 每一輪除了中央尺度，還依「中心優先」順序往下掃分區（QR 放哪都掃得到）。
+         ② 上一次解到的分區優先試（人沒動 → 幾乎馬上再解到）。
+         ③ 拉桿拉大（≥4x）時，你眼睛看到的就是中央 1/z：那一塊會直接先被掃一輪，
+            而且分區也先在這一塊裡找（拉越大、要看的越少、越快掃到你看到的那個 QR）；
+            那一塊都找過了，才往畫面其他角落找。
+         ④ 完整輪（每 1.2 秒）一次多掃幾塊，讓整圈早點掃完。                    */
+    const TILE_COLS = 4;
+    const TILE_ROWS = 5;
+    const TILE_W_FRAC = 0.3;              // 分區寬＝畫面 30%
+    const TILE_H_FRAC = 0.25;             // 分區高＝畫面 25%（相鄰重疊 20～25%，QR 卡邊界也解得動）
+    const TILE_PX_BUDGET = 1300 * 1000;   // 每輪分區解碼的畫素預算 → 決定每輪掃幾塊
+    const TILES_PER_THOROUGH = 4;         // 完整輪一次掃幾塊（整圈早點掃完）
+    const THOROUGH_EVERY_MS = 800;       // 多久算一次「完整輪」（調快：完整輪會多掃中央 1/2 與全幅）
+    let tileCursor = 0;                   // 分區輪掃的游標
+    let stickyTile = -1;                  // 上一次解到的分區（優先重試）
+
+    /* 分區順序：中心優先（先掃畫面中央，往外擴）。距離相同時用列、行決定，順序固定。 */
+    function tileOrderList() {
+      const cc = (TILE_COLS - 1) / 2;
+      const cr = (TILE_ROWS - 1) / 2;
+      const items = [];
+      for (let r = 0; r < TILE_ROWS; r++) {
+        for (let c = 0; c < TILE_COLS; c++) {
+          const d = Math.sqrt((c - cc) * (c - cc) + (r - cr) * (r - cr));
+          items.push({ idx: r * TILE_COLS + c, d, r, c });
+        }
       }
-      return { passes, opts };
+      items.sort((a, b) => (a.d - b.d) || (a.r - b.r) || (a.c - b.c));
+      return items.map((it) => it.idx);
+    }
+    const TILE_ORDER = tileOrderList();
+
+    /* 第 i 塊分區在目前畫面裡的位置：等距鋪滿、貼邊對齊（所以相鄰會重疊）。 */
+    function tileRect(i) {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const cw = Math.max(64, Math.round(vw * TILE_W_FRAC));
+      const ch = Math.max(64, Math.round(vh * TILE_H_FRAC));
+      const col = i % TILE_COLS;
+      const row = Math.floor(i / TILE_COLS);
+      const sx = TILE_COLS > 1 ? Math.round((col * (vw - cw)) / (TILE_COLS - 1)) : Math.round((vw - cw) / 2);
+      const sy = TILE_ROWS > 1 ? Math.round((row * (vh - ch)) / (TILE_ROWS - 1)) : Math.round((vh - ch) / 2);
+      return { sx, sy, cw, ch, label: `分區 ${i + 1}/${TILE_COLS * TILE_ROWS}`, tile: i };
+    }
+
+    /* 中央尺度的一塊（k=4 → 中央 1/4）. */
+    function centerRegion(k) {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const cw = Math.max(64, Math.round(vw / k));
+      const ch = Math.max(64, Math.round(vh / k));
+      return {
+        sx: Math.max(0, Math.round((vw - cw) / 2)),
+        sy: Math.max(0, Math.round((vh - ch) / 2)),
+        cw,
+        ch,
+        label: scaleLabel(k),
+      };
+    }
+
+    /* 你眼睛看到的那一塊：拉桿 z 倍 → 畫面正中央的 1/z（預覽是從中心放大的）。 */
+    function visibleRect(vw, vh) {
+      const z = Math.max(1, targetZoom);
+      const cw = Math.max(1, Math.round(vw / z));
+      const ch = Math.max(1, Math.round(vh / z));
+      return { x: (vw - cw) / 2, y: (vh - ch) / 2, w: cw, h: ch };
+    }
+
+    /* 這一塊分區有沒有落在「你看得到的範圍」裡。 */
+    function tileHitsVisible(i, vw, vh) {
+      const t = tileRect(i);
+      const v = visibleRect(vw, vh);
+      return t.sx < v.x + v.w && t.sx + t.cw > v.x && t.sy < v.y + v.h && t.sy + t.ch > v.y;
+    }
+
+    /* 每輪掃幾塊：依畫素預算（手機小畫面可以多掃幾塊，成本一樣）。 */
+    function tilesPerRound(vw, vh) {
+      const px = Math.max(1, Math.round(vw * TILE_W_FRAC) * Math.round(vh * TILE_H_FRAC));
+      const n = Math.floor(TILE_PX_BUDGET / px);
+      return Math.max(1, Math.min(TILES_PER_THOROUGH, n));
+    }
+
+    /* 依「是否完整輪」決定這一輪要試哪些區域，以及解碼選項。
+       順序＝最可能的先試：上次命中的分區 → 你眼睛看到的那塊 → 便宜的中央尺度 → 分區輪掃。 */
+    function decodeRegions() {
+      const at = nowMs();
+      const thorough = at - lastThoroughAt > THOROUGH_EVERY_MS;
+      if (thorough) lastThoroughAt = at;
+      const opts = thorough ? undefined : { inversionAttempts: "dontInvert" };
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const regions = [];
+      const seen = [];
+      const push = (rg) => {
+        const key = rg.sx + "," + rg.sy + "," + rg.cw + "," + rg.ch;
+        if (seen.indexOf(key) >= 0) return;      // 同一塊不要重複解
+        seen.push(key);
+        regions.push(rg);
+      };
+      if (stickyTile >= 0) push(tileRect(stickyTile));
+      const zoomK = Math.round(targetZoom);
+      /* 你看到的畫面＝中央 1/z。拉很大（z≥4）時那一塊最值得先掃；太小反而難解，所以不到 4 不掃。 */
+      if (zoomK >= 4) push(centerRegion(Math.min(8, zoomK)));
+      for (const pass of LADDER) {
+        if (pass.thoroughOnly && !thorough) continue;
+        push(centerRegion(pass.k));
+      }
+      const hard = hardModeOn();
+      const n = hard ? TILES_PER_THOROUGH : Math.min(FAST_TILES, tilesPerRound(vw, vh));
+      let picked = 0;
+      let guard = 0;
+      while (picked < n && guard < TILE_ORDER.length * 2) {
+        const idx = TILE_ORDER[tileCursor % TILE_ORDER.length];
+        const wrap = Math.floor(tileCursor / TILE_ORDER.length);
+        tileCursor += 1;
+        guard += 1;
+        /* 使用者有拉大（z≥4）時，先只在「你看得到的那塊」裡挑（拉越大＝看得越少＝越快掃到）；
+           看得到的都試過了才往畫面其他角落掃。沒拉大時照中心優先順序掃整張。 */
+        if (wrap === 0 && targetZoom >= 4 && !tileHitsVisible(idx, vw, vh)) continue;
+        push(tileRect(idx));
+        picked += 1;
+      }
+      return { regions, opts, hard };
     }
 
     /* QR_SHARPEN_V1（fix82）：解碼前的 3×3 銳化。
@@ -690,22 +1743,584 @@
       }
     }
 
-    /* 在目前 canvas 上跑一次解碼（原生解碼器優先，其次 jsQR）。 */
-    async function readCanvas(k, opts) {
+    /* ─────────── QR_SCREEN_AVG_V1（fix85）：螢幕模式 —— 連拍平均去摩爾紋 ───────
+       為什麼（2026-09-19 使用者第四次回報，附「拍筆電螢幕」截圖）：
+         拍螢幕時會出現摩爾紋（螢幕像素格 × 相機像素格），單一張畫面裡的 QR 會被
+         摩爾紋切碎；而且螢幕場景通常偏軟、偏亮。使用者截圖那張 QR 用 jsQR 直接解、
+         加銳化、對比拉伸、自適應二值化（共 55 種組合）全部失敗 —— 單張畫面沒救。
+       量測（4K 擷取、QR 200/250/300px、失焦、摩爾紋 22-30%、手震 1.6-2px、雜訊）：
+         單框 ❌❌❌｜單框＋銳化 ❌❌❌（銳化把摩爾紋一起放大 → 更糟）
+         **平均 3 框 ✅✅✅**（三個樣本全部變成解得動）｜平均 6 框 ✅❌✅
+         平均 3 框＋銳化 ❌ → 螢幕場景不要銳化
+       做法：
+         ① 把「你瞄準的那一塊」（拉桿倍率對應的中央裁切）連續疊框平均
+            （α=1/3 → 記憶約 3 框）；每框先用 64×64 亮度估位移並補回去，
+            避免手震把畫面糊掉（總位移超過搜尋範圍就重新起算）。
+         ② 平均圖只解「原圖」與「對比拉伸」，**不銳化**（量測顯示銳化會弄壞）。
+         ③ 疊滿 3 框才開始解，之後每 3 個 tick 解一次（控制耗時）。
+         ④ 每 12 個 tick 重新起算一次，避免畫面拖影。
+       顯示：相機資訊列會出現「螢幕平均 N 框」；按鈕可關（螢幕強化：開／關）。    */
+    const SCREEN_AVG_KEY = "tronclassScannerScreen";
+    const AVG_ALPHA = 1 / 3;
+    const AVG_MIN_FRAMES = 3;
+    const AVG_DECODE_EVERY = 3;
+    const AVG_RESET_TICKS = 12;      // 每 12 個 tick 重新起算（避免舊畫面拖影）
+    const AVG_PATCH = 64;            // 位移估計用的亮度 patch（覆蓋 128×128 視訊像素）
+    const AVG_PATCH_SRC = 128;
+    const AVG_SEARCH = 4;            // 位移搜尋範圍 ±4 patch px（＝±8 視訊像素）
+
+    let screenAvgOn = true;
+    let avgCanvas = null;
+    let avgCtx = null;
+    let avgFrames = 0;
+    let avgTicks = 0;
+    let avgDecodeTicks = 0;
+    let avgRefPatch = null;
+    let avgShift = { x: 0, y: 0 };
+    let patchCanvas = null;
+    let patchCtx = null;
+
+    function readStoredScreenAvg() {
+      try {
+        const v = window.localStorage ? window.localStorage.getItem(SCREEN_AVG_KEY) : null;
+        if (v === "0") return false;
+        if (v === "1") return true;
+        if (v === null || v === undefined) return true;
+      } catch (err) { /* 無痕模式沒有 localStorage */ }
+      return true;
+    }
+    function storeScreenAvg(on) {
+      try {
+        if (window.localStorage) window.localStorage.setItem(SCREEN_AVG_KEY, on ? "1" : "0");
+      } catch (err) { /* 沒得存就算了 */ }
+    }
+    screenAvgOn = readStoredScreenAvg();
+
+    /* 螢幕平均的那一塊＝拉桿倍率對應的中央裁切（z<4 用中央 1/4，z>8 用中央 1/8）。 */
+    function avgRegion() {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const k = Math.max(4, Math.min(8, Math.round(targetZoom)));
+      const cw = Math.max(64, Math.round(vw / k));
+      const ch = Math.max(64, Math.round(vh / k));
+      return {
+        k,
+        cw,
+        ch,
+        sx: Math.max(0, Math.round((vw - cw) / 2)),
+        sy: Math.max(0, Math.round((vh - ch) / 2)),
+      };
+    }
+
+    /* 取「那一塊」中央的 64×64 亮度 patch（來源 128×128 視訊像素）→ 用來估位移。 */
+    function grabPatch(rg) {
+      if (!patchCanvas) {
+        patchCanvas = document.createElement("canvas");
+        patchCanvas.width = AVG_PATCH;
+        patchCanvas.height = AVG_PATCH;
+        patchCtx = patchCanvas.getContext("2d", { willReadFrequently: true });
+      }
+      if (!patchCtx) return null;
+      let src = AVG_PATCH_SRC;
+      if (rg.cw < src || rg.ch < src) src = Math.max(16, Math.min(rg.cw, rg.ch));
+      const px = Math.max(0, Math.min(video.videoWidth - src, Math.round(rg.sx + (rg.cw - src) / 2)));
+      const py = Math.max(0, Math.min(video.videoHeight - src, Math.round(rg.sy + (rg.ch - src) / 2)));
+      patchCtx.drawImage(video, px, py, src, src, 0, 0, AVG_PATCH, AVG_PATCH);
+      const img = patchCtx.getImageData(0, 0, AVG_PATCH, AVG_PATCH);
+      const lum = new Uint8Array(AVG_PATCH * AVG_PATCH);
+      for (let i = 0, j = 0; i < img.data.length; i += 4, j++) lum[j] = img.data[i];
+      lum.srcPerPatch = src / AVG_PATCH;   // 1 patch px ＝幾個視訊像素
+      return lum;
+    }
+
+    /* 兩張 patch 之間的整數位移（SAD 最小）；回傳「視訊像素」位移，找不到就 null。 */
+    function estimateShift(ref, cur) {
+      if (!ref || !cur || ref.length !== cur.length) return null;
+      const N = AVG_PATCH;
+      const R = AVG_SEARCH;
+      let best = null;
+      let bestScore = Infinity;
+      for (let dy = -R; dy <= R; dy++) {
+        for (let dx = -R; dx <= R; dx++) {
+          let sad = 0;
+          /* 跳 2 像素取樣：位移是整數、畫面又軟，精度夠用但快 4 倍（手機很吃這個）。 */
+          for (let y = 0; y < N - R; y += 2) {
+            const cy = y + R;
+            const ry = y;
+            for (let x = 0; x < N - R; x += 2) {
+              const a = cur[cy * N + (x + R)];      // 現在的畫面
+              const b = ref[ry * N + x];            // 起算那張
+              sad += a > b ? a - b : b - a;
+            }
+          }
+          if (sad < bestScore) { bestScore = sad; best = { dx, dy }; }
+        }
+      }
+      if (!best) return null;
+      const scale = (ref.srcPerPatch || 2);
+      /* 現在畫面上的內容比對照組往右下移了 (dx,dy) → 疊圖時要往左上補回去。 */
+      return { x: best.dx * scale, y: best.dy * scale };
+    }
+
+    /* 對比拉伸（2%～98%）：把偏灰的螢幕畫面拉回黑白分明（只在平均圖上用一次）。 */
+    function contrastStretchInPlace(data, w, h) {
+      const hist = new Uint32Array(256);
+      let total = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const g = (data[i] * 77 + data[i + 1] * 150 + data[i + 2] * 29) >> 8;
+        hist[g]++;
+        total++;
+      }
+      let acc = 0;
+      let lo = 0;
+      let hi = 255;
+      const cut = Math.max(1, Math.floor(total * 0.02));
+      for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= cut) { lo = v; break; } }
+      acc = 0;
+      for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= cut) { hi = v; break; } }
+      const span = Math.max(1, hi - lo);
+      const lut = new Uint8ClampedArray(256);
+      for (let v = 0; v < 256; v++) lut[v] = ((v - lo) * 255) / span;
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = lut[data[i]];
+        data[i + 1] = lut[data[i + 1]];
+        data[i + 2] = lut[data[i + 2]];
+      }
+      return { lo, hi };
+    }
+
+    /* 每個 tick 疊一次：估位移 → 把這一格疊進平均畫布（位移補回去）。 */
+    function avgTick() {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return;
+      const rg = avgRegion();
+      if (!avgCanvas) {
+        avgCanvas = document.createElement("canvas");
+        avgCtx = avgCanvas.getContext("2d", { willReadFrequently: true });
+      }
+      if (!avgCtx) return;
+      if (avgCanvas.width !== rg.cw || avgCanvas.height !== rg.ch) {
+        avgCanvas.width = rg.cw;
+        avgCanvas.height = rg.ch;
+        avgFrames = 0;
+        avgRefPatch = null;
+        avgShift = { x: 0, y: 0 };
+      }
+      avgTicks += 1;
+      const restart = avgFrames === 0 || avgTicks % AVG_RESET_TICKS === 0 || !avgRefPatch;
+      if (restart) {
+        avgFrames = 0;
+        avgRefPatch = grabPatch(rg);
+        avgShift = { x: 0, y: 0 };
+      } else {
+        const cur = grabPatch(rg);
+        const s = estimateShift(avgRefPatch, cur);
+        if (s) {
+          /* 位移太大（人走動了）→ 直接用這一格當新的起算點 */
+          if (Math.abs(s.x) > 24 || Math.abs(s.y) > 24) {
+            avgRefPatch = cur;
+            avgShift = { x: 0, y: 0 };
+            avgFrames = 0;
+          } else {
+            avgShift = s;
+          }
+        } else {
+          avgFrames = 0;
+          avgRefPatch = cur;
+          avgShift = { x: 0, y: 0 };
+        }
+      }
+      const ox = Math.max(0, Math.min(vw - rg.cw, rg.sx - avgShift.x));
+      const oy = Math.max(0, Math.min(vh - rg.ch, rg.sy - avgShift.y));
+      avgCtx.globalAlpha = avgFrames === 0 ? 1 : AVG_ALPHA;
+      avgCtx.drawImage(video, ox, oy, rg.cw, rg.ch, 0, 0, rg.cw, rg.ch);
+      avgFrames += 1;
+    }
+
+    /* 解「平均圖」：只解原圖與對比拉伸（**不銳化** —— 量測顯示銳化會把摩爾紋放大）。 */
+    async function decodeAvg() {
+      if (!screenAvgOn || !avgCanvas || !avgCtx) return null;
+      if (avgFrames < AVG_MIN_FRAMES || !window.jsQR) return null;
+      avgDecodeTicks += 1;
+      if (avgDecodeTicks % AVG_DECODE_EVERY !== 0) return null;
+      const w = avgCanvas.width;
+      const h = avgCanvas.height;
+      const label = `螢幕平均 ${Math.round(1 / AVG_ALPHA)} 框`;
+      const plainOpts = { inversionAttempts: "dontInvert" };
+      /* QR_PREVIEW_FEEDBACK_V1：平均圖是「相機畫面某個區域」的平均，
+         座標要按那個區域（含位移補償）換算回畫面，綠框才會畫在正確位置。 */
+      const rg = avgRegion();
+      const avgMap = {
+        sx: rg.sx + (avgShift ? avgShift.x : 0),
+        sy: rg.sy + (avgShift ? avgShift.y : 0),
+        cw: rg.cw,
+        ch: rg.ch,
+        dw: w,
+        dh: h,
+      };
+      try {
+        const img = avgCtx.getImageData(0, 0, w, h);
+        const hit = await readImageData(img, label, plainOpts);
+        if (hit) return Object.assign(hit, { corners: mapLocToVideo(hit.imgLoc, avgMap) });
+        contrastStretchInPlace(img.data, w, h);
+        const hit2 = await readImageData(img, label + "＋對比", plainOpts);
+        if (hit2) return Object.assign(hit2, { corners: mapLocToVideo(hit2.imgLoc, avgMap) });
+      } catch (err) {
+        /* 這一輪平均圖解不動沒關係，下一輪再試。 */
+      }
+      return null;
+    }
+
+    /* 顯示「有效記憶框數」＝1/α＝3 框（不是累計疊了幾格）＋暖機進度。 */
+    function screenAvgLabel() {
+      const win = Math.round(1 / AVG_ALPHA);
+      if (avgFrames < AVG_MIN_FRAMES) return `螢幕平均 ${win} 框（暖機 ${avgFrames}/${AVG_MIN_FRAMES}）`;
+      return `螢幕平均 ${win} 框`;
+    }
+
+    /* ─────────── QR_ZXING_V1（fix86）：zxing-wasm 主要解碼器 ────────────────
+       為什麼：實測「手機拍螢幕」（4K 擷取、失焦、摩爾紋、手震）——jsQR 單框 0/5，
+       zxing-wasm 單框 5/5，而且同一張圖 jsQR 55ms、zxing 4ms。螢幕場景是我們最難的
+       情境（fix85 的連拍平均仍然保留：zxing 也吃平均圖，兩者疊加最好）。
+       載入方式：本機 `/scanner/zxing.js` ＋ `/scanner/zxing_reader.wasm`，
+       進頁面就背景預熱（fireImmediately），不用等第一次掃描才編 wasm。
+       jsQR 留著當後備：zxing 還沒載好或載入失敗時，行為跟以前完全一樣。      */
+    const ZXING_WASM_URL = "/scanner/zxing_reader.wasm";
+    let zxingReady = false;
+    let zxingState = "loading";        // loading / ready / unavailable
+
+    function hasZxing() {
+      return zxingReady && typeof window !== "undefined" && window.ZXingWASM
+        && typeof window.ZXingWASM.readBarcodes === "function";
+    }
+
+    async function initZxing() {
+      try {
+        if (typeof window === "undefined" || !window.ZXingWASM) {
+          zxingState = "unavailable";
+          return zxingState;
+        }
+        window.__zxingWasmUrl = ZXING_WASM_URL;
+        const prepare = window.ZXingWASM.prepareZXingModule;
+        if (typeof prepare === "function") {
+          await prepare({
+            overrides: { locateFile: () => ZXING_WASM_URL },
+            fireImmediately: true,
+          });
+        }
+        zxingReady = true;
+        zxingState = "ready";
+      } catch (err) {
+        zxingReady = false;
+        zxingState = "unavailable";
+      }
+      return zxingState;
+    }
+
+    /* zxing 解一張 ImageData：回傳字串或 null。tryHarder 是它的強項（模糊/低對比有明顯差）。 */
+    /* ─────────── QR_PREVIEW_FEEDBACK_V1：解碼器座標 → 相機畫面座標 ─────────────
+       三顆解碼器都會回報「QR 在哪」：
+         zxing-wasm → position { topLeft, topRight, bottomRight, bottomLeft }（解碼圖像素）
+         jsQR       → location { topLeftCorner, topRightCorner, bottomRightCorner, bottomLeftCorner }
+         微信引擎   → rect { x, y, width, height }
+       這裡統一成 4 個點（原圖像素），再由呼叫端用「該區域的裁切比例」換算回相機畫面座標，
+       這樣預覽上畫的綠框才會跟畫面裡的 QR 對齊（放大時也一樣，因為重疊層共用同一個 transform）。 */
+    function zxingPositionToPts(hit) {
+      const pos = hit && hit.position;
+      if (!pos) return null;
+      const pick = (o) => (o && typeof o.x === "number" && typeof o.y === "number" ? { x: o.x, y: o.y } : null);
+      const tl = pick(pos.topLeft);
+      const tr = pick(pos.topRight);
+      const br = pick(pos.bottomRight);
+      const bl = pick(pos.bottomLeft);
+      if (tl && tr && br && bl) return [tl, tr, br, bl];
+      return null;
+    }
+    function jsqrLocationToPts(code) {
+      const loc = code && code.location;
+      if (!loc) return null;
+      const pick = (o) => (o && typeof o.x === "number" && typeof o.y === "number" ? { x: o.x, y: o.y } : null);
+      const tl = pick(loc.topLeftCorner);
+      const tr = pick(loc.topRightCorner);
+      const br = pick(loc.bottomRightCorner);
+      const bl = pick(loc.bottomLeftCorner);
+      if (tl && tr && br && bl) return [tl, tr, br, bl];
+      return null;
+    }
+    function rectToPts(rect) {
+      if (!rect || typeof rect.x !== "number") return null;
+      const x = rect.x;
+      const y = rect.y;
+      const w = typeof rect.width === "number" ? rect.width : 0;
+      const h = typeof rect.height === "number" ? rect.height : 0;
+      if (w <= 0 || h <= 0) return null;
+      return [{ x, y }, { x: x + w, y }, { x: x + w, y: y + h }, { x, y: y + h }];
+    }
+    /* 把「解碼圖像素」換算成「相機畫面像素」。m＝該區域的裁切資訊 {sx,sy,cw,ch,dw,dh}。 */
+    function mapLocToVideo(imgLoc, m) {
+      if (!imgLoc || !imgLoc.pts || !imgLoc.pts.length || !m) return null;
+      const dw = m.dw || imgLoc.w || 1;
+      const dh = m.dh || imgLoc.h || 1;
+      const kx = (m.cw || dw) / dw;
+      const ky = (m.ch || dh) / dh;
+      const sx = m.sx || 0;
+      const sy = m.sy || 0;
+      return imgLoc.pts.map((p) => ({ x: sx + p.x * kx, y: sy + p.y * ky }));
+    }
+
+    async function zxingReadImageData(imageData, opts) {
+      if (!hasZxing()) return null;
+      const thorough = !opts;          // 完整輪才試反相，跟 jsQR 那邊的邏輯一致
+      try {
+        const results = await window.ZXingWASM.readBarcodes(imageData, {
+          formats: ["QRCode"],
+          tryHarder: true,
+          tryRotate: true,
+          tryInvert: thorough,
+          maxNumberOfSymbols: 1,
+        });
+        const hit = results && results.length ? results[0] : null;
+        if (hit && hit.text) {
+          return { text: hit.text, pts: zxingPositionToPts(hit), w: imageData.width, h: imageData.height };
+        }
+      } catch (err) {
+        /* 單次失敗不影響其他尺度；下面還有 jsQR 這條路。 */
+      }
+      return null;
+    }
+
+    /* ─────────── QR_WECHAT_V1（fix87）：微信 QRCode 引擎（第三層解碼器）────────
+       它是 OpenCV 的 wechat_qrcode（微信自家演算法）編成 WASM，模型內嵌、完全自架。
+       公開 benchmark 的「拍螢幕（monitor）」類命中率 94%（ZXing/ZBar 是 0%），
+       我自己實測：QR 120px＋失焦這種連 zxing 都吃不下的，只有它解得到。
+       代價：6MB（只在「深度掃描」或背景預熱時下載）＋ 一次解碼約 90ms（手機約 300-800ms），
+       所以它**只當第三層**：zxing／jsQR 都失敗、或連續幾秒沒解到（深度掃描）時才上場。
+       圖片來源優先序：連續平均圖（螢幕場景最乾淨）→ 中央 1/4 裁切。               */
+    const WECHAT_URL = "/scanner/wechat/index.mjs";
+    const HARD_AFTER_MS = 2500;          // 連續這麼久沒解到 → 進「深度掃描」（調快：早一點加強）
+    const WECHAT_EVERY_MS = 500;         // 平常最多每 0.5 秒問它一次（手機上一次約 0.3-0.8 秒）
+    const WECHAT_HARD_EVERY_MS = 300;    // 深度掃描時更積極
+    let wechatEngine = null;
+    let wechatState = "idle";            // idle / loading / ready / unavailable
+    let lastWechatAt = 0;
+    let wechatPreloadTimer = null;
+
+    function wechatReady() {
+      return wechatState === "ready" && wechatEngine
+        && typeof wechatEngine.scan === "function";
+    }
+    /* 載入微信引擎（背景做、失敗不影響其他解碼器）。force＝深度掃描時立刻載。 */
+    async function initWechat(force) {
+      if (wechatState === "ready" || wechatState === "unavailable") return wechatState;
+      if (wechatState === "loading") return wechatState;
+      wechatState = "loading";
+      if (force) setScanHint("正在加強掃描引擎（下載約 6MB，只需一次）…", "");
+      try {
+        const mod = await import(WECHAT_URL);
+        if (mod && typeof mod.ready === "function") await mod.ready();
+        if (mod && typeof mod.scan === "function") {
+          wechatEngine = mod;
+          wechatState = "ready";
+        } else {
+          wechatState = "unavailable";
+        }
+      } catch (err) {
+        wechatEngine = null;
+        wechatState = "unavailable";
+      }
+      updateCamInfo();
+      return wechatState;
+    }
+
+    /* 用微信引擎解一張 ImageData（回傳字串或 null）。 */
+    async function wechatScanRaw(imageData) {
+      if (!wechatReady()) return null;
+      try {
+        return await wechatEngine.scan(imageData);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    async function wechatReadImageData(imageData) {
+      const res = await wechatScanRaw(imageData);
+      return res && res.text ? res.text : null;
+    }
+
+    /* QR_WECHAT_V1＋只做「偵測」（還沒解出內容）時：拿偵測框回原生解析度精準裁切再解。
+       這是「不用盲掃 20 塊」的關鍵 —— 微信告訴我們 QR 在哪，我們就用那一小塊的原始像素去解。 */
+    function cropVideoRect(t, rect) {
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      const sx0 = t.sx || 0;
+      const sy0 = t.sy || 0;
+      const scaleX = (t.cw || t.dw || 1) / Math.max(1, t.dw || t.cw || 1);
+      const scaleY = (t.ch || t.dh || 1) / Math.max(1, t.dh || t.ch || 1);
+      const pad = 0.22;
+      let w = Math.round(rect.width * scaleX * (1 + pad));
+      let h = Math.round(rect.height * scaleY * (1 + pad));
+      w = Math.max(64, Math.min(w, vw));
+      h = Math.max(64, Math.min(h, vh));
+      const cx = sx0 + (rect.x + rect.width / 2) * scaleX;
+      const cy = sy0 + (rect.y + rect.height / 2) * scaleY;
+      const sx = Math.max(0, Math.min(vw - w, Math.round(cx - w / 2)));
+      const sy = Math.max(0, Math.min(vh - h, Math.round(cy - h / 2)));
+      try {
+        canvas.width = w;
+        canvas.height = h;
+        context.drawImage(video, sx, sy, w, h, 0, 0, w, h);
+        return {
+          im: context.getImageData(0, 0, w, h),
+          label: "定位裁切",
+          sx,
+          sy,
+          cw: w,
+          ch: h,
+          dw: w,
+          dh: h,
+        };
+      } catch (err) {
+        return null;
+      }
+    }
+
+    /* 深度掃描：把最值得試的兩張圖交給微信引擎（平均圖 → 中央 1/4）。 */
+    async function decodeWechat() {
+      const at = nowMs();
+      const hard = hardModeOn();
+      if (at - lastWechatAt < (hard ? WECHAT_HARD_EVERY_MS : WECHAT_EVERY_MS)) return null;
+      if (!wechatReady()) {
+        if (hard) initWechat(true);       // 一直掃不到 → 現在就把強化引擎載進來
+        return null;
+      }
+      lastWechatAt = at;
+      const tries = [];
+      const avgRg = avgRegion();
+      if (avgCanvas && avgFrames >= AVG_MIN_FRAMES) {
+        try {
+          tries.push({
+            im: avgCtx.getImageData(0, 0, avgCanvas.width, avgCanvas.height),
+            label: `螢幕平均 ${Math.round(1 / AVG_ALPHA)} 框`,
+            sx: avgRg.sx,
+            sy: avgRg.sy,
+            cw: avgRg.cw,
+            ch: avgRg.ch,
+            dw: avgCanvas.width,
+            dh: avgCanvas.height,
+          });
+        } catch (err) { /* 取不到就跳過 */ }
+      }
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (vw && vh) {
+        const k = Math.max(4, Math.min(8, Math.round(targetZoom)));
+        const cw = Math.max(64, Math.round(vw / k));
+        const ch = Math.max(64, Math.round(vh / k));
+        const sx = Math.max(0, Math.round((vw - cw) / 2));
+        const sy = Math.max(0, Math.round((vh - ch) / 2));
+        canvas.width = cw;
+        canvas.height = ch;
+        try {
+          context.drawImage(video, sx, sy, cw, ch, 0, 0, cw, ch);
+          tries.push({ im: context.getImageData(0, 0, cw, ch), label: scaleLabel(k), sx, sy, cw, ch, dw: cw, dh: ch });
+        } catch (err) { /* 這一格跳過 */ }
+      }
+      for (const t of tries) {
+        const res = await wechatScanRaw(t.im);
+        if (res && res.text) {
+          return {
+            data: res.text,
+            scale: t.label,
+            via: "微信",
+            imgLoc: { pts: rectToPts(res.rect), w: t.im.width, h: t.im.height },
+            corners: mapLocToVideo({ pts: rectToPts(res.rect) }, t),
+          };
+        }
+        /* 只偵測到位置、還沒解出內容 → 用偵測框回原生解析度精準裁切，交給 zxing 解。 */
+        if (res && res.rect && res.rect.width > 8 && res.rect.height > 8 && hasZxing()) {
+          const crop = cropVideoRect(t, res.rect);
+          if (crop) {
+            const zHit = await zxingReadImageData(crop.im, undefined);
+            if (zHit && zHit.text) {
+              return {
+                data: zHit.text,
+                scale: t.label + "＋定位裁切",
+                via: "zxing（定位）",
+                imgLoc: { pts: zHit.pts, w: crop.im.width, h: crop.im.height },
+                corners: mapLocToVideo({ pts: zHit.pts }, crop),
+              };
+            }
+            const wxRes = await wechatScanRaw(crop.im);
+            if (wxRes && wxRes.text) {
+              return {
+                data: wxRes.text,
+                scale: t.label + "＋定位裁切",
+                via: "微信（定位）",
+                imgLoc: { pts: rectToPts(wxRes.rect), w: crop.im.width, h: crop.im.height },
+                corners: mapLocToVideo({ pts: rectToPts(wxRes.rect) }, crop),
+              };
+            }
+          }
+        }
+      }
+      return null;
+    }
+
+    function hardModeOn() {
+      return !lastSeenAt || (nowMs() - lastSeenAt) / 1000 > HARD_AFTER_MS / 1000;
+    }
+
+    function decoderLabel() {
+      const parts = [];
+      if (decoderName === "內建解碼器") parts.push("內建解碼器");
+      parts.push(zxingState === "ready" ? "zxing-wasm"
+        : zxingState === "loading" ? "zxing-wasm(載入中)" : "zxing 不可用");
+      if (typeof window !== "undefined" && window.jsQR) parts.push("jsQR");
+      if (wechatState === "ready") parts.push("微信");
+      else if (wechatState === "loading") parts.push("微信(載入中)");
+      return parts.join("＋");
+    }
+
+    /* 一份 ImageData 依序試：zxing-wasm → jsQR（回傳含 via 讓提示能說明用哪個解到的）。 */
+    async function readImageData(imageData, label, opts, allowJsQR) {
+      const zHit = await zxingReadImageData(imageData, opts);
+      if (zHit && zHit.text) {
+        return {
+          data: zHit.text,
+          scale: label,
+          via: "zxing",
+          imgLoc: { pts: zHit.pts, w: imageData.width, h: imageData.height },
+        };
+      }
+      if (window.jsQR && allowJsQR !== false) {
+        const code = window.jsQR(imageData.data, imageData.width, imageData.height, opts);
+        if (code && code.data) {
+          return {
+            data: code.data,
+            scale: label,
+            via: "jsQR",
+            imgLoc: { pts: jsqrLocationToPts(code), w: imageData.width, h: imageData.height },
+          };
+        }
+      }
+      return null;
+    }
+
+    /* 在目前 canvas 上跑一次解碼（zxing-wasm 優先，其次原生解碼器）。label 只是顯示用。 */
+    async function readCanvas(label, opts, allowJsQR) {
+      const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+      const byZxing = await readImageData(imageData, label, opts, allowJsQR);
+      if (byZxing) return byZxing;
       if (barcodeDetector) {
         try {
           const codes = await barcodeDetector.detect(canvas);
           if (codes && codes.length && codes[0].rawValue) {
-            return { data: codes[0].rawValue, scale: k };
+            return { data: codes[0].rawValue, scale: label, via: "內建" };
           }
         } catch (err) {
-          /* 單次失敗不影響其他尺度；下面還有 jsQR 這條路。 */
+          /* 單次失敗不影響其他尺度。 */
         }
-      }
-      if (window.jsQR) {
-        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
-        const code = window.jsQR(imageData.data, imageData.width, imageData.height, opts);
-        if (code && code.data) return { data: code.data, scale: k };
       }
       return null;
     }
@@ -715,12 +2330,16 @@
       const vh = video.videoHeight;
       if (!vw || !vh) return null;
 
-      const { passes, opts } = decodePasses();
-      for (const pass of passes) {
-        const cw = Math.max(64, Math.round(vw / pass.k));
-        const ch = Math.max(64, Math.round(vh / pass.k));
-        const sx = Math.max(0, Math.round((vw - cw) / 2));
-        const sy = Math.max(0, Math.round((vh - ch) / 2));
+      const { regions, opts, hard } = decodeRegions();
+      /* QR_TURBO_V1：快路徑＝有 zxing 又不在深度掃描 → 不跑 jsQR、不銳化（那兩個都慢）。
+         jsQR 只在①zxing 不可用 ②深度掃描且輪到全幅那一塊時才跑（保留後備又不拖速）。 */
+      const fastPath = hasZxing() && !hard;
+      const roundStart = nowMs();
+      for (let ri = 0; ri < regions.length; ri++) {
+        if (nowMs() - roundStart > ROUND_BUDGET_MS) break;   // 這輪做夠了，剩下的下一輪再掃
+        const region = regions[ri];
+        const cw = region.cw;
+        const ch = region.ch;
         const longSide = Math.max(cw, ch);
         const fit = longSide > DECODE_MAX_SIDE ? DECODE_MAX_SIDE / longSide : 1;
         const dw = Math.max(1, Math.round(cw * fit));
@@ -728,51 +2347,173 @@
 
         canvas.width = dw;
         canvas.height = dh;
-        context.drawImage(video, sx, sy, cw, ch, 0, 0, dw, dh);
+        context.drawImage(video, region.sx, region.sy, cw, ch, 0, 0, dw, dh);
 
-        const plain = await readCanvas(pass.k, opts);
-        if (plain) return plain;
+        /* 只有「zxing 不可用」或「深度掃描的最後一塊」才允許 jsQR（jsQR 一次 55ms，很貴）。 */
+        const allowJsQR = !hasZxing() || (hard && ri === regions.length - 1);
+        const plain = await readCanvas(region.label, opts, allowJsQR);
+        if (plain) {
+          return {
+            data: plain.data,
+            scale: plain.scale,
+            via: plain.via,
+            tile: tileIndexOf(region),
+            corners: mapLocToVideo(plain.imgLoc, region),
+          };
+        }
 
         /* 小張裁切再試一次「銳化後」——遠處的小 QR 常常就差這一點。 */
-        if (window.jsQR && dw * dh <= SHARPEN_MAX_PX) {
+        if ((hasZxing() || window.jsQR) && dw * dh <= SHARPEN_MAX_PX && (!fastPath)) {
           const imageData = context.getImageData(0, 0, dw, dh);
           sharpenInPlace(imageData.data, dw, dh);
-          const code = window.jsQR(imageData.data, dw, dh, opts);
-          if (code && code.data) return { data: code.data, scale: pass.k, sharpened: true };
+          const sharpened = await readImageData(imageData, region.label, opts);
+          if (sharpened) {
+            return {
+              data: sharpened.data,
+              scale: region.label,
+              sharpened: true,
+              via: sharpened.via,
+              tile: tileIndexOf(region),
+              corners: mapLocToVideo(sharpened.imgLoc, region),
+            };
+          }
         }
       }
       return null;
+    }
+
+    /* 這一塊是不是「分區」（是的話回傳索引，否則 -1）—— 解到後要記住它。 */
+    function tileIndexOf(region) {
+      return typeof region.tile === "number" ? region.tile : -1;
     }
 
     function scaleLabel(k) {
       return k <= 1 ? "全幅" : k + "x";
     }
 
+    /* QR_CAMERA_LIVENESS_V1（fix93c）：相機「看起來開著」但畫面沒在動的自救 ——
+       iOS 偶爾會讓 <video> 停住（metadata 還在、整片黑）。每秒看 currentTime 有沒有前進：
+       卡住 3s 補一次 play()；fix93e：卡 8s 自動降 1080p 重開相機，再卡才提示重新整理。 */
+    let vidWatchAt = 0;
+    let vidLastT = 0;
+    let vidLastAt = 0;
+    let vidKickAt = 0;
+    let vidStallWarned = false;
+    /* 解析度切換／自動降級共用的重開相機（stop → start 走原本的完整初始化）。
+       doneHint：重開完成後才寫的說明（太早寫會被 stopCamera／startCamera 自己的提示洗掉）。 */
+    async function restartCameraForCaptureMode(doneHint) {
+      if (!scanning || cameraStarting) return;
+      const wantDevice = activeCamId || "";
+      try { stopCamera(); } catch (err) { /* 已停就往下走 */ }
+      try { await startCamera(wantDevice); } catch (err) { /* 失敗由 startCamera 自己提示 */ }
+      if (doneHint) setScanHint(doneHint, "warn");
+    }
+    /* 卡到不動 8 秒：先降 1080p 重開（記住）；降過還卡 → 明確提示重新整理（只提示一次）。 */
+    let hdFallbackTried = false;
+    function hdAutoFallback() {
+      if (hdFallbackTried) {
+        if (!vidStallWarned) {
+          vidStallWarned = true;
+          setScanHint("畫面還是卡住：請往下拉重新整理頁面（或按「停止掃描」再重新開始）", "warn");
+        }
+        return;
+      }
+      hdFallbackTried = true;
+      persistCapMode(false);
+      const r = restartCameraForCaptureMode("這台裝置跑 4K 預覽不穩，已自動降到 1080p 重開相機（連點資訊列四下可切回）");
+      if (r && r.catch) r.catch(() => {});
+    }
     async function tick() {
       if (!scanning) return;
       requestAnimationFrame(tick);
       const at = nowMs();
+      settleCamInfoTaps();   /* fix93e：連點資訊列 3 下銳化／4 下解析度（靜止 0.75s 結算） */
+      if (at - vidWatchAt > 1000) {
+        vidWatchAt = at;
+        updateCamInfo();   /* fix93e：讓資訊列的 t 秒數每秒跳一次（活性一眼可見） */
+        if (typeof document !== "undefined" && document.hidden === true) {
+          /* 背景分頁：影片本來就會被暫停，不算卡；回前景後重新暖機一秒 */
+          vidLastAt = 0;
+        } else if (stream && video) {
+          const nowT = (typeof video.currentTime === "number") ? video.currentTime : -1;
+          if (nowT > 0 && nowT !== vidLastT) {
+            vidLastT = nowT; vidLastAt = at; vidStallWarned = false;
+          } else if (!vidLastAt) {
+            vidLastAt = at;   /* 剛開機的第一秒不算卡（相機暖機） */
+          } else if (at - vidLastAt > 8000 && at - vidKickAt > 4000) {
+            vidKickAt = at;
+            hdAutoFallback();   /* 卡 8 秒：自動降 1080p 重開相機（fix93e） */
+          } else if (at - vidLastAt > 3000 && at - vidKickAt > 3000) {
+            vidKickAt = at;
+            if (video.paused || video.readyState < 3) {
+              try { const p = video.play(); if (p && p.catch) p.catch(() => {}); } catch (err) { /* 播放被拒就維持現狀 */ }
+            }
+          }
+        }
+      }
       if (decoding || at - lastDecodeAt < DECODE_INTERVAL_MS) return;
       if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
       decoding = true;
       lastDecodeAt = at;
       try {
-        const found = await decodeOnce();
+        /* QR_SCREEN_AVG_V1（fix85）：每個 tick 疊一格平均（拍螢幕去摩爾紋用）。
+           先試「連續平均圖」，再試一般尺度 —— 實測螢幕場景單張畫面永遠解不到，
+           平均圖是關鍵路徑；先試它也能讓命中後少做一大輪白工（手機比較省電）。 */
+        if (screenAvgOn) avgTick();
+        let found = await decodeAvg();
+        if (!found) found = await decodeOnce();
+        /* QR_WECHAT_V1：前兩層都失敗 → 交給微信引擎（平常 0.9 秒一次、深度掃描 0.4 秒一次）。 */
+        if (!found) found = await decodeWechat();
+        /* QR_AI_SR_V1（fix93）：撿背景 AI 救援的結果；沒有就看看該不該放出去跑（不會阻塞這裡）。 */
+        if (!found && srFound) { found = srFound; srFound = null; }
+        if (!found) { srKick(); srWarmup(); }
         if (found) {
           lastSeenAt = nowMs();
+          lastQrAt = lastSeenAt;
           seenCount += 1;
-          lastHitScale = found.scale;
+          lastHitLabel = found.scale;
+          lastHitVia = found.via || "";
+          reportScanOnPreview(found);      // QR_PREVIEW_FEEDBACK_V1：預覽上直接顯示「掃到了」
+          /* QR_BLUR_GUARD_V1：解到了 → 對焦是好的，重置（下一段仍可自動對焦）。 */
+          refocusTries = 0;
+          refocusHelped = -1;
+          lastScore = sharpnessNow();
+          /* QR_TILE_SCAN_V1：記住解到的那一塊，下一輪先試它（人沒動就幾乎是連續命中）。 */
+          if (found.tile >= 0) {
+            stickyTile = found.tile;
+            tileCursor = 0;      // 之後萬一又不見了，從畫面中央重新掃一圈
+          }
           setScanHint(
-            `✅ 已解出 QR（第 ${seenCount} 次，${found.data.length} 字元，用 ${scaleLabel(found.scale)}` +
-              `${found.sharpened ? "＋銳化" : ""} 解到）`,
+            `✅ 已解出 QR（第 ${seenCount} 次，${found.data.length} 字元，用 ${found.scale}` +
+              `${found.sharpened ? "＋銳化" : ""} 解到${found.via ? "・" + found.via : ""}）`,
             "ok"
           );
           submitQr(found.data);
         } else if (!lastSeenAt || (nowMs() - lastSeenAt) / 1000 > NO_QR_HINT_SECS) {
+          /* QR_BLUR_GUARD_V1（fix88）：畫面裡有內容卻一直掃不到 → 重新對焦並比較改善。 */
+          if (nowMs() - lastQrAt > BLUR_AFTER_MS && refocusTries < BLUR_STRIKE_LIMIT && !refocusBusy) {
+            const score = sharpnessNow();
+            lastScore = score;
+            if (score > BLUR_CONTENT_FLOOR) {
+              refocusTries += 1;
+              scoreBeforeRefocus = score;
+              lastQrAt = nowMs();
+              refocus(`畫面不清楚（分數 ${score.toFixed(0)}）`);
+            }
+          } else if (!refocusBusy && nowMs() - lastQrAt > BLUR_AFTER_MS) {
+            lastScore = sharpnessNow();
+          }
+          const vwNow = video.videoWidth || 0;
+          const vhNow = video.videoHeight || 0;
           setScanHint(
-            `還沒看到 QR：請把 QR 移到畫面正中央（畫面放大 ${targetZoom.toFixed(1)}x 只影響你看到的畫面；` +
-              "若拉很大反而讀不到，往左退一點再試）" +
-              (hasTelephoto() ? "・坐很遠可改選上方鏡頭的「望遠」" : ""),
+            `還沒看到 QR：把 QR 放在畫面正中央最快（放旁邊也會自動分區掃描）。` +
+              `拍螢幕時請開著「螢幕強化」（連續平均 3 張，把摩爾紋洗掉）。` +
+              `拉太大反而讀不到、QR 太小也讀不到 → 往左退一點或靠近螢幕。` +
+              (targetZoom >= 5 ? `〔目前 ${targetZoom.toFixed(1)}x：數位放大到這個倍率畫面本來就會軟，` +
+                `讀不到請退回 4x 或靠近；解碼仍會持續解析相機原圖〕` : "") +
+              (lastFrameMean > 205 ? "〔畫面偏亮：螢幕太亮會整片發白 → 稍微退後或調暗螢幕亮度〕" : "") +
+              (vwNow ? `〔相機 ${vwNow}×${vhNow}・${screenAvgLabel()}・${decoderLabel()}〕` : "") +
+              (camList.length > 1 ? "鏡頭會依倍率自動挑最好的那一顆。" : ""),
             "warn"
           );
         }
@@ -782,14 +2523,22 @@
       }
     }
 
-    /* ─────────── QR_CAMERA_PICKER_V1（fix82）：鏡頭選擇 ─────────────────────
-       iPhone Safari 不支援 ImageCapture（拍照模式）與 BarcodeDetector，
-       但**支援用 deviceId 選鏡頭** —— Pro 機型的「後置望遠相機」是真光學變焦，
-       可讀距離是主鏡頭的 2～3 倍。這是 Safari 上唯一能真正「坐很遠」的手段。
-       （fix78 用過的 zoom 是數位放大、會糊，已在 fix81 移除。）                    */
+    /* ─────────── QR_AUTO_LENS_V1（fix87）：鏡頭自動選擇（使用者不用選）─────────
+       需求：「拉大的方式不要讓使用者自己選鏡頭，依照放大的倍率來自動用最好的鏡頭」。
+       規則（給分最高的那顆）：
+         · 前鏡頭一律排除（點名要拍螢幕，不是自拍）。
+         · 「望遠／tele」：倍率 ≥ AUTO_TELE_ZOOM（3x）時最高分；倍率小的時候扣分
+           （沒在放大還用望遠，視野太小反而容易跟丟）。
+         · 「後置／主鏡頭」：倍率 < 3x 時優先。
+         · 「超廣角／ultra wide／0.5x」：只在「沒有其他後鏡頭」時才用（拍螢幕最不適合）。
+         · 只有一顆合併鏡頭（iPhone 11 以後的「後置三鏡頭相機」）→ 沒得挑，
+           交給 iOS 自己按畫面內容選鏡頭（我們不硬切，避免 OverconstrainedError）。
+       倍率跨過門檻會自動換鏡頭（沿用同一條串流重開流程，跟重新對焦共用防抖）。       */
     const CAM_KEY = "tronclassScannerCam";
+    const AUTO_TELE_ZOOM = 3;          // 倍率 ≥ 3 → 優先望遠
     let activeCamId = "";
     let camList = [];
+    let lastAutoLensKey = "";          // 上次自動選的鏡頭（避免重複切換）
 
     function readSavedCam() {
       try {
@@ -801,24 +2550,68 @@
         if (window.localStorage) window.localStorage.setItem(CAM_KEY, String(id || ""));
       } catch (err) { /* 存不了不影響功能 */ }
     }
-    /* 相機名稱加上用途提示（iPhone 的標籤是中文：「後置望遠相機」等）。 */
-    function camLabel(label, index) {
-      const text = String(label || "");
-      if (/望遠|tele/i.test(text)) return text + "（最遠・推薦）";
-      if (/超廣角|ultra\s*wide/i.test(text)) return text + "（最廣・不適合遠距離）";
-      if (/前置|front/i.test(text)) return text + "（前鏡頭）";
-      return text || "相機 " + (index + 1);
+    function isFrontCam(d) {
+      return /前置|front|face/i.test(String((d && d.label) || ""));
+    }
+    function isTeleCam(d) {
+      return /望遠|tele|telephoto|\b(2x|3x|5x)\b/i.test(String((d && d.label) || ""));
+    }
+    function isUltraCam(d) {
+      return /超廣角|ultra\s*wide|0\.5x/i.test(String((d && d.label) || ""));
+    }
+    /* 這一顆鏡頭在「這個倍率」下值幾分（越高越該用）。 */
+    function camScore(d, zoom) {
+      if (!d) return -Infinity;
+      if (isFrontCam(d)) return -Infinity;
+      const tele = isTeleCam(d);
+      const ultra = isUltraCam(d);
+      let score = 40;
+      if (tele) score += zoom >= AUTO_TELE_ZOOM ? 100 : -25;
+      else if (ultra) score -= 30;
+      else score += zoom < AUTO_TELE_ZOOM ? 60 : 20;   // 一般後鏡頭
+      if (/後置|back|rear/i.test(String(d.label || ""))) score += 5;
+      return score;
+    }
+    /* 依倍率挑出最好的鏡頭；回傳 deviceId（挑不出來＝空字串，用預設後鏡頭）。 */
+    function autoLensFor(zoom) {
+      if (!camList.length) return "";
+      let best = null;
+      let bestScore = -Infinity;
+      for (const d of camList) {
+        const sc = camScore(d, zoom);
+        if (sc > bestScore) { bestScore = sc; best = d; }
+      }
+      if (!best || bestScore === -Infinity) return "";
+      return best.deviceId || "";
     }
     function camNameOf(deviceId) {
       const hit = camList.find((d) => d.deviceId === deviceId);
-      if (hit) return camLabel(hit.label, camList.indexOf(hit)).replace(/（.*）$/, "");
-      return deviceId ? "已選鏡頭" : "預設後鏡頭";
+      if (hit) return String(hit.label || "後鏡頭");
+      return deviceId ? "已自動選定鏡頭" : "自動（預設後鏡頭）";
     }
-    function hasTelephoto() {
-      return camList.some((d) => /望遠|tele/i.test(String(d.label || "")));
+    function lensSummary() {
+      if (!camList.length) return "自動";
+      const id = activeCamId || autoLensFor(targetZoom);
+      const name = camNameOf(id);
+      const how = camList.length <= 1 ? "自動（此機型只有一顆後鏡頭）"
+        : (isTeleCam(camList.find((d) => d.deviceId === id) || {}) ? `自動・望遠（${targetZoom.toFixed(1)}x）` : `自動・主鏡頭（${targetZoom.toFixed(1)}x）`);
+      return `${name}・${how}`;
+    }
+    /* 倍率變了 → 如果「這個倍率最適合的鏡頭」跟現在用的不同，就自動換過去。 */
+    async function lensFollowZoom() {
+      if (!scanning) return;
+      if (camList.length <= 1) return;      // 只有一顆（iPhone 常見）→ 沒得換
+      const want = autoLensFor(targetZoom);
+      if (!want) return;
+      if (activeCamId && want === activeCamId) return;
+      if (lastAutoLensKey === want) return;
+      lastAutoLensKey = want;
+      storeCam(want);
+      setScanHint(`自動切換鏡頭 → ${camNameOf(want)}（${targetZoom.toFixed(1)}x）`, "");
+      await startCamera(want);
     }
 
-    /* 列出可用鏡頭。iOS 要等權限給了才拿得到名稱，所以在相機開起來之後才呼叫。 */
+    /* 列出可用鏡頭（iOS 要等權限給了才拿得到名稱，所以相機開起來之後才呼叫）。 */
     async function refreshCamList(activeId) {
       const md = navigator.mediaDevices;
       if (!md || !md.enumerateDevices) return;
@@ -827,45 +2620,307 @@
         devices = await md.enumerateDevices();
       } catch (err) { return; }
       camList = devices.filter((d) => d && d.kind === "videoinput");
-      const sel = document.getElementById("camSelect");
-      const pick = document.getElementById("camPick");
-      if (!sel) return;
-      sel.innerHTML = "";
-      const auto = document.createElement("option");
-      auto.value = "";
-      auto.textContent = "自動（預設後鏡頭）";
-      sel.appendChild(auto);
-      camList.forEach((d, i) => {
-        const opt = document.createElement("option");
-        opt.value = d.deviceId || "";
-        opt.textContent = camLabel(d.label, i);
-        sel.appendChild(opt);
-      });
-      const want = activeId || readSavedCam();
-      if (want && camList.some((d) => d.deviceId === want)) sel.value = want;
-      if (pick && camList.length > 1) pick.style.display = "";
+      if (!activeCamId) {
+        /* 第一次拿到清單：依目前倍率自動挑一顆（使用者的選擇優先序＝存檔 > 自動）。 */
+        const saved = readSavedCam();
+        if (saved && camList.some((d) => d.deviceId === saved)) activeCamId = saved;
+        else {
+          const auto = autoLensFor(targetZoom);
+          if (auto) activeCamId = auto;
+        }
+      }
       updateCamInfo();
     }
 
+    /* QR_CAPTURE_MODE_V1（fix93e）：iOS 26 起 Safari 真的會給 4K（2160×3840 直向）——
+       但部分裝置的影片管線在 4K 下不穩（預覽整片黑／滑走滑回只亮一帧）。
+       預設照舊要 4K（fix84/85 實測「坐遠」靠 4K 像素）；萬一卡住，活性看門狗會自動降
+       1080p 並記住；連點資訊列四下可手動切換。 */
+    const CAP_KEY = "tronclassScannerHiRes4K";   // "0"＝1080p（穩定優先）；未設／"1"＝4K
+    function capHiResOn() {
+      const st = sharpenStore();                 /* 借用同一個安全儲存 */
+      if (!st) return true;
+      try { return st.getItem(CAP_KEY) !== "0"; } catch (err) { return true; }
+    }
+    function persistCapMode(hiRes) {
+      const st = sharpenStore();
+      if (!st) return;
+      try { st.setItem(CAP_KEY, hiRes ? "1" : "0"); } catch (err) { /* 無痕模式 */ }
+    }
     function camSettings() {
-      const base = { width: { ideal: 3840 }, height: { ideal: 2160 } };
-      return base;
+      if (!capHiResOn()) return { width: { ideal: 1920 }, height: { ideal: 1080 } };
+      return { width: { ideal: 3840 }, height: { ideal: 2160 } };
+    }
+
+    /* ─────────── QR_AUTOFOCUS_V1（fix83）：放大後自動重新對焦 ─────────────
+       使用者的問題：坐很遠、放大之後畫面變模糊（相機對到近處、QR 在遠處失焦）。
+       實作兩條路（依裝置能力自動選）：
+         Android Chrome：支援 focusMode 約束 → 先 single-shot 再 continuous，等於重新對焦。
+         iPhone Safari：**不支援任何對焦約束** → 只能用「重啟相機串流」逼相機重跑對焦循環。
+       觸發時機：①拉桿／± 按鈕停止後 400ms ②手動按「重新對焦」③一直沒解到碼時自動試一次。 */
+    const REFOCUS_DEBOUNCE_MS = 400;
+    const REFOCUS_MIN_GAP_MS = 2500;
+    const AUTO_REFOCUS_AFTER_MS = 6000;
+    /* QR_BLUR_GUARD_V1（fix88）：處理「鏡頭模糊」。
+       量測（2160×3840 合成、取中央 96×96 算平均 |Laplacian| /255）：
+         空白深色畫面 0.0（沒有內容）｜QR 200px 極糊 20｜QR 250px 很糊 34
+         ｜QR 300px 糊 43｜QR 400px 清晰 54-65
+       也就是這個分數其實在量「畫面裡有沒有東西」——所以**不能**用絕對門檻當模糊判斷
+       （對著白牆也會很低分，卻不是失焦）。策略改成：
+         ① 畫面裡明顯有內容（分數 > BLUR_CONTENT_FLOOR）卻連續 BLUR_AFTER_MS 掃不到 → 重新對焦
+         ② 對焦前後各量一次分數；沒變清楚 → 就不在同一個倍率再試（最多 BLUR_STRIKE_LIMIT 次）
+         ③ 試滿還是不清楚 → 直接告訴使用者該做什麼（靠近／擦鏡頭／避反光）
+       另外：相機一開好就先「開機對焦」一次（不必等使用者拉拉桿）。 */
+    const BLUR_CONTENT_FLOOR = 6;
+    const BLUR_AFTER_MS = 2500;
+    const BLUR_STRIKE_LIMIT = 3;
+    let lastScore = 0;
+    let scoreBeforeRefocus = 0;
+    let refocusTries = 0;
+    let refocusHelped = -1;              // -1 未知、1 有變清楚、0 沒幫助
+    let blurCanvas = null;
+    let blurCtx = null;
+
+    /* 目前的「清晰度分數」：中央 96×96 的平均 |Laplacian|（越大＝細節越多＝越清楚）。 */
+    function sharpnessNow() {
+      const vw = video ? video.videoWidth : 0;
+      const vh = video ? video.videoHeight : 0;
+      if (!vw || !vh) return 0;
+      if (!blurCanvas) {
+        blurCanvas = document.createElement("canvas");
+        blurCanvas.width = 96;
+        blurCanvas.height = 96;
+        blurCtx = blurCanvas.getContext("2d", { willReadFrequently: true });
+      }
+      if (!blurCtx) return 0;
+      const src = 192;
+      const x = Math.max(0, Math.round((vw - src) / 2));
+      const y = Math.max(0, Math.round((vh - src) / 2));
+      try {
+        blurCtx.drawImage(video, x, y, src, src, 0, 0, 96, 96);
+        const img = blurCtx.getImageData(0, 0, 96, 96);
+        const N = 96;
+        let sum = 0;
+        let cnt = 0;
+        for (let yy = 1; yy < N - 1; yy++) {
+          for (let xx = 1; xx < N - 1; xx++) {
+            const i = (yy * N + xx) * 4;
+            const c = img.data[i];
+            const lap = 4 * c - img.data[i - 4] - img.data[i + 4] - img.data[i - N * 4] - img.data[i + N * 4];
+            sum += lap < 0 ? -lap : lap;
+            cnt += 1;
+          }
+        }
+        /* 順便量平均亮度（QR_BLUR_GUARD_V1 fix90）：螢幕過曝時畫面會整片發白、也很難解。 */
+        let luma = 0;
+        for (let i = 0; i < img.data.length; i += 4) luma += img.data[i];
+        lastFrameMean = luma / (img.data.length / 4);
+        return cnt ? sum / cnt : 0;
+      } catch (err) {
+        return 0;
+      }
+    }
+
+    /* ─────────── QR_PINCH_ZOOM_V1（fix90）：預覽清晰度 ＋ 最佳倍率建議 ───────────
+       使用者的問題：「較高的倍率畫面還是很模糊」。
+       真相（先講清楚）：拉桿是**數位放大** —— 相機原本 4K，放大 8 倍等於只取中間 1/8 的像素
+       鋪滿整個畫面，任何手機都一樣會軟。真正影響「讀不讀得到」的是**解碼用的是相機原始像素**，
+       不是螢幕上看到的畫面 —— 所以畫面糊 ≠ 讀不到。我們能做的是：
+         ① 預覽提味：對比／飽和微調（抵掉數位放大的灰糊感）＋高倍率用較銳利的重繪方式。
+         ② 量給你數字：資訊列顯示「清晰度 NN」與「原生／數位放大 ×N」。
+         ③ 自動建議：若高倍率的清晰度明顯比低倍率差 → 直接建議退回哪個倍率（只提示一次）。 */
+    let lastFrameMean = 0;
+    let bestLowScore = 0;                // 低倍率（≤3.5x）量到的最好清晰度
+    let bestLowZoom = 0;
+    let advisedZoomKey = "";             // 已經提示過的（倍率組合）避免洗版
+
+    /* 畫質比例：現在畫面上 1 個裝置像素，對應相機幾個原生像素。
+       ≥1 ＝還是縮小顯示（清楚）；<1 ＝已經在放大（畫面會軟，正常現象）。 */
+    function nativePxPerDevicePx() {
+      const vw = video ? video.videoWidth : 0;
+      /* 取不到版面寬度時用 360（一般手機的預覽寬度），避免整段算不出來。 */
+      const cssW = video && video.clientWidth ? video.clientWidth : 360;
+      const dpr = (typeof window !== "undefined" && window.devicePixelRatio) ? window.devicePixelRatio : 2;
+      if (!vw || !dpr) return 0;
+      return vw / targetZoom / (cssW * dpr);
+    }
+
+    function zoomQualityLabel() {
+      if (targetZoom <= 1.05) return "";
+      const ratio = nativePxPerDevicePx();
+      if (!ratio) return "";
+      return ratio >= 1 ? "・畫質 原生" : `・畫質 數位放大 ×${(1 / ratio).toFixed(1)}`;
+    }
+
+    /* 預覽提味：越高倍率加越多對比（只是顯示，不影響解碼用的原始像素）。
+       QR_PREVIEW_SHARPEN_V1（fix92）：銳化層開著時，提味改套在銳化層上（疊加後才看得到真正效果）。 */
+    function applyPreviewTuning() {
+      const el = (glOn && glPreviewEl && glPreviewEl.style) ? glPreviewEl : video;
+      if (!el || !el.style) return;
+      const other = (el === video) ? glPreviewEl : video;
+      if (other && other.style) {
+        other.style.filter = "";
+        if (other.classList) other.classList.remove("crisp");
+      }
+      const z = targetZoom;
+      if (z <= 1.05) {
+        el.style.filter = "";
+        el.classList.remove("crisp");
+        return;
+      }
+      const contrast = Math.min(1.35, 1 + (z - 1) * 0.045);
+      const sat = Math.min(1.15, 1 + (z - 1) * 0.02);
+      el.style.filter = `contrast(${contrast.toFixed(2)}) saturate(${sat.toFixed(2)})`;
+      if (z >= 3) el.classList.add("crisp");
+      else el.classList.remove("crisp");
+    }
+
+    /* 放開手指／對焦完成後評估：這個倍率值不值得留著。 */
+    function noteZoomQualityForAdvice() {
+      if (!scanning) return;
+      const score = sharpnessNow();
+      if (!score) return;
+      if (targetZoom <= 3.5) {
+        if (score > bestLowScore) { bestLowScore = score; bestLowZoom = targetZoom; }
+        return;
+      }
+      /* 高倍率：明顯比低倍率糊 → 建議退回（同一組只講一次）。 */
+      if (bestLowScore > 0 && score < bestLowScore * 0.75) {
+        const key = `${targetZoom}>${bestLowZoom}`;
+        if (advisedZoomKey !== key) {
+          advisedZoomKey = key;
+          setScanHint(
+            `這個倍率比 ${bestLowZoom.toFixed(1)}x 更糊（清晰度 ${score.toFixed(0)} vs ${bestLowScore.toFixed(0)}）` +
+              `→ 建議退回 ${bestLowZoom.toFixed(1)}x 或再靠近一點（畫面糊不等於讀不到，仍會持續解析原圖）`,
+            "warn"
+          );
+        }
+      }
+    }
+    let refocusTimer = null;
+    let lastRefocusAt = 0;
+    let refocusBusy = false;
+    let autoRefocusedZoom = -1;
+    let initialFocusKicked = false;   // QR_BLUR_GUARD_V1：開機對焦只做一次
+
+    function supportsFocusControl() {
+      try {
+        if (!videoTrack || !videoTrack.getCapabilities) return false;
+        const caps = videoTrack.getCapabilities();
+        return !!(caps && (caps.focusMode || caps.focusDistance));
+      } catch (err) {
+        return false;
+      }
+    }
+
+    function focusModeLabel() {
+      return supportsFocusControl() ? "單次對焦" : "重啟串流對焦";
+    }
+
+    /* 重啟相機串流：iOS 上逼相機重新對焦的唯一手段（畫面會閃一下，約 0.3-0.6 秒）。 */
+    async function restartStreamForFocus(reason) {
+      const savedId = activeCamId;
+      if (stream) {
+        try { stream.getTracks().forEach((track) => track.stop()); } catch (err) { /* 已停止 */ }
+      }
+      stream = null;
+      videoTrack = null;
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      stream = await openCamera(savedId);
+      videoTrack = stream.getVideoTracks()[0] || null;
+      video.srcObject = stream;
+      await video.play();
+      try {
+        await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+      } catch (err) { /* iOS 不支援，忽略 */ }
+      const applied = (videoTrack && videoTrack.getSettings) ? videoTrack.getSettings() : {};
+      activeCamId = applied.deviceId || savedId || "";
+      setScanHint(`已重新對焦（${reason}），繼續掃描`, "ok");
+    }
+
+    /* 重新對焦：有速率限制，避免拉桿連按時不斷重啟。 */
+    async function refocus(reason) {
+      if (!scanning || refocusBusy || cameraStarting) return;
+      const at = nowMs();
+      if (at - lastRefocusAt < REFOCUS_MIN_GAP_MS) return;
+      lastRefocusAt = at;
+      refocusBusy = true;
+      try {
+        if (supportsFocusControl()) {
+          setScanHint(`重新對焦中…（${reason}）`, "");
+          try {
+            await videoTrack.applyConstraints({ advanced: [{ focusMode: "single-shot" }] });
+          } catch (err) { /* 有些機型不給單次對焦 */ }
+          await new Promise((resolve) => setTimeout(resolve, 220));
+          await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+          setScanHint(`已重新對焦（${reason}），繼續掃描`, "ok");
+        } else {
+          setScanHint(`重新對焦中…（${reason}）`, "");
+          await restartStreamForFocus(reason);
+        }
+        /* QR_BLUR_GUARD_V1：量一次「有沒有變清楚」，沒改善就不再同倍率硬試。 */
+        await new Promise((resolve) => setTimeout(resolve, 260));
+        lastScore = sharpnessNow();
+        if (scoreBeforeRefocus > 0) {
+          refocusHelped = lastScore > scoreBeforeRefocus * 1.05 ? 1 : 0;
+        }
+        noteZoomQualityForAdvice();      // QR_PINCH_ZOOM_V1：順便評估這個倍率值不值得
+        if (refocusHelped === 0 && refocusTries >= 2) {
+          setScanHint("畫面一直不清楚：靠近一點、避開反光，或擦一下鏡頭（QR 放進框內最快）", "warn");
+        }
+        updateCamInfo();
+      } catch (err) {
+        setScanHint("重新對焦失敗，仍會持續掃描（可改用「手動貼上」）", "warn");
+      } finally {
+        refocusBusy = false;
+      }
+    }
+
+    /* 拉桿停止後才重新對焦（拖動過程中不重啟，否則會不斷閃畫面）。 */
+    function scheduleRefocus(reason) {
+      if (refocusTimer) clearTimeout(refocusTimer);
+      refocusTimer = setTimeout(() => {
+        refocusTimer = null;
+        refocus(reason);
+      }, REFOCUS_DEBOUNCE_MS);
     }
 
     function applyZoom() {
+      const xf = targetZoom > 1.001 ? `translateZ(0) scale(${targetZoom.toFixed(3)})` : "translateZ(0)";
       if (video && video.style) {
-        video.style.transform = targetZoom > 1.001 ? `scale(${targetZoom.toFixed(3)})` : "";
+        /* translateZ(0)：讓瀏覽器用 GPU 圖層以「縮放後的尺寸」重繪，避免 Safari 直接拉伸點陣圖而變糊。 */
+        video.style.transform = xf;
       }
+      /* QR_PREVIEW_FEEDBACK_V1：綠框重疊層用同一個 transform，才會跟畫面一起放大、對齊。 */
+      if (hitBoxEl && hitBoxEl.style) hitBoxEl.style.transform = xf;
       if (zoomSlider) zoomSlider.value = String(targetZoom);
       if (zoomValue) zoomValue.textContent = targetZoom.toFixed(1) + "x";
+      if (typeof applyPresetUi === "function") applyPresetUi();
       if (zoomModeEl) {
         zoomModeEl.textContent = `畫面放大 ${targetZoom.toFixed(1)}x（解碼會自動試多個倍率）`;
       }
       storeZoom(targetZoom);
+      applyPreviewTuning();            // QR_PINCH_ZOOM_V1：高倍率時預覽提味
       updateCamInfo();
+      /* QR_AUTOFOCUS_V1：倍率變了就重新對焦（拖動中不觸發，停止後才做）。 */
+      if (scanning && targetZoom !== lastZoomForFocus) {
+        lastZoomForFocus = targetZoom;
+        autoRefocusedZoom = -1;          // 換倍率 → 允許再自動對焦一次
+        tileCursor = 0;                  // QR_TILE_SCAN_V1：換了視野 → 重新從「看得到的範圍」掃
+        avgFrames = 0;                   // QR_SCREEN_AVG_V1：視野換了 → 連拍平均重新起算（避免拖影）
+        avgRefPatch = null;
+        stickyTile = -1;                 // 舊的分區位置在新視野裡已經沒意義
+        lastDecodeAt = 0;                // 讓下一個 tick 立刻開始掃（拉大後馬上看到結果）
+        refocusTries = 0;                // 換倍率＝重新對焦一次新的視野（模糊守衛重新起算）
+        refocusHelped = -1;
+        scheduleRefocus(`放大 ${targetZoom.toFixed(1)}x`);
+        /* QR_AUTO_LENS_V1：這個倍率最適合的鏡頭如果不是現在用的，就自動換過去。 */
+        lensFollowZoom();
+      }
     }
+    let lastZoomForFocus = ZOOM_DEFAULT;
 
-    /* QR_MULTISCALE_V1：顯示相機解析度／解碼尺度／上次命中的尺度／用哪個解碼器。
+    /* QR_MULTISCALE_V1／QR_TILE_SCAN_V1：顯示相機解析度／解碼尺度／上次命中的尺度或分區／解碼器。
        使用者才知道自己離得夠不夠近、以及系統是用哪個尺度解到的。 */
     function updateCamInfo() {
       if (!camInfoEl) return;
@@ -875,9 +2930,18 @@
         camInfoEl.textContent = "";
         return;
       }
-      const hit = lastHitScale ? `・上次命中 ${scaleLabel(lastHitScale)}` : "";
-      const cam = `・鏡頭 ${camNameOf(activeCamId)}`;
-      camInfoEl.textContent = `相機 ${vw}×${vh}${cam}・解碼尺度 全幅/2x/4x/8x${hit}・${decoderName}`;
+      const hit = lastHitLabel ? `・上次命中 ${lastHitLabel}${lastHitVia ? "（" + lastHitVia + "）" : ""}` : "";
+      const hard = hardModeOn() ? "・深度掃描" : "";
+      const sharp = lastScore > 0 ? `・清晰度 ${lastScore.toFixed(0)}${lastFrameMean > 205 ? "・畫面偏亮" : ""}` : "";
+      const quality = zoomQualityLabel();
+      const cam = `・鏡頭 ${lensSummary()}・對焦 ${focusModeLabel()}${hard}`;
+      const scr = screenAvgOn ? `・${screenAvgLabel()}` : "・螢幕強化 關";
+      const glTxt = (glOn && glReadyShot) ? `・預覽銳化 ${Math.round(previewSharpenAmount() * 100)}%`
+        : (glWhy === "關閉" ? "・銳化 關（連點三下開）" : (glArmed ? "・銳化準備中…" : (glFailed && glWhy ? `・銳化退回（${glWhy}）` : "")));
+      const capTxt = capHiResOn() ? "" : "・1080p";   // fix93e：降解析度時標記（回報截圖可直接確認）
+      const tSec = (video && typeof video.currentTime === "number" && isFinite(video.currentTime)) ? Math.round(video.currentTime) : 0;
+      const srTxt = srSummary();       // QR_AI_SR_V1：試了幾次、救回幾個（沒用過就不顯示）
+      camInfoEl.textContent = `相機 ${vw}×${vh}${cam}${quality}・解碼尺度 全幅/2x/4x/8x＋分區 ${TILE_COLS}×${TILE_ROWS}${scr}${glTxt}${capTxt}・t${tSec}s${srTxt}${sharp}${hit}・${decoderLabel()}`;
     }
 
     function setZoomValue(next) {
@@ -956,6 +3020,14 @@
         videoTrack = stream.getVideoTracks()[0] || null;
         video.srcObject = stream;
         await video.play();
+      sizeHitOverlay();                    // QR_PREVIEW_FEEDBACK_V1：重疊層跟著預覽尺寸
+      setPreviewBadge("掃描中…", "");
+      /* QR_BLUR_GUARD_V1（fix88）：相機真的開好了 → 先自動對焦一次
+         （坐很遠時鏡頭常常對在近處，畫面一開始是糊的；使用者不必拉拉桿也會對焦）。 */
+      if (!initialFocusKicked) {
+        initialFocusKicked = true;      // 只做一次（之後靠拉桿／模糊守衛）
+        setTimeout(() => refocus("開機對焦"), 700);   // refocus 自己會判斷「有沒在掃描」
+      }
         /* 遠距離時有沒有對到焦，影響比解析度還大；支援就要求連續自動對焦。 */
         try {
           if (videoTrack && videoTrack.applyConstraints) {
@@ -966,8 +3038,10 @@
         activeCamId = applied.deviceId || wantId || "";
         targetZoom = clampZoom(readStoredZoom());
         applyZoom();
+        startPreviewSharpen();     /* QR_PREVIEW_SHARPEN_V1：相機開好 → 啟用預覽銳化（失敗自動退回） */
         await refreshCamList(activeCamId);
         scanning = true;
+        lastQrAt = nowMs();
         setStatus("正在掃描並持續回傳 QR Code...", "");
         setScanHint("開始找 QR：把 QR 放進畫面，太遠就往右拉「畫面放大」拉桿", "");
         requestAnimationFrame(tick);
@@ -981,6 +3055,7 @@
 
     function stopCamera() {
       scanning = false;
+      if (refocusTimer) { clearTimeout(refocusTimer); refocusTimer = null; }
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
         stream = null;
@@ -988,6 +3063,18 @@
       videoTrack = null;
       video.srcObject = null;
       if (video && video.style) video.style.transform = "";
+      /* QR_WECHAT_V1：停止時不要留著預熱中的計時器。 */
+      if (wechatPreloadTimer) { clearTimeout(wechatPreloadTimer); wechatPreloadTimer = null; }
+      /* QR_SCREEN_AVG_V1：停止後不留舊的平均畫面，下次開啟重新累積。 */
+      avgFrames = 0;
+      avgRefPatch = null;
+      avgShift = { x: 0, y: 0 };
+      stopAiSuperRes();                    // QR_AI_SR_V1：停止時終止 AI 超分 worker（不留背景工作）
+      stopPreviewSharpen();                // QR_PREVIEW_SHARPEN_V1：停止時關掉銳化層
+      clearHitOverlay();                   // QR_PREVIEW_FEEDBACK_V1：停止時不要留著綠框
+      if (aimBoxEl) aimBoxEl.classList.remove("found");
+      if (aimTextEl) aimTextEl.textContent = AIM_TEXT_DEFAULT;
+      setPreviewBadge("已停止", "");
       setStatus("已停止掃描", "");
       setScanHint("已停止掃描（可按「開啟相機」重新開始）", "");
     }
@@ -1009,25 +3096,137 @@
     document.getElementById("zoomIn").addEventListener("click", () => setZoomValue(targetZoom + ZOOM_STEP));
     document.getElementById("zoomOut").addEventListener("click", () => setZoomValue(targetZoom - ZOOM_STEP));
     document.getElementById("zoomReset").addEventListener("click", () => setZoomValue(ZOOM_MIN));
+    /* QR_AUTOFOCUS_V1：手動重新對焦（坐很遠、畫面糊掉時按一下）。 */
+    document.getElementById("refocusBtn").addEventListener("click", () => {
+      lastRefocusAt = 0;                 // 手動按就繞過速率限制
+      refocus("手動");
+    });
+    /* QR_SCREEN_AVG_V1（fix85）：螢幕強化開關（拍螢幕／投影幕時用，預設開）。 */
+    const screenBtn = document.getElementById("screenBtn");
+    function applyScreenAvgUi() {
+      if (screenBtn) screenBtn.textContent = screenAvgOn ? "螢幕強化：開" : "螢幕強化：關";
+    }
+    if (screenBtn) {
+      screenBtn.addEventListener("click", () => {
+        screenAvgOn = !screenAvgOn;
+        storeScreenAvg(screenAvgOn);
+        avgFrames = 0;                   // 切換後重新累積
+        avgRefPatch = null;
+        avgShift = { x: 0, y: 0 };
+        applyScreenAvgUi();
+        setScanHint(
+          screenAvgOn
+            ? "螢幕強化已開啟：會連續平均 3 張畫面（拍螢幕／投影幕時可洗掉摩爾紋）"
+            : "螢幕強化已關閉：只解單張畫面（一般實體 QR 已足夠）",
+          "ok"
+        );
+        updateCamInfo();
+      });
+    }
+    applyScreenAvgUi();
     targetZoom = clampZoom(readStoredZoom());
     if (zoomSlider) zoomSlider.value = String(targetZoom);
     if (zoomValue) zoomValue.textContent = targetZoom.toFixed(1) + "x";
 
-    /* QR_CAMERA_PICKER_V1：選鏡頭（iPhone Pro 選「望遠」＝真光學變焦，可讀距離 ×2～3）。 */
-    const camSel = document.getElementById("camSelect");
-    if (camSel) {
-      camSel.addEventListener("change", () => {
-        storeCam(camSel.value);
-        setScanHint(camSel.value ? "切換鏡頭中…（望遠鏡頭可以坐更遠）" : "切回預設後鏡頭…", "");
-        startCamera(camSel.value || undefined);
-      });
-    }
     if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
       navigator.mediaDevices.addEventListener("devicechange", () => { refreshCamList(activeCamId); });
     }
 
+    /* ─────────── QR_ZOOM_MOBILE_V1（fix89）：手機放大更直覺 ────────────────
+       ① 倍率快捷鈕（1x／2x／4x／8x）：一下就到常用倍率，不用拖細拉桿。
+       ② 說明可收合：預設收起（手機畫面留給相機），要看再點「說明」。
+       ③ 雙指捏合縮放：在預覽上直接捏（像 LINE／相機 App）——連續、即時、不必找按鈕。
+          放開手指後才觸發「自動對焦／自動換鏡頭」（跟拉桿同一條路，不重複做事）。 */
+    const zoomPresetBox = document.getElementById("zoomPresets");
+    function applyPresetUi() {
+      if (!zoomPresetBox) return;
+      const btns = zoomPresetBox.querySelectorAll("button[data-zoom]");
+      for (let i = 0; i < btns.length; i++) {
+        const b = btns[i];
+        const on = Math.abs(Number(b.getAttribute("data-zoom")) - targetZoom) < 0.26;
+        b.classList.toggle("active", on);
+      }
+    }
+    if (zoomPresetBox) {
+      zoomPresetBox.addEventListener("click", (ev) => {
+        const b = ev.target && ev.target.closest ? ev.target.closest("button[data-zoom]") : null;
+        if (!b) return;
+        setZoomValue(Number(b.getAttribute("data-zoom")));
+        applyPresetUi();
+      });
+    }
+    const hintToggle = document.getElementById("hintToggle");
+    const zoomHintEl = document.getElementById("zoomHint");
+    if (hintToggle && zoomHintEl) {
+      hintToggle.addEventListener("click", () => {
+        const open = zoomHintEl.classList.toggle("open");
+        hintToggle.textContent = open ? "說明 ▴" : "說明 ▾";
+        hintToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+    }
+    /* 雙指捏合：預覽上兩指距離變化 → 倍率；放開後才做對焦／換鏡頭。 */
+    const stageEl = document.querySelector(".stage");
+    let pinchStartDist = 0;
+    let pinchStartZoom = ZOOM_DEFAULT;
+    let pinchLive = false;
+    if (stageEl) {
+      const distOf = (t) => {
+        const dx = t[0].clientX - t[1].clientX;
+        const dy = t[0].clientY - t[1].clientY;
+        return Math.sqrt(dx * dx + dy * dy);
+      };
+      /* 注意：這兩個監聽器必須是 non-passive —— iOS Safari 只有在
+         touchstart／touchmove 內 preventDefault 才會「不把雙指手勢當成網頁縮放」。 */
+      stageEl.addEventListener("touchstart", (ev) => {
+        if (!scanning || !ev.touches || ev.touches.length !== 2) return;
+        if (typeof ev.preventDefault === "function") ev.preventDefault();   // 擋掉瀏覽器自己的縮放
+        pinchLive = true;
+        pinchStartDist = Math.max(1, distOf(ev.touches));
+        pinchStartZoom = targetZoom;
+        stageEl.classList.add("pinching");
+      }, { passive: false });
+      stageEl.addEventListener("touchmove", (ev) => {
+        if (!pinchLive) return;
+        if (!ev.touches || ev.touches.length !== 2) return;
+        if (typeof ev.preventDefault === "function") ev.preventDefault();   // 同上（拖動中也要一直擋）
+        const d = distOf(ev.touches);
+        const next = clampZoom(pinchStartZoom * (d / pinchStartDist));
+        if (Math.abs(next - pinchStartZoom) > 0.1) {
+          setZoomValue(next);
+          applyPresetUi();
+        }
+      }, { passive: false });
+      const endPinch = () => {
+        if (!pinchLive) return;
+        pinchLive = false;
+        stageEl.classList.remove("pinching");
+        noteZoomQualityForAdvice();          // 放開後評估這個倍率值不值得
+        updateCamInfo();
+      };
+      stageEl.addEventListener("touchend", endPinch, { passive: true });
+      stageEl.addEventListener("touchcancel", endPinch, { passive: true });
+      /* iOS Safari 的雙指縮放還會發 gesture* 事件（touch-action 不完全擋得住）→ 一併擋。 */
+      ["gesturestart", "gesturechange", "gestureend"].forEach((name) => {
+        stageEl.addEventListener(name, (ev) => {
+          if (typeof ev.preventDefault === "function") ev.preventDefault();
+        }, { passive: false });
+      });
+    }
+
+    if (typeof window.addEventListener === "function") {
+      window.addEventListener("resize", () => { sizeHitOverlay(); });
+    }
+    if (window.screen && window.screen.orientation && typeof window.screen.orientation.addEventListener === "function") {
+      window.screen.orientation.addEventListener("change", () => { setTimeout(sizeHitOverlay, 250); });
+    }
     refreshAttendanceStatus();
     setInterval(refreshAttendanceStatus, 1500);
+    /* QR_ZXING_V1：進頁面就把 zxing-wasm 載好（背景做，不擋相機開啟）。
+       載入失敗也不影響：解碼會自動退回 jsQR。 */
+    initZxing().then(() => updateCamInfo());
+    /* QR_WECHAT_V1：開頁 1.5 秒後在背景把微信引擎載好（6MB，只需一次）。
+       不擋相機、不擋掃描；如果一直掃不到，深度掃描會立刻把它叫上來。 */
+    wechatPreloadTimer = setTimeout(() => { initWechat(false); }, 1500);
     startCamera();
   </script>
 

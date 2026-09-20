@@ -62,6 +62,16 @@ pub fn build_router(state: LineWebhookState, webhook_path: &str) -> Router {
         .route(webhook_path, post(webhook_handler))
         .route("/scanner", get(scanner_page_handler))
         .route("/scanner/jsqr.js", get(scanner_jsqr_handler))
+        // QR_ZXING_V1（fix86）：zxing-wasm（主要解碼器）與它的 wasm 檔（見 scanner.rs 的說明）。
+        .route("/scanner/zxing.js", get(scanner_zxing_js_handler))
+        .route("/scanner/zxing_reader.wasm", get(scanner_zxing_wasm_handler))
+        // QR_WECHAT_V1（fix87）：微信 QRCode 引擎（見 scanner.rs 的說明）。
+        .route("/scanner/wechat/index.mjs", get(scanner_wechat_index_handler))
+        .route("/scanner/wechat/wasm.mjs", get(scanner_wechat_wasm_handler))
+        .route("/scanner/sr/worker.mjs", get(scanner_sr_worker_handler))
+        .route("/scanner/sr/ort.mjs", get(scanner_sr_ort_handler))
+        .route("/scanner/sr/ort-wasm-simd.wasm", get(scanner_sr_wasm_handler))
+        .route("/scanner/sr/model.onnx", get(scanner_sr_model_handler))
         .route("/scanner/status", get(scanner_status_handler))
         .route("/scanner/submit", post(scanner_submit_handler))
         .route("/number", get(number_page_handler))
@@ -173,6 +183,127 @@ async fn scanner_jsqr_handler() -> Response {
             (header::CACHE_CONTROL, "public, max-age=86400"),
         ],
         include_str!("jsQR.min.js"),
+    )
+        .into_response()
+}
+
+/// QR_ZXING_V1（fix86）：zxing-wasm 的 JS 與 wasm（本機供應，不連 CDN）。
+/// 這條路徑（webhook 伺服器）跟 scanner.rs 那條會各自供應一份，兩邊都要有，
+/// 否則在 webhook 部署模式下頁面會載不到解碼器、只能退回 jsQR。
+async fn scanner_zxing_js_handler() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("zxing.js"),
+    )
+        .into_response()
+}
+
+/// QR_WECHAT_V1（fix87）：微信 QRCode 引擎（本機供應；webhook 模式也要有，否則載不到）。
+async fn scanner_wechat_index_handler() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("wechat/index.mjs"),
+    )
+        .into_response()
+}
+
+async fn scanner_wechat_wasm_handler() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("wechat/wasm.mjs"),
+    )
+        .into_response()
+}
+
+/// QR_AI_SR_V1（fix93）：AI 超分救援的資產（只在使用者「深度掃描一直解不到」時才會下載）。
+///
+/// 為什麼要加：實測（見 fix93 報告）「差一點點」的案例（QR 每模組約 3.6px，三個引擎原本全 ❌），
+///   用 Swin2SR-lightweight ×2 超分之後 zxing 與微信**都解得出來**；但實拍投影幕照片
+///   （訊號已低於可解極限）救不回 —— 所以設計成「最後一擊」而不是每帧跑。
+/// 四個檔案都由本機供應（不連 CDN）：
+///   `sr/worker.mjs`            —— worker 橋接（onnxruntime-web 推論，背景執行緒）
+///   `sr/ort.mjs`               —— onnxruntime-web 1.17.3 的 WASM-only ESM 建置（單執行緒、
+///                                      不需要 SharedArrayBuffer，部署端不必加 COOP/COEP）
+///   `sr/ort-wasm-simd.wasm`    —— ORT 的 WASM 執行檔（約 10MB）
+///   `sr/model.onnx`            —— Swin2SR-lightweight ×2（uint8 量化，約 6.8MB；Apache-2.0）
+async fn scanner_sr_worker_handler() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("sr/worker.mjs"),
+    )
+        .into_response()
+}
+
+async fn scanner_sr_ort_handler() -> Response {
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/javascript; charset=utf-8",
+            ),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("sr/ort.mjs"),
+    )
+        .into_response()
+}
+
+async fn scanner_sr_wasm_handler() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/wasm"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("sr/ort-wasm-simd.wasm").as_slice(),
+    )
+        .into_response()
+}
+
+async fn scanner_sr_model_handler() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("sr/model.onnx").as_slice(),
+    )
+        .into_response()
+}
+
+async fn scanner_zxing_wasm_handler() -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "application/wasm"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("zxing_reader.wasm").as_slice(),
     )
         .into_response()
 }
