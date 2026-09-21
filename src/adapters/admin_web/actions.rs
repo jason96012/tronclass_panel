@@ -170,6 +170,7 @@ pub(super) async fn admin_action_handler(
             | "mock_rollcall"
             | "runtime_settings"
             | "digest_settings"
+            | "indexnow_submit"
     ) {
         if !session.is_admin {
             return unauthorized_response();
@@ -740,18 +741,61 @@ pub(super) async fn handle_admin_account_action(
                     None => current.semester_override.clone(),
                 },
             };
-            crate::runtime_settings::update(settings.clone()).await;
+            /* PERSISTED_RUNTIME_SETTINGS_V1（fix104）：設定會寫進 config/runtime_settings.json，
+               所以這裡要處理「寫檔失敗」：記憶體已經生效，但面板必須講清楚它撐不過重啟。 */
+            let persist_error = match crate::runtime_settings::update(settings.clone()).await {
+                Ok(()) => None,
+                Err(error) => {
+                    tracing::warn!(error = %error, "執行期設定寫檔失敗（這次的設定重啟後不會保留）");
+                    Some(format!("{error}"))
+                }
+            };
             super::status::invalidate_admin_status_cache().await;
+            let message = match &persist_error {
+                None => "運行參數已更新（已永久保存，重啟後仍沿用）".to_string(),
+                Some(error) => format!(
+                    "運行參數已在這次執行中生效，但寫入檔案失敗（重啟後會回到上次成功保存的值）：{error}"
+                ),
+            };
             (
                 StatusCode::OK,
                 Json(json!({
                     "ok": true,
                     "affected": 1,
-                    "message": "運行參數已更新",
+                    "message": message,
+                    "persist_error": persist_error,
                     "settings": settings,
                 })),
             )
                 .into_response()
+        }
+        /* INDEXNOW_V1（fix105）：把公開首頁提交給 Bing（IndexNow）。
+           使用者需求：「我希望在 BING 也能打 jasonserver 也能搜尋到」。
+           fix106：提交網址固定用正式站（可用 INDEXNOW_ORIGIN 覆蓋）——這個 handler
+           因此不需要額外的抽取器參數（它刻意維持原本的簽名）。 */
+        "indexnow_submit" => {
+            let origin = super::seo::submit_origin();
+            match super::indexnow::submit(&origin).await {
+                Ok(outcome) => {
+                    // 面板的「最近一次提交」是從 /admin/api/status 讀的 → 讓快取失效。
+                    super::status::invalidate_admin_status_cache().await;
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "ok": true,
+                            "affected": 1,
+                            "message": format!("IndexNow：{}", outcome.message),
+                            "indexnow": outcome,
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(error) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "ok": false, "error": format!("IndexNow 提交失敗：{error}") })),
+                )
+                    .into_response(),
+            }
         }
         _ => (
             StatusCode::BAD_REQUEST,

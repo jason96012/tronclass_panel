@@ -1344,6 +1344,8 @@ async fn main() -> Result<()> {
     // MORNING_DIGEST_V1：晨間摘要推送（今日課表＋48h 截止作業＋最新公告）。
     if let Some(state) = admin_web_state.clone() {
         adapters::admin_web::start_morning_digest(state);
+        // INDEXNOW_V1（fix105）：啟動後主動把公開首頁提交給 Bing（IndexNow；24 小時內只送一次）。
+        adapters::admin_web::start_indexnow_auto_submit();
     }
 
     let webhook_handle = if line_bot.is_some() {

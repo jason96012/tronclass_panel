@@ -1388,6 +1388,12 @@
       '已儲存 ' + (st.files_saved||0) + '、已跳過 ' + (st.files_skipped||0) +
       '、連結 ' + (st.links_created||0) + '、未開放 ' + (st.pending||0) +
       '、失敗 ' + (st.failed||0);
+    // MATERIALS_MATERIAL_FOLDER_V1（fix101）：多檔案教材現在有自己的資料夾；舊的攤平檔案
+    // 會在重新匯入時被搬進去（不是重新下載、也不算跳過）→ 單獨回報，否則使用者不知道
+    // 「東西被搬到哪去了」。
+    if (st.files_moved){
+      msg += '\n\n已整理 ' + st.files_moved + ' 個既有檔案：移入各自的教材資料夾（不用重新下載）';
+    }
     if (st.disallowed){
       msg += '\n\n非允許的檔案類型（本次未匯入）：' + st.disallowed + ' 個';
       const sample = (Array.isArray(st.disallowed_files) ? st.disallowed_files : []).slice(0, 10);

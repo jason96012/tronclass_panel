@@ -201,10 +201,10 @@
     </div>
   </section>
 
-  <!-- RUNTIME_SEMESTER_OVERRIDE_V1: 網頁即時調整學期判定（僅管理員，重啟後退回 config.toml／自動） -->
+  <!-- RUNTIME_SEMESTER_OVERRIDE_V1: 網頁即時調整學期判定（僅管理員；持久化於 config/runtime_settings.json） -->
   <section class="card" id="semesterCard" hidden>
     <h1>學期判定</h1>
-    <p class="hint">決定作業學期過濾、課程學期判定與淡江課表同步以哪個學期為準。調整即時生效；服務重啟後退回 config.toml 設定（若有的話）或依日期自動推算。</p>
+    <p class="hint">決定作業學期過濾、課程學期判定與淡江課表同步以哪個學期為準。調整即時生效並永久保存（重啟後仍沿用）；按「恢復自動」才會退回 config.toml 設定（若有的話）或依日期自動推算。</p>
     <div class="test-row"><span><b>目前生效</b><i id="semesterStatus">讀取中…</i></span></div>
     <div class="test-row wrap" id="semesterPresets">
       <span class="span-full"><b>快速選擇</b><i>點一下填入下方欄位（國曆年自動換算民國學年）</i></span>
@@ -220,10 +220,11 @@
     <div id="semesterMsg" class="tmsg"></div>
   </section>
 
-  <!-- GROUP_SUBMIT_RELAY_V1: 多帳號點名送出節奏（僅管理員；走 /admin/api/action runtime_settings） -->
+  <!-- GROUP_SUBMIT_RELAY_V1: 多帳號點名送出節奏（僅管理員；走 /admin/api/action runtime_settings，
+     設定持久化於 config/runtime_settings.json → 重啟後仍沿用） -->
   <section class="card" id="groupSubmitCard" hidden>
     <h1>多帳號點名送出節奏</h1>
-    <p class="hint">同一場點名由多個帳號送出時，用「下一個可送出時間」的游標把時間錯開：第一位立即送出，之後每位間隔 <b>基準 + 隨機(0～上限)</b> 毫秒。順序不會亂，且兩人至少間隔「基準」；若某人回應較慢，也不會卡住後面的人。<b>數字、QR Code、雷達</b>各有自己的參數；同一個帳號在同一場點名重試不會重新排隊。設定即時生效，服務重啟後回到預設。</p>
+    <p class="hint">同一場點名由多個帳號送出時，用「下一個可送出時間」的游標把時間錯開：第一位立即送出，之後每位間隔 <b>基準 + 隨機(0～上限)</b> 毫秒。順序不會亂，且兩人至少間隔「基準」；若某人回應較慢，也不會卡住後面的人。<b>數字、QR Code、雷達</b>各有自己的參數；同一個帳號在同一場點名重試不會重新排隊。設定即時生效並<b>永久保存</b>（<code>config/runtime_settings.json</code>），服務重啟後仍會沿用；要回預設請按「恢復預設」。</p>
     <div class="test-row"><span><b>目前生效</b><i id="gsStatus">讀取中…</i></span></div>
     <div class="test-row">
       <span><b>數字點名：基準間隔（毫秒）</b><i>600 ＝ 0.6 秒；0 ＝ 不等待（多位會同時送出，僅建議單帳號）</i></span>
@@ -254,6 +255,22 @@
       <button id="gsReset" class="ghost" type="button">恢復預設</button>
     </div>
     <div id="gsMsg" class="tmsg"></div>
+  </section>
+
+  <!-- INDEXNOW_V1: 搜尋引擎收錄（Bing）——僅管理員；走 /admin/api/action indexnow_submit -->
+  <section class="card" id="seoCard" hidden>
+    <h1>搜尋引擎收錄（Bing）</h1>
+    <p class="hint">Google 會自己找到首頁；<b>Bing 不會</b>——這裡用 Bing 官方支援的 <b>IndexNow</b> 主動告訴它「首頁在這裡」，按一下就會送出（同一個網址一天最多自動送一次；手動不受限）。送出後通常幾小時～幾天內會出現在 Bing 的搜尋結果。想看收錄狀況與提交 sitemap，請到 Bing Webmaster Tools 驗證站台：把它給的字串設成部署環境變數 <code>BING_SITE_VERIFICATION</code>，重新編譯並重啟後，下面會顯示「已設定」。</p>
+    <div class="test-row"><span><b>要提交的網址</b><i id="seoLanding">讀取中…</i></span></div>
+    <div class="test-row"><span><b>Bing 站台驗證</b><i id="seoBing">讀取中…</i></span></div>
+    <div class="test-row"><span><b>Google 站台驗證</b><i id="seoGoogle">讀取中…</i></span></div>
+    <div class="test-row"><span><b>IndexNow 金鑰</b><i id="seoKey">讀取中…</i></span></div>
+    <div class="test-row"><span><b>最近一次提交</b><i id="seoLast">讀取中…</i></span></div>
+    <div class="test-row wrap">
+      <button id="seoSubmit" class="tbtn" type="button">立即提交給 Bing</button>
+      <button id="seoWmt" class="ghost" type="button">開啟 Bing Webmaster Tools</button>
+    </div>
+    <div id="seoMsg" class="tmsg"></div>
   </section>
 
   <!-- MORNING_DIGEST_V1: 晨間摘要推送設定（僅管理員；持久化於 config/digest.json） -->
@@ -529,7 +546,11 @@
         });
         var body = await res.json().catch(function () { return {}; });
         if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
-        show('已套用：數字 ' + describe(base, jitter) + '、QR ' + describe(qrBase, qrJitter) + '、雷達 ' + describe(radarBase, radarJitter) + '（即時生效）', 'ok');
+        /* PERSISTED_RUNTIME_SETTINGS_V1（fix104）：設定會寫檔；寫檔失敗時要講清楚（不要讓人以為存好了）。 */
+        var savedNote = body.persist_error
+          ? '，但寫檔失敗：' + body.persist_error + '（重啟後會回到上次成功保存的值）'
+          : '（已永久保存，重啟後仍沿用）';
+        show('已套用：數字 ' + describe(base, jitter) + '、QR ' + describe(qrBase, qrJitter) + '、雷達 ' + describe(radarBase, radarJitter) + '（即時生效' + savedNote + '）', body.persist_error ? 'bad' : 'ok');
         loadStatus();
       } catch (e) {
         show('套用失敗：' + (e && e.message ? e.message : e), 'bad');
@@ -548,6 +569,92 @@
     });
     var resetBtn = document.getElementById('gsReset');
     if (resetBtn) resetBtn.addEventListener('click', function () { apply(DEFAULT_BASE, DEFAULT_JITTER, DEFAULT_QR_BASE, DEFAULT_QR_JITTER, DEFAULT_RADAR_BASE, DEFAULT_RADAR_JITTER); });
+    loadStatus();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+<script>
+/* INDEXNOW_V1（fix105）：搜尋引擎收錄卡片——僅管理員。
+   顯示 Bing／Google 站台驗證是否已設定、IndexNow 金鑰與最近一次提交結果，
+   並提供「立即提交給 Bing」按鈕（走 /admin/api/action indexnow_submit）。 */
+(function () {
+  'use strict';
+  function init() {
+    var card = document.getElementById('seoCard');
+    if (!card) return;
+    var landingEl = document.getElementById('seoLanding');
+    var bingEl = document.getElementById('seoBing');
+    var googleEl = document.getElementById('seoGoogle');
+    var keyEl = document.getElementById('seoKey');
+    var lastEl = document.getElementById('seoLast');
+    var msg = document.getElementById('seoMsg');
+    function setText(el, text) { if (el) el.textContent = text; }
+    function show(text, kind) {
+      if (!msg) return;
+      msg.textContent = text || '';
+      msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+    }
+    function verText(on) {
+      return on
+        ? '已設定（首頁會帶驗證 meta）'
+        : '未設定（要用的話，把 Bing／Google 給的字串設成部署環境變數後重新建置）';
+    }
+    async function loadStatus() {
+      try {
+        var res = await fetch('/admin/api/status', {
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var body = await res.json();
+        if (!body || !body.is_admin) { card.hidden = true; return; }
+        card.hidden = false;
+        var seo = body.seo || {};
+        var ix = seo.indexnow || {};
+        setText(landingEl, seo.landing || '—');
+        setText(bingEl, verText(!!seo.bing_verification));
+        setText(googleEl, verText(!!seo.google_verification));
+        setText(keyEl, ix.key
+          ? (ix.key + '（金鑰檔：' + (ix.key_path || '') + '）')
+          : '尚未產生（重啟服務後會自動產生並寫入 config/indexnow.json）');
+        if (ix.last_submit) {
+          setText(lastEl, (ix.last_ok ? '✅ ' : '❌ ') + ix.last_submit
+            + (ix.last_status == null ? '' : '（HTTP ' + ix.last_status + '）')
+            + '：' + (ix.last_message || ''));
+        } else {
+          setText(lastEl, '還沒有提交過（服務啟動後會自動送一次）');
+        }
+      } catch (e) {
+        setText(lastEl, '讀取失敗：' + (e && e.message ? e.message : e));
+      }
+    }
+    async function submitNow() {
+      show('提交中…');
+      try {
+        var res = await fetch('/admin/api/action', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ action: 'indexnow_submit' })
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (res.ok && body.ok !== false) show(body.message || '已提交', 'ok');
+        else show(body.error || body.message || ('HTTP ' + res.status), 'bad');
+        loadStatus();
+      } catch (e) {
+        show('提交失敗：' + (e && e.message ? e.message : e), 'bad');
+      }
+    }
+    var submitBtn = document.getElementById('seoSubmit');
+    if (submitBtn) submitBtn.addEventListener('click', submitNow);
+    var wmtBtn = document.getElementById('seoWmt');
+    if (wmtBtn) wmtBtn.addEventListener('click', function () {
+      // 外部連結用 window.open（CSP 只限制資源載入，不擋導覽）。
+      window.open('https://www.bing.com/webmasters/', '_blank', 'noopener');
+    });
     loadStatus();
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
@@ -631,8 +738,10 @@
         });
         var body = await res.json().catch(function () { return {}; });
         if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
-        if (value) show('已套用學期覆蓋：' + value + '（即時生效）', 'ok');
-        else show('已恢復自動推算（即時生效）', 'ok');
+        /* PERSISTED_RUNTIME_SETTINGS_V1（fix104）：會寫檔；寫檔失敗要看得出來。 */
+        var saved = body.persist_error ? '，但寫檔失敗：' + body.persist_error : '，已永久保存';
+        if (value) show('已套用學期覆蓋：' + value + '（即時生效' + saved + '）', body.persist_error ? 'bad' : 'ok');
+        else show('已恢復自動推算（即時生效' + saved + '）', body.persist_error ? 'bad' : 'ok');
         loadStatus();
       } catch (e) {
         show('套用失敗：' + (e && e.message ? e.message : e), 'bad');

@@ -8,6 +8,10 @@
 //! 規則：
 //! - 只處理「當學期」課程（is_current != Some(false)），避免拉進上學期舊教材。
 //! - `material`：取下載真檔（依 upload 的 `key` 組出下載位址，帶 session cookie）。
+//! - MATERIALS_MATERIAL_FOLDER_V1（fix101）：一個教材含**多個**檔案時，替它開一個跟教材同名
+//!   的資料夾：`<root>/<group>/<course>/<教材標題>/<檔案>`（學校 App 的呈現就是這樣：
+//!   例如「E-Commerce 2018 Book」是一個資料夾，裡面是 Chapter 1..12.pptx）。
+//!   只有 0～1 個檔案的教材維持攤平在課程資料夾裡，不製造一堆單檔資料夾。
 //! - `web_link`：存成 `.url` 連結檔。
 //! - `online_video`：能下載就下載，否則存 `.url` 連結檔。
 //! - 冪等：目的檔案已存在即跳過；一律寫一份 `tronclass_materials_manifest.json`。
@@ -183,6 +187,9 @@ pub(super) struct ImportReport {
     pub materials_found: u64,
     pub files_saved: u64,
     pub files_skipped: u64,
+    /// MATERIALS_MATERIAL_FOLDER_V1（fix101）：舊的攤平檔案被移進教材資料夾的數量。
+    /// 這些檔案既沒有重新下載、也不算跳過 —— 單獨記一筆，使用者才知道「東西被搬到哪去了」。
+    pub files_moved: u64,
     pub links_created: u64,
     pub failed: u64,
     /// MATERIALS_PENDING_V1（fix48）：教材「還沒到開放時間」而略過的數量。
@@ -223,6 +230,8 @@ pub(super) async fn admin_materials_import_status_handler(
         "materials_found": job.report.materials_found,
         "files_saved": job.report.files_saved,
         "files_skipped": job.report.files_skipped,
+        // MATERIALS_MATERIAL_FOLDER_V1（fix101）：舊檔被搬進教材資料夾的數量。
+        "files_moved": job.report.files_moved,
         "links_created": job.report.links_created,
         "failed": job.report.failed,
         "pending": job.report.pending,
@@ -357,12 +366,13 @@ pub(super) async fn admin_materials_import_handler(
         job.ok = report.ok;
         job.last_update_at = now_ts();
         job.message = format!(
-            "完成：課程 {} 門、教材 {} 項、儲存 {}、跳過 {}（非允許類型 {}）、連結 {}、未開放 {}、失敗 {}",
+            "完成：課程 {} 門、教材 {} 項、儲存 {}、跳過 {}（非允許類型 {}）、整理 {}、連結 {}、未開放 {}、失敗 {}",
             report.courses_scanned,
             report.materials_found,
             report.files_saved,
             report.files_skipped,
             report.disallowed,
+            report.files_moved,
             report.links_created,
             report.pending,
             report.failed,
@@ -432,6 +442,7 @@ async fn run_import(
         materials_found: 0,
         files_saved: 0,
         files_skipped: 0,
+        files_moved: 0,
         links_created: 0,
         failed: 0,
         pending: 0,
@@ -624,6 +635,8 @@ struct ItemOutcome {
     materials: u64,
     saved: u64,
     skipped: u64,
+    /// MATERIALS_MATERIAL_FOLDER_V1（fix101）：把「以前攤平在課程層」的舊檔搬進教材資料夾的數量。
+    moved: u64,
     links: u64,
     pending: u64,
     failed: u64,
@@ -639,6 +652,7 @@ impl ItemOutcome {
         self.materials += other.materials;
         self.saved += other.saved;
         self.skipped += other.skipped;
+        self.moved += other.moved;
         self.links += other.links;
         self.pending += other.pending;
         self.failed += other.failed;
@@ -657,6 +671,7 @@ impl ItemOutcome {
         report.materials_found += self.materials;
         report.files_saved += self.saved;
         report.files_skipped += self.skipped;
+        report.files_moved += self.moved;
         report.links_created += self.links;
         report.pending += self.pending;
         report.failed += self.failed;
@@ -914,8 +929,20 @@ async fn process_item(
     match item_type.as_str() {
         "material" | "file" | "resource" | "attachment" => {
             if let Some(uploads) = item.get("uploads").and_then(Value::as_array) {
+                /* MATERIALS_MATERIAL_FOLDER_V1：多檔案教材給它自己的資料夾（單檔維持攤平）。 */
+                let folder = material_folder_for(ctx, &title, uploads);
                 for upload in uploads {
-                    let _ = process_upload(ctx, group, course_name, &title, upload, opens_at, outcome).await;
+                    let _ = process_upload(
+                        ctx,
+                        group,
+                        course_name,
+                        &title,
+                        folder.as_deref(),
+                        upload,
+                        opens_at,
+                        outcome,
+                    )
+                    .await;
                 }
             }
         }
@@ -945,8 +972,20 @@ async fn process_item(
         "online_video" | "video" => {
             if let Some(uploads) = item.get("uploads").and_then(Value::as_array) {
                 let mut dl = false;
+                let folder = material_folder_for(ctx, &title, uploads);
                 for upload in uploads {
-                    if process_upload(ctx, group, course_name, &title, upload, opens_at, outcome).await {
+                    if process_upload(
+                        ctx,
+                        group,
+                        course_name,
+                        &title,
+                        folder.as_deref(),
+                        upload,
+                        opens_at,
+                        outcome,
+                    )
+                    .await
+                    {
                         dl = true;
                     }
                 }
@@ -964,30 +1003,75 @@ async fn process_item(
     }
 }
 
+/// 取 upload 的檔名（沒有 `name`／`file_name` 就用教材標題）。
+fn upload_file_name(upload: &Value, material_title: &str) -> String {
+    upload
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| upload.get("file_name").and_then(Value::as_str))
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| material_title.to_string())
+}
+
+/// MATERIALS_MATERIAL_FOLDER_V1（fix101）：這個教材要不要有自己的資料夾？
+///
+/// 判斷方式是「這個教材**真的會進教材庫**幾個檔案」：只算通過副檔名白名單的（使用者選了
+/// 「全部匯入」時全部都算）—— 一個教材就算掛了 5 個 upload，其中 4 個是被跳過的影片，
+/// 那它只會有一個檔案，也就沒有必要開資料夾。
+fn material_folder_for(
+    ctx: &ImportContext<'_>,
+    title: &str,
+    uploads: &[Value],
+) -> Option<String> {
+    let names: Vec<String> = uploads
+        .iter()
+        .map(|upload| upload_file_name(upload, title))
+        .collect();
+    if needs_material_folder(ctx.include_all_types, &names) {
+        Some(title.to_string())
+    } else {
+        None
+    }
+}
+
+/// MATERIALS_MATERIAL_FOLDER_V1：要不要替這個教材開資料夾？（純函式，方便測試）
+///
+/// 只有一個檔案的教材不開資料夾 —— 目錄列表才不會被一堆單檔資料夾洗掉；
+/// 兩個以上才開（學校 App 的呈現就是這樣）。**被白名單跳過的檔案不算**：
+/// 一個教材掛了 5 個 upload、其中 4 個是被略過的影片，實際只會進 1 個檔案。
+fn needs_material_folder(include_all_types: bool, names: &[String]) -> bool {
+    names
+        .iter()
+        .filter(|name| include_all_types || is_allowed_file_type(name))
+        .count()
+        >= 2
+}
+
 /// 下載單一 upload 並寫入磁碟。回傳是否成功下載(供影片分支判斷)。
 async fn process_upload(
     ctx: &ImportContext<'_>,
     group: &str,
     course_name: &str,
     material_title: &str,
+    material_folder: Option<&str>,
     upload: &Value,
     opens_at: Option<DateTime<Utc>>,
     outcome: &mut ItemOutcome,
 ) -> bool {
-    let name = upload
-        .get("name")
-        .and_then(Value::as_str)
-        .or_else(|| upload.get("file_name").and_then(Value::as_str))
-        .map(str::to_string)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| material_title.to_string());
+    let name = upload_file_name(upload, material_title);
 
-    // 資料夾到「分班/課程」這一層，教材不再細分。
+    // 資料夾到「分班/課程」這一層；MATERIALS_MATERIAL_FOLDER_V1 再加一層教材資料夾。
     // MATERIALS_IMPORT_V2: <root>/<group>/<course_name>/<file>
-    let dir = ctx
+    // MATERIALS_MATERIAL_FOLDER_V1: <root>/<group>/<course_name>/<material>/<file>
+    let course_dir = ctx
         .root
         .join(sanitize_component(group))
         .join(sanitize_component(course_name));
+    let dir = match material_folder {
+        Some(folder) => course_dir.join(sanitize_component(folder)),
+        None => course_dir.clone(),
+    };
     let filename = sanitize_filename(&name);
     if filename.is_empty() {
         return false;
@@ -1027,6 +1111,36 @@ async fn process_upload(
         outcome.skipped += 1;
         debug!(course = %course_name, file = %filename, "教材匯入：已存在，跳過（共用省硬碟）");
         return true;
+    }
+    /* MATERIALS_MATERIAL_FOLDER_V1：這次要放進教材資料夾，而課程層已經有同名舊檔
+       （fix100 以前是攤平的）→ 直接搬進來：不重抓、不留兩份、也不會出現「同一個檔案兩份」。
+       搬不動（極少數跨裝置或權限問題）就走原本的下載流程。 */
+    if material_folder.is_some() {
+        let legacy = course_dir.join(&filename);
+        if legacy.exists() {
+            if tokio::fs::create_dir_all(&dir).await.is_ok() {
+                match tokio::fs::rename(&legacy, &dest).await {
+                    Ok(()) => {
+                        outcome.moved += 1;
+                        debug!(
+                            course = %course_name,
+                            file = %filename,
+                            folder = ?material_folder,
+                            "教材匯入：舊的攤平檔案已移入教材資料夾"
+                        );
+                        return true;
+                    }
+                    Err(e) => {
+                        debug!(
+                            course = %course_name,
+                            file = %filename,
+                            error = %e,
+                            "教材匯入：舊檔搬移失敗，改用重新下載"
+                        );
+                    }
+                }
+            }
+        }
     }
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
         outcome.failed += 1;
@@ -1396,6 +1510,8 @@ fn write_manifest(root: &Path, report: &ImportReport) {
         "materials_found": report.materials_found,
         "files_saved": report.files_saved,
         "files_skipped": report.files_skipped,
+        // MATERIALS_MATERIAL_FOLDER_V1：搬進教材資料夾的舊檔數量（對照用）。
+        "files_moved": report.files_moved,
         "links_created": report.links_created,
         "failed": report.failed,
         // MATERIALS_PENDING_V1（fix48）：尚未開放而略過的數量（與 failed 分開記）。
@@ -1526,17 +1642,58 @@ fn group_folder_for(department: Option<&str>, course_name: &str) -> String {
     }
 }
 
-/// 供測試的資料夾建構(避免重複路徑邏輯)。
-/// MATERIALS_IMPORT_V2: <root>/<group>/<course>
+/// 教材的目的資料夾(避免重複路徑邏輯)。
+///
+/// MATERIALS_IMPORT_V2: `<root>/<group>/<course>`
+/// MATERIALS_MATERIAL_FOLDER_V1（fix101）：`material` 有值時多一層教材資料夾
+///   → `<root>/<group>/<course>/<教材標題>`（一個教材含多個檔案時使用）。
 #[allow(dead_code)]
-fn course_material_dir(root: &Path, group: &str, course: &str, _title: &str) -> PathBuf {
-    root.join(sanitize_component(group))
-        .join(sanitize_component(course))
+fn material_dir(root: &Path, group: &str, course: &str, material: Option<&str>) -> PathBuf {
+    let base = root
+        .join(sanitize_component(group))
+        .join(sanitize_component(course));
+    match material {
+        Some(title) => base.join(sanitize_component(title)),
+        None => base,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// MATERIALS_MATERIAL_FOLDER_V1（fix101）：多檔案教材才有自己的資料夾。
+    #[test]
+    fn material_folder_only_for_multi_file_materials() {
+        let two = vec!["Chapter 1.pptx".to_string(), "Chapter 2.pptx".to_string()];
+        let one = vec!["講義.pdf".to_string()];
+        /* 一個影片（白名單外，預設會被跳過）＋ 一個 PDF → 實際只進 1 個檔案 → 不開資料夾。 */
+        let video_and_pdf = vec!["lecture.mp4".to_string(), "講義.pdf".to_string()];
+        assert!(needs_material_folder(false, &two));
+        assert!(!needs_material_folder(false, &one));
+        assert!(!needs_material_folder(false, &video_and_pdf));
+        /* 使用者選了「全部匯入」→ 影片也會進來 → 就是兩個檔案，要開資料夾。 */
+        assert!(needs_material_folder(true, &video_and_pdf));
+    }
+
+    /// 資料夾路徑：有教材標題時多一層（`<root>/<group>/<course>/<教材>`）。
+    #[test]
+    fn material_dir_adds_material_level() {
+        let root = Path::new("/m");
+        assert_eq!(
+            material_dir(root, "資工系英語班", "計算機組織", None),
+            Path::new("/m/資工系英語班/計算機組織")
+        );
+        assert_eq!(
+            material_dir(root, "資工系英語班", "計算機組織", Some("E-Commerce 2018 Book")),
+            Path::new("/m/資工系英語班/計算機組織/E-Commerce 2018 Book")
+        );
+        /* 路徑分隔字元會被消掉，不會跑到別的目錄去。 */
+        assert_eq!(
+            material_dir(root, "a", "b", Some("Ch1/../../etc")),
+            Path::new("/m/a/b/Ch1_.._.._etc")
+        );
+    }
 
     /// MATERIALS_PENDING_V1（fix48）：教材還沒開放 → 記成 pending，不是 failed。
     #[test]

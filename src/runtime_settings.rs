@@ -1,8 +1,11 @@
 //! Runtime-tunable settings controlled from the Web admin panel.
 //!
-//! These settings are intentionally in-memory: changing them from `/admin` takes
-//! effect immediately, and restarting the service restores values from config / defaults.
+//! PERSISTED_RUNTIME_SETTINGS_V1（fix104）：這些設定**持久化在 `config/runtime_settings.json`** ——
+//! 從 `/admin` 改完即時生效並原子寫檔，服務重啟後沿用上次存的值；要回預設請按面板的「恢復預設」。
+//! 以前是純記憶體（重啟＝全部回預設），使用者回報：
+//! 「我在設定所儲存的送出節奏不要因為重啟就重置」。
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Datelike, Local, NaiveTime, Weekday};
@@ -40,6 +43,7 @@ pub const MAX_GROUP_SUBMIT_INTERVAL_MS: u64 = 10_000;
 pub const MAX_RUNTIME_REST_PERIODS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]   // 讀檔時缺欄位＝用 Default（送出節奏的預設是 600/2000…，不會變成 0）
 pub struct RuntimeSettings {
     /// Override provider poll interval. None means use provider config.
     pub poll_interval_secs: Option<u64>,
@@ -170,8 +174,47 @@ impl Default for RuntimeSettings {
     }
 }
 
-static SETTINGS: Lazy<RwLock<RuntimeSettings>> =
-    Lazy::new(|| RwLock::new(RuntimeSettings::default()));
+/// PERSISTED_RUNTIME_SETTINGS_V1（fix104）：設定檔位置。
+///
+/// 與其他小型設定檔（`config/digest.json`、`config/ai_chat.json`…）同一個目錄，
+/// 走同一套 [`crate::atomic_write`] 原子寫入。
+fn settings_file() -> PathBuf {
+    std::path::Path::new("config/runtime_settings.json").to_path_buf()
+}
+
+/// 把設定檔的 JSON 文字轉成 [`RuntimeSettings`]：
+/// * 缺欄位 → 該欄位的預設（`#[serde(default)]` 用 [`RuntimeSettings::default`]；
+///   送出節奏的預設是 600/2000…，**不會變成 0** 而意外讓大家同時送出）
+/// * 超界值 → [`normalize`] 夾回硬上限（手改檔也不能繞過）
+/// * 整份壞掉 → 全部回預設（不讓半截 JSON 讓服務起不來）
+fn parse_persisted(text: &str) -> RuntimeSettings {
+    serde_json::from_str::<RuntimeSettings>(text)
+        .map(normalize)
+        .unwrap_or_default()
+}
+
+/// 讀持久化設定（缺檔／讀不到＝用預設）。啟動時呼叫一次。
+fn load_persisted() -> RuntimeSettings {
+    match std::fs::read_to_string(settings_file()) {
+        Ok(text) => parse_persisted(&text),
+        Err(_) => RuntimeSettings::default(),
+    }
+}
+
+/// 啟動時載入持久化設定（以前是 `RuntimeSettings::default()` → 重啟就把面板存的設定打回預設）。
+static SETTINGS: Lazy<RwLock<RuntimeSettings>> = Lazy::new(|| {
+    let loaded = load_persisted();
+    /* CURRENT_SEMESTER_OVERRIDE_V1：學期覆蓋的快取也必須用「載入後的值」算一次 ——
+       以前只有 update() 會刷新，所以重啟後那個快取會是空的（覆蓋看起來失效）。 */
+    refresh_semester_override_cache(loaded.semester_override.as_deref());
+    tracing::debug!(
+        path = %settings_file().display(),
+        interval_ms = loaded.group_submit_interval_ms,
+        jitter_ms = loaded.group_submit_jitter_ms,
+        "執行期設定已載入（持久化）"
+    );
+    RwLock::new(loaded)
+});
 
 /// CURRENT_SEMESTER_OVERRIDE_V1：解析後的學期覆蓋快取。
 ///
@@ -198,10 +241,21 @@ pub async fn snapshot() -> RuntimeSettings {
     SETTINGS.read().await.clone()
 }
 
-pub async fn update(settings: RuntimeSettings) {
+/// 更新設定：夾範圍 → **先讓記憶體生效** → 原子寫檔；回傳寫檔結果。
+///
+/// 為什麼是這個順序：面板的操作不該因為寫檔失敗就當作沒發生（掃描中的那一輪需要它立刻生效），
+/// 但寫檔失敗**一定要回報** —— 否則又會變成「存了、重啟後卻不見」的那個老問題。
+pub async fn update(settings: RuntimeSettings) -> miette::Result<()> {
     let settings = normalize(settings);
     refresh_semester_override_cache(settings.semester_override.as_deref());
-    *SETTINGS.write().await = settings;
+    *SETTINGS.write().await = settings.clone();
+    let text = serde_json::to_string_pretty(&settings)
+        .map_err(|e| miette::miette!("序列化執行期設定失敗（這次的設定重啟後不會保留）：{e}"))?;
+    // ATOMIC_WRITE_V1：write-to-temp → fsync → rename（不會留下半截 JSON）。
+    crate::atomic_write::write_atomic(settings_file(), text).map_err(|e| {
+        miette::miette!("寫入 config/runtime_settings.json 失敗（這次的設定重啟後不會保留）：{e}")
+    })?;
+    Ok(())
 }
 
 pub async fn poll_interval(default_secs: u64) -> Duration {
@@ -379,5 +433,80 @@ mod tests {
         assert_eq!(semester_override(), None);
         refresh_semester_override_cache(None);
         assert_eq!(semester_override(), None);
+    }
+
+    /* ─────────── PERSISTED_RUNTIME_SETTINGS_V1（fix104）：設定檔往返 ─────────── */
+
+    /// 序列化 → 解析之後每一個欄位都要一模一樣（不然重啟後會悄悄換一組節奏）。
+    #[test]
+    fn persisted_settings_roundtrip_keeps_every_field() {
+        let settings = RuntimeSettings {
+            poll_interval_secs: Some(45),
+            group_submit_interval_ms: 1_200,
+            group_submit_jitter_ms: 300,
+            group_submit_qrcode_interval_ms: 800,
+            group_submit_qrcode_jitter_ms: 200,
+            group_submit_radar_interval_ms: 900,
+            group_submit_radar_jitter_ms: 1_500,
+            auto_stop_time: Some("23:30".to_string()),
+            rest_periods: vec![RuntimeRestPeriod {
+                weekday: RuntimeWeekday::Fri,
+                start_time: "23:00".to_string(),
+                end_time: "07:00".to_string(),
+            }],
+            semester_override: Some("1151".to_string()),
+        };
+        let text = serde_json::to_string_pretty(&settings).unwrap();
+        let back = parse_persisted(&text);
+        assert_eq!(back.poll_interval_secs, Some(45));
+        assert_eq!(back.group_submit_interval_ms, 1_200);
+        assert_eq!(back.group_submit_jitter_ms, 300);
+        assert_eq!(back.group_submit_qrcode_interval_ms, 800);
+        assert_eq!(back.group_submit_qrcode_jitter_ms, 200);
+        assert_eq!(back.group_submit_radar_interval_ms, 900);
+        assert_eq!(back.group_submit_radar_jitter_ms, 1_500);
+        assert_eq!(back.auto_stop_time.as_deref(), Some("23:30"));
+        assert_eq!(back.rest_periods.len(), 1);
+        assert_eq!(back.semester_override.as_deref(), Some("1151"));
+    }
+
+    /// 缺欄位（舊版設定檔、手寫的檔）＝用預設，**不是 0** —— 0 會變成「不等待、全部同時送出」。
+    #[test]
+    fn persisted_settings_missing_fields_fall_back_to_defaults() {
+        let back = parse_persisted("{}");
+        assert_eq!(back.group_submit_interval_ms, DEFAULT_GROUP_SUBMIT_INTERVAL_MS);
+        assert_eq!(back.group_submit_jitter_ms, DEFAULT_GROUP_SUBMIT_JITTER_MS);
+        assert_eq!(
+            back.group_submit_qrcode_jitter_ms,
+            DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS
+        );
+        assert_eq!(
+            back.group_submit_radar_interval_ms,
+            DEFAULT_GROUP_SUBMIT_RADAR_INTERVAL_MS
+        );
+        assert_eq!(back.poll_interval_secs, None);
+        assert!(back.rest_periods.is_empty());
+        assert_eq!(back.semester_override, None);
+    }
+
+    /// 壞檔＝整份回預設（服務照樣起得來，只是回到預設節奏）。
+    #[test]
+    fn persisted_settings_garbage_falls_back_to_defaults() {
+        let back = parse_persisted("{ this is not json");
+        assert_eq!(back.group_submit_interval_ms, DEFAULT_GROUP_SUBMIT_INTERVAL_MS);
+        assert_eq!(back.group_submit_jitter_ms, DEFAULT_GROUP_SUBMIT_JITTER_MS);
+    }
+
+    /// 手改檔塞超界值也要被夾回來（不能靠改檔案繞過硬上限）。
+    #[test]
+    fn persisted_settings_are_clamped() {
+        let back = parse_persisted(
+            r#"{"group_submit_interval_ms": 999999, "group_submit_jitter_ms": 999999,
+                "auto_stop_time": "25:99", "semester_override": "not-a-semester"}"#,
+        );
+        assert_eq!(back.group_submit_interval_ms, MAX_GROUP_SUBMIT_INTERVAL_MS);
+        assert_eq!(back.group_submit_jitter_ms, MAX_GROUP_SUBMIT_JITTER_MS);
+        assert_eq!(back.auto_stop_time, None);
+        assert_eq!(back.semester_override, None);
     }
 }

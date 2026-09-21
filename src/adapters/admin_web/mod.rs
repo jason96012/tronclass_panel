@@ -76,6 +76,11 @@ pub(crate) fn start_bulletin_notifier(
 pub(crate) fn start_morning_digest(state: AdminWebState) {
     morning_digest::start(state);
 }
+
+/// INDEXNOW_V1（fix105）：啟動後主動把公開首頁提交給 Bing（同一個網址 24 小時內只送一次）。
+pub(crate) fn start_indexnow_auto_submit() {
+    indexnow::start_auto_submit();
+}
 mod files;
 mod materials_import;
 mod homework;
@@ -90,6 +95,8 @@ mod radar;
 mod radar_input;
 // SEO_LANDING_V1（fix60）：公開介紹頁 ＋ robots.txt／sitemap.xml。
 mod seo;
+// INDEXNOW_V1（fix105）：主動把公開首頁提交給 Bing（Bing 官方協定；Google 不參與）。
+mod indexnow;
 mod static_assets;
 mod status;
 // ROLLCALL_ATTENDANCE_V1（fix66）：點名出席統計與送出者查詢。
@@ -2256,6 +2263,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // 搜尋引擎用：只允許首頁被檢索（見 seo.rs 的 robots_txt／sitemap_xml）。
         .route("/robots.txt", get(seo::robots_txt_handler))
         .route("/sitemap.xml", get(seo::sitemap_xml_handler))
+        // INDEXNOW_V1（fix105）：Bing 的所有權驗證檔（`/{key}.txt`）。
+        // 金鑰只含 `[A-Za-z0-9-]`，所以這是一條確切的字面路徑（不是 `{參數}`），
+        // 只會攔到這個檔名 —— 其餘根目錄請求照舊走原本的路由／404。
+        .route(indexnow::key_path(), get(indexnow::key_file_handler))
         .route("/healthz", get(health::healthz_handler))
         // TRONCLASS_PROXY_JUMP_V1：iClass 反向代理。SPA 資源是根絕對路徑
         //（/static/...），因此頂層 /static、/api、/course、/uploads 也掛代理；
@@ -3069,14 +3080,27 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
 /// `/tc`、`/api`、`/course`、`/uploads` 是 iClass 反向代理：上游內容已經有自己的網域，
 /// 讓它掛在本站下面只會產生重複內容（duplicate content），一併排除。
 fn path_is_private_for_search(path: &str) -> bool {
-    const PRIVATE_PREFIXES: [&str; 7] = [
+    // ROBOTS_NO_BLANKET_DISALLOW_V1（fix105）：robots.txt 不再有一條大範圍的
+    // `Disallow: /`，所以「不要被收錄」這件事改由這裡（X-Robots-Tag: noindex）與
+    // robots.txt 的逐條清單共同保證 —— 兩份清單必須一致，
+    // `checks/seo_check.py` 會逐條比對。
+    const PRIVATE_PREFIXES: [&str; 16] = [
         "/admin",
         "/pub",
         "/tc/",
         "/api/",
+        "/static/",
         "/course/",
         "/uploads/",
+        "/bulletin-list",
+        "/homework",
+        "/scanner",
+        "/number",
+        "/radar",
         "/healthz",
+        "/manifest.webmanifest",
+        "/service-worker.js",
+        "/.well-known/",
     ];
     PRIVATE_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
 }

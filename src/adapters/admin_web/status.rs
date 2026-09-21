@@ -22,6 +22,8 @@ pub(super) struct AdminStatusResponse {
     settings: RuntimeSettings,
     /// MORNING_DIGEST_V1：晨間摘要設定（設定頁顯示用）。
     digest: super::morning_digest::DigestStatusInfo,
+    /// INDEXNOW_V1（fix105）：搜尋引擎收錄狀態（Bing 站台驗證／IndexNow／sitemap）。
+    seo: super::seo::SeoStatus,
     accounts: Vec<AdminAccountStatus>,
     /// ACCOUNT_HOT_ADD_FEEDBACK_V1：已在 accounts.db 且 enabled，但目前沒有監控循環的帳號
     /// （熱啟動登入失敗／CLI 離線新增）。只有管理員看得到；一般使用者永遠是空陣列。
@@ -517,6 +519,7 @@ pub(super) async fn admin_status_handler(
             default_poll_interval_secs: state.default_poll_interval_secs,
             settings: crate::runtime_settings::snapshot().await,
             digest: super::morning_digest::digest_status(),
+            seo: super::seo::seo_status(&headers),
             accounts: vec![],
             // ACCOUNT_HOT_ADD_FEEDBACK_V1：首次登入尚未改密碼前不暴露任何帳號資料。
             inactive_accounts: vec![],
@@ -697,6 +700,7 @@ pub(super) async fn admin_status_handler(
         default_poll_interval_secs: state.default_poll_interval_secs,
         settings,
         digest: super::morning_digest::digest_status(),
+        seo: super::seo::seo_status(&headers),
         accounts,
         inactive_accounts,
         // REST_DAY_NO_POLL_V1
