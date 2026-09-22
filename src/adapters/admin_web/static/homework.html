@@ -1272,6 +1272,167 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     renderPickedFiles();
   }
 
+  // ── HOMEWORK_PASTE_V1（fix108）：把剪貼簿裡的照片直接貼進繳交清單 ──────────────
+  // 使用者需求：「我希望這裡能直接 ctrl+v 貼上照片上去」。
+  // 電腦（Win+Shift+S 截圖、⌘⇧4、在檔案總管複製圖片）與手機（長按複製圖片／截圖）
+  // 都會在剪貼簿裡放一個 kind === 'file' 的項目；這裡把它交給既有的 addPickedFiles，
+  // 所以「上限、去重、清單顯示、送出格式」與按鈕挑檔走的是同一條路徑
+  //（送出時 formData.append('file', file, file.name) 不變，伺服器端 safe_file_name
+  // 明確放行中文檔名，這條路已經有測試守著）。
+  const PASTE_EXT_BY_MIME = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/bmp': 'bmp',
+    'image/avif': 'avif',
+    'image/svg+xml': 'svg',
+    'image/tiff': 'tif',
+    'image/heic': 'heic',
+    'image/heif': 'heif',
+    'application/pdf': 'pdf'
+  };
+  let pasteBound = false;
+
+  // 剪貼簿給的檔名常常沒有意義（image.png／blob／空字串），三張截圖會全部同名，
+  // 老師在 iClass 也看不出是什麼。這裡換成「貼上圖片-YYYYMMDD-HHMMSS」＋對應副檔名。
+  // 有真正檔名的（例如從 Finder 複製的 IMG_2136.HEIC）沿用原檔名，不亂改。
+  function isGenericPasteName(name) {
+    const value = String(name || '').trim().toLowerCase();
+    if (!value || value === 'blob' || value === 'image' || value === 'untitled') return true;
+    return /^image\.(png|jpe?g|gif|webp|bmp|avif|heic|heif|tiff?)$/.test(value);
+  }
+
+  function pasteStamp(date) {
+    const pad = function(value) { return (value < 10 ? '0' : '') + value; };
+    return String(date.getFullYear()) + pad(date.getMonth() + 1) + pad(date.getDate())
+      + '-' + pad(date.getHours()) + pad(date.getMinutes()) + pad(date.getSeconds());
+  }
+
+  function pasteFileExt(file) {
+    const mime = String((file && file.type) || '').toLowerCase();
+    if (PASTE_EXT_BY_MIME[mime]) return PASTE_EXT_BY_MIME[mime];
+    return hwExtOf(file && file.name) || 'png';
+  }
+
+  function renamePastedFile(file, name) {
+    try {
+      return new File([file], name, {
+        type: file.type || '',
+        lastModified: file.lastModified || Date.now()
+      });
+    } catch (error) {
+      // 極舊的瀏覽器沒有 File 建構子 → 沿用原本的檔名，貼上功能不受影響。
+      return file;
+    }
+  }
+
+  // 檔名唯一化（HOMEWORK_PASTE_V1 的補強）：時間戳只到秒，同一秒內連貼兩次會產生
+  // 相同的檔名；而 addPickedFiles 是用「檔名＋大小」去重的 → 兩張**同尺寸**的圖會被
+  // 安靜地吃掉一張（使用者以為貼了兩張，清單只有一張）。這裡改成跟清單裡已存在的
+  // 名字（含同一批剛取好的）比對，撞到就往後加 -2／-3…
+  function uniquePasteName(stem, ext, usedNames) {
+    let name = stem + '.' + ext;
+    let counter = 2;
+    while (usedNames.indexOf(name) >= 0) {
+      name = stem + '-' + counter + '.' + ext;
+      counter += 1;
+    }
+    usedNames.push(name);
+    return name;
+  }
+
+  function addPastedFiles(rawFiles) {
+    if (!rawFiles || !rawFiles.length) return;
+    const maxFiles = submitLimits.max_files || 10;
+    const stamp = pasteStamp(new Date());
+    const multiple = rawFiles.length > 1;
+    // 目前清單裡已有的檔名（含逐一新增的），用來確保這次取的名字不會撞到。
+    const usedNames = pickedFiles.map(function(file) { return file.name; });
+    let total = 0;
+    for (let i = 0; i < pickedFiles.length; i += 1) total += pickedFiles[i].size;
+    const accepted = [];
+    let skippedSize = 0;
+    let skippedCount = 0;
+    let skippedTotal = 0;
+    for (let i = 0; i < rawFiles.length; i += 1) {
+      let file = rawFiles[i];
+      if (isGenericPasteName(file.name)) {
+        const ext = pasteFileExt(file);
+        const stem = '貼上圖片-' + stamp + (multiple ? ('-' + (i + 1)) : '');
+        file = renamePastedFile(file, uniquePasteName(stem, ext, usedNames));
+      }
+      // 逐檔先擋：超過上限的直接略過，其餘仍照收（不要因為一張太大就整批不算）。
+      if (submitLimits.max_file_bytes && file.size > submitLimits.max_file_bytes) {
+        skippedSize += 1;
+        continue;
+      }
+      if (pickedFiles.length + accepted.length >= maxFiles) {
+        skippedCount += 1;
+        continue;
+      }
+      if (submitLimits.max_total_bytes && total + file.size > submitLimits.max_total_bytes) {
+        skippedTotal += 1;
+        continue;
+      }
+      total += file.size;
+      accepted.push(file);
+    }
+    const before = pickedFiles.length;
+    if (accepted.length) addPickedFiles(accepted);
+    const added = pickedFiles.length - before;
+
+    const parts = [];
+    if (added) {
+      let sum = 0;
+      for (let i = 0; i < accepted.length; i += 1) sum += accepted[i].size;
+      parts.push('已貼上 ' + added + ' 個檔案（' + formatBytes(sum) + '）'
+        + (added < accepted.length ? '（同檔名的重複項目已略過）' : ''));
+    } else if (accepted.length) {
+      // 名稱與大小都跟清單裡既有的一樣 → addPickedFiles 會去重，這裡要照實說。
+      parts.push('這 ' + accepted.length + ' 個檔案與清單裡既有的相同，已略過');
+    }
+    if (skippedSize) {
+      parts.push(skippedSize + ' 個超過單檔上限 ' + formatBytes(submitLimits.max_file_bytes) + '，已略過');
+    }
+    if (skippedCount) parts.push(skippedCount + ' 個超過「最多 ' + maxFiles + ' 個」上限，已略過');
+    if (skippedTotal) {
+      parts.push(skippedTotal + ' 個超過單次合計上限 ' + formatBytes(submitLimits.max_total_bytes) + '，已略過');
+    }
+    if (!parts.length) return;
+    showToast(parts.join('；'), accepted.length ? 'ok' : 'warn');
+  }
+
+  function onHomeworkPaste(ev) {
+    // 只有「繳交作業」彈窗開著時才接手；其他頁面、其他輸入框的貼上一律不干擾。
+    const mask = q('hwDetailMask');
+    const list = q('hwSubmitPicked');
+    if (!mask || mask.hidden || !list || !list.closest('#hwDetailMask')) return;
+    const clipboard = ev.clipboardData;
+    if (!clipboard) return;
+    const pasted = [];
+    const items = clipboard.items || [];
+    for (let i = 0; i < items.length; i += 1) {
+      if (items[i].kind !== 'file') continue;      // 純文字留在剪貼簿路徑，不攔
+      const file = items[i].getAsFile();
+      if (file) pasted.push(file);
+    }
+    if (!pasted.length && clipboard.files && clipboard.files.length) {
+      for (let i = 0; i < clipboard.files.length; i += 1) pasted.push(clipboard.files[i]);
+    }
+    // 沒有檔案 → 不 preventDefault，文字照常貼進下方的「文字說明」。
+    if (!pasted.length) return;
+    ev.preventDefault();   // 有檔案就不要再把圖片／檔名塞進文字框
+    addPastedFiles(pasted);
+  }
+
+  function bindHomeworkPaste() {
+    if (pasteBound) return;
+    pasteBound = true;
+    document.addEventListener('paste', onHomeworkPaste);
+  }
+
   function renderSubmitStatus(submission) {
     const box = q('hwSubmitStatus');
     if (!box) return;
@@ -1513,7 +1674,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     fileField.className = 'hw-submit-field';
     const fileLabel = document.createElement('label');
     fileLabel.setAttribute('for', 'hwSubmitFileInput');
-    fileLabel.textContent = '選擇檔案（可多選；選擇後可再追加）';
+    fileLabel.textContent = '選擇檔案（可多選；選擇後可再追加，也可以直接貼上 Ctrl+V）';
     const fileInput = document.createElement('input');
     fileInput.type = 'file';
     fileInput.id = 'hwSubmitFileInput';
@@ -1570,6 +1731,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     wrap.appendChild(note);
 
     body.appendChild(wrap);
+    bindHomeworkPaste();
     renderPickedFiles();
     loadSubmissionState(courseId, itemId, account);
   }

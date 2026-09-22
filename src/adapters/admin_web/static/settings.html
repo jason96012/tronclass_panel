@@ -123,6 +123,13 @@
   .tmsg.ok{color:var(--ok)}
   .tmsg.bad{color:#b91c1c}
   @media(max-width:640px){.test-row{flex-direction:column;align-items:stretch}.tbtn{width:100%}}
+  /* MOBILE_OVERFLOW_V1（fix107）：卡片裡的網址與 IndexNow 金鑰是「沒有空白的長字串」，
+     預設不會斷行 → 整張卡（連帶整頁）被撐出畫面（手機實測 320px 寬時溢出 189px）。
+     ① .test-row 是 flex；子項的 min-width:auto 讓它無法縮到比「最長的不可斷行字串」更窄 → 給 0。
+     ② overflow-wrap:anywhere 讓長字串能在任何位置斷行；它同時會影響 min-content 寬度，
+        所以①的縮小才真的有效（overflow-wrap:break-word 不會影響 min-content）。 */
+  .test-row>span{min-width:0}
+  .test-row i,.test-row b,.test-row .test-input,p.hint{overflow-wrap:anywhere}
   /* ── SETTINGS_PICKER_VISIBILITY_V1：深色下 theme.css 通用按鈕規則會蓋掉本頁樣式，以更高優先權還原 ── */
   html[data-theme="dark"] button.theme-card{background:var(--soft)!important;color:var(--text)!important}
   html[data-theme="dark"] button.theme-card.active{background:var(--card)!important;border-color:var(--primary)!important;box-shadow:0 0 0 3px rgba(59,130,246,.35)!important}
