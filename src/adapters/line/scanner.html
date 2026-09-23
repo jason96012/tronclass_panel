@@ -810,6 +810,11 @@
     const PERF_MIN_IDLE_MS = 6;        // 區域之間的最小讓手時間
     /* 送出（POST /scanner/submit）最多等幾毫秒，逾時就放棄那一次並解鎖。 */
     const SUBMIT_TIMEOUT_MS = 8000;
+    /* SCANNER_QUALITY_V1（fix110）：送出失敗的自動重試。後端 `scanner.rs` 的 submit 明確寫著
+       「同一個 scanner token 在過期前允許重複送出…流程成功的帳號會自行 unregister」，
+       所以重試只會補送給**仍在等待**的帳號，不會造成重複簽到。 */
+    const SUBMIT_ATTEMPTS = 3;          /* 1 次 + 最多 2 次重試 */
+    const SUBMIT_RETRY_BASE_MS = 1200;  /* 退避：1.2s → 2.4s */
     /* 連續多久沒解到碼就提示使用者（秒）。 */
     const NO_QR_HINT_SECS = 2.5;
     /* ALL_DONE_AUTOSTOP_V1（fix103）：待點名的都點到 → 自動切「完成」狀態並關掉相機。
@@ -1073,6 +1078,39 @@
     /* QR_SUBMIT_TIMEOUT_V1（fix78）：送出一定要有逾時。
        以前 fetch 沒有逾時，手機切換網路／休眠時 promise 可能不結束 → submitInFlight
        永遠是 true → 之後每一次掃到的碼都被丢掉，而且畫面一句話都不說。 */
+    /* ─────────── SCANNER_QUALITY_V1（fix110）②：送出失敗的自動重試 ───────────
+       為什麼要做：教室 WiFi 掉一下、電梯裡沒訊號、伺服器忙一下 —— 舊版就只有一行紅字，
+       那個 QR 就真的沒送出去（下一個碼如果換了，前面的帳號就漏掉了）。
+
+       什麼情況才重試（這是關鍵，不要亂重試）：
+         * **沒有拿到 HTTP 回應**（連線失敗、8 秒逾時被 abort）→ 重試（`err.scannerStatus` 不存在）。
+         * **HTTP 5xx**（上游臨時錯誤）→ 重試。
+         * **HTTP 4xx**（逾時、沒有等待中的 QR、token 失效、參數錯）→ **不重試**：
+           那是學校系統的明確答案，重試只會多打三次、還把真正的錯誤訊息蓋掉。
+         * **手機沒網路**（`navigator.onLine === false`）→ 不重試（重試必然失敗），改提示離線。
+       安全性：後端同一個 token 本來就允許重複送出（見 scanner.rs 的註解），
+       成功簽到的帳號會自行 unregister，所以重試只補送給還在等待的人。 */
+    function sleepMs(ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, Math.max(0, ms || 0)); });
+    }
+    function submitRetryVerdict(err, attempt) {
+      if (attempt >= SUBMIT_ATTEMPTS) return { retry: false };
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        return { retry: false, offline: true };
+      }
+      const status = err && err.scannerStatus;
+      const noResponse = (typeof status !== "number");
+      const serverError = (typeof status === "number") && status >= 500;
+      if (!noResponse && !serverError) return { retry: false };
+      const delay = SUBMIT_RETRY_BASE_MS * Math.pow(2, attempt - 1);
+      return {
+        retry: true,
+        delay: delay,
+        message: `送出${noResponse ? "沒有回應" : "遇到伺服器錯誤"}（第 ${attempt} 次），`
+          + `${Math.round(delay / 100) / 10} 秒後自動重試…`
+      };
+    }
+
     async function submitQr(qrData) {
       const now = Date.now();
       if (!qrData) return;
@@ -1094,28 +1132,66 @@
       lastSubmittedAt = now;
       setStatus("正在回傳 QR Code...", "");
 
-      const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
-      const timer = controller
-        ? setTimeout(() => { try { controller.abort(); } catch (err) {} }, SUBMIT_TIMEOUT_MS)
-        : null;
-      try {
-        const init = {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            provider,
-            rollcall_id: rollcallId,
-            account_id: accountId,
-            token,
-            qr_data: qrData
-          })
-        };
-        if (controller) init.signal = controller.signal;
-        const res = await fetch("/scanner/submit", init);
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          throw new Error(body.error || `回傳失敗（HTTP ${res.status}）`);
+      /* 送出一次（逾時、keepalive 都在這裡）。外層的 while 負責重試。 */
+      async function submitOnce() {
+        const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
+        const timer = controller
+          ? setTimeout(() => { try { controller.abort(); } catch (err) {} }, SUBMIT_TIMEOUT_MS)
+          : null;
+        try {
+          const init = {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              provider,
+              rollcall_id: rollcallId,
+              account_id: accountId,
+              token,
+              qr_data: qrData
+            }),
+            /* keepalive：送出後就算使用者把分頁切走或關掉，瀏覽器也會把請求送完
+               （本體只有幾百 bytes，遠低於 keepalive 的 64KB 上限）。 */
+            keepalive: true
+          };
+          if (controller) init.signal = controller.signal;
+          const res = await fetch("/scanner/submit", init);
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            const failure = new Error(body.error || `回傳失敗（HTTP ${res.status}）`);
+            /* 有狀態碼＝學校系統的明確答案 → submitRetryVerdict 會據此決定不重試。 */
+            failure.scannerStatus = res.status;
+            throw failure;
+          }
+          return body;
+        } finally {
+          if (timer) clearTimeout(timer);
         }
+      }
+
+      let body = null;
+      let failure = null;
+      let attempts = 0;
+      let offlineThisTime = false;   /* 離線時要留著白話說明，不要被 "Failed to fetch" 蓋掉 */
+      try {
+        while (attempts < SUBMIT_ATTEMPTS) {
+          attempts += 1;
+          try {
+            body = await submitOnce();
+            failure = null;
+            break;
+          } catch (err) {
+            failure = err;
+            const verdict = submitRetryVerdict(err, attempts);
+            if (verdict.offline) {
+              offlineThisTime = true;
+              setStatus("手機目前沒有網路連線，這次 QR 沒有送出：等連線恢復後可以直接重掃，或按「立即回傳」。", "warn");
+            }
+            if (!verdict.retry) break;
+            setStatus(verdict.message, "warn");
+            await sleepMs(verdict.delay);
+          }
+        }
+        if (failure) throw failure;
         successfulSubmits += 1;
         /* ALL_DONE_AUTOSTOP_V1：送出途中如果已經「全部點到自動收工」，就不要再把狀態列
            蓋回「持續掃描中...」——那會讓已經收工的畫面看起來又在掃（同一種競態）。 */
@@ -1123,7 +1199,9 @@
           /* 送出結果只寫在狀態列，不要蓋掉掃描列的「已解出 QR」（兩行各司其職：
              掃描列＝有沒有解到碼，狀態列＝送出結果）。 */
           setStatus(
-            `已送出第 ${successfulSubmits} 次，${body.delivered_count || 0} 個帳號收到 QR Code。持續掃描中...`,
+            `已送出第 ${successfulSubmits} 次，${body.delivered_count || 0} 個帳號收到 QR Code。`
+              + (attempts > 1 ? `（重試 ${attempts - 1} 次後成功）` : "")
+              + "持續掃描中...",
             "ok"
           );
           reportSubmitOnPreview(true, `✅ 已送出（${body.delivered_count || 0} 個帳號）`);
@@ -1134,16 +1212,17 @@
         /* ALL_DONE_AUTOSTOP_V1：已經自動收工就不用再報送出失敗（那時全班都已點到，
            這一輪的失敗已經不影響結果），免得紅色訊息蓋掉完成訊息。 */
         if (!allDoneStopped) {
-          setStatus(
-            aborted
-              ? `回傳卡住超過 ${Math.round(SUBMIT_TIMEOUT_MS / 1000)} 秒，已放棄這一次（仍會持續掃描）`
-              : ((err && err.message) || "回傳失敗，仍會持續掃描。"),
-            "error"
-          );
+          const tried = attempts > 1 ? `（已嘗試 ${attempts} 次）` : "";
+          /* 離線時留著白話說明：原生錯誤（Failed to fetch）對老師沒有任何意義。 */
+          const reason = offlineThisTime
+            ? "手機沒有網路連線，這次 QR 沒有送出去（連線恢復後重掃，或按「立即回傳」）"
+            : (aborted
+              ? `回傳卡住超過 ${Math.round(SUBMIT_TIMEOUT_MS / 1000)} 秒，已放棄這一次`
+              : ((err && err.message) || "回傳失敗"));
+          setStatus(reason + tried + "（仍會持續掃描）", offlineThisTime ? "warn" : "error");
           reportSubmitOnPreview(false, aborted ? "❌ 送出逾時（仍持續掃描）" : "❌ 送出失敗（仍持續掃描）");
         }
       } finally {
-        if (timer) clearTimeout(timer);
         submitInFlight = false;   // ← 一定會解鎖，不會再永久卡住
       }
     }
@@ -4471,6 +4550,53 @@ void main() {
       return navigator.mediaDevices.getUserMedia({ video: constraints, audio: false });
     }
 
+    /* ─────────── SCANNER_QUALITY_V1（fix110）①：掃描時螢幕不要自己熄掉 ───────────
+       為什麼要做：掃碼得一直開著相機，手機幾十秒沒觸控就自動鎖屏 → 畫面黑掉、掃描中斷，
+       使用者要重新解鎖、再按「開啟相機」。班上一堆人排隊時這個中斷特別惱人。
+
+       實作要點（都是規格層面的事實，不是偏好）：
+       * `navigator.wakeLock.request("screen")` 回傳一個 sentinel；**頁面進入背景時瀏覽器會
+         自動釋放它**（並觸發 sentinel 的 "release" 事件），所以回前景要重新取得。
+       * 不支援的環境（舊 iOS Safari、非 HTTPS、省電模式、使用者拒絕）→ 靜靜跳過，
+         **完全不影響既有功能**（掃描、預覽、送出都不經過這裡）。
+       * 只在掃描中持有；`stopCamera()` 一定釋放 —— 收工（ALL_DONE_AUTOSTOP_V1）、
+         按停止、換鏡頭都走同一條路徑。 */
+    let wakeLockSentinel = null;
+    let wakeLockNotice = "";
+    function wakeLockSupported() {
+      return typeof navigator !== "undefined" && navigator.wakeLock
+        && typeof navigator.wakeLock.request === "function";
+    }
+    function acquireWakeLock() {
+      if (!scanning || !wakeLockSupported() || wakeLockSentinel) return;
+      let request = null;
+      try {
+        request = navigator.wakeLock.request("screen");
+      } catch (err) {
+        wakeLockNotice = "螢幕鎖定：不支援";
+        return;
+      }
+      Promise.resolve(request).then(function (sentinel) {
+        wakeLockSentinel = sentinel || null;
+        wakeLockNotice = sentinel ? "螢幕鎖定：保持亮著" : "";
+        if (sentinel && typeof sentinel.addEventListener === "function") {
+          /* 背景自動釋放、或使用者手動關螢幕 → 這裡會收到通知，狀態才不會說謊。 */
+          sentinel.addEventListener("release", function () { wakeLockSentinel = null; });
+        }
+      }).catch(function () {
+        wakeLockSentinel = null;
+        wakeLockNotice = "螢幕鎖定：瀏覽器未允許";
+      });
+    }
+    function releaseWakeLock() {
+      const sentinel = wakeLockSentinel;
+      wakeLockSentinel = null;
+      wakeLockNotice = "";
+      if (sentinel && typeof sentinel.release === "function") {
+        try { sentinel.release(); } catch (err) { /* 已經被瀏覽器釋放過了 */ }
+      }
+    }
+
     async function startCamera(deviceId) {
       /* QR_CAMERA_SINGLETON_V1（fix80）：同時只允許一個開啟流程。
          頁面載入時會自動開相機，使用者若在那之前又按「開啟相機」，
@@ -4546,6 +4672,7 @@ void main() {
         if (surfaceEffective() === "gl") startPreviewSharpen();
         await refreshCamList(activeCamId);
         scanning = true;
+        acquireWakeLock();   /* SCANNER_QUALITY_V1：掃描中要求螢幕保持亮著（不支援就跳過） */
         lastQrAt = nowMs();
         /* PREVIEW_ALIVE_V1：開機前 3 秒曝光／圖層都還在收斂，先不要判定黑屏。 */
         previewWarmUntil = nowMs() + 3000;
@@ -4568,6 +4695,7 @@ void main() {
 
     function stopCamera() {
       scanning = false;
+      releaseWakeLock();   /* SCANNER_QUALITY_V1：停止掃描就一定要放掉螢幕鎖定 */
       /* PREVIEW_ALIVE_V1／BRIGHT_GUARD_V1：停止時把偵測狀態歸零，下次開相機重新起算。 */
       previewDarkSince = 0;
       previewRecoverStep = 0;
@@ -4773,7 +4901,30 @@ void main() {
       window.screen.orientation.addEventListener("change", () => { setTimeout(sizeHitOverlay, 250); });
     }
     refreshAttendanceStatus();
-    setInterval(refreshAttendanceStatus, 1500);
+    /* SCANNER_QUALITY_V1（fix110）③：切到背景就不要再打 /scanner/status —— 手機切到別的 App
+       時畫面看不到、掃描也不會動，1.5 秒一次只是白耗電並多打學校後端。回前景立刻補一次讀數。
+       ④：離線／恢復也給一句白話，不要讓使用者只看到一次次的失敗訊息。 */
+    setInterval(function () {
+      if (typeof document !== "undefined" && document.hidden === true) return;
+      refreshAttendanceStatus();
+    }, 1500);
+    if (typeof document.addEventListener === "function") {
+      document.addEventListener("visibilitychange", function () {
+        if (typeof document.hidden !== "undefined" && document.hidden === true) return;
+        refreshAttendanceStatus();
+        /* 回前景：Wake Lock 被瀏覽器在背景自動釋放了，掃描中就把螢幕鎖定再拿回來。 */
+        acquireWakeLock();
+      });
+    }
+    if (typeof window.addEventListener === "function") {
+      window.addEventListener("offline", function () {
+        setStatus("手機目前沒有網路連線：QR 還是解得出來，但送不出去（連線恢復這裡會提示）。", "warn");
+      });
+      window.addEventListener("online", function () {
+        setStatus("網路恢復了，繼續掃描中...", "ok");
+        refreshAttendanceStatus();
+      });
+    }
     /* QR_ZXING_V1：進頁面就把 zxing-wasm 載好（背景做，不擋相機開啟）。
        載入失敗也不影響：解碼會自動退回 jsQR。 */
     initZxing().then(() => updateCamInfo());

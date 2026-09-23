@@ -5753,7 +5753,7 @@ dependencies = [
 
 [[package]]
 name = "tronclass_rollcall"
-version = "0.1.9"
+version = "0.1.13"
 dependencies = [
  "aes-gcm",
  "argon2",

@@ -52,7 +52,7 @@ cee87586dabf358d4adc3dd0b2c9183a35b141baeb99f51c3506176a5cd9726e  ./adapters/adm
 da0c3055c6584cbd2fa8a9d72c9ca05eeabd9208330c46bc66aaeb46d8f46aca  ./adapters/admin_web/static/dashboard.html
 1b397fca25606dd2ebac59c6f68c621cdf3b4f9e006a61757b7c6903749a316a  ./adapters/admin_web/static/detection_schedule.html
 98c9317bb61f2f6c3f0cc66c2ecc63f8ff7a7753c73c118f9a5f2658f714b81f  ./adapters/admin_web/static/devices.html
-4a758e2011f3eec886ee4061d9cd6c42fd18168301c3d8e95b5eeaf7dafb9b54  ./adapters/admin_web/static/files.html
+456c75aac129dfbd6ced3c3be92d99da935595d854b0394fe2a4aeac0be57d83  ./adapters/admin_web/static/files.html
 df5ac0a1a5bb612e00ac32d10877e03019f2ed3c6b590dd60648f44b1915e12f  ./adapters/admin_web/static/health.html
 0509295409c728f1d5f43127b973b4e5e2013c8fef4156be37a63ba45b89fe51  ./adapters/admin_web/static/homework.html
 1829b12fb419cb4d8cbafe219af692d71395642ab476c82c148f884a5bf44407  ./adapters/admin_web/static/js/accounts.js
@@ -129,7 +129,7 @@ a26f07ed75be2647affd8e0c2f0a728399f4ee4f543a76754423cfa6d956262e  ./adapters/eve
 f9e1462788f9bd1acfaccd16110c98f66e93107d8a8e71d50234bdf80e7adbe3  ./adapters/line/mod.rs
 911417ba11386e993d1ec0937dd6ce968df45014c865361e59c020419fc9bef4  ./adapters/line/number.html
 d35635cb78ade470f2c74c4a38af76e97e90daf78ec3646ba72154a91877b3a3  ./adapters/line/radar.html
-dda674ef05893b90e45048b17cef57d6c0706d1011a048192355056a06e411e3  ./adapters/line/scanner.html
+e82975c6b1374027766eb0cd09ab78cdbfa0842f8a8516e523da71448b430966  ./adapters/line/scanner.html
 8be384ae3a1483833996886278022f94d332813e8d08f03a1e315ea4a412b3c2  ./adapters/line/sr/model.onnx
 6783fcd6647ce1b426a527c31412a9c40894552faa609e9c931b3239a3438071  ./adapters/line/sr/ort-wasm-simd.wasm
 7164cd2f49f85bb09673f7e4a255f0a71bc2af8f9a88f65bbd096b1ad834d8f8  ./adapters/line/sr/ort.mjs
