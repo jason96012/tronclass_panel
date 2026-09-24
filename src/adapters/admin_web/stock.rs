@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::body::Bytes;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
@@ -82,8 +82,14 @@ fn stockgenie_python_candidates() -> Vec<PathBuf> {
 }
 
 fn resolve_stockgenie_python() -> Option<PathBuf> {
-    for cand in stockgenie_python_candidates() {
-        if cand.is_file() {
+    let cands = stockgenie_python_candidates();
+    for cand in &cands {
+        if cand.is_file() && is_venv_python(cand) {
+            return Some(cand.clone());
+        }
+    }
+    for cand in cands {
+        if cand.is_file() && !is_bare_cpython(&cand) {
             return Some(cand);
         }
     }
@@ -197,28 +203,117 @@ fn stock_html_response(html: String) -> Response {
     response
 }
 
+fn pidfile_alive(path: &str) -> bool {
+    let Ok(txt) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let pid = txt.trim();
+    if pid.is_empty() || !pid.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    std::path::Path::new("/proc").join(pid).exists()
+}
+
+fn sidecar_log_tail() -> String {
+    let Ok(data) = std::fs::read("logs/stockgenie.log") else {
+        return String::new();
+    };
+    let start = data.len().saturating_sub(600);
+    let s = String::from_utf8_lossy(&data[start..]);
+    let t = s.trim();
+    if t.is_empty() {
+        String::new()
+    } else {
+        format!("；log：{t}")
+    }
+}
+
+fn abs_python(bin: &std::path::Path) -> PathBuf {
+    // 不可 canonicalize：venv/bin/python 是 symlink，解開會變成裸 CPython，
+    // 沒有 uvicorn／site-packages。
+    if bin.is_absolute() {
+        bin.to_path_buf()
+    } else if let Ok(cwd) = std::env::current_dir() {
+        cwd.join(bin)
+    } else {
+        bin.to_path_buf()
+    }
+}
+
+fn is_venv_python(p: &std::path::Path) -> bool {
+    p.to_string_lossy().contains("stockgenie-venv")
+}
+
+fn is_bare_cpython(p: &std::path::Path) -> bool {
+    let s = p.to_string_lossy();
+    s.contains("stockgenie-python") && !s.contains("stockgenie-venv")
+}
+
+async fn sidecar_port_open() -> bool {
+    tokio::net::TcpStream::connect((STOCK_SIDECAR_HOST, STOCK_SIDECAR_PORT))
+        .await
+        .is_ok()
+}
+
+async fn wait_sidecar_health_for(rounds: u32, delay_ms: u64) -> bool {
+    for _ in 0..rounds {
+        if wait_sidecar_health().await {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+    }
+    false
+}
+
 async fn spawn_uvicorn(dir: &std::path::Path, bin: &std::path::Path) -> Result<tokio::process::Child, String> {
-    Command::new(bin)
-        .args([
-            "-m",
-            "uvicorn",
-            "app:app",
-            "--host",
-            STOCK_SIDECAR_HOST,
-            "--port",
-            "18765",
-            "--log-level",
-            "warning",
-        ])
-        .current_dir(dir)
-        .env("PYTHONUNBUFFERED", "1")
-        .env("STOCKGENIE_EMBED", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .kill_on_drop(false)
-        .spawn()
-        .map_err(|e| format!("無法啟動 {}：{e}", bin.display()))
+    let py = abs_python(bin);
+    let mut cmd = Command::new(&py);
+    cmd.args([
+        "-m",
+        "uvicorn",
+        "app:app",
+        "--host",
+        STOCK_SIDECAR_HOST,
+        "--port",
+        "18765",
+        "--log-level",
+        "warning",
+    ])
+    .current_dir(dir)
+    .env("PYTHONUNBUFFERED", "1")
+    .env("STOCKGENIE_EMBED", "1")
+    .env("PYTHONNOUSERSITE", "1")
+    .env("DD_TRACE_ENABLED", "0")
+    .env("DD_PROFILING_ENABLED", "0")
+    .stdin(Stdio::null())
+    .kill_on_drop(false);
+    if let Some(venv) = py.parent().and_then(std::path::Path::parent) {
+        cmd.env("VIRTUAL_ENV", venv);
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        cmd.env("UV_PYTHON_INSTALL_DIR", cwd.join("run/stockgenie-python"));
+        cmd.env("UV_CACHE_DIR", cwd.join("run/uv-cache"));
+        cmd.env("STOCKGENIE_CACHE", cwd.join("run/stockgenie-cache"));
+    }
+    let _ = std::fs::create_dir_all("logs");
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("logs/stockgenie.log")
+    {
+        match file.try_clone() {
+            Ok(clone) => {
+                cmd.stdout(Stdio::from(clone)).stderr(Stdio::from(file));
+            }
+            Err(_) => {
+                cmd.stdout(Stdio::from(file)).stderr(Stdio::null());
+            }
+        }
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    cmd.spawn()
+        .map_err(|e| format!("無法啟動 {}：{e}", py.display()))
 }
 
 /// STOCKGENIE_BOOTSTRAP_ASYNC_V1：第一次裝 venv 可能要幾分鐘，不能卡住
@@ -292,9 +387,25 @@ async fn wait_sidecar_health() -> bool {
 }
 
 async fn start_stock_sidecar() -> Result<(), String> {
-    // ptero-start 可能已經聽在 18765；先確認，避免搶 port。
+    // ptero-start 可能已經聽在 18765；先確認，避免搶 port（EADDRINUSE → exit 1）。
     if wait_sidecar_health().await {
         return Ok(());
+    }
+    let already =
+        pidfile_alive("logs/stockgenie.pid") || pidfile_alive("logs/stockgenie-boot.pid") || sidecar_port_open().await;
+    if already {
+        // pandas／uvicorn 冷啟動可能要十幾秒才開始聽；不要再 spawn。
+        if wait_sidecar_health_for(120, 250).await {
+            return Ok(());
+        }
+        if wait_sidecar_health().await {
+            return Ok(());
+        }
+        if sidecar_port_open().await {
+            return Err(
+                "智選 port 18765 已占用但尚未回應 health（多半還在載入）。請稍後重新整理。".to_string(),
+            );
+        }
     }
     let dir = stockgenie_dir().ok_or_else(|| {
         "找不到智選程式（src/adapters/admin_web/stockgenie/app.py）".to_string()
@@ -304,29 +415,49 @@ async fn start_stock_sidecar() -> Result<(), String> {
         None => bootstrap_stockgenie_python().await?,
     };
     let mut child = spawn_uvicorn(&dir, &py).await?;
-    for _ in 0..40 {
+    for _ in 0..80 {
         match child.try_wait() {
             Ok(Some(status)) => {
-                return Err(format!("智選服務立即結束（{status}）"));
+                if wait_sidecar_health_for(20, 250).await {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "智選服務立即結束（{status}）{}",
+                    sidecar_log_tail()
+                ));
             }
             Ok(None) => {}
             Err(e) => return Err(format!("無法確認智選行程：{e}")),
         }
         if wait_sidecar_health().await {
             tokio::spawn(async move {
-                let _ = child.wait().await;
+                let status = child.wait().await;
+                if wait_sidecar_health().await {
+                    SIDECAR_READY.store(true, Ordering::SeqCst);
+                    return;
+                }
                 SIDECAR_READY.store(false, Ordering::SeqCst);
-                tracing::warn!("stockgenie sidecar exited");
+                match status {
+                    Ok(s) => tracing::warn!(exit = %s, "stockgenie sidecar exited"),
+                    Err(e) => tracing::warn!(error = %e, "stockgenie sidecar wait failed"),
+                }
             });
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    // 行程還在、只是 health 較慢（首次掃描）——仍視為已啟動。
+    // 行程還在、只是 health 較慢（首次掃描／import）——仍視為已啟動。
     tokio::spawn(async move {
-        let _ = child.wait().await;
+        let status = child.wait().await;
+        if wait_sidecar_health().await {
+            SIDECAR_READY.store(true, Ordering::SeqCst);
+            return;
+        }
         SIDECAR_READY.store(false, Ordering::SeqCst);
-        tracing::warn!("stockgenie sidecar exited");
+        match status {
+            Ok(s) => tracing::warn!(exit = %s, "stockgenie sidecar exited"),
+            Err(e) => tracing::warn!(error = %e, "stockgenie sidecar wait failed"),
+        }
     });
     Ok(())
 }
@@ -376,7 +507,7 @@ pub(super) async fn admin_stock_page_handler(
 pub(super) async fn admin_stock_api_proxy(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
-    Path(rest): Path<String>,
+    AxumPath(rest): AxumPath<String>,
     request: axum::extract::Request,
 ) -> Response {
     let Some(_session) = state.authorize(&query.token).await else {

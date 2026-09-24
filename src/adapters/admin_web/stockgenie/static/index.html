@@ -44,7 +44,13 @@ button{cursor:pointer}
 .toolbar{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);align-items:center}
 .chip{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:5px 11px;color:var(--muted);font-size:12px}
 .chip.on{border-color:#3a6a68;color:var(--cyan);background:#132428}
+.search-wrap{position:relative;flex:1;min-width:200px;display:flex;gap:6px;align-items:center}
 .search{flex:1;min-width:140px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+.suggest{display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:40;background:#121a22;border:1px solid var(--line);border-radius:10px;max-height:260px;overflow:auto;box-shadow:0 8px 24px #0008}
+.suggest.on{display:block}
+.suggest button{display:block;width:100%;text-align:left;border:0;background:transparent;padding:8px 12px;color:var(--text)}
+.suggest button:hover{background:#152430}
+.suggest .sub{display:inline;margin-left:8px}
 .table-wrap{overflow:auto;flex:1}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th{position:sticky;top:0;background:#121a22;text-align:left;font-size:11px;color:var(--muted);font-weight:650;
@@ -160,7 +166,11 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <button class="chip" data-f="reso">三面向共振</button>
         <button class="chip" data-f="rr">RR≥1.5</button>
         <button class="chip" data-f="skip">建議放棄</button>
-        <input class="search" id="q" placeholder="搜尋代號或名稱">
+        <div class="search-wrap">
+          <input class="search" id="q" placeholder="查詢代號或名稱（Enter）" autocomplete="off">
+          <button class="chip" type="button" data-act="lookup">查詢</button>
+          <div class="suggest" id="suggest"></div>
+        </div>
         <label class="cap">資金 <input id="capital" type="number" value="1000000" step="10000"> 風控 1%</label>
       </div>
       <div class="table-wrap">
@@ -210,7 +220,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     1. 回測約五年 walk-forward，只覆蓋技術分＋長上影／價格還原／週線／大盤閘門；基本面／籌碼是當前快照，納入會前視偏差。<br>
     2. 訊號是機率不是保證；T86 盤後延遲一日；融資融券用 MI_MARGN 當日快照；財報季更；台股盤中約延遲 20 分。<br>
     3. 分析師目標價 12–18 個月準確率約 30%。<br>
-    4. 台股看板為上市普通股全市場（證交所 MI_INDEX，排除 00xx ETF）。美股仍為精選大盤股。<br>
+    4. 台股看板為每日輪換的潛力股（約 30 檔：當日成交金額／量／漲幅／收在高檔），不是全市場下載。新交易日自動換一批。美股仍為精選大盤股。上方可輸入代號或名稱查任意上市股票（單檔日K，不掃全市場）。<br>
     5. 「結構三買」是簡化規則（回測不破前段盤整上沿），不是完整纏論中樞。<br>
     6. 因子排序不是微軟 qlib 的機器學習模型。<br>
     本系統不構成投資建議。虧損可能超過本金的風險部位請自行控制。
@@ -269,7 +279,53 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <td class="num up">${px(r.target_mid)}</td>
         <td>${r.rr==null?'—':fmt(r.rr,2)}</td>
       </tr>`;
-    }).join('') || `<tr><td colspan="11" class="empty">沒有符合條件的股票。資料載入中或篩選太嚴。</td></tr>`;
+    }).join('') || `<tr><td colspan="11" class="empty">沒有符合條件的股票。可在上方輸入代號或名稱查詢任意上市股票。</td></tr>`;
+  }
+
+  function hideSuggest(){
+    const box = $('suggest');
+    if (!box) return;
+    box.classList.remove('on');
+    box.innerHTML = '';
+  }
+  function guessSymbol(raw){
+    const t = (raw||'').trim().toUpperCase().replace(/．/g,'.');
+    if (!t) return '';
+    if (/^\d{3,6}$/.test(t)) return t + '.TW';
+    return t;
+  }
+  function renderSuggest(hits){
+    const box = $('suggest');
+    if (!box) return;
+    if (!hits || !hits.length){ hideSuggest(); return; }
+    box.innerHTML = hits.map(h => {
+      const code = String(h.symbol||'').replace('.TW','');
+      const name = h.name || '';
+      const mkt = h.market || '';
+      return `<button type="button" data-s="${String(h.symbol||'').replace(/"/g,'')}"><b>${code}</b><span class="sub">${name} · ${mkt}</span></button>`;
+    }).join('');
+    box.classList.add('on');
+  }
+  async function fetchLookup(q){
+    return j('/admin/stock-api/lookup?q='+encodeURIComponent(q)+'&market='+market);
+  }
+  async function lookupGo(openFirst){
+    const q = ($('q').value||'').trim();
+    if (!q){ hideSuggest(); return; }
+    try{
+      const d = await fetchLookup(q);
+      const hits = d.hits || [];
+      renderSuggest(hits);
+      const pick = (hits[0] && hits[0].symbol) || guessSymbol(q);
+      if (openFirst && pick){
+        hideSuggest();
+        open(pick);
+      }
+    }catch(e){
+      const pick = guessSymbol(q);
+      if (openFirst && pick){ hideSuggest(); open(pick); }
+      else hideSuggest();
+    }
   }
 
   function drawChart(bars, plan, fc){
@@ -625,12 +681,34 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     if (tab==='pos') loadPos();
   });
   document.querySelector('.toolbar').addEventListener('click', e => {
-    const b = e.target.closest('.chip'); if(!b) return;
+    const look = e.target.closest('[data-act="lookup"]');
+    if (look) { lookupGo(true); return; }
+    const b = e.target.closest('.chip'); if(!b || !b.dataset.f) return;
     filter = b.dataset.f;
-    document.querySelectorAll('.chip').forEach(x=>x.classList.toggle('on', x===b));
+    document.querySelectorAll('.chip[data-f]').forEach(x=>x.classList.toggle('on', x===b));
     renderTable();
   });
-  $('q').addEventListener('input', renderTable);
+  let suggestTimer = 0;
+  $('q').addEventListener('input', () => {
+    renderTable();
+    const q = ($('q').value||'').trim();
+    clearTimeout(suggestTimer);
+    if (!q){ hideSuggest(); return; }
+    suggestTimer = setTimeout(() => lookupGo(false), 220);
+  });
+  $('q').addEventListener('keydown', e => {
+    if (e.key === 'Enter'){ e.preventDefault(); lookupGo(true); }
+    else if (e.key === 'Escape') hideSuggest();
+  });
+  $('suggest').addEventListener('click', e => {
+    const b = e.target.closest('button[data-s]');
+    if (!b) return;
+    hideSuggest();
+    open(b.dataset.s);
+  });
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.search-wrap')) hideSuggest();
+  });
   $('capital').addEventListener('change', ()=>{ if(detail) renderDetail(detail); });
   $('tb').addEventListener('click', e => {
     const tr = e.target.closest('tr[data-s]'); if(!tr) return;

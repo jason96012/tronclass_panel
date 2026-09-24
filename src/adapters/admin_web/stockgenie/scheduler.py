@@ -6,9 +6,9 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-REPORTS = ROOT / "cache" / "reports"
-REPORTS.mkdir(parents=True, exist_ok=True)
+from paths import cache_dir, ensure_dir
+
+REPORTS = ensure_dir(cache_dir() / "reports")
 TAIPEI = timezone(timedelta(hours=8))
 
 

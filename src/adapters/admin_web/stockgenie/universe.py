@@ -1,4 +1,4 @@
-"""股票池：台股上市全市場（MI_INDEX，排除 00xx ETF）；美股仍為精選大盤股。
+"""股票池：台股為每日輪換潛力股（約 30 檔）；美股仍為精選大盤股。
 硬編碼 TW/US 清單當證交所資料尚未就緒時的後備。"""
 
 TW = [
@@ -282,9 +282,14 @@ def listed_tw_rows() -> list:
 def by_market(market: str):
     m = (market or "TW").upper()
     if m == "TW":
-        listed = listed_tw_rows()
-        if listed:
-            return listed
+        try:
+            from picks import daily_tw_rows
+
+            rows = daily_tw_rows()
+            if rows:
+                return rows
+        except Exception:
+            pass
     return [r for r in all_rows() if r["market"] == m]
 
 
@@ -308,6 +313,74 @@ def ranking_rows(market: str | None = None):
 
 def ranking_symbols(market: str) -> list[str]:
     return [r["symbol"] for r in ranking_rows(market)]
+
+
+def search_symbols(q: str, limit: int = 12) -> list:
+    """STOCKGENIE_LOOKUP_V1：查代號或名稱。用最新一盤上市名單，不下載全市場日K。"""
+    q = (q or "").strip()
+    if not q:
+        return []
+    if len(q) > 40:
+        q = q[:40]
+    q_up = q.upper().replace("．", ".")
+    pool = []
+    seen = set()
+
+    def add(row):
+        if not row:
+            return
+        sym = row.get("symbol") or ""
+        if not sym or sym in seen:
+            return
+        seen.add(sym)
+        pool.append(row)
+
+    for r in ranking_rows():
+        add(r)
+    try:
+        for r in listed_tw_rows():
+            add(r)
+    except Exception:
+        pass
+    hits = []
+    for r in pool:
+        sym = r["symbol"]
+        name = r.get("name") or ""
+        code = sym.replace(".TW", "")
+        name_up = name.upper()
+        if (
+            q_up == code
+            or q_up == sym.upper()
+            or q in name
+            or q_up in name_up
+            or code.startswith(q_up)
+            or sym.upper().startswith(q_up)
+        ):
+            hits.append(
+                {
+                    "symbol": sym,
+                    "name": name,
+                    "sector": r.get("sector") or "",
+                    "market": r.get("market") or ("TW" if sym.endswith(".TW") else "US"),
+                }
+            )
+    hits.sort(
+        key=lambda h: (
+            0 if h["symbol"].replace(".TW", "") == q_up or h["symbol"].upper() == q_up else 1,
+            0 if (h.get("name") or "").startswith(q) else 1,
+            h["symbol"],
+        )
+    )
+    if not hits:
+        raw = q_up.replace(".TW", "")
+        if raw.isdigit() and 3 <= len(raw) <= 6:
+            hits.append({"symbol": f"{raw}.TW", "name": raw, "sector": "", "market": "TW"})
+        elif 1 <= len(q_up) <= 10 and all(
+            c.isascii() and (c.isalnum() or c in ".-") for c in q_up
+        ) and not q_up.isdigit():
+            hits.append({"symbol": q_up, "name": q_up, "sector": "", "market": "US"})
+    cap = max(1, min(int(limit or 12), 20))
+    return hits[:cap]
 
 
 def meta(symbol: str):

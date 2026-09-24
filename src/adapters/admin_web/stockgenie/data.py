@@ -12,11 +12,12 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-CACHE = Path(__file__).resolve().parent / "cache"
-CACHE.mkdir(exist_ok=True)
-(CACHE / "info").mkdir(exist_ok=True)
-(CACHE / "ohlcv").mkdir(exist_ok=True)
-(CACHE / "t86").mkdir(exist_ok=True)
+from paths import cache_dir, ensure_dir
+
+CACHE = cache_dir()
+ensure_dir(CACHE / "info")
+ensure_dir(CACHE / "ohlcv")
+ensure_dir(CACHE / "t86")
 
 TAIPEI = timezone(timedelta(hours=8))
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StockGenie/2.0; research)"}
@@ -835,3 +836,49 @@ def load_twse_market_ohlcv(lookback: int = 260, max_new: int = 80) -> dict[str, 
         df = pd.DataFrame(rows).set_index("date").sort_index()
         out[f"{code}.TW"] = df
     return out
+
+
+def load_symbol_ohlcv(symbol: str, lookback: int = 260) -> pd.DataFrame | None:
+    """單檔日K：台股走 twse_bar 快取，美股走 ohlcv pkl。不掃全市場。"""
+    symbol = (symbol or "").upper()
+    if not symbol:
+        return None
+    code = symbol.split(".")[0]
+    if symbol.endswith(".TW") or (code.isdigit() and len(code) == 4):
+        bar_dir = CACHE / "twse_bar"
+        if not bar_dir.exists():
+            return None
+        files = sorted(bar_dir.glob("*.json"))[-lookback:]
+        rows: list[dict] = []
+        for f in files:
+            payload = _read_json(f, 10 * 365 * 86400)
+            if not isinstance(payload, dict):
+                continue
+            rec = payload.get(code)
+            if not rec:
+                continue
+            try:
+                ts = pd.Timestamp(f.stem)
+            except Exception:
+                continue
+            rows.append(
+                {
+                    "date": ts,
+                    "open": rec.get("open"),
+                    "high": rec.get("high"),
+                    "low": rec.get("low"),
+                    "close": rec.get("close"),
+                    "volume": rec.get("volume") or 0,
+                }
+            )
+        if len(rows) < 40:
+            return None
+        return pd.DataFrame(rows).set_index("date").sort_index()
+    path = CACHE / "ohlcv" / f"{symbol.replace('/', '_')}.pkl"
+    if path.exists():
+        try:
+            return pd.read_pickle(path)
+        except Exception:
+            return None
+    got = load_ohlcv_many([symbol], period="2y")
+    return got.get(symbol)

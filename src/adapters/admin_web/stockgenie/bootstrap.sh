@@ -55,11 +55,21 @@ venv_python() {
   return 1
 }
 
-# 已裝過：只認「venv 裡有可執行的 python」，不 import、不連網。
+pkgs_ok() {
+  local sp=""
+  sp="$(ls -d "$VENV"/lib/python3.*/site-packages 2>/dev/null | head -1 || true)"
+  [[ -n "$sp" && -d "$sp/fastapi" && -d "$sp/pandas" && -d "$sp/uvicorn" ]]
+}
+
+# 已裝過：venv python + fastapi/pandas/uvicorn 目錄都在，不 import、不連網。
 reuse_existing() {
   local bin=""
   bin="$(venv_python 2>/dev/null || true)"
   if [[ -z "$bin" ]]; then
+    return 1
+  fi
+  if ! pkgs_ok; then
+    echo "[stockgenie-bootstrap] python 已在但套件不齊，只補 pip"
     return 1
   fi
   write_bin "$bin"
@@ -174,12 +184,6 @@ else
   echo "[stockgenie-bootstrap] 建立 venv（不 --clear，以免下次開機把已裝環境清掉）"
   "$UV" venv "$VENV" --python 3.12
 fi
-
-pkgs_ok() {
-  local sp=""
-  sp="$(ls -d "$VENV"/lib/python3.*/site-packages 2>/dev/null | head -1 || true)"
-  [[ -n "$sp" && -d "$sp/fastapi" && -d "$sp/pandas" && -d "$sp/uvicorn" ]]
-}
 
 if pkgs_ok; then
   echo "[stockgenie-bootstrap] 套件已在，略過 pip"

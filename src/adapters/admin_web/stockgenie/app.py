@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import traceback
+import gc
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -24,9 +25,8 @@ from data import (
     load_monthly_revenue,
     load_ohlcv_many,
     load_t86_history,
-    load_twse_rps,
     load_latest_twse_closes,
-    load_twse_market_ohlcv,
+    load_symbol_ohlcv,
     summarize_intraday,
     t86_by_code,
 )
@@ -36,7 +36,7 @@ from positions import close_position, list_open, open_position
 from regime import detect_regime
 from scheduler import write_daily_report
 from scorer import rps_ranks
-from universe import by_market, meta as uni_meta, ranking_symbols
+from universe import by_market, meta as uni_meta, ranking_symbols, search_symbols
 
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
@@ -59,6 +59,7 @@ _t86 = {}
 _backtest: dict[str, dict] = {}
 _hist: dict[str, dict] = {}
 _regime: dict[str, dict] = {}
+_scan_busy: set[str] = set()
 
 
 def _set(**kwargs):
@@ -91,6 +92,40 @@ def _hist_for(symbol: str, df, market: str) -> dict:
 
 def _code_of(symbol: str) -> str:
     return symbol.split(".")[0]
+
+
+def _df_of(symbol: str):
+    with _lock:
+        df = _ohlcv.get(symbol)
+    if df is not None:
+        return df
+    df = load_symbol_ohlcv(symbol)
+    if df is not None:
+        with _lock:
+            _ohlcv[symbol] = df
+    return df
+
+
+def _kick_scan(market: str, force: bool = False) -> None:
+    market = market.upper()
+    with _lock:
+        if market in _scan_busy:
+            return
+        _scan_busy.add(market)
+
+    def run():
+        try:
+            scan_market(market, force=force)
+        except MemoryError:
+            _set(phase="error", error="memory", message="掃描記憶體不足")
+        except Exception as exc:
+            _set(phase="error", error=str(exc), message="掃描失敗")
+            traceback.print_exc()
+        finally:
+            with _lock:
+                _scan_busy.discard(market)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _sector_rs(ohlcv: dict) -> dict[str, int]:
@@ -158,24 +193,29 @@ def _apply_crowding(packed: dict) -> None:
 
 def scan_market(market: str, force: bool = False) -> None:
     market = market.upper()
-    rows = by_market(market)
+    if market == "TW":
+        from picks import daily_tw_rows
+
+        rows = daily_tw_rows(force=force)
+        if not rows:
+            rows = by_market(market)
+    else:
+        rows = by_market(market)
     symbols = [r["symbol"] for r in rows]
     if market == "TW":
-        _set(phase="download", progress=5, message="載入上市全市場日K（證交所 MI_INDEX）…", error=None)
-        ohlcv_all = load_twse_market_ohlcv(lookback=260)
-        idx_need = [s for s in ("^TWII", "0050.TW") if s not in ohlcv_all]
-        if idx_need:
-            ohlcv_all.update(load_ohlcv_many(idx_need, period="2y"))
+        _set(phase="download", progress=5, message=f"下載今日潛力股日K（{len(symbols)} 檔，非全市場）…", error=None)
+        need = list(dict.fromkeys(symbols + ["^TWII", "0050.TW"]))
+        ohlcv_all = load_ohlcv_many(need, period="1y")
         ohlcv = {s: ohlcv_all[s] for s in symbols if s in ohlcv_all and len(ohlcv_all[s]) >= 40}
-        if len(ohlcv) < 40:
-            _set(phase="download", progress=8, message="全市場日K不足，改抓 Yahoo 後備池…")
+        if len(ohlcv) < 8:
+            _set(phase="download", progress=8, message="潛力股日K不足，改抓精選後備池…")
             rank_syms = ranking_symbols(market)
-            all_syms = list(dict.fromkeys(symbols[:80] + rank_syms))
-            yf_map = load_ohlcv_many(all_syms, period="2y")
+            all_syms = list(dict.fromkeys(symbols + rank_syms[:24] + ["^TWII", "0050.TW"]))
+            yf_map = load_ohlcv_many(all_syms, period="1y")
             ohlcv_all.update(yf_map)
             ohlcv = {s: ohlcv_all[s] for s in symbols if s in ohlcv_all and len(ohlcv_all[s]) >= 40}
             if not ohlcv:
-                ohlcv = dict(yf_map)
+                ohlcv = {s: df for s, df in yf_map.items() if s.endswith(".TW") and len(df) >= 40}
     else:
         _set(phase="download", progress=5, message=f"下載{market}日線 2 年（看板＋RPS 擴充池）…", error=None)
         rank_syms = ranking_symbols(market)
@@ -192,16 +232,17 @@ def scan_market(market: str, force: bool = False) -> None:
         with _lock:
             _t86.clear()
             _t86.update(t86_hist)
-        _set(phase="chips", progress=24, message="下載融資融券、除權息、月營收、全市場 RPS…")
+        _set(phase="chips", progress=24, message="下載融資融券、除權息、月營收…")
         margin_map = load_margin_map()
         exrights = load_exrights_upcoming()
         monthly_map = load_monthly_revenue()
-        market_rps = load_twse_rps(120)
+        market_rps = {}
     else:
         margin_map, exrights, monthly_map, market_rps = {}, {}, {}, {}
 
-    _set(phase="info", progress=30, message="抓取基本面／分析師共識…")
-    infos = load_info_many([s for s in symbols if s in ohlcv])
+    info_syms = [s for s in symbols if s in ohlcv]
+    _set(phase="info", progress=30, message=f"抓取基本面（{len(info_syms)} 檔）…")
+    infos = load_info_many(info_syms)
 
     _set(phase="regime", progress=42, message="評估大盤狀態…")
     n_ma, n_ab = 0, 0
@@ -270,6 +311,8 @@ def scan_market(market: str, force: bool = False) -> None:
             packed[sym] = {"symbol": sym, "error": str(exc)}
         if i % 8 == 0:
             _set(progress=55 + int(40 * i / n), message=f"評分 {i+1}/{n}…")
+        if i % 25 == 0:
+            gc.collect()
 
     for sym, full in packed.items():
         if "verdict" not in full:
@@ -278,11 +321,19 @@ def scan_market(market: str, force: bool = False) -> None:
         full["beta"] = None if b is None else round(b, 2)
     apply_portfolio(packed, list_open())
 
+    keep = {"^TWII", "0050.TW", "^GSPC", "^VIX"}
     with _lock:
         _cache[market] = packed
         drop = [k for k in _hist if uni_meta(k)["market"] == market]
         for k in drop:
             _hist.pop(k, None)
+        for k in [k for k in _ohlcv if k not in keep]:
+            try:
+                if uni_meta(k)["market"] == market:
+                    _ohlcv.pop(k, None)
+            except Exception:
+                continue
+    gc.collect()
     try:
         rows = [summary_row(f) for f in packed.values() if "verdict" in f]
         write_daily_report(market, rows, regime)
@@ -291,19 +342,11 @@ def scan_market(market: str, force: bool = False) -> None:
     _set(phase="ready", progress=100, message=f"{market} 掃描完成，{len(packed)} 檔 · {regime.get('label','')}")
 
 
-def scan_all():
-    try:
-        scan_market("TW")
-        scan_market("US")
-        _set(phase="ready", progress=100, message="台股＋美股掃描完成")
-    except Exception as exc:
-        _set(phase="error", error=str(exc), message="掃描失敗")
-        traceback.print_exc()
-
-
 @app.on_event("startup")
 def _boot():
-    threading.Thread(target=scan_all, daemon=True).start()
+    # 只掃台股；美股等使用者切換再掃。避免開機就把容器 RAM 打爆導致 sidecar 退出。
+    _set(phase="idle", message="智選已啟動，背景掃描台股…")
+    _kick_scan("TW")
 
 
 @app.get("/")
@@ -321,6 +364,19 @@ def health():
     return st
 
 
+@app.get("/api/lookup")
+def api_lookup(q: str = "", market: str = "TW"):
+    """STOCKGENIE_LOOKUP_V1：代號／名稱建議。不觸發全市場掃描。"""
+    q = (q or "").strip()
+    hits = search_symbols(q)
+    m = (market or "TW").upper()
+    if m in ("TW", "US") and hits:
+        prefer = [h for h in hits if h.get("market") == m]
+        rest = [h for h in hits if h.get("market") != m]
+        hits = prefer + rest
+    return {"q": q, "hits": hits[:12]}
+
+
 @app.get("/api/scan")
 def api_scan(market: str = "TW"):
     market = market.upper()
@@ -330,6 +386,9 @@ def api_scan(market: str = "TW"):
         data = _cache.get(market) or {}
         st = dict(_state)
         regime = _regime.get(market)
+        busy = market in _scan_busy
+    if not data and not busy:
+        _kick_scan(market)
     rows = []
     for full in data.values():
         if "error" in full and "verdict" not in full:
@@ -352,9 +411,9 @@ def api_stock(symbol: str):
     market = meta["market"]
     with _lock:
         cached = (_cache.get(market) or {}).get(symbol)
-        df = _ohlcv.get(symbol)
         t86 = dict(_t86)
         regime = _regime.get(market)
+    df = _df_of(symbol)
     if df is None:
         # 允許池外查詢
         from data import load_info, load_ohlcv_many

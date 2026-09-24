@@ -7,8 +7,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parent
-PATH = ROOT / "cache" / "positions.json"
+from paths import cache_dir
+
+PATH = cache_dir() / "positions.json"
 TAIPEI = timezone(timedelta(hours=8))
 
 

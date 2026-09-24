@@ -689,21 +689,19 @@ start_stockgenie() {
     return 0
   fi
   mkdir -p logs run
-  # STOCKGENIE_BOOTSTRAP_SKIP_IF_PRESENT_V1：venv 已在就不要再跑安裝（避免每次開機下載）。
-  if [[ -x run/stockgenie-venv/bin/python || -x run/stockgenie-venv/bin/python3 ]]; then
-    echo "[ptero-start] 智選 Python 已存在，略過下載"
-  else
-    # STOCKGENIE_PYTHON_BOOTSTRAP_V1：映像沒有系統 python3 時，把獨立 CPython
-    # 裝進 run/stockgenie-venv。失敗只記 log，不擋點名／編譯。
-    if ! bash "$STOCKGENIE_DIR/bootstrap.sh" >> logs/stockgenie-bootstrap.log 2>&1; then
-      echo "[ptero-start] 智選 Python 環境安裝失敗（詳見 logs/stockgenie-bootstrap.log）；面板其餘功能不受影響"
-      return 0
-    fi
+  # bootstrap.sh 自己判斷：完整就瞬間結束；缺套件才 pip；缺 python 才下載。
+  # STOCKGENIE_PYTHON_BOOTSTRAP_V1／SKIP_IF_PRESENT／PIECEWISE。失敗不擋點名。
+  if ! bash "$STOCKGENIE_DIR/bootstrap.sh" >> logs/stockgenie-bootstrap.log 2>&1; then
+    echo "[ptero-start] 智選 Python 環境安裝失敗（詳見 logs/stockgenie-bootstrap.log）；面板其餘功能不受影響"
+    return 0
   fi
   local py=""
-  py="$(tr -d '\r\n' < run/stockgenie-python-bin.txt 2>/dev/null || true)"
-  if [[ -z "$py" || ! -x "$py" ]]; then
-    py="run/stockgenie-venv/bin/python"
+  if [[ -x run/stockgenie-venv/bin/python ]]; then
+    py="$PWD/run/stockgenie-venv/bin/python"
+  elif [[ -x run/stockgenie-venv/bin/python3 ]]; then
+    py="$PWD/run/stockgenie-venv/bin/python3"
+  else
+    py="$(tr -d '\r\n' < run/stockgenie-python-bin.txt 2>/dev/null || true)"
   fi
   if [[ ! -x "$py" ]]; then
     echo "[ptero-start] 智選 python 仍不存在，略過"
@@ -729,15 +727,20 @@ start_stockgenie() {
     rm -f logs/stockgenie.pid
   fi
   echo "[ptero-start] 啟動智選 sidecar（127.0.0.1:${STOCKGENIE_PORT}）"
-  local sg_root sg_log
+  local sg_root sg_log sg_cache
   sg_root="$PWD/$STOCKGENIE_DIR"
   sg_log="$PWD/logs/stockgenie.log"
+  sg_cache="$PWD/run/stockgenie-cache"
+  mkdir -p "$sg_cache"
   # nohup + disown：熱重編只殺 Rust binary，智選繼續跑。
+  # $4＝可寫 cache（不可用內層 $PWD，cd 進 src 後會指到唯讀目錄）。
   nohup bash -c '
     cd "$1" || exit 1
-    exec env PYTHONUNBUFFERED=1 STOCKGENIE_EMBED=1 "$2" -m uvicorn app:app \
+    exec env PYTHONUNBUFFERED=1 STOCKGENIE_EMBED=1 PYTHONNOUSERSITE=1 \
+      DD_TRACE_ENABLED=0 DD_PROFILING_ENABLED=0 STOCKGENIE_CACHE="$4" \
+      "$2" -m uvicorn app:app \
       --host 127.0.0.1 --port "$3" --log-level warning
-  ' bash "$sg_root" "$py" "$STOCKGENIE_PORT" >> "$sg_log" 2>&1 &
+  ' bash "$sg_root" "$py" "$STOCKGENIE_PORT" "$sg_cache" >> "$sg_log" 2>&1 &
   echo $! > logs/stockgenie.pid
   disown || true
 }
@@ -777,7 +780,7 @@ else
 fi
 # SEC_MASTER_KEY_FAIL_CLOSED_V1：正式部署一定有 key（上面三條路徑保證），因此讓程式在
 # key 缺失／無效時拒絕啟動，避免學校密碼以明文落地（可設 0 關閉，不建議）。
-export TRONCLASS_REQUIRE_MASTER_KEY="${TRONCLASS_REQUIRE_MASTER_KEY:-1}"
+export TRONCLASS_REQUIRE_MASTEMASTER_KEY="${TRONCLASS_REQUIRE_MASTER_KEY:-1}"
 
 # MASTER_KEY_ROTATION_V1：舊 key 僅供解密＋背景重加密（一行一個 64 hex key）。
 # 輪替步驟：
