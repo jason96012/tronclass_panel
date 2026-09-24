@@ -240,7 +240,10 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     if (r.status === 202) return {ready:false};
     if (!r.ok) {
       let msg = 'HTTP '+r.status;
-      try { const b = await r.json(); if (b && b.error) msg = String(b.error); } catch(_){}
+      try {
+        const b = await r.json();
+        if (b && (b.error || b.detail)) msg = String(b.error || b.detail);
+      } catch(_){}
       throw new Error(msg);
     }
     return r.json();
@@ -312,6 +315,11 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   async function lookupGo(openFirst){
     const q = ($('q').value||'').trim();
     if (!q){ hideSuggest(); return; }
+    const box = $('suggest');
+    if (box && !openFirst){
+      box.innerHTML = '<button type="button" disabled>上網查詢中…</button>';
+      box.classList.add('on');
+    }
     try{
       const d = await fetchLookup(q);
       const hits = d.hits || [];

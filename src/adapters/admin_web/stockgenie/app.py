@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 import traceback
@@ -94,12 +95,45 @@ def _code_of(symbol: str) -> str:
     return symbol.split(".")[0]
 
 
+def _clean_json(obj):
+    if isinstance(obj, dict):
+        return {str(k): _clean_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_clean_json(v) for v in obj]
+    if obj is None or isinstance(obj, (bool, str)):
+        return obj
+    if isinstance(obj, int) and not isinstance(obj, bool):
+        return int(obj)
+    try:
+        if hasattr(obj, "item") and type(obj).__module__.startswith("numpy"):
+            obj = obj.item()
+    except Exception:
+        pass
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return float(obj)
+    if isinstance(obj, datetime):
+        return obj.strftime("%Y-%m-%d %H:%M:%S")
+    return obj
+
+
+def _norm_symbol(symbol: str) -> str:
+    from data import guess_yahoo_symbol
+
+    s = (symbol or "").strip().upper().replace("．", ".")
+    return guess_yahoo_symbol(s) or s
+
+
 def _df_of(symbol: str):
     with _lock:
         df = _ohlcv.get(symbol)
     if df is not None:
         return df
     df = load_symbol_ohlcv(symbol)
+    if df is None:
+        got = load_ohlcv_many([symbol], period="1y")
+        df = got.get(symbol)
     if df is not None:
         with _lock:
             _ohlcv[symbol] = df
@@ -404,39 +438,39 @@ def api_scan(market: str = "TW"):
 
 @app.get("/api/stock/{symbol}")
 def api_stock(symbol: str):
-    symbol = symbol.upper()
-    if symbol.endswith(".TW") is False and symbol.isdigit():
-        symbol = f"{symbol}.TW"
+    """池內走快取；沒有就單檔上網 Yahoo。不掃全市場。"""
+    try:
+        return _pack_detail(symbol)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return JSONResponse({"error": detail}, status_code=exc.status_code)
+    except Exception as exc:
+        traceback.print_exc()
+        return JSONResponse({"error": f"計算失敗：{exc}"}, status_code=502)
+
+
+def _pack_detail(symbol: str) -> dict:
+    from data import load_info, resolve_yahoo_meta
+
+    symbol = _norm_symbol(symbol)
     meta = uni_meta(symbol)
-    market = meta["market"]
+    name = (meta.get("name") or "").strip()
+    code = _code_of(symbol)
+    if name in ("", symbol, code):
+        try:
+            live = resolve_yahoo_meta(symbol)
+            if live and live.get("name"):
+                meta = {**meta, **{k: live[k] for k in ("name", "sector", "market") if live.get(k)}}
+        except Exception:
+            pass
+    market = meta.get("market") or ("TW" if symbol.endswith(".TW") or symbol.endswith(".TWO") else "US")
     with _lock:
         cached = (_cache.get(market) or {}).get(symbol)
         t86 = dict(_t86)
         regime = _regime.get(market)
     df = _df_of(symbol)
     if df is None:
-        # 允許池外查詢
-        from data import load_info, load_ohlcv_many
-
-        got = load_ohlcv_many([symbol])
-        df = got.get(symbol)
-        if df is None:
-            raise HTTPException(404, f"找不到 {symbol} 的日線")
-        info = load_info(symbol)
-        series = t86_by_code(t86, _code_of(symbol)) if market == "TW" else []
-        code = _code_of(symbol)
-        full = analyze(
-            symbol, df, info, series, None, include_chart=True, regime=regime,
-            margin=load_margin_map().get(code) if market == "TW" else None,
-            exdiv=load_exrights_upcoming().get(code) if market == "TW" else None,
-            monthly=load_monthly_revenue().get(code) if market == "TW" else None,
-            official_close=(load_latest_twse_closes().get(code) if market == "TW" else None),
-        )
-        full["intraday"] = summarize_intraday(load_intraday_60m(symbol))
-        full["hist"] = _hist_for(symbol, df, market)
-        return full
-    from data import load_info
-
+        raise HTTPException(404, f"找不到 {symbol} 的日線（已上網查詢 Yahoo）")
     info = load_info(symbol)
     series = t86_by_code(t86, _code_of(symbol)) if market == "TW" else []
     rps = None if not cached else cached.get("rps")
@@ -452,7 +486,13 @@ def api_stock(symbol: str):
         margin=margin, exdiv=exdiv, monthly=monthly,
         official_close=(load_latest_twse_closes().get(code) if market == "TW" else None),
     )
-    intra = summarize_intraday(load_intraday_60m(symbol))
+    if meta.get("name"):
+        full["name"] = meta["name"]
+        full["sector"] = meta.get("sector") or full.get("sector") or ""
+    try:
+        intra = summarize_intraday(load_intraday_60m(symbol))
+    except Exception:
+        intra = None
     full["intraday"] = intra
     v = full.get("verdict") or {}
     if intra and intra.get("weak_close") and v.get("key") in ("buy", "buy_breakout") and not v.get("hold"):
@@ -466,15 +506,18 @@ def api_stock(symbol: str):
         v["flags"] = flags
         full["verdict"] = v
     full["hist"] = _hist_for(symbol, df, market)
-    full["forecast"] = build_forecast(
-        df,
-        plan=full.get("plan"),
-        setup=full.get("setup"),
-        regime=full.get("regime"),
-        hist=full.get("hist"),
-        tech=full.get("tech"),
-    )
-    return full
+    try:
+        full["forecast"] = build_forecast(
+            df,
+            plan=full.get("plan"),
+            setup=full.get("setup"),
+            regime=full.get("regime"),
+            hist=full.get("hist"),
+            tech=full.get("tech"),
+        )
+    except Exception:
+        full["forecast"] = {"ok": False, "bias_label": "路徑計算失敗"}
+    return _clean_json(full)
 
 
 @app.post("/api/refresh")

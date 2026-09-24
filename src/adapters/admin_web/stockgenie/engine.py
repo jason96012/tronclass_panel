@@ -558,6 +558,16 @@ def detect_signals(df: pd.DataFrame, plan: dict, tech: dict) -> list[dict]:
     return signals
 
 
+def _bar_vol(row) -> int:
+    try:
+        v = row["volume"]
+        if v is None or pd.isna(v):
+            return 0
+        return int(float(v))
+    except Exception:
+        return 0
+
+
 def bars_payload(df: pd.DataFrame, n: int = 180) -> list[dict]:
     tail = df.iloc[-n:]
     out = []
@@ -569,7 +579,7 @@ def bars_payload(df: pd.DataFrame, n: int = 180) -> list[dict]:
                 "h": round(float(row["high"]), 4),
                 "l": round(float(row["low"]), 4),
                 "c": round(float(row["close"]), 4),
-                "v": int(row["volume"]) if pd.notna(row["volume"]) else 0,
+                "v": _bar_vol(row),
                 "ma20": None if pd.isna(row.get("ma20", np.nan)) else round(float(row["ma20"]), 4),
                 "ma60": None if pd.isna(row.get("ma60", np.nan)) else round(float(row["ma60"]), 4),
                 "ma120": None if pd.isna(row.get("ma120", np.nan)) else round(float(row["ma120"]), 4),

@@ -485,7 +485,10 @@ def load_intraday_60m(symbol: str) -> pd.DataFrame | None:
 def summarize_intraday(df: pd.DataFrame | None) -> dict | None:
     if df is None or len(df) < 4:
         return None
-    last_day = df.index[-1].date()
+    try:
+        last_day = df.index[-1].date()
+    except Exception:
+        return None
     day = df[df.index.date == last_day] if hasattr(df.index, "date") else df.iloc[-7:]
     if len(day) < 2:
         day = df.iloc[-7:]
@@ -844,10 +847,11 @@ def load_symbol_ohlcv(symbol: str, lookback: int = 260) -> pd.DataFrame | None:
     if not symbol:
         return None
     code = symbol.split(".")[0]
-    if symbol.endswith(".TW") or (code.isdigit() and len(code) == 4):
+    if symbol.endswith(".TW") or symbol.endswith(".TWO") or (code.isdigit() and 3 <= len(code) <= 6):
         bar_dir = CACHE / "twse_bar"
         if not bar_dir.exists():
-            return None
+            got = load_ohlcv_many([symbol], period="1y")
+            return got.get(symbol)
         files = sorted(bar_dir.glob("*.json"))[-lookback:]
         rows: list[dict] = []
         for f in files:
@@ -871,14 +875,144 @@ def load_symbol_ohlcv(symbol: str, lookback: int = 260) -> pd.DataFrame | None:
                     "volume": rec.get("volume") or 0,
                 }
             )
-        if len(rows) < 40:
-            return None
-        return pd.DataFrame(rows).set_index("date").sort_index()
+        if len(rows) >= 40:
+            return pd.DataFrame(rows).set_index("date").sort_index()
+        # 日K快取不足（每日潛力股只留一盤）→ 單檔上網 Yahoo
+        got = load_ohlcv_many([symbol], period="1y")
+        return got.get(symbol)
     path = CACHE / "ohlcv" / f"{symbol.replace('/', '_')}.pkl"
     if path.exists():
         try:
             return pd.read_pickle(path)
         except Exception:
-            return None
+            pass
     got = load_ohlcv_many([symbol], period="2y")
     return got.get(symbol)
+
+
+def cached_quote_meta(symbol: str) -> dict | None:
+    symbol = (symbol or "").upper()
+    if not symbol:
+        return None
+    return _read_json(CACHE / "lookup" / f"{symbol.replace('/', '_')}.json", 14 * 86400)
+
+
+def remember_quote_meta(row: dict) -> dict:
+    sym = str((row or {}).get("symbol") or "").upper()
+    if not sym:
+        return row or {}
+    item = {
+        "symbol": sym,
+        "name": str(row.get("name") or sym),
+        "sector": str(row.get("sector") or ""),
+        "market": row.get("market") or ("TW" if sym.endswith(".TW") or sym.endswith(".TWO") else "US"),
+    }
+    try:
+        _write_json(CACHE / "lookup" / f"{sym.replace('/', '_')}.json", item)
+    except Exception:
+        pass
+    return item
+
+
+def guess_yahoo_symbol(q: str) -> str | None:
+    s = (q or "").strip().upper().replace("．", ".")
+    if not s:
+        return None
+    if s.endswith(".TW") or s.endswith(".TWO"):
+        return s
+    raw = s.replace(".TW", "").replace(".TWO", "")
+    if raw.isdigit() and 3 <= len(raw) <= 6:
+        return f"{raw}.TW"
+    if 4 <= len(raw) <= 7 and raw[:4].isdigit() and raw.isalnum():
+        return f"{raw}.TW"
+    if 1 <= len(s) <= 10 and all(c.isascii() and (c.isalnum() or c in ".-") for c in s) and not s.isdigit():
+        return s
+    return None
+
+
+def resolve_yahoo_meta(symbol: str) -> dict | None:
+    """單檔名稱：Yahoo info。本地 lookup 快取優先。"""
+    symbol = (symbol or "").upper()
+    got = cached_quote_meta(symbol)
+    code = symbol.replace(".TW", "").replace(".TWO", "")
+    if got and (got.get("name") or "") not in ("", symbol, code):
+        return got
+    try:
+        raw = yf.Ticker(symbol).info or {}
+        name = raw.get("shortName") or raw.get("longName") or raw.get("displayName")
+        if name:
+            return remember_quote_meta(
+                {
+                    "symbol": symbol,
+                    "name": str(name),
+                    "sector": str(raw.get("sector") or raw.get("quoteType") or ""),
+                    "market": "TW" if symbol.endswith(".TW") or symbol.endswith(".TWO") else "US",
+                }
+            )
+    except Exception:
+        pass
+    return got
+
+
+def search_live_quotes(q: str, limit: int = 8) -> list:
+    """STOCKGENIE_LOOKUP_LIVE_V1：名單沒有就上網查 Yahoo，不掃全市場。"""
+    q = (q or "").strip()
+    if not q:
+        return []
+    safe = "".join(
+        ch if ch.isalnum() or ch in "._-" or "\u4e00" <= ch <= "\u9fff" else "_"
+        for ch in q
+    )[:80] or "q"
+    path = CACHE / "lookup" / f"q_{safe}.json"
+    cached = _read_json(path, 6 * 3600)
+    if isinstance(cached, list) and cached:
+        return cached[:limit]
+    out: list[dict] = []
+    payload: dict = {}
+    try:
+        r = httpx.get(
+            "https://query1.finance.yahoo.com/v1/finance/search",
+            params={
+                "q": q,
+                "lang": "zh-Hant-TW",
+                "region": "TW",
+                "quotesCount": max(4, min(int(limit or 8), 12)),
+                "newsCount": 0,
+                "listsCount": 0,
+            },
+            headers=HEADERS,
+            timeout=12,
+        )
+        if r.status_code == 200:
+            payload = r.json() or {}
+    except Exception:
+        payload = {}
+    seen: set[str] = set()
+    for row in payload.get("quotes") or []:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").upper().strip()
+        if not sym or sym in seen or "=" in sym:
+            continue
+        qtype = str(row.get("quoteType") or "").upper()
+        if qtype in ("OPTION", "CRYPTOCURRENCY", "FUTURE", "CURRENCY"):
+            continue
+        name = str(row.get("shortname") or row.get("longname") or row.get("shortName") or "").strip()
+        if not name:
+            continue
+        market = "TW" if sym.endswith(".TW") or sym.endswith(".TWO") else "US"
+        sector = str(row.get("sector") or row.get("industry") or qtype or "").strip()
+        seen.add(sym)
+        out.append(remember_quote_meta({"symbol": sym, "name": name, "sector": sector, "market": market}))
+        if len(out) >= limit:
+            break
+    guess = guess_yahoo_symbol(q)
+    if guess and guess not in seen:
+        meta = resolve_yahoo_meta(guess)
+        if meta:
+            out.insert(0, meta)
+    try:
+        _write_json(path, out)
+    except Exception:
+        pass
+    return out[: max(1, min(int(limit or 8), 20))]

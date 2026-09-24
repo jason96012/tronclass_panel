@@ -315,8 +315,16 @@ def ranking_symbols(market: str) -> list[str]:
     return [r["symbol"] for r in ranking_rows(market)]
 
 
+def _hit_has_name(h: dict) -> bool:
+    if not h:
+        return False
+    name = (h.get("name") or "").strip()
+    code = str(h.get("symbol") or "").replace(".TW", "").replace(".TWO", "")
+    return bool(name) and name not in (h.get("symbol"), code)
+
+
 def search_symbols(q: str, limit: int = 12) -> list:
-    """STOCKGENIE_LOOKUP_V1：查代號或名稱。用最新一盤上市名單，不下載全市場日K。"""
+    """STOCKGENIE_LOOKUP_V1：先查本地名單；沒有真實名稱就上網 Yahoo（STOCKGENIE_LOOKUP_LIVE_V1）。"""
     q = (q or "").strip()
     if not q:
         return []
@@ -342,11 +350,21 @@ def search_symbols(q: str, limit: int = 12) -> list:
             add(r)
     except Exception:
         pass
+    try:
+        from data import cached_quote_meta, guess_yahoo_symbol
+
+        g = guess_yahoo_symbol(q_up)
+        if g:
+            got = cached_quote_meta(g)
+            if got:
+                add(got)
+    except Exception:
+        pass
     hits = []
     for r in pool:
         sym = r["symbol"]
         name = r.get("name") or ""
-        code = sym.replace(".TW", "")
+        code = sym.replace(".TW", "").replace(".TWO", "")
         name_up = name.upper()
         if (
             q_up == code
@@ -361,34 +379,68 @@ def search_symbols(q: str, limit: int = 12) -> list:
                     "symbol": sym,
                     "name": name,
                     "sector": r.get("sector") or "",
-                    "market": r.get("market") or ("TW" if sym.endswith(".TW") else "US"),
+                    "market": r.get("market") or ("TW" if sym.endswith(".TW") or sym.endswith(".TWO") else "US"),
                 }
             )
     hits.sort(
         key=lambda h: (
-            0 if h["symbol"].replace(".TW", "") == q_up or h["symbol"].upper() == q_up else 1,
+            0 if h["symbol"].replace(".TW", "").replace(".TWO", "") == q_up or h["symbol"].upper() == q_up else 1,
             0 if (h.get("name") or "").startswith(q) else 1,
             h["symbol"],
         )
     )
+    if not any(_hit_has_name(h) for h in hits):
+        try:
+            from data import search_live_quotes
+
+            live = search_live_quotes(q, limit=max(8, int(limit or 12)))
+        except Exception:
+            live = []
+        by = {h["symbol"]: h for h in hits}
+        for h in live:
+            old = by.get(h["symbol"])
+            if old is None:
+                hits.append(h)
+                by[h["symbol"]] = h
+            elif not _hit_has_name(old):
+                old["name"] = h.get("name") or old.get("name")
+                old["sector"] = h.get("sector") or old.get("sector") or ""
     if not hits:
-        raw = q_up.replace(".TW", "")
-        if raw.isdigit() and 3 <= len(raw) <= 6:
-            hits.append({"symbol": f"{raw}.TW", "name": raw, "sector": "", "market": "TW"})
-        elif 1 <= len(q_up) <= 10 and all(
-            c.isascii() and (c.isalnum() or c in ".-") for c in q_up
-        ) and not q_up.isdigit():
-            hits.append({"symbol": q_up, "name": q_up, "sector": "", "market": "US"})
+        try:
+            from data import guess_yahoo_symbol
+
+            g = guess_yahoo_symbol(q_up)
+        except Exception:
+            g = None
+        if g:
+            hits.append(
+                {
+                    "symbol": g,
+                    "name": g.replace(".TW", "").replace(".TWO", ""),
+                    "sector": "",
+                    "market": "TW" if g.endswith(".TW") or g.endswith(".TWO") else "US",
+                }
+            )
     cap = max(1, min(int(limit or 12), 20))
     return hits[:cap]
 
 
 def meta(symbol: str):
+    symbol = (symbol or "").strip()
     for r in ranking_rows():
         if r["symbol"] == symbol:
             return r
-    if (symbol or "").endswith(".TW") or str(symbol).isdigit():
-        want = symbol if str(symbol).endswith(".TW") else f"{symbol}.TW"
+    try:
+        from data import cached_quote_meta, guess_yahoo_symbol
+
+        want = guess_yahoo_symbol(symbol) or symbol
+        got = cached_quote_meta(want)
+        if got:
+            return got
+    except Exception:
+        want = symbol
+    if (symbol or "").endswith(".TW") or (symbol or "").endswith(".TWO") or str(symbol).isdigit():
+        want = symbol if str(symbol).endswith(".TW") or str(symbol).endswith(".TWO") else f"{symbol}.TW"
         listed_tw_rows()
         if _listed_tw_by_sym and want in _listed_tw_by_sym:
             return _listed_tw_by_sym[want]
