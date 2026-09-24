@@ -14,7 +14,8 @@ from fastapi.staticfiles import StaticFiles
 
 from collections import defaultdict
 
-from backtest import run_market
+from backtest import pack_symbol_hist, run_market, run_symbol
+from forecast import analog_pack, build_forecast
 from data import (
     load_exrights_upcoming,
     load_info_many,
@@ -56,6 +57,7 @@ _cache: dict[str, dict] = {"TW": {}, "US": {}}  # symbol -> full payload without
 _ohlcv = {}
 _t86 = {}
 _backtest: dict[str, dict] = {}
+_hist: dict[str, dict] = {}
 _regime: dict[str, dict] = {}
 
 
@@ -64,6 +66,27 @@ def _set(**kwargs):
         _state.update(kwargs)
         if "message" in kwargs:
             _state["updated"] = datetime.now(TAIPEI).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _hist_for(symbol: str, df, market: str) -> dict:
+    with _lock:
+        cached = _hist.get(symbol)
+        if cached is not None:
+            return cached
+        if market == "TW":
+            idx = _ohlcv.get("^TWII") or _ohlcv.get("0050.TW")
+            vix = None
+        else:
+            idx = _ohlcv.get("^GSPC")
+            vix = _ohlcv.get("^VIX")
+    try:
+        raw = run_symbol(df, market, idx, vix)
+        hist = pack_symbol_hist(raw)
+    except Exception:
+        hist = pack_symbol_hist(None)
+    with _lock:
+        _hist[symbol] = hist
+    return hist
 
 
 def _code_of(symbol: str) -> str:
@@ -198,7 +221,13 @@ def scan_market(market: str, force: bool = False) -> None:
         regime = detect_regime("TW", idx, breadth=breadth)
     else:
         idx_map = load_ohlcv_many(["^GSPC", "^VIX"], period="2y")
-        regime = detect_regime("US", idx_map.get("^GSPC"), idx_map.get("^VIX"), breadth=breadth)
+        idx = idx_map.get("^GSPC")
+        regime = detect_regime("US", idx, idx_map.get("^VIX"), breadth=breadth)
+    if idx is not None:
+        try:
+            regime["forecast"] = analog_pack(idx)
+        except Exception:
+            pass
     with _lock:
         _ohlcv.update(idx_map)
         _regime[market] = regime
@@ -251,6 +280,9 @@ def scan_market(market: str, force: bool = False) -> None:
 
     with _lock:
         _cache[market] = packed
+        drop = [k for k in _hist if uni_meta(k)["market"] == market]
+        for k in drop:
+            _hist.pop(k, None)
     try:
         rows = [summary_row(f) for f in packed.values() if "verdict" in f]
         write_daily_report(market, rows, regime)
@@ -342,6 +374,7 @@ def api_stock(symbol: str):
             official_close=(load_latest_twse_closes().get(code) if market == "TW" else None),
         )
         full["intraday"] = summarize_intraday(load_intraday_60m(symbol))
+        full["hist"] = _hist_for(symbol, df, market)
         return full
     from data import load_info
 
@@ -373,6 +406,15 @@ def api_stock(symbol: str):
             flags.append("60分收弱")
         v["flags"] = flags
         full["verdict"] = v
+    full["hist"] = _hist_for(symbol, df, market)
+    full["forecast"] = build_forecast(
+        df,
+        plan=full.get("plan"),
+        setup=full.get("setup"),
+        regime=full.get("regime"),
+        hist=full.get("hist"),
+        tech=full.get("tech"),
+    )
     return full
 
 

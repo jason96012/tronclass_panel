@@ -20,6 +20,35 @@ from vp import recent_profile
 COST = 0.0015
 
 
+def summarize_trades(arr: list[float]) -> dict[str, Any]:
+    """勝率／平均報酬／獲利因子／盈虧比（均賺÷均賠）。"""
+    if not arr:
+        return {
+            "n": 0,
+            "win_rate": None,
+            "avg": None,
+            "profit_factor": None,
+            "payoff": None,
+            "sum_pct": None,
+        }
+    w = [t for t in arr if t > 0]
+    l = [t for t in arr if t <= 0]
+    pf = round(sum(w) / abs(sum(l)), 2) if l and sum(l) != 0 else None
+    payoff = None
+    if w and l:
+        avg_l = abs(float(np.mean(l)))
+        if avg_l > 0:
+            payoff = round(float(np.mean(w)) / avg_l, 2)
+    return {
+        "n": len(arr),
+        "win_rate": round(len(w) / len(arr) * 100, 1),
+        "avg": round(float(np.mean(arr)) * 100, 2),
+        "profit_factor": pf,
+        "payoff": payoff,
+        "sum_pct": round(float(np.sum(arr)) * 100, 2),
+    }
+
+
 def _asof_regime(index_df: pd.DataFrame | None, vix_df: pd.DataFrame | None, ts, breadth: float | None, market: str) -> dict:
     if index_df is None or len(index_df) < 80:
         return {"key": "unknown", "allow_long": True, "label": "無指數"}
@@ -117,11 +146,13 @@ def run_symbol(
     buckets: dict[str, list[float]] = {k: [] for k in ("強多", "溫和多", "中性", "溫和空", "強空")}
     trades: list[float] = []
     paths: list[str] = []
+    fills: list[dict] = []
     in_pos = False
     entry_px = stop = t1 = t2 = 0.0
     hold = 0
     path = "pullback"
     trail = None
+    entry_ts = None
 
     def bucket(score: float) -> str:
         if score >= 55:
@@ -157,10 +188,21 @@ def run_symbol(
                 trail = max(stop, ma20 - 0.5 * atr)
             exit_px, why = _exit_day(nxt_low, nxt_high, nxt_close, stop, t2, hold, trail)
             if exit_px is not None:
-                trades.append((exit_px / entry_px - 1) - 2 * COST)
+                ret = (exit_px / entry_px - 1) - 2 * COST
+                trades.append(ret)
                 paths.append(path)
+                fills.append(
+                    {
+                        "entry": str(entry_ts)[:10] if entry_ts is not None else "",
+                        "exit": str(df.index[i + 1])[:10],
+                        "path": "突破" if path == "breakout" else "回檔",
+                        "ret": round(ret * 100, 2),
+                        "why": why or "",
+                    }
+                )
                 in_pos = False
                 trail = None
+                entry_ts = None
             continue
 
         close = float(df["close"].iloc[i])
@@ -181,6 +223,7 @@ def run_symbol(
             continue
         in_pos = True
         path = sig["path"]
+        entry_ts = df.index[i + 1] if (i + 1) < n else ts
         entry_px = nxt_open
         stop = sig["stop"]
         if stop >= entry_px:
@@ -200,7 +243,27 @@ def run_symbol(
         "buckets": {k: stats(v) for k, v in buckets.items()},
         "trades": trades,
         "paths": paths,
+        "fills": fills,
     }
+
+
+def pack_symbol_hist(raw: dict[str, Any] | None) -> dict[str, Any]:
+    """個股詳情用：若照系統買賣點進出的歷史模擬摘要。"""
+    empty = summarize_trades([])
+    empty["fills"] = []
+    empty["pullback"] = summarize_trades([])
+    empty["breakout"] = summarize_trades([])
+    if not raw:
+        return empty
+    trades = raw.get("trades") or []
+    paths = raw.get("paths") or []
+    out = summarize_trades(trades)
+    pb = [t for t, p in zip(trades, paths) if p != "breakout"]
+    bo = [t for t, p in zip(trades, paths) if p == "breakout"]
+    out["pullback"] = summarize_trades(pb)
+    out["breakout"] = summarize_trades(bo)
+    out["fills"] = list(raw.get("fills") or [])[-8:]
+    return out
 
 
 def _cross_section_ranks(prepared: dict[str, pd.DataFrame]) -> tuple[dict, dict]:

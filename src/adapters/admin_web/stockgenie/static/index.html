@@ -272,7 +272,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     }).join('') || `<tr><td colspan="11" class="empty">沒有符合條件的股票。資料載入中或篩選太嚴。</td></tr>`;
   }
 
-  function drawChart(bars, plan){
+  function drawChart(bars, plan, fc){
     const c = $('kline'); if (!c || !bars || !bars.length) return;
     const dpr = Math.min(2, window.devicePixelRatio||1);
     const w = c.clientWidth, h = c.clientHeight;
@@ -281,12 +281,17 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     g.setTransform(dpr,0,0,dpr,0,0);
     g.clearRect(0,0,w,h);
     const padL=48, padR=12, padT=12, padB=22;
-    const vis = bars.slice(-120);
+    const vis = bars.slice(-100);
+    const cone = (fc && fc.cone) || [];
+    const extra = Math.max(0, cone.length ? cone.length-1 : 0);
+    const n = vis.length + extra;
     let lo=Math.min(...vis.map(b=>b.l)), hi=Math.max(...vis.map(b=>b.h));
     [plan.buy, plan.target].forEach(z => { if(z){ lo=Math.min(lo,z.lo); hi=Math.max(hi,z.hi);} });
     if (plan.stop) lo=Math.min(lo, plan.stop);
+    if (plan.live_stop) lo=Math.min(lo, plan.live_stop);
+    cone.forEach(p => { lo=Math.min(lo,p.lo); hi=Math.max(hi,p.hi); });
     const span = hi-lo || 1; lo-=span*0.04; hi+=span*0.04;
-    const X = i => padL + i*(w-padL-padR)/Math.max(vis.length-1,1);
+    const X = i => padL + i*(w-padL-padR)/Math.max(n-1,1);
     const Y = p => padT + (hi-p)*(h-padT-padB)/(hi-lo);
     const zone = (z, color) => {
       if (!z) return;
@@ -297,13 +302,28 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     };
     zone(plan.buy, '#3ee07a');
     zone(plan.target, '#5ad0e6');
-    if (plan.stop) {
+    if (plan.stop || plan.live_stop) {
       g.strokeStyle = '#ff5d73';
       g.setLineDash([4,4]);
-      g.beginPath(); g.moveTo(padL, Y(plan.stop)); g.lineTo(w-padR, Y(plan.stop)); g.stroke();
+      g.beginPath(); g.moveTo(padL, Y(plan.live_stop||plan.stop)); g.lineTo(w-padR, Y(plan.live_stop||plan.stop)); g.stroke();
       g.setLineDash([]);
     }
-    const cw = Math.max(2, (w-padL-padR)/Math.max(vis.length,1)*0.6);
+    const strokeMa = (key, color) => {
+      g.strokeStyle = color; g.lineWidth = 1.2; g.beginPath();
+      let started = false;
+      vis.forEach((b,i) => {
+        const v = b[key];
+        if (v==null) return;
+        if (!started) { g.moveTo(X(i), Y(v)); started = true; }
+        else g.lineTo(X(i), Y(v));
+      });
+      if (started) g.stroke();
+      g.lineWidth = 1;
+    };
+    strokeMa('ma20', '#5ad0e6');
+    strokeMa('ma60', '#d4a84b');
+    strokeMa('ma120', '#8b9bb0');
+    const cw = Math.max(2, (w-padL-padR)/Math.max(n,1)*0.55);
     vis.forEach((b,i) => {
       const x = X(i);
       const up = b.c >= b.o;
@@ -313,11 +333,39 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       const y1 = Y(Math.max(b.o,b.c)), y2 = Y(Math.min(b.o,b.c));
       g.fillRect(x-cw/2, y1, cw, Math.max(1, y2-y1));
     });
+    if (cone.length > 1) {
+      const i0 = vis.length - 1;
+      g.beginPath();
+      cone.forEach((p,k) => {
+        const x = X(i0 + k);
+        if (k===0) g.moveTo(x, Y(p.hi));
+        else g.lineTo(x, Y(p.hi));
+      });
+      for (let k = cone.length-1; k>=0; k--) g.lineTo(X(i0+k), Y(cone[k].lo));
+      g.closePath();
+      g.fillStyle = 'rgba(90,208,230,.14)';
+      g.fill();
+      g.strokeStyle = '#5ad0e6';
+      g.setLineDash([5,4]);
+      g.beginPath();
+      cone.forEach((p,k) => {
+        const x = X(i0 + k);
+        if (k===0) g.moveTo(x, Y(p.med));
+        else g.lineTo(x, Y(p.med));
+      });
+      g.stroke();
+      g.setLineDash([]);
+      g.fillStyle = '#5ad0e6';
+      g.font = '10px ui-sans-serif';
+      [5,10,20].forEach(k => {
+        if (k < cone.length) g.fillText('+'+k, X(i0+k)-8, h-6);
+      });
+    }
     g.fillStyle='#8b9bb0'; g.font='11px ui-sans-serif';
     g.fillText(hi.toFixed(1), 4, padT+8);
     g.fillText(lo.toFixed(1), 4, h-padB);
     g.fillText(vis[0].t.slice(5), padL, h-6);
-    g.fillText(vis[vis.length-1].t.slice(5), w-80, h-6);
+    g.fillText(vis[vis.length-1].t.slice(5), X(vis.length-1)-28, h-6);
   }
 
   function posSize(entry, stop){
@@ -327,6 +375,60 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     const per = entry - stop;
     const sh = Math.floor(risk / per);
     return {sh, notional: sh*entry, risk, per};
+  }
+
+  function forecastCard(f){
+    if (!f) return '';
+    if (!f.ok) {
+      return `<div class="vcard"><p class="note" style="margin:0">未來走向：${f.bias_label||'日K不足，無法估條件路徑。'}</p></div>`;
+    }
+    const tone = f.bias==='bull'?'good': f.bias==='bear'?'bad':'warn';
+    const hz = (h, lab) => {
+      if (!h) return `<div class="kpi"><span>${lab}</span><b>—</b></div>`;
+      const up = (h.median||0) >= 0;
+      return `<div class="kpi"><span>${lab}上漲機率</span><b>${h.p_up==null?'—':h.p_up+'%'}</b><span>中位 ${up?'+':''}${h.median}% · ${h.p25}%～${h.p75}%</span></div>`;
+    };
+    const sc = (f.scenarios||[]).map(s => {
+      const cls = s.key==='bull'?'buy': s.key==='bear'?'stop':'tgt';
+      const r = s.ret==null ? '' : ((s.ret>=0?'+':'')+s.ret+'%');
+      return `<div class="plan ${cls}"><h4>${s.label}</h4><div class="px">${px(s.px)}</div><div class="hint">20 日 ${r||'—'}</div></div>`;
+    }).join('');
+    return `<div class="vcard ${tone}">
+      <p class="note" style="margin:0 0 6px">未來走向（條件樣本，不是預言）</p>
+      <p class="vtitle" style="font-size:18px">${f.bias_label||''}</p>
+      <p class="vreason">現況 ${f.state_label||''} · 信心 ${f.confidence||'—'} · 樣本 ${f.n} 次${f.matched==='trend'?'（同均線結構）':''}</p>
+      <div class="kpis">
+        ${hz(f.h5,'5 日')}
+        ${hz(f.h10,'10 日')}
+        ${hz(f.h20,'20 日')}
+        <div class="kpi"><span>下一根波動帶</span><b>${f.next_lo==null?'—':px(f.next_lo)+'～'+px(f.next_hi)}</b><span>現價 ± ATR</span></div>
+      </div>
+      ${sc ? `<div class="plans">${sc}</div>` : ''}
+      <p class="note">${f.note||''}${f.conflict_why?' · '+f.conflict_why:''}</p>
+    </div>`;
+  }
+
+  function histCard(h){
+    if (!h) return '';
+    if (!h.n) {
+      return `<div class="vcard"><p class="note" style="margin:0">若照系統買點進、停利／停損出：這段日K還沒有已完成的模擬單。</p></div>`;
+    }
+    const fills = (h.fills||[]).slice().reverse().map(f => {
+      const up = (f.ret||0) >= 0;
+      return `<div class="check ${up?'ok':'no'}"><div class="mark">${up?'✓':'✕'}</div><div><b>${f.path||''} ${up?'+':''}${fmt(f.ret,2)}%</b><div class="note" style="margin:0">${f.entry||''} → ${f.exit||''} · ${f.why||''}</div></div></div>`;
+    }).join('');
+    const tone = (h.avg||0) >= 0 ? 'good' : 'bad';
+    return `<div class="vcard ${tone}">
+      <p class="note" style="margin:0 0 8px">若照系統買點進、停利／停損出（歷史模擬）</p>
+      <div class="kpis">
+        <div class="kpi"><span>完成筆數</span><b>${h.n}</b></div>
+        <div class="kpi"><span>勝率</span><b>${h.win_rate==null?'—':h.win_rate+'%'}</b></div>
+        <div class="kpi"><span>平均報酬</span><b>${h.avg==null?'—':h.avg+'%'}</b></div>
+        <div class="kpi"><span>盈虧比</span><b>${h.payoff==null?'—':fmt(h.payoff,2)}</b><span>均賺 ÷ 均賠</span></div>
+      </div>
+      <p class="note">獲利因子 ${h.profit_factor==null?'—':fmt(h.profit_factor,2)}（毛利÷毛損）· 累計 ${h.sum_pct==null?'—':h.sum_pct+'%'} · 次日開盤進 · 雙邊成本 0.15%</p>
+      ${fills ? `<div class="checks">${fills}</div>` : ''}
+    </div>`;
   }
 
   function itemBars(items){
@@ -360,6 +462,8 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <div class="kpi"><span>技術／基本／籌碼</span><b>${fmt(d.tech.score,1)}<span style="font-size:12px;color:var(--muted)"> / ${d.fund.available?fmt(d.fund.score,1):'—'} / ${d.chips&&d.chips.available?fmt(d.chips.score,1):'—'}</span></b></div>
         <div class="kpi"><span>清單／RPS／RVOL</span><b>${d.checks_ok}/${d.checks_n}</b><span>RPS ${d.rps??'—'} · RVOL ${(d.setup&&d.setup.rvol)!=null?d.setup.rvol:'—'}${d.resonance?' · 共振':''}${d.factor_rank!=null?' · 因子'+d.factor_rank:''}${d.sector_rs!=null?' · 族群'+d.sector_rs:''}</span></div>
       </div>
+      ${forecastCard(d.forecast)}
+      ${histCard(d.hist)}
       <div class="plans">
         <div class="plan buy"><h4>回檔買區</h4><div class="px">${p.buy?px(p.buy.mid):'—'}</div><div class="hint">${p.buy? (px(p.buy.lo)+' – '+px(p.buy.hi)+' · 品質 '+(p.buy.quality??'—')+' · 家族 '+(p.buy.n_src??'—')+' · '+(p.buy.sources||[]).slice(0,3).join('、')) : '無支撐'}${p.buy_valid?'':'　品質未達 40'}</div></div>
         <div class="plan stop"><h4>回檔停損</h4><div class="px">${px(p.live_stop||p.stop)}</div><div class="hint">${p.trail_active?'已走過 1R，停損已上移':'買區下緣 − max(1.2×ATR, 2%)'} · 最長 ${p.time_stop_days||20} 日</div></div>
@@ -376,7 +480,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
           <div class="plan"><h4>突破 RR</h4><div class="px">${fmt(p.breakout_plan.rr,1)}</div><div class="hint">${p.breakout_plan.note||''}</div></div>
         </div></div>`:''}
       <canvas class="chart" id="kline"></canvas>
-      <p class="note">綠帶＝買區，藍帶＝目標賣區，紅虛線＝停損。均線：青 MA20、金 MA60、灰 MA120。</p>
+      <p class="note">綠帶＝買區，藍帶＝目標賣區，紅虛線＝停損。均線：青 MA20、金 MA60、灰 MA120。右方青錐＝同樣狀態後 20 日的 25–75 分位路徑，虛線＝中位。</p>
       <div class="sec"><h3>訊號</h3><div class="sigs">${(d.signals||[]).map(s=>`<span class="sig ${s.tone||''}">${s.title}</span>`).join('') || '<span class="note">近日無觸發訊號</span>'}</div></div>
       <div class="sec"><h3>檢查清單 ${d.checks_ok}/${d.checks_n}（閘門／加分／參考）</h3>
         ${['gate','bonus','info'].map(g=>{
@@ -407,7 +511,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <p class="note">綠＝現價下方（獲利盤），紅＝套牢盤。峰已納入支撐／壓力候選。</p></div>`:''}
       <div class="lim">技術訊號是機率。台股報價延遲約 20 分、籌碼延遲一日、財報季更。不構成投資建議。</div>
     </div>`;
-    requestAnimationFrame(()=>drawChart(d.bars||[], p));
+    requestAnimationFrame(()=>drawChart(d.bars||[], p, d.forecast));
   }
 
   async function loadScan(){
