@@ -252,7 +252,7 @@ fn spawn_bootstrap_detached() {
     }
     tracing::info!("stockgenie bootstrap starting in background");
     match cmd.spawn() {
-        Ok(child) => {
+        Ok(mut child) => {
             std::thread::spawn(move || {
                 let _ = child.wait();
             });
