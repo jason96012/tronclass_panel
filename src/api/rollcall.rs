@@ -359,22 +359,29 @@ pub const AUTO_SUBMIT_PERCENT: u32 = 15;
 const MIN_CLASS_PROGRESS_ROSTER: usize = 4;
 /// 可能代表「班上總人數」的欄位名。
 const PROGRESS_TOTAL_KEYS: &[&str] = &[
-    "total_count", "total_students", "student_count", "students_count", "total_num",
-    "student_num", "class_size", "total",
+    "total_count", "totalCount", "total_students", "totalStudents", "student_count",
+    "studentCount", "students_count", "studentsCount", "total_num", "totalNum",
+    "student_num", "studentNum", "class_size", "classSize", "total",
 ];
 /// 可能代表「已點名成功人數」的欄位名。
 const PROGRESS_DONE_KEYS: &[&str] = &[
-    "signed_count", "finished_count", "completed_count", "attended_count", "present_count",
-    "checked_in_count", "on_call_fine_count", "signed_num", "signed_students",
+    "signed_count", "signedCount", "finished_count", "finishedCount",
+    "completed_count", "completedCount", "attended_count", "attendedCount",
+    "present_count", "presentCount", "checked_in_count", "checkedInCount",
+    "on_call_fine_count", "onCallFineCount", "signed_num", "signedNum",
+    "signed_students", "signedStudents",
 ];
-/// 每一筆學生紀錄裡「狀態」可能長在這些欄位。
+/// 每一筆學生紀錄裡「個人出席狀態」可能長在這些欄位。
+/// 不含 `rollcall_status`：那是整場點名進行中，拿來當個人已點會讓全班變成 100%。
 const PROGRESS_STATUS_KEYS: &[&str] = &[
-    "status", "attendance_status", "attendanceStatus", "rollcall_status", "rollcallStatus",
-    "state", "result", "signed", "checked_in", "checkedIn", "attended", "finished",
-    "is_signed", "is_checked_in",
+    "status", "attendance_status", "attendanceStatus",
+    "signed", "checked_in", "checkedIn", "attended", "finished",
+    "is_signed", "isSigned", "is_checked_in", "isCheckedIn",
 ];
 /// 學生名單可能放在這些 key 底下。
-const PROGRESS_LIST_KEYS: &[&str] = &["student_rollcalls", "students", "records", "list", "items"];
+const PROGRESS_LIST_KEYS: &[&str] = &[
+    "student_rollcalls", "studentRollcalls", "students", "records", "list", "items",
+];
 
 /// 從 JSON 值取整數（接受數字與數字字串）。
 fn progress_number(value: &serde_json::Value) -> Option<usize> {
@@ -388,13 +395,26 @@ fn progress_number(value: &serde_json::Value) -> Option<usize> {
     }
 }
 
+/// 大小寫不敏感地從物件取欄位（iClass 有時 snake_case、有時 camelCase）。
+fn progress_map_get<'a>(
+    map: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<&'a serde_json::Value> {
+    if let Some(value) = map.get(key) {
+        return Some(value);
+    }
+    map.iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
+}
+
 /// 在一個物件裡找第一個命中的整數欄位。
 fn progress_number_in(
     map: &serde_json::Map<String, serde_json::Value>,
     keys: &[&str],
 ) -> Option<(usize, String)> {
     for key in keys {
-        if let Some(value) = map.get(*key) {
+        if let Some(value) = progress_map_get(map, key) {
             if let Some(number) = progress_number(value) {
                 return Some((number, (*key).to_string()));
             }
@@ -403,14 +423,45 @@ fn progress_number_in(
     None
 }
 
-/// 把單筆學生的狀態值轉成「是否成功」。
+/// 把單筆學生的狀態值轉成「是否已點名成功」。
+///
+/// 不用 [`is_number_success_text`]：那個把 `ok`／`true` 也算成功，班上進度會被灌水。
 fn progress_status_success(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Bool(flag) => *flag,
         serde_json::Value::Number(number) => number.as_u64() == Some(1),
-        serde_json::Value::String(text) => is_number_success_text(text),
+        serde_json::Value::String(text) => is_progress_attended_text(text),
         _ => false,
     }
+}
+
+/// 個人已點名成功的狀態字。含 `on_call`（數字點名送出後的個人狀態），
+/// 但不靠 `rollcall_status` 欄位，避免把「整場進行中」當成全班已點。
+fn is_progress_attended_text(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let normalized = lower.trim();
+    matches!(
+        normalized,
+        "on_call"
+            | "oncall"
+            | "on_call_fine"
+            | "oncallfine"
+            | "attended"
+            | "present"
+            | "checked_in"
+            | "checked-in"
+            | "checkedin"
+            | "signed"
+            | "finished"
+            | "success"
+            | "succeeded"
+    ) || lower.contains("on_call_fine")
+        || text.contains("簽到成功")
+        || text.contains("签到成功")
+        || text.contains("點名成功")
+        || text.contains("点名成功")
+        || text.contains("已簽到")
+        || text.contains("已签到")
 }
 
 /// 從 `student_rollcalls` payload 讀出班上進度。
@@ -484,7 +535,7 @@ pub fn parse_rollcall_progress(payload: &serde_json::Value) -> Option<RollcallPr
             let Some(map) = item.as_object() else { continue };
             let mut status: Option<&serde_json::Value> = None;
             for status_key in PROGRESS_STATUS_KEYS {
-                if let Some(value) = map.get(*status_key) {
+                if let Some(value) = progress_map_get(map, status_key) {
                     status = Some(value);
                     break;
                 }
@@ -1690,5 +1741,38 @@ mod tests {
     fn test_parse_rollcall_progress_unknown_shape_is_none() {
         let payload = serde_json::json!({ "data": { "number_code": "1234" }, "foo": [1, 2, 3] });
         assert!(parse_rollcall_progress(&payload).is_none());
+    }
+
+    #[test]
+    fn test_parse_rollcall_progress_camel_case_counts() {
+        let payload = serde_json::json!({ "totalCount": 40, "signedCount": 3 });
+        let progress = parse_rollcall_progress(&payload).expect("應該讀到 camelCase 統計欄位");
+        assert_eq!(progress.completed, 3);
+        assert_eq!(progress.total, 40);
+        assert!(!progress.passed(15), "3/40=7.5% 未超過 15%");
+        let over = parse_rollcall_progress(&serde_json::json!({
+            "totalCount": 40,
+            "signedCount": 7
+        }))
+        .expect("7/40");
+        assert!(over.passed(15));
+    }
+
+    #[test]
+    fn test_parse_rollcall_progress_ignores_session_on_call() {
+        let payload = serde_json::json!({
+            "student_rollcalls": [
+                { "student_id": 1, "status": "absent", "rollcall_status": "on_call" },
+                { "student_id": 2, "status": "absent", "rollcall_status": "on_call" },
+                { "student_id": 3, "status": "absent", "rollcall_status": "on_call" },
+                { "student_id": 4, "status": "on_call_fine", "rollcall_status": "on_call" },
+                { "student_id": 5, "status": "absent", "rollcall_status": "on_call" },
+                { "student_id": 6, "status": "absent", "rollcall_status": "on_call" }
+            ]
+        });
+        let progress = parse_rollcall_progress(&payload).expect("應該讀到學生名單");
+        assert_eq!(progress.completed, 1);
+        assert_eq!(progress.total, 6);
+        assert!(!progress.passed(15));
     }
 }

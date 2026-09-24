@@ -1629,6 +1629,10 @@
       isAdmin = !!body.is_admin;
       files = (body.files || []).map(f => typeof f === 'string' ? { path: f, name: f } : f);
       folders = body.folders || [];
+      // CLOUD_LIST_CACHE_SINGLE_SCAN_V1：超過 5000 項時後端截斷，提醒使用者列表不完整。
+      if (body.truncated) {
+        toast('教材超過 ' + (body.max_list_entries || 5000) + ' 項，僅顯示部分列表', false);
+      }
       render();
     } catch(e) {
       toast(e.message || '讀取教材失敗', false);

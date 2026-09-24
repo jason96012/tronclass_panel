@@ -30,6 +30,7 @@ use passkey_auth::{
 use qrcode::{render::svg, QrCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use base64::{engine::general_purpose::STANDARD as B64_STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{error, info, warn};
@@ -81,6 +82,17 @@ pub(crate) fn start_morning_digest(state: AdminWebState) {
 pub(crate) fn start_indexnow_auto_submit() {
     indexnow::start_auto_submit();
 }
+
+/// STOCKGENIE_BOOT_V1：面板 process 起來就接上（或補啟動）智選 sidecar。
+/// ptero-start 才是主機級監工；這裡只做 health 探測＋舊腳本 fallback，不擋點名。
+pub(crate) fn start_stockgenie_embed() {
+    tokio::spawn(async {
+        match stock::ensure_stock_sidecar().await {
+            Ok(()) => tracing::info!("stockgenie sidecar ready"),
+            Err(e) => tracing::warn!(error = %e, "stockgenie sidecar start failed"),
+        }
+    });
+}
 mod files;
 mod materials_import;
 mod homework;
@@ -102,6 +114,8 @@ mod status;
 // ROLLCALL_ATTENDANCE_V1（fix66）：點名出席統計與送出者查詢。
 mod rollcall_stats;
 mod credits;
+// STOCKGENIE_EMBED_V1：智選股 sidecar（/admin/stock + /admin/stock-api → 127.0.0.1:18765）。
+mod stock;
 mod timetable;
 mod web_push;
 pub mod materials_webdav;
@@ -2515,6 +2529,15 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/static/dashboard-access.css",
             get(static_assets::admin_dashboard_access_css_handler),
         )
+        // DASHBOARD_UI_BUNDLE_V1
+        .route(
+            "/admin/static/js/dashboard-ui.js",
+            get(static_assets::admin_dashboard_ui_js_handler),
+        )
+        .route(
+            "/admin/static/dashboard-extras.css",
+            get(static_assets::admin_dashboard_extras_css_handler),
+        )
         .route(
             "/admin/static/dashboard-runtime.js",
             get(static_assets::admin_dashboard_runtime_handler),
@@ -3023,6 +3046,16 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/credits",
             axum::routing::get(pages::admin_credits_page_handler),
+        )
+        // STOCKGENIE_EMBED_V1：智選頁與 JSON 代理。不掛頂層 /api（那是 iClass）。
+        .route(
+            "/admin/stock",
+            axum::routing::get(stock::admin_stock_page_handler),
+        )
+        .route(
+            "/admin/stock-api/{*path}",
+            axum::routing::any(stock::admin_stock_api_proxy)
+                .layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
         )
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         .layer(axum::middleware::from_fn_with_state(
@@ -3826,7 +3859,9 @@ async fn admin_same_origin_middleware(
         || method == Method::PUT
         || method == Method::PATCH
         || method == Method::DELETE;
-    if mutating && request.uri().path().starts_with("/admin/api/") && !same_origin_request(&headers)
+    let same_origin_api = request.uri().path().starts_with("/admin/api/")
+        || request.uri().path().starts_with("/admin/stock-api/");
+    if mutating && same_origin_api && !same_origin_request(&headers)
     {
         return (
             StatusCode::FORBIDDEN,
@@ -3835,10 +3870,6 @@ async fn admin_same_origin_middleware(
             .into_response();
     }
     next.run(request).await
-}
-
-fn generate_csp_nonce() -> String {
-    Uuid::new_v4().simple().to_string()
 }
 
 /// CSP_STYLE_ATTR_STAGED_V1：內聯 style 屬性的策略（見 `AdminWebConfig::csp_style_attr_mode`）。
@@ -3863,40 +3894,47 @@ fn csp_style_attr_mode() -> CspStyleAttrMode {
     }
 }
 
-fn csp_header_value(nonce: Option<&str>) -> String {
-    let style_attr = if csp_style_attr_mode() == CspStyleAttrMode::Enforce {
+fn csp_style_attr_allow() -> &'static str {
+    if csp_style_attr_mode() == CspStyleAttrMode::Enforce {
         "'none'"
     } else {
         "'unsafe-inline'"
-    };
-    csp_header_value_with_style_attr(nonce, style_attr)
+    }
+}
+
+/// HTML_CACHE_HASH_CSP_V1：inline `<script>` / `<style>` 的 CSP extra
+///（`'sha256-…'` 清單，含前導空白；空字串＝沒有 inline）。
+struct InlineCspHashes {
+    script: String,
+    style: String,
+}
+
+fn format_csp(script_extra: &str, style_extra: &str, style_attr: &str) -> String {
+    format!(
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_extra} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_extra}; style-src-attr {style_attr}; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com https://docs.google.com; worker-src 'self' blob:; upgrade-insecure-requests"
+    )
+}
+
+/// JSON／靜態回應的嚴格 CSP（沒有 inline 腳本／樣式）。
+fn csp_header_value(nonce: Option<&str>) -> String {
+    // 非 HTML 路徑不再發 nonce；參數保留是為了既有 `csp_header_value(None)` 呼叫點。
+    let _ = nonce;
+    format_csp("", "", csp_style_attr_allow())
 }
 
 /// CSP_STYLE_ATTR_STAGED_V1：Report-Only 版本（style-src-attr 'none'），只在 `report` 模式
 /// 對 HTML 頁面加送。違規由瀏覽器觸發 `securitypolicyviolation`（disposition=report），
 /// client-log.js 會把它回報到 /admin/api/client-log。
-fn csp_report_only_header_value(nonce: &str) -> Option<String> {
+fn csp_report_only_header_value(script_extra: &str, style_extra: &str) -> Option<String> {
     if csp_style_attr_mode() != CspStyleAttrMode::Report {
         return None;
     }
-    Some(csp_header_value_with_style_attr(Some(nonce), "'none'"))
-}
-
-fn csp_header_value_with_style_attr(nonce: Option<&str>, style_attr: &str) -> String {
-    let script_nonce = nonce
-        .map(|value| format!(" 'nonce-{value}'"))
-        .unwrap_or_default();
-    let style_nonce = nonce
-        .map(|value| format!(" 'nonce-{value}'"))
-        .unwrap_or_default();
-    format!(
-        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_nonce} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_nonce}; style-src-attr {style_attr}; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com https://docs.google.com; worker-src 'self' blob:; upgrade-insecure-requests"
-    )
+    Some(format_csp(script_extra, style_extra, "'none'"))
 }
 
 /// CSP_STYLE_ATTR_STAGED_V1：把 Report-Only 標頭掛到 HTML 回應（有才掛）。
-fn apply_csp_report_only(response: &mut Response, nonce: &str) {
-    if let Some(value) = csp_report_only_header_value(nonce) {
+fn apply_csp_report_only(response: &mut Response, script_extra: &str, style_extra: &str) {
+    if let Some(value) = csp_report_only_header_value(script_extra, style_extra) {
         if let Ok(value) = value.parse::<HeaderValue>() {
             response.headers_mut().insert(
                 HeaderName::from_static("content-security-policy-report-only"),
@@ -3906,13 +3944,32 @@ fn apply_csp_report_only(response: &mut Response, nonce: &str) {
     }
 }
 
-/// Add a per-response nonce to every inline `<script>` and `<style>` element.
-/// Static JavaScript/CSS files remain allowed by `'self'`; inline event handlers
-/// remain blocked. Legacy inline style attributes are allowed because the
-/// timetable grid and several runtime controls position themselves dynamically.
-fn add_csp_nonce_to_inline_tags(html: &str, nonce: &str) -> String {
+fn csp_sha256_token(body: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(body.as_bytes());
+    format!("'sha256-{}'", B64_STANDARD.encode(hasher.finalize()))
+}
+
+fn html_attr_present(open_tag: &str, name: &str) -> bool {
+    let lower = open_tag.to_ascii_lowercase();
+    let needle = format!("{name}=");
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find(&needle) {
+        let ok = at == 0 || rest.as_bytes()[at - 1].is_ascii_whitespace();
+        if ok {
+            return true;
+        }
+        rest = &rest[at + needle.len()..];
+    }
+    false
+}
+
+/// HTML_CACHE_HASH_CSP_V1：掃描 inline `<script>`（無 `src`）與 `<style>`，
+/// 產出 CSP Level 2 的 `'sha256-…'`（標準 base64）。帶 `src` 的外部腳本由 `'self'` 放行，不雜湊。
+fn collect_inline_csp_hashes(html: &str) -> InlineCspHashes {
     let lower = html.to_ascii_lowercase();
-    let mut out = String::with_capacity(html.len() + 512);
+    let mut script_hashes: Vec<String> = Vec::new();
+    let mut style_hashes: Vec<String> = Vec::new();
     let mut cursor = 0usize;
 
     while cursor < html.len() {
@@ -3924,52 +3981,73 @@ fn add_csp_nonce_to_inline_tags(html: &str, nonce: &str) -> String {
             (None, Some(style)) => Some(style),
             (None, None) => None,
         }) else {
-            out.push_str(&html[cursor..]);
             break;
         };
 
-        let tag_name_len = if lower[tag_at..].starts_with("<script") {
+        let is_script = lower[tag_at..].starts_with("<script");
+        let name_len = if is_script {
             "<script".len()
         } else {
             "<style".len()
         };
-        let next_byte = html.as_bytes().get(tag_at + tag_name_len).copied();
+        let next_byte = html.as_bytes().get(tag_at + name_len).copied();
         if !next_byte
             .map(|byte| byte.is_ascii_whitespace() || byte == b'>' || byte == b'/')
             .unwrap_or(false)
         {
-            // Ignore string literals such as `"<script..."` inside an inline
-            // script; they are not HTML elements and must not be rewritten.
-            let end = (tag_at + tag_name_len).min(html.len());
-            out.push_str(&html[cursor..end]);
-            cursor = end;
+            cursor = tag_at + name_len;
             continue;
         }
         let Some(relative_end) = lower[tag_at..].find('>') else {
-            out.push_str(&html[cursor..]);
             break;
         };
-        let tag_end = tag_at + relative_end;
-        let tag = &html[tag_at..=tag_end];
-        out.push_str(&html[cursor..tag_at]);
-        if tag.to_ascii_lowercase().contains(" nonce=") {
-            out.push_str(tag);
-        } else {
-            let without_close = tag.strip_suffix('>').unwrap_or(tag);
-            out.push_str(without_close);
-            out.push_str(" nonce=\"");
-            out.push_str(nonce);
-            out.push_str("\">");
+        let open_end = tag_at + relative_end;
+        let open_tag = &html[tag_at..=open_end];
+        let close_needle = if is_script { "</script>" } else { "</style>" };
+        let Some(relative_close) = lower[open_end + 1..].find(close_needle) else {
+            cursor = open_end + 1;
+            continue;
+        };
+        let body_start = open_end + 1;
+        let body_end = open_end + 1 + relative_close;
+        let body = &html[body_start..body_end];
+        cursor = body_end + close_needle.len();
+
+        if is_script {
+            if html_attr_present(open_tag, "src") {
+                continue;
+            }
+            let open_lower = open_tag.to_ascii_lowercase();
+            if open_lower.contains("application/json") || open_lower.contains("ld+json") {
+                continue;
+            }
         }
-        cursor = tag_end + 1;
+        let token = csp_sha256_token(body);
+        let dest = if is_script {
+            &mut script_hashes
+        } else {
+            &mut style_hashes
+        };
+        if !dest.iter().any(|existing| existing == &token) {
+            dest.push(token);
+        }
     }
 
-    out
+    InlineCspHashes {
+        script: script_hashes
+            .into_iter()
+            .map(|token| format!(" {token}"))
+            .collect(),
+        style: style_hashes
+            .into_iter()
+            .map(|token| format!(" {token}"))
+            .collect(),
+    }
 }
 
-/// Security headers for the externally reachable Admin Web. Inline elements
-/// receive a fresh nonce in `html_page_response`; inline event/style
-/// attributes are blocked instead of enabling the global inline bypass.
+/// Security headers for the externally reachable Admin Web. Inline `<script>` /
+/// `<style>` are allowed by content hashes in `html_page_response` (HTML_CACHE_HASH_CSP_V1);
+/// inline event attributes stay blocked (`script-src-attr 'none'`).
 /// TRONCLASS_PROXY_PASSTHROUGH_V1（fix29）：頂層代理路由的路徑判定。
 /// 這些前綴由 tc_proxy 轉發 iClass，回應不得套用面板的安全標頭/CSP。
 fn is_tc_proxy_path(path: &str) -> bool {
@@ -3990,6 +4068,14 @@ fn is_tc_proxy_path(path: &str) -> bool {
         || path.starts_with("/bulletin-list/")
 }
 
+/// STOCKGENIE_EMBED_V1：智選頁用 innerHTML，不能套 require-trusted-types-for。
+/// 與 iClass 代理一樣跳過面板 CSP；頁面 handler 自行送較鬆的 CSP。
+fn is_stock_embed_path(path: &str) -> bool {
+    path == "/admin/stock"
+        || path == "/admin/stock-api"
+        || path.starts_with("/admin/stock-api/")
+}
+
 async fn admin_security_headers_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -4005,7 +4091,7 @@ async fn admin_security_headers_middleware(
     // innerHTML 會整頁拋 TypeError（與 2026-09-14 /admin/homework 回報的
     // TrustedHTML 錯誤同型）。代理回應在 tc_proxy 內已做上游 header 白名單，
     // 這裡直接原樣放行，不加任何面板安全標頭。
-    if is_tc_proxy_path(path) {
+    if is_tc_proxy_path(path) || is_stock_embed_path(path) {
         return next.run(request).await;
     }
     let is_admin_path = path.starts_with("/admin")
@@ -4042,6 +4128,9 @@ async fn admin_security_headers_middleware(
     // Compute this before taking the mutable header borrow: reading `response`
     // afterwards would conflict with the `headers` borrow held below.
     let html_document = is_html_document(&response);
+    // HTML_CACHE_HASH_CSP_V1：304 沒有 Content-Type，不能靠 is_html_document；
+    // 若當成非 HTML 會被寫成 `no-store`，瀏覽器下次就不帶 If-None-Match。
+    let not_modified = response.status() == StatusCode::NOT_MODIFIED;
 
     let headers = response.headers_mut();
     headers.insert(
@@ -4081,7 +4170,7 @@ async fn admin_security_headers_middleware(
         HeaderName::from_static("strict-transport-security"),
         HeaderValue::from_static("max-age=31536000; includeSubDomains"),
     );
-    // Page handlers install a nonce-bearing CSP. Use the strict no-inline
+    // Page handlers install a hash-bearing CSP. Use the strict no-inline
     // fallback only for JSON/static responses that do not contain inline code.
     if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
         // PDF_FRAME_PREVIEW_V1: 預覽回應需要能被同源 <iframe> 內嵌，把
@@ -4101,7 +4190,7 @@ async fn admin_security_headers_middleware(
         // requests, so every navigation re-downloaded the full ~260 KB
         // dashboard. `no-cache` still revalidates on each load while allowing
         // the ETag below to answer with an empty 304.
-        if html_document {
+        if html_document || not_modified {
             headers.insert(
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("private, no-cache, must-revalidate"),
@@ -4123,15 +4212,17 @@ fn is_html_document(response: &Response) -> bool {
 
 /// Serve a static in-binary HTML page with a content-derived ETag so repeat
 /// navigations get a 304 instead of the full payload.
+///
+/// HTML_CACHE_HASH_CSP_V1：inline 腳本改以 sha256 雜湊放行，HTML 本體不再插入
+/// 每次不同的 nonce，所以同一份 HTML 的 ETag 穩定，If-None-Match 才能 304。
+/// 隨機 nonce 與 304 不能共存（快取的 body nonce ≠ 新回應的 CSP nonce）。
 fn html_page_response(headers: &HeaderMap, html: String) -> Response {
     // ASSET_VERSION_AUTO_V1：先統一改寫 /admin/static/... 版號（?sv=<build id>），
-    // 再計算 nonce 與 ETag——ETag 自然隨資產內容變動。
+    // 再算雜湊 CSP 與 ETag——ETag 自然隨資產內容變動。
     let html = asset_versions::rewrite_asset_versions(&html).into_owned();
-    let nonce = generate_csp_nonce();
-    let html = add_csp_nonce_to_inline_tags(&html, &nonce);
+    let hashes = collect_inline_csp_hashes(&html);
+    let csp = format_csp(&hashes.script, &hashes.style, csp_style_attr_allow());
 
-    // Hash the nonce-bearing body directly. Each response gets a fresh nonce,
-    // so a previously cached ETag cannot be reused for a different response.
     let mut hasher = Sha256::new();
     hasher.update(html.as_bytes());
     let etag = format!("\"{}\"", hex::encode(&hasher.finalize()[..16]));
@@ -4141,20 +4232,22 @@ fn html_page_response(headers: &HeaderMap, html: String) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.split(',').any(|c| c.trim() == etag));
 
+    const HTML_CACHE_CONTROL: &str = "private, no-cache, must-revalidate";
+
     if matches {
         let mut response = StatusCode::NOT_MODIFIED.into_response();
         if let Ok(value) = etag.parse::<HeaderValue>() {
             response.headers_mut().insert(header::ETAG, value);
         }
-        if let Ok(value) = csp_header_value(Some(&nonce)).parse::<HeaderValue>() {
+        if let Ok(value) = csp.parse::<HeaderValue>() {
             response
                 .headers_mut()
                 .insert(header::CONTENT_SECURITY_POLICY, value);
         }
-        apply_csp_report_only(&mut response, &nonce);
+        apply_csp_report_only(&mut response, &hashes.script, &hashes.style);
         response.headers_mut().insert(
             header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store, max-age=0"),
+            HeaderValue::from_static(HTML_CACHE_CONTROL),
         );
         return response;
     }
@@ -4163,17 +4256,16 @@ fn html_page_response(headers: &HeaderMap, html: String) -> Response {
     if let Ok(value) = etag.parse::<HeaderValue>() {
         response.headers_mut().insert(header::ETAG, value);
     }
-    if let Ok(value) = csp_header_value(Some(&nonce)).parse::<HeaderValue>() {
+    if let Ok(value) = csp.parse::<HeaderValue>() {
         response
             .headers_mut()
             .insert(header::CONTENT_SECURITY_POLICY, value);
     }
-    apply_csp_report_only(&mut response, &nonce);
-    // Admin HTML contains account/session-specific state. Never let Safari,
-    // the installed PWA, or an intermediary reuse it after a server restart.
+    apply_csp_report_only(&mut response, &hashes.script, &hashes.style);
+    // Admin HTML 含帳號／session 狀態：private + 每次必須再驗證（304 可省 body）。
     response.headers_mut().insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store, max-age=0"),
+        HeaderValue::from_static(HTML_CACHE_CONTROL),
     );
     response
 }
@@ -4631,6 +4723,31 @@ mod tests {
         assert!(!is_tc_proxy_path("/statics"));
         assert!(!is_tc_proxy_path("/courseware"));
         assert!(!is_tc_proxy_path("/bulletin-listing"));
+    }
+
+    #[test]
+    fn stock_embed_paths_bypass_trusted_types_csp() {
+        // STOCKGENIE_EMBED_V1：智選 innerHTML 不能被面板 Trusted Types 毒殺；
+        // 也絕不能被誤判成 iClass `/api` 代理。
+        for path in [
+            "/admin/stock",
+            "/admin/stock-api",
+            "/admin/stock-api/health",
+            "/admin/stock-api/scan",
+            "/admin/stock-api/stock/2330.TW",
+            "/admin/stock-api/positions/close",
+        ] {
+            assert!(is_stock_embed_path(path), "stock embed must bypass: {path}");
+            assert!(
+                !is_tc_proxy_path(path),
+                "stock embed must not look like iClass proxy: {path}"
+            );
+        }
+        assert!(!is_stock_embed_path("/admin/stockpile"));
+        assert!(!is_stock_embed_path("/admin/stock-extra"));
+        assert!(!is_stock_embed_path("/admin/homework"));
+        assert!(!is_stock_embed_path("/api/scan"));
+        assert!(!is_stock_embed_path("/admin/credits"));
     }
 
     #[test]
@@ -5169,6 +5286,69 @@ mod tests {
             .await
             .unwrap();
         String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    /// HTML_CACHE_HASH_CSP_V1：同一份 HTML 的 ETag 必須穩定，If-None-Match 才能 304；
+    /// CSP 用 sha256 雜湊而不是每次不同的 nonce。
+    #[tokio::test]
+    async fn html_page_etag_is_stable_and_supports_304() {
+        let html = "<html><body><script>console.log(1)</script></body></html>".to_string();
+        let first = html_page_response(&HeaderMap::new(), html.clone());
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first
+            .headers()
+            .get(header::ETAG)
+            .expect("ETag")
+            .clone();
+        let csp = first
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        assert!(csp.contains("'sha256-"), "CSP must list script hashes: {csp}");
+        assert!(
+            !csp.contains("'nonce-"),
+            "HTML CSP must not use a per-request nonce: {csp}"
+        );
+        let mut hasher = Sha256::new();
+        hasher.update(b"console.log(1)");
+        let expected = format!("'sha256-{}'", B64_STANDARD.encode(hasher.finalize()));
+        assert!(
+            csp.contains(&expected),
+            "CSP missing hash {expected}: {csp}"
+        );
+        let cache = first
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            cache.contains("no-cache") && !cache.contains("no-store"),
+            "HTML must revalidate, not no-store: {cache}"
+        );
+        let body = body_string(first).await;
+        assert!(
+            !body.to_ascii_lowercase().contains(" nonce="),
+            "HTML body must stay nonce-free so ETag can match"
+        );
+
+        let second = html_page_response(&HeaderMap::new(), html.clone());
+        assert_eq!(second.headers().get(header::ETAG).unwrap(), &etag);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, etag);
+        let third = html_page_response(&headers, html);
+        assert_eq!(third.status(), StatusCode::NOT_MODIFIED);
+        let cache304 = third
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            cache304.contains("no-cache") && !cache304.contains("no-store"),
+            "304 must keep revalidate Cache-Control: {cache304}"
+        );
     }
 
     #[tokio::test]

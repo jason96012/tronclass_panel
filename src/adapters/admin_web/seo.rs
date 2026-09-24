@@ -163,7 +163,7 @@ fn landing_html(headers: &HeaderMap) -> String {
 
 /// `GET /`：公開介紹頁。
 ///
-/// 回應一律走 `html_page_response()`：統一補 CSP nonce、資產版號改寫與 ETag／304，
+/// 回應一律走 `html_page_response()`：統一補雜湊 CSP、資產版號改寫與 ETag／304，
 /// 與站內其他頁面同一套管線（不會有「介紹頁少了安全標頭」的破口）。
 pub(super) fn landing_page_response(headers: &HeaderMap) -> Response {
     html_page_response(headers, landing_html(headers))

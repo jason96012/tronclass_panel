@@ -2164,7 +2164,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
           <div class="empty-box">
             <h3>🎉 太棒了！目前沒有待繳交的作業</h3>
             <p>所有進行中的待辦事項與作業皆已完成。</p>
-            <button class="button" onclick="document.querySelector('[data-filter=all]').click()">查看全部作業紀錄</button>
+            <button class="button" type="button" data-filter-jump="all">查看全部作業紀錄</button>
           </div>
         `;
       } else if (currentFilter === 'nolimit') {
@@ -2442,6 +2442,15 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     // HOMEWORK_USER_COMPLETED_V1
     // 委派處理「標記完成／取消」按鈕（卡片會重新 render，用容器委派避免重綁）。
     q('homeworkContainer').addEventListener('click', async function(ev) {
+      // HW_FILTER_JUMP_V1：空狀態「查看全部」改 data-filter-jump。
+      // innerHTML 模板裡的 onclick= 會被 DOMPurify 剝掉，且 CSP script-src-attr 'none' 也會擋。
+      const jump = ev.target.closest('[data-filter-jump]');
+      if (jump) {
+        const name = jump.getAttribute('data-filter-jump');
+        const tab = document.querySelector('.filter-tab[data-filter="' + name + '"]');
+        if (tab) tab.click();
+        return;
+      }
       // HOMEWORK_DETAIL_V1（fix41）：面板內看內容（伺服器端抓 iClass 資料）。
       // 不再走 /admin/tc-go 代理——代理路線會動到瀏覽器 cookie，是 fix38 事故的來源。
       const detailBtn = ev.target.closest('[data-hw-detail]');

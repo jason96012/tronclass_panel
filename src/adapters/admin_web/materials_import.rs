@@ -1423,6 +1423,19 @@ async fn download_file(
                     if chunk.is_empty() {
                         continue;
                     }
+                    // IMPORT_REJECT_HTML_JSON_V1：第一片若是 HTML 登入頁／JSON 錯誤，
+                    // 不要當成 zip／exe 落地。文字類檔名（.html／.json／.txt…）放行。
+                    if written == 0
+                        && !is_texty_file_name(
+                            dest.file_name().and_then(|n| n.to_str()).unwrap_or(""),
+                        )
+                        && looks_like_html_or_json_prefix(&chunk)
+                    {
+                        stream_err = Some(
+                            "上游回的不是檔案（HTML／JSON 登入頁或錯誤訊息）".to_string(),
+                        );
+                        break;
+                    }
                     if let Err(e) = out.write_all(&chunk).await {
                         stream_err = Some(format!("寫入暫存檔失敗：{e}"));
                         break;

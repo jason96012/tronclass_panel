@@ -673,6 +673,72 @@ start_filebrowser() {
 
 start_filebrowser
 
+# STOCKGENIE_BOOT_V1：容器／主機一啟動就拉起智選 sidecar（只聽 127.0.0.1:18765）。
+# 面板經 /admin/stock-api 反代；絕不開 0.0.0.0、不佔頂層 /api（那是 iClass）。
+# 失敗只記 log，不擋點名／Dashboard。STOCKGENIE_ENABLE=0 可關。
+STOCKGENIE_PORT="${STOCKGENIE_PORT:-18765}"
+STOCKGENIE_DIR="src/adapters/admin_web/stockgenie"
+
+start_stockgenie() {
+  if [[ "${STOCKGENIE_ENABLE:-1}" != "1" ]]; then
+    echo "[ptero-start] 智選 sidecar 已關閉（STOCKGENIE_ENABLE=0）"
+    return 0
+  fi
+  if [[ ! -f "$STOCKGENIE_DIR/app.py" ]]; then
+    echo "[ptero-start] 找不到 $STOCKGENIE_DIR/app.py，略過智選"
+    return 0
+  fi
+  mkdir -p logs run
+  # STOCKGENIE_PYTHON_BOOTSTRAP_V1：映像沒有系統 python3 時，把獨立 CPython
+  # 裝進 run/stockgenie-venv。失敗只記 log，不擋點名／編譯。
+  if ! bash "$STOCKGENIE_DIR/bootstrap.sh" >> logs/stockgenie-bootstrap.log 2>&1; then
+    echo "[ptero-start] 智選 Python 環境安裝失敗（詳見 logs/stockgenie-bootstrap.log）；面板其餘功能不受影響"
+    return 0
+  fi
+  local py=""
+  py="$(tr -d '\r\n' < run/stockgenie-python-bin.txt 2>/dev/null || true)"
+  if [[ -z "$py" || ! -x "$py" ]]; then
+    py="run/stockgenie-venv/bin/python"
+  fi
+  if [[ ! -x "$py" ]]; then
+    echo "[ptero-start] 智選 python 仍不存在，略過"
+    return 0
+  fi
+  mkdir -p logs
+  local code="000"
+  if command -v curl >/dev/null 2>&1; then
+    code="$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${STOCKGENIE_PORT}/api/health" 2>/dev/null || echo 000)"
+  fi
+  if [[ "$code" == "200" || "$code" == "202" ]]; then
+    echo "[ptero-start] 智選 sidecar 已在 127.0.0.1:${STOCKGENIE_PORT}"
+    return 0
+  fi
+  if [[ -s logs/stockgenie.pid ]]; then
+    local pid
+    pid="$(cat logs/stockgenie.pid 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]]; then
+      kill "$pid" 2>/dev/null || true
+      sleep 0.3
+      kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f logs/stockgenie.pid
+  fi
+  echo "[ptero-start] 啟動智選 sidecar（127.0.0.1:${STOCKGENIE_PORT}）"
+  local sg_root sg_log
+  sg_root="$PWD/$STOCKGENIE_DIR"
+  sg_log="$PWD/logs/stockgenie.log"
+  # nohup + disown：熱重編只殺 Rust binary，智選繼續跑。
+  nohup bash -c '
+    cd "$1" || exit 1
+    exec env PYTHONUNBUFFERED=1 STOCKGENIE_EMBED=1 "$2" -m uvicorn app:app \
+      --host 127.0.0.1 --port "$3" --log-level warning
+  ' bash "$sg_root" "$py" "$STOCKGENIE_PORT" >> "$sg_log" 2>&1 &
+  echo $! > logs/stockgenie.pid
+  disown || true
+}
+
+start_stockgenie
+
 # At-rest encryption master key for the accounts database. Encrypts upstream
 # passwords and session cookies with AES-256-GCM before storing them.
 # Resolution order:
@@ -804,6 +870,7 @@ watchdog_pid_alive() {
     *cloudflared.pid) expected='cloudflared' ;;
     *filebrowser-caddy.pid) expected='filebrowser|caddy' ;;
     *filebrowser-*.pid) expected='filebrowser' ;;
+    *stockgenie.pid) expected='uvicorn|python|bootstrap.sh' ;;
     *dashboard.pid) expected='tronclass_rollcall' ;;
     *) return 0 ;;
   esac
@@ -944,6 +1011,24 @@ watchdog_start_tunnel() {
   fi
 }
 
+watchdog_start_stockgenie() {
+  [[ "${STOCKGENIE_ENABLE:-1}" == "1" ]] || return 0
+  [[ -f src/adapters/admin_web/stockgenie/app.py ]] || return 0
+  if watchdog_pid_alive logs/stockgenie.pid; then
+    return 0
+  fi
+  local now last=0
+  now="$(date +%s)"
+  last="$(cat logs/stockgenie-watchdog.last 2>/dev/null || echo 0)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if (( now - last < ${STOCKGENIE_RESTART_BACKOFF_SECS:-30} )); then
+    return 0
+  fi
+  printf '%s\n' "$now" > logs/stockgenie-watchdog.last
+  echo "[watchdog] 智選 sidecar 不存在，重新啟動（$(date -Iseconds)）" >> logs/stockgenie-watchdog.log
+  start_stockgenie
+}
+
 watchdog_restart_filebrowser() {
   local now last=0
   now="$(date +%s)"
@@ -1031,6 +1116,7 @@ watchdog_loop() {
     # 就 copytruncate 輪替，最多保留 LOG_ROTATE_KEEP（預設 5）份 → 每個 log 上限約 60 MB。
     rotate_logs
     watchdog_start_tunnel
+    watchdog_start_stockgenie
     if hot_rebuild_if_needed "$bin"; then
       kill "$child" 2>/dev/null || true
       break

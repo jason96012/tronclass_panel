@@ -1098,6 +1098,16 @@ enum SingleRadarResult {
 /// 使用者連按送出時，10 公尺內視為同一組，不重複打學校。
 const MANUAL_POINT_DEDUP_METERS: f64 = 10.0;
 
+/// 輸入頁是否已經按下「系統演算」（通道裡有座標還沒被取走）。
+/// 自動送出要等班上超過 15%；使用者手動按按鈕則立刻送，不消耗這筆座標。
+pub async fn radar_channel_has_point(rx: Option<&RadarPointReceiver>) -> bool {
+    let Some(rx) = rx else {
+        return false;
+    };
+    let guard = rx.lock().await;
+    !guard.is_empty()
+}
+
 /// 從輸入頁的通道取出「最新一組」座標（非阻塞；一次清空佇列，只留最後一筆）。
 ///
 /// 為什麼只留最後一筆：使用者可能連按兩次（第一組打錯、第二組修正），

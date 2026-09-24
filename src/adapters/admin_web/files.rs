@@ -106,26 +106,38 @@ impl Drop for MaterialsInflightReservation {
 // 系統呼叫與排程開銷直接少兩個數量級，CPU 也就不再是上傳速度的天花板。
 //
 // 緩衝以「池」的形式保留一份重複使用（上限 8 MiB 常駐），連續上傳不必每次重新配置。
+//
+// UPLOAD_WRITE_BUFFER_RESET_V1：池裡的 Vec **寫出後必須 clear**。
+// `extend_from_slice` 是接在 `len` 後面，不是覆蓋開頭。舊實作只把「已寫長度」
+// 計數歸零、沒清 Vec，下一次 extend 把新資料接在舊 8 MiB 後面，寫出時卻切
+// `buffer[..計數]`（舊資料的開頭）→ 超過 8 MiB 的 zip／exe 會變成
+// 「檔案開頭那 8 MiB 反覆重貼」，解不開、執行不了；第二個以後的檔案從 byte 0
+// 就是上一個檔的殘留。不變量：`buffer` 裡永遠只有還沒寫出的位元組。
 const UPLOAD_WRITE_BUFFER_SIZE: usize = 8 * 1024 * 1024;
 
 static UPLOAD_WRITE_BUFFER_POOL: once_cell::sync::Lazy<std::sync::Mutex<Vec<Vec<u8>>>> =
     once_cell::sync::Lazy::new(|| std::sync::Mutex::new(Vec::new()));
 
-/// 取一個至少 `UPLOAD_WRITE_BUFFER_SIZE` 的緩衝；池空時新建。
+/// 取一個至少 `UPLOAD_WRITE_BUFFER_SIZE` 的**空**緩衝；池空時新建。
 fn take_upload_write_buffer() -> Vec<u8> {
-    UPLOAD_WRITE_BUFFER_POOL
+    let mut buffer = UPLOAD_WRITE_BUFFER_POOL
         .lock()
         .ok()
         .and_then(|mut pool| pool.pop())
         .filter(|buffer| buffer.capacity() >= UPLOAD_WRITE_BUFFER_SIZE)
-        .unwrap_or_else(|| Vec::with_capacity(UPLOAD_WRITE_BUFFER_SIZE))
+        .unwrap_or_else(|| Vec::with_capacity(UPLOAD_WRITE_BUFFER_SIZE));
+    // UPLOAD_WRITE_BUFFER_RESET_V1：池裡可能還留著上一個檔的位元組。
+    buffer.clear();
+    buffer
 }
 
 /// 把緩衝還回池中。只保留一份；容量不對的直接丟掉讓 allocator 回收。
-fn return_upload_write_buffer(buffer: Vec<u8>) {
+fn return_upload_write_buffer(mut buffer: Vec<u8>) {
     if buffer.capacity() < UPLOAD_WRITE_BUFFER_SIZE {
         return;
     }
+    // UPLOAD_WRITE_BUFFER_RESET_V1：還回去之前清掉，下一個檔不會吃到殘留。
+    buffer.clear();
     if let Ok(mut pool) = UPLOAD_WRITE_BUFFER_POOL.lock() {
         if pool.is_empty() {
             pool.push(buffer);
@@ -138,6 +150,36 @@ async fn write_upload_buffer(out: &mut tokio::fs::File, buffer: &[u8]) -> std::i
         out.write_all(buffer).await?;
     }
     Ok(())
+}
+
+/// UPLOAD_WRITE_BUFFER_RESET_V1：寫出目前緩衝並清空（len=0、capacity 保留）。
+async fn flush_upload_buffer(
+    out: &mut tokio::fs::File,
+    buffer: &mut Vec<u8>,
+) -> std::io::Result<()> {
+    if buffer.is_empty() {
+        return Ok(());
+    }
+    write_upload_buffer(out, buffer).await?;
+    buffer.clear();
+    Ok(())
+}
+
+/// UPLOAD_WRITE_BUFFER_RESET_V1：把一片上傳資料併進緩衝；若需要先沖出舊資料或
+/// 併完後已滿，把該寫出的內容附加到 `flushed`。
+///
+/// 這是上傳迴圈的**唯一**合併邏輯（單元測試也走這裡），避免「計數歸零但 Vec
+/// 沒清」再犯。`max` 在正式路徑是 [`UPLOAD_WRITE_BUFFER_SIZE`]。
+fn absorb_upload_chunk(buffer: &mut Vec<u8>, chunk: &[u8], max: usize, flushed: &mut Vec<u8>) {
+    if buffer.len() + chunk.len() > max && !buffer.is_empty() {
+        flushed.extend_from_slice(buffer);
+        buffer.clear();
+    }
+    buffer.extend_from_slice(chunk);
+    if buffer.len() >= max {
+        flushed.extend_from_slice(buffer);
+        buffer.clear();
+    }
 }
 
 /// 寫入失敗的回應（訊息與 fix50 之前完全一致，前端仍看得到同一句話）。
@@ -206,8 +248,9 @@ pub(super) async fn invalidate_materials_usage_cache() {
 struct MaterialsListSnapshot {
     root: PathBuf,
     updated_at: Instant,
-    files: Vec<MaterialFileEntry>,
-    folders: Vec<String>,
+    files: std::sync::Arc<Vec<MaterialFileEntry>>,
+    folders: std::sync::Arc<Vec<String>>,
+    truncated: bool,
 }
 
 fn session_materials_root(session: &AdminSession) -> PathBuf {
@@ -224,29 +267,57 @@ static MATERIALS_LIST_CACHE: once_cell::sync::Lazy<
     tokio::sync::Mutex<Option<MaterialsListSnapshot>>,
 > = once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(None));
 
+/// CLOUD_LIST_CACHE_SINGLE_FLIGHT_V1：未命中時只允許一條掃描；其餘等結果。
+static MATERIALS_LIST_SCAN_LOCK: once_cell::sync::Lazy<tokio::sync::Mutex<()>> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Mutex::new(()));
+
+/// 掃描進行中若有上傳／刪除，世代加一，掃描結果不得寫回快取。
+static MATERIALS_LIST_CACHE_GEN: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+type MaterialsListResult = (
+    std::sync::Arc<Vec<MaterialFileEntry>>,
+    std::sync::Arc<Vec<String>>,
+    bool,
+);
+
 /// IMPORT_INVALIDATE_CACHE_V1（fix61）：理由同 `invalidate_materials_usage_cache`。
 pub(super) async fn invalidate_materials_list_cache() {
+    MATERIALS_LIST_CACHE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     *MATERIALS_LIST_CACHE.lock().await = None;
 }
 
-async fn cached_materials_list(
-    root: PathBuf,
-) -> std::result::Result<(Vec<MaterialFileEntry>, Vec<String>), Response> {
+async fn materials_list_cache_hit(root: &Path) -> Option<MaterialsListResult> {
+    let cache = MATERIALS_LIST_CACHE.lock().await;
+    let snapshot = cache.as_ref()?;
+    if snapshot.root == root && snapshot.updated_at.elapsed() <= MATERIALS_LIST_CACHE_TTL {
+        Some((
+            std::sync::Arc::clone(&snapshot.files),
+            std::sync::Arc::clone(&snapshot.folders),
+            snapshot.truncated,
+        ))
+    } else {
+        None
+    }
+}
+
+async fn cached_materials_list(root: PathBuf) -> std::result::Result<MaterialsListResult, Response> {
     let root = match root.canonicalize() {
         Ok(root) => root,
         Err(error) => return Err(material_path_error(&error, "materials folder not found")),
     };
-    {
-        let cache = MATERIALS_LIST_CACHE.lock().await;
-        if let Some(snapshot) = cache.as_ref() {
-            if snapshot.root == root && snapshot.updated_at.elapsed() <= MATERIALS_LIST_CACHE_TTL {
-                return Ok((snapshot.files.clone(), snapshot.folders.clone()));
-            }
-        }
+    if let Some(hit) = materials_list_cache_hit(&root).await {
+        return Ok(hit);
     }
 
-    // CLOUD_LIST_CACHE_SINGLE_SCAN_V1: scan files and folders in one blocking
-    // traversal, then reuse the result for short bursts from the files page.
+    // CLOUD_LIST_CACHE_SINGLE_SCAN_V1 + SINGLE_FLIGHT_V1：
+    // 檔案＋資料夾一次掃完；併發的 list 只讓第一個走 blocking，其餘等它。
+    let _scan_guard = MATERIALS_LIST_SCAN_LOCK.lock().await;
+    if let Some(hit) = materials_list_cache_hit(&root).await {
+        return Ok(hit);
+    }
+
+    let gen = MATERIALS_LIST_CACHE_GEN.load(std::sync::atomic::Ordering::SeqCst);
     let scan_root = root.clone();
     let scan = tokio::task::spawn_blocking(move || list_material_tree(&scan_root))
         .await
@@ -265,14 +336,19 @@ async fn cached_materials_list(
                 .into_response()
         })?;
 
-    let snapshot = MaterialsListSnapshot {
-        root,
-        updated_at: Instant::now(),
-        files: scan.0.clone(),
-        folders: scan.1.clone(),
-    };
-    *MATERIALS_LIST_CACHE.lock().await = Some(snapshot);
-    Ok(scan)
+    let files = std::sync::Arc::new(scan.0);
+    let folders = std::sync::Arc::new(scan.1);
+    let truncated = scan.2;
+    if MATERIALS_LIST_CACHE_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
+        *MATERIALS_LIST_CACHE.lock().await = Some(MaterialsListSnapshot {
+            root,
+            updated_at: Instant::now(),
+            files: std::sync::Arc::clone(&files),
+            folders: std::sync::Arc::clone(&folders),
+            truncated,
+        });
+    }
+    Ok((files, folders, truncated))
 }
 
 // RANGE_STREAM_V1: 64 KiB → 256 KiB。tokio::fs::File 每次 read 都是一趟
@@ -707,7 +783,7 @@ pub(super) async fn admin_files_list_handler(
             .into_response();
     }
 
-    let (files, folders) = match cached_materials_list(root).await {
+    let (files, folders, truncated) = match cached_materials_list(root).await {
         Ok(list) => list,
         Err(resp) => return resp,
     };
@@ -725,6 +801,8 @@ pub(super) async fn admin_files_list_handler(
             "allowed_extensions": null,
             "folders": folders,
             "files": files,
+            "truncated": truncated,
+            "max_list_entries": MATERIALS_MAX_LIST_ENTRIES,
         })),
     )
         .into_response()
@@ -1694,8 +1772,9 @@ pub(super) async fn admin_files_upload_handler(
 
         let mut written = 0u64;
         // UPLOAD_WRITE_BUFFER_V1（fix51）：先集中到 8 MiB 緩衝再一次寫。
+        // UPLOAD_WRITE_BUFFER_RESET_V1：合併邏輯只走 `absorb_upload_chunk`（寫出後 clear）。
         let mut buffer = take_upload_write_buffer();
-        let mut buffered = 0usize;
+        let mut flushed = Vec::new();
         loop {
             let chunk = match field.chunk().await {
                 Ok(Some(chunk)) => chunk,
@@ -1725,26 +1804,22 @@ pub(super) async fn admin_files_upload_handler(
                 )
                     .into_response();
             }
-            // 緩衝滿了就整批寫出（最後不足一個緩衝的尾巴在迴圈後補寫）。
-            if buffered + chunk.len() > UPLOAD_WRITE_BUFFER_SIZE && buffered > 0 {
-                if let Err(e) = write_upload_buffer(&mut out, &buffer[..buffered]).await {
+            flushed.clear();
+            absorb_upload_chunk(
+                &mut buffer,
+                &chunk,
+                UPLOAD_WRITE_BUFFER_SIZE,
+                &mut flushed,
+            );
+            if !flushed.is_empty() {
+                if let Err(e) = write_upload_buffer(&mut out, &flushed).await {
                     let _ = tokio::fs::remove_file(&temp_path).await;
                     return upload_write_error(e);
                 }
-                buffered = 0;
             }
-            buffer.extend_from_slice(&chunk);
-            buffered += chunk.len();
             written = written.saturating_add(chunk_len);
-            if buffered >= UPLOAD_WRITE_BUFFER_SIZE {
-                if let Err(e) = write_upload_buffer(&mut out, &buffer[..buffered]).await {
-                    let _ = tokio::fs::remove_file(&temp_path).await;
-                    return upload_write_error(e);
-                }
-                buffered = 0;
-            }
         }
-        if let Err(e) = write_upload_buffer(&mut out, &buffer[..buffered]).await {
+        if let Err(e) = flush_upload_buffer(&mut out, &mut buffer).await {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return upload_write_error(e);
         }
@@ -2113,5 +2188,100 @@ mod material_range_tests {
         assert_eq!(parse_material_range("items=0-9", 1000), None);
         assert_eq!(parse_material_range("bytes=abc-def", 1000), None);
         assert_eq!(parse_material_range("bytes=50-10", 1000), Some(MaterialByteRange::Unsatisfiable));
+    }
+}
+
+#[cfg(test)]
+mod upload_buffer_tests {
+    use super::*;
+
+    fn replay(data: &[u8], chunk_sizes: &[usize], max: usize) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        for &n in chunk_sizes {
+            let end = (pos + n).min(data.len());
+            if pos >= data.len() {
+                break;
+            }
+            absorb_upload_chunk(&mut buffer, &data[pos..end], max, &mut out);
+            pos = end;
+        }
+        out.extend_from_slice(&buffer);
+        out
+    }
+
+    /// UPLOAD_WRITE_BUFFER_RESET_V1：超過一個緩衝的大檔，內容必須與原始位元組一致。
+    #[test]
+    fn large_file_roundtrip_is_byte_identical() {
+        let max = 64;
+        let data: Vec<u8> = (0..200).map(|i| (i * 17) as u8).collect();
+        let chunks = [8usize, 8, 50, 1, 64, 30, 40];
+        assert_eq!(replay(&data, &chunks, max), data);
+    }
+
+    /// 連續兩個檔案共用同一個 Vec（模擬池）：第二個檔從 byte 0 就是自己的內容。
+    #[test]
+    fn second_file_does_not_inherit_first_file_prefix() {
+        let max = 32;
+        let mut buffer = Vec::new();
+        let first: Vec<u8> = (0..80).map(|i| i as u8).collect();
+        let second: Vec<u8> = (0..50).map(|i| 200u8.wrapping_add(i)).collect();
+        let mut out1 = Vec::new();
+        for chunk in first.chunks(10) {
+            absorb_upload_chunk(&mut buffer, chunk, max, &mut out1);
+        }
+        out1.extend_from_slice(&buffer);
+        buffer.clear(); // 等同 flush + take_upload_write_buffer 的 clear
+        let mut out2 = Vec::new();
+        for chunk in second.chunks(7) {
+            absorb_upload_chunk(&mut buffer, chunk, max, &mut out2);
+        }
+        out2.extend_from_slice(&buffer);
+        assert_eq!(out1, first);
+        assert_eq!(out2, second);
+    }
+
+    /// 從池取出的緩衝必須是空的——這是「第二個 exe 整份都壞」的守門員。
+    #[test]
+    fn take_from_pool_always_returns_empty_vec() {
+        let mut dirty = Vec::with_capacity(UPLOAD_WRITE_BUFFER_SIZE);
+        dirty.extend_from_slice(&[0x4D, 0x5A, 0x90, 0x00]); // MZ（.exe 魔數）
+        return_upload_write_buffer(dirty);
+        let next = take_upload_write_buffer();
+        assert!(
+            next.is_empty(),
+            "從池取出的緩衝必須 len=0，實際 len={}",
+            next.len()
+        );
+        assert!(next.capacity() >= UPLOAD_WRITE_BUFFER_SIZE);
+        return_upload_write_buffer(next);
+    }
+
+    /// 舊實作（只歸零計數、不清 Vec）會把大檔寫成「開頭重貼」——這個測試鎖住「不能再那樣」。
+    #[test]
+    fn old_counter_reset_without_clear_would_corrupt() {
+        let max = 8;
+        let data: Vec<u8> = (0..20).map(|i| i as u8).collect();
+        // 舊邏輯
+        let mut buffer = Vec::new();
+        let mut buffered = 0usize;
+        let mut bad = Vec::new();
+        for chunk in data.chunks(3) {
+            if buffered + chunk.len() > max && buffered > 0 {
+                bad.extend_from_slice(&buffer[..buffered]);
+                buffered = 0;
+            }
+            buffer.extend_from_slice(chunk);
+            buffered += chunk.len();
+            if buffered >= max {
+                bad.extend_from_slice(&buffer[..buffered]);
+                buffered = 0;
+            }
+        }
+        bad.extend_from_slice(&buffer[..buffered]);
+        assert_ne!(bad, data, "舊邏輯必須能被這個測試證明是錯的");
+        // 新邏輯
+        assert_eq!(replay(&data, &[3, 3, 3, 3, 3, 3, 3], max), data);
     }
 }

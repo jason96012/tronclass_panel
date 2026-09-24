@@ -40,6 +40,9 @@ pub enum ApiError {
 
 // ─── API 客戶端 ───────────────────────────────────────────────────────────────
 /// Tronclass API 客戶端
+/// CLASS_COUNT_LIVE_V1：點名頁輪詢要能沿用監控流程的 session 重讀班上進度，所以必須可 Clone
+///（`reqwest::Client` 本身是 Arc，clone 不會複製連線）。
+#[derive(Clone)]
 pub struct ApiClient {
     /// API 基礎 URL
     pub(crate) base_url: String,

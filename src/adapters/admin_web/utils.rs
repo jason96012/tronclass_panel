@@ -20,6 +20,8 @@ use serde_json::json;
 //
 // 作業繳交（homework.rs）有自己的 50 MiB 上限 `HOMEWORK_SUBMIT_MAX_FILE_BYTES`，
 // 與教材無關，fix54 起已拆成獨立常數。
+// CLOUD_LIST_CACHE_SINGLE_SCAN_V1：教材列表一次走完整棵樹（檔案＋資料夾），
+// 掃描／回傳上限 5000。超過就停（截斷），不讓列表 API 整頁 500。
 pub(super) const MATERIALS_MAX_LIST_ENTRIES: usize = 5000;
 
 // UPLOAD_ANY_TYPE_V1（fix39）：這裡原本是 `MATERIAL_ALLOWED_EXTENSIONS` 副檔名白名單
@@ -248,19 +250,20 @@ pub(super) fn list_material_files(root: &Path) -> std::io::Result<Vec<MaterialFi
     Ok(files)
 }
 
+/// 單次遞迴掃整棵教材樹。第三個回傳值＝是否因 [`MATERIALS_MAX_LIST_ENTRIES`] 截斷。
 pub(super) fn list_material_tree(
     root: &Path,
-) -> std::io::Result<(Vec<MaterialFileEntry>, Vec<String>)> {
+) -> std::io::Result<(Vec<MaterialFileEntry>, Vec<String>, bool)> {
     let mut files = Vec::new();
     let mut folders = Vec::new();
     if !root.exists() {
-        return Ok((files, folders));
+        return Ok((files, folders, false));
     }
-    collect_material_tree(root, root, &mut files, &mut folders)?;
+    let truncated = collect_material_tree(root, root, &mut files, &mut folders)?;
     files.sort_by(|a, b| a.path.cmp(&b.path));
     folders.sort();
     folders.dedup();
-    Ok((files, folders))
+    Ok((files, folders, truncated))
 }
 
 pub(super) fn collect_material_files(
@@ -338,13 +341,10 @@ fn collect_material_tree(
     dir: &Path,
     files: &mut Vec<MaterialFileEntry>,
     folders: &mut Vec<String>,
-) -> std::io::Result<()> {
+) -> std::io::Result<bool> {
     for entry in std::fs::read_dir(dir)? {
         if files.len().saturating_add(folders.len()) >= MATERIALS_MAX_LIST_ENTRIES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("materials tree exceeds {MATERIALS_MAX_LIST_ENTRIES} files and folders"),
-            ));
+            return Ok(true);
         }
         let entry = entry?;
         // UPLOAD_ANY_TYPE_V1（fix39）：只跳過本模組自己的上傳暫存檔
@@ -369,7 +369,9 @@ fn collect_material_tree(
             if !rel_path.trim().is_empty() {
                 folders.push(rel_path);
             }
-            collect_material_tree(root, &path, files, folders)?;
+            if collect_material_tree(root, &path, files, folders)? {
+                return Ok(true);
+            }
             continue;
         }
         if !file_type.is_file() {
@@ -411,7 +413,7 @@ fn collect_material_tree(
             extension,
         });
     }
-    Ok(())
+    Ok(false)
 }
 
 pub(super) fn list_material_folders(root: &Path) -> std::io::Result<Vec<String>> {
@@ -531,6 +533,72 @@ pub(super) fn material_content_type(path: &Path) -> &'static str {
         "flac" => "audio/flac",
         _ => "application/octet-stream",
     }
+}
+
+/// IMPORT_REJECT_HTML_JSON_V1：回應開頭是不是「明顯不是真檔」。
+///
+/// zip 開頭是 `PK`、exe 開頭是 `MZ`、PDF 是 `%PDF`，都不會誤傷。
+/// iClass session 失效時，200 回應常常是 HTML 登入頁或 JSON 錯誤；若原封不動
+/// 寫成 `.zip`／`.exe`，使用者下載後解不開、執行不了，看起來就像檔案壞了。
+/// 作業附件（`homework.rs::looks_like_recognition_page`）已經有同一套判斷；
+/// 這裡抽出純函式給教材匯入寫檔前用。
+pub(super) fn looks_like_html_or_json_prefix(prefix: &[u8]) -> bool {
+    matches!(
+        prefix.iter().copied().find(|b| !b.is_ascii_whitespace()),
+        Some(b'<' | b'{' | b'[')
+    )
+}
+
+/// 這個檔名本來就是文字／網頁類嗎？開頭可能是 `<`／`{`，不能套用上面的拒絕。
+pub(super) fn is_texty_file_name(file_name: &str) -> bool {
+    let ext = Path::new(file_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "html"
+            | "htm"
+            | "xhtml"
+            | "txt"
+            | "text"
+            | "md"
+            | "markdown"
+            | "csv"
+            | "tsv"
+            | "json"
+            | "xml"
+            | "svg"
+            | "yaml"
+            | "yml"
+            | "ini"
+            | "conf"
+            | "cfg"
+            | "toml"
+            | "sql"
+            | "sh"
+            | "rs"
+            | "js"
+            | "mjs"
+            | "ts"
+            | "jsx"
+            | "tsx"
+            | "css"
+            | "py"
+            | "java"
+            | "c"
+            | "h"
+            | "cpp"
+            | "hpp"
+            | "go"
+            | "php"
+            | "log"
+            | "srt"
+            | "vtt"
+            | "url"
+            | "rtf"
+    )
 }
 
 pub(super) fn sanitize_header_filename(value: &str) -> String {
@@ -706,5 +774,23 @@ mod tests {
         );
         // 舊式瀏覽器送來帶目錄的值時，只保留最後一段。
         assert_eq!(safe_file_name("dir/file.txt").as_deref(), Some("file.txt"));
+    }
+
+    /// IMPORT_REJECT_HTML_JSON_V1：zip／exe／PDF 開頭不能是 HTML／JSON；真檔魔數要放行。
+    #[test]
+    fn html_json_prefix_does_not_false_positive_on_zip_exe_pdf() {
+        assert!(looks_like_html_or_json_prefix(b"<!DOCTYPE html>"));
+        assert!(looks_like_html_or_json_prefix(b"  \n<html>"));
+        assert!(looks_like_html_or_json_prefix(b"{\"error\":\"login\"}"));
+        assert!(looks_like_html_or_json_prefix(b"[{\"id\":1}]"));
+        assert!(!looks_like_html_or_json_prefix(b"PK\x03\x04")); // zip
+        assert!(!looks_like_html_or_json_prefix(b"MZ\x90\x00")); // exe
+        assert!(!looks_like_html_or_json_prefix(b"%PDF-1.7"));
+        assert!(!looks_like_html_or_json_prefix(b""));
+        assert!(is_texty_file_name("readme.txt"));
+        assert!(is_texty_file_name("page.html"));
+        assert!(!is_texty_file_name("setup.exe"));
+        assert!(!is_texty_file_name("book.zip"));
+        assert!(!is_texty_file_name("slides.pptx"));
     }
 }

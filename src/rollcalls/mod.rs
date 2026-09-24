@@ -35,7 +35,7 @@ use crate::api::{
 
 use self::group_submit::{wait_group_submit_turn, GroupSubmitKind};
 use self::qrcode::{attempt_qrcode_rollcall, QrCodeResult};
-use self::radar::{attempt_radar_rollcall, RadarResult};
+use self::radar::{attempt_radar_rollcall, radar_channel_has_point, RadarResult};
 
 // ─── 簽到執行結果 ─────────────────────────────────────────────────────────────
 
@@ -551,7 +551,17 @@ async fn handle_number_rollcall(
     let reminder_at = started_waiting + Duration::from_secs(INPUT_REMINDER_SECS);
     let mut reminder_sent = reminder_at >= deadline;
     let mut last_error: Option<String> = None;
-    // AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：第一次檢查班上進度的時間點。
+    // NUMBER_USER_SUBMIT_NOW_V1：手動 4 碼／頁面「自動讀取」立刻送，不受 15% 限制。
+    // NUMBER_AUTO_DETECT_ONCE_V1：只有後台「班上超過 15% 才自動讀碼」這條受門檻；失敗通知一次、不再重試。
+    let mut auto_detect_tried = false;
+    // CLASS_COUNT_HEADER_V1：一進場就讀班上進度（寫進共用快取），上方人數條才不會卡在「讀取中」。
+    let _ = class_progress_snapshot(
+        &api,
+        scanner_registry.as_ref(),
+        &config.provider,
+        rollcall.rollcall_id,
+    )
+    .await;
     let mut next_progress_check = started_waiting + Duration::from_secs(AUTO_SUBMIT_POLL_SECS);
     loop {
         let now = tokio::time::Instant::now();
@@ -593,38 +603,60 @@ async fn handle_number_rollcall(
                 )
                 .await
                 {
-                    if let Some(bot) = messenger {
-                        let target = adapter_target.lock().await.clone();
-                        let _ = bot
-                            .push_to_account_or_admin(
-                                &target,
-                                &OutboundMessage::Text(format!(
-                                    "🌐 班上已有 {}/{} 人點名成功（{}%，超過 {}%），系統自動讀取數字點名碼並送出。",
-                                    progress.completed,
-                                    progress.total,
-                                    progress.percent_rounded(),
-                                    AUTO_SUBMIT_PERCENT
-                                )),
-                            )
-                            .await;
-                    }
-                    match auto_lookup_and_submit_number(
-                        &api,
-                        rollcall,
-                        config,
-                        number_registered
-                            .as_ref()
-                            .map(|(registry, _)| Arc::clone(registry)),
-                    )
-                    .await
-                    {
-                        Ok(result) => return result,
-                        Err(AutoLookupFailure::NoCode { .. }) => {
-                            last_error =
-                                Some("班上已超過門檻，但自動讀不到數字碼".to_string());
-                        }
-                        Err(AutoLookupFailure::Error { reason }) => {
-                            last_error = Some(reason);
+                    // NUMBER_USER_SUBMIT_NOW_V1：15% 只管後台自動讀碼；使用者已手動送／已按自動讀取則這裡不再插手。
+                    if auto_detect_tried {
+                        debug!("後台自動讀碼已試過，繼續等手動輸入");
+                    } else {
+                        auto_detect_tried = true;
+                        match auto_lookup_and_submit_number(
+                            &api,
+                            rollcall,
+                            config,
+                            number_registered
+                                .as_ref()
+                                .map(|(registry, _)| Arc::clone(registry)),
+                        )
+                        .await
+                        {
+                            Ok(result) => {
+                                if result.is_success() {
+                                    if let Some(bot) = messenger {
+                                        let target = adapter_target.lock().await.clone();
+                                        let _ = bot
+                                            .push_to_account_or_admin(
+                                                &target,
+                                                &OutboundMessage::Text(format!(
+                                                    "🌐 班上已有 {}/{} 人點名成功（{}%，超過 {}%），系統自動讀取數字點名碼並送出。",
+                                                    progress.completed,
+                                                    progress.total,
+                                                    progress.percent_rounded(),
+                                                    AUTO_SUBMIT_PERCENT
+                                                )),
+                                            )
+                                            .await;
+                                    }
+                                }
+                                return result;
+                            }
+                            Err(AutoLookupFailure::NoCode { status }) => {
+                                last_error =
+                                    Some("自動偵測不到數字點名碼".to_string());
+                                notify_number_auto_miss(
+                                    messenger,
+                                    &adapter_target,
+                                    &status,
+                                )
+                                .await;
+                            }
+                            Err(AutoLookupFailure::Error { reason }) => {
+                                last_error = Some(reason.clone());
+                                notify_number_auto_miss(
+                                    messenger,
+                                    &adapter_target,
+                                    &reason,
+                                )
+                                .await;
+                            }
                         }
                     }
                 }
@@ -668,6 +700,7 @@ async fn handle_number_rollcall(
 
         match input {
             NumberCodeInput::Code(code) => {
+                // NUMBER_USER_SUBMIT_NOW_V1：人打的 4 碼立刻送，不等 15%。
                 let result = submit_number_code(
                     Arc::clone(&api),
                     rollcall.rollcall_id,
@@ -691,6 +724,12 @@ async fn handle_number_rollcall(
                 }
             }
             NumberCodeInput::AutoLookup => {
+                // NUMBER_USER_SUBMIT_NOW_V1：頁面／Discord「自動讀取」立刻查碼，不等 15%。
+                if auto_detect_tried {
+                    info!("自動讀碼已試過，忽略再次自動讀取");
+                    continue;
+                }
+                auto_detect_tried = true;
                 match auto_lookup_and_submit_number(
                     &api,
                     rollcall,
@@ -703,41 +742,12 @@ async fn handle_number_rollcall(
                 {
                     Ok(result) => return result,
                     Err(AutoLookupFailure::NoCode { status }) => {
-                        warn!(
-                            rollcall_id = rollcall.rollcall_id,
-                            status = %status,
-                            "自動讀取未取得 number_code，繼續等待手動輸入"
-                        );
-                        if let Some(bot) = messenger {
-                            let target = adapter_target.lock().await.clone();
-                            let _ = bot
-                                .push_to_account_or_admin(
-                                    &target,
-                                    &OutboundMessage::Text(
-                                        "⚠️ 自動讀取未取得數字點名碼，請改用 `/num code:1234` 或直接傳 4 位數字。".to_string(),
-                                    ),
-                                )
-                                .await;
-                        }
+                        last_error = Some("自動偵測不到數字點名碼".to_string());
+                        notify_number_auto_miss(messenger, &adapter_target, &status).await;
                     }
                     Err(AutoLookupFailure::Error { reason }) => {
-                        warn!(
-                            rollcall_id = rollcall.rollcall_id,
-                            error = %reason,
-                            "自動讀取數字點名碼失敗，繼續等待手動輸入"
-                        );
                         last_error = Some(reason.clone());
-                        if let Some(bot) = messenger {
-                            let target = adapter_target.lock().await.clone();
-                            let _ = bot
-                                .push_to_account_or_admin(
-                                    &target,
-                                    &OutboundMessage::Text(format!(
-                                        "⚠️ 自動讀取數字點名碼失敗：{reason}\n請改用 `/num code:1234` 或直接傳 4 位數字。"
-                                    )),
-                                )
-                                .await;
-                        }
+                        notify_number_auto_miss(messenger, &adapter_target, &reason).await;
                     }
                 }
             }
@@ -1014,6 +1024,26 @@ enum NumberCodeSource {
     Auto(String),
 }
 
+/// NUMBER_AUTO_DETECT_ONCE_V1：自動偵測數字碼失敗時通知一次，之後改等手動輸入。
+async fn notify_number_auto_miss(
+    messenger: Option<&dyn AdapterMessenger>,
+    adapter_target: &Arc<Mutex<AdapterAccountTarget>>,
+    detail: &str,
+) {
+    warn!(detail = %detail, "自動偵測數字碼失敗，不再重試，改通知使用者手動輸入");
+    if let Some(bot) = messenger {
+        let target = adapter_target.lock().await.clone();
+        let _ = bot
+            .push_to_account_or_admin(
+                &target,
+                &OutboundMessage::Text(format!(
+                    "⚠️ 自動偵測不到數字點名碼（{detail}），不再重試。請在輸入頁輸入 4 位數字，或用 `/num code:1234`。"
+                )),
+            )
+            .await;
+    }
+}
+
 /// ROLLCALL_INPUT_REMINDER_V1：對綁定使用者（或管理員）與該帳號的手機推播各催一次。
 /// 每筆點名最多送一次；有任何輸入（即使簽到失敗）就不催。
 #[allow(clippy::too_many_arguments)]
@@ -1176,8 +1206,63 @@ async fn handle_radar_rollcall(
         }
     }
 
-    // §70c：有效設定（面板覆寫優先）＋輸入頁座標通道一起交給雷達流程。
+    // CLASS_COUNT_HEADER_V1 + AUTO_SUBMIT 15% 閘門：
+    // 自動送出必須等班上已點人數嚴格超過 15%；頁面「系統演算」仍可立刻送。
+    // 一進場就讀進度並寫進頁面狀態，上方人數條才不會卡在「讀取中」。
     let api_for_retry = Arc::clone(&api);
+    let wait_deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let progress = class_progress_snapshot(
+            &api_for_retry,
+            scanner_registry.as_ref(),
+            &config.provider,
+            rollcall.rollcall_id,
+        )
+        .await;
+        if let Some(registry) = scanner_registry.as_ref() {
+            registry
+                .set_radar_class_progress(
+                    &config.provider,
+                    rollcall.rollcall_id,
+                    &config.id,
+                    progress.clone(),
+                )
+                .await;
+        }
+        let passed = progress
+            .as_ref()
+            .map(|p| p.passed(AUTO_SUBMIT_PERCENT))
+            .unwrap_or(false);
+        let manual = radar_channel_has_point(radar_rx.as_ref()).await;
+        if passed {
+            info!(
+                rollcall_id = rollcall.rollcall_id,
+                completed = progress.as_ref().map(|p| p.completed).unwrap_or(0),
+                total = progress.as_ref().map(|p| p.total).unwrap_or(0),
+                "班上已點人數超過 15%，開始自動送出雷達點名"
+            );
+            break;
+        }
+        if manual {
+            info!(
+                rollcall_id = rollcall.rollcall_id,
+                "使用者在頁面按下系統演算，不等人數到 15% 立刻送出"
+            );
+            break;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= wait_deadline {
+            return RollcallResult::Failed {
+                reason: format!(
+                    "班上已點人數未超過 {AUTO_SUBMIT_PERCENT}%，未自動送出雷達點名"
+                ),
+            };
+        }
+        let slice = Duration::from_secs(AUTO_SUBMIT_POLL_SECS)
+            .min(wait_deadline.saturating_duration_since(now));
+        tokio::time::sleep(slice).await;
+    }
+
     let mut result = attempt_radar_rollcall(
         api,
         rollcall.rollcall_id,
@@ -1502,8 +1587,8 @@ async fn handle_qrcode_rollcall(
     let mut last_error: Option<String> = None;
     // QR_FRESH_PAYLOAD_V1（fix68）：上一次實際送出的 payload 與時間（避免短時間重複送同一個碼）。
     let mut last_qr_attempt: Option<(String, tokio::time::Instant)> = None;
-    // AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：班上進度檢查時間點／是否已催過。
-    let mut next_progress_check = started_waiting + Duration::from_secs(AUTO_SUBMIT_POLL_SECS);
+    // CLASS_COUNT_HEADER_V1：一進場就讀班上進度，掃碼頁人數條才會動。
+    let mut next_progress_check = started_waiting;
     let mut progress_nudged = false;
 
     loop {

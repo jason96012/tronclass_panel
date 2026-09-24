@@ -1,10 +1,9 @@
 <!doctype html>
 <html lang="zh-Hant" class="tron-auth-pending">
 <head>
+<link rel="preload" href="/admin/static/dashboard-extras.css?v=dashbundle1" as="style">
+<link rel="preload" href="/admin/static/dashboard.css?v=20260822b" as="style">
 <link rel="preload" href="/admin/static/dashboard-late-fixes.css?v=20260826a" as="style">
-<link rel="preload" href="/admin/static/dashboard-mobile.css?v=20260826b" as="style">
-<link rel="preload" href="/admin/static/dashboard-components.css?v=20260826b" as="style">
-<link rel="preload" href="/admin/static/dashboard-access.css?v=20260826b" as="style">
 
 
 
@@ -1420,6 +1419,8 @@
 <script defer src="/admin/static/maintenance.js?v=20260822b" data-dashboard-module="maintenance-phase4a2b"></script>
 <script defer src="/admin/static/accounts.js?v=20260822b" data-dashboard-module="accounts-phase4e2"></script>
 <script defer src="/admin/static/core-api.js?v=20260822b" data-dashboard-module="core-api-phase4f2"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：常駐小模組（permissions／cookie-badge／more-*／modal／live-alerts／header-*／notify-purge／desktop-size） -->
+<script defer src="/admin/static/js/dashboard-ui.js?v=dashbundle1" data-dashboard-module="ui-bundle"></script>
 
 <!-- DESKTOP_HEADER_SPACIOUS_V1_START -->
 <style id="DESKTOP_HEADER_SPACIOUS_V1">
@@ -1496,7 +1497,7 @@
     }
   }
 </style>
-<script defer src="/admin/static/js/dashboard-header-spacious.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-header-spacious.js 已併入 dashboard-ui.js -->
 <!-- DESKTOP_HEADER_SPACIOUS_V1_END -->
 
 <!-- MOBILE_HEADER_TO_MORE_V1_START -->
@@ -1562,16 +1563,16 @@
     #changePasswordModal.cp-modal{align-items:center}
   }
 </style>
-<script defer src="/admin/static/js/dashboard-header-more.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-header-more.js 已併入 dashboard-ui.js -->
 <!-- MOBILE_HEADER_TO_MORE_V1_END -->
 
 <!-- NOTIFY_MORE_PURGE_V1_START -->
-<script defer src="/admin/static/js/dashboard-notify-purge.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-notify-purge.js 已併入 dashboard-ui.js -->
 <!-- NOTIFY_MORE_PURGE_V1_END -->
 
 <!-- MOBILE_ACCOUNT_ACTIONS_V1_START -->
 <!-- DASHBOARD_CSS_PHASE2: dashboard-mobile.css -->
-<link rel="stylesheet" href="/admin/static/dashboard-mobile.css?v=20260826b" data-dashboard-style="css-phase2-dashboard-mobile">
+<link rel="stylesheet" href="/admin/static/dashboard-extras.css?v=dashbundle1" data-dashboard-style="css-ui-bundle">
 <!-- MOBILE_ACCOUNT_ACTIONS_V1_END -->
 
 
@@ -1648,7 +1649,7 @@
 
 <!-- MORE_ACTIONS_CLICK_V1_START -->
 <!-- MORE_ACTIONS_CLICK_CSS_V1 moved to static/css/dashboard-mobile.css -->
-<script defer src="/admin/static/js/dashboard-more-actions.js?v=dashmod4"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-more-actions.js 已併入 dashboard-ui.js -->
 <!-- MORE_ACTIONS_CLICK_V1_END -->
 
 <!-- ONBOARDING_GUIDE_V1_START：第一次進入的新手導覽（頂欄「?」或 #guide 可重開） -->
@@ -1659,7 +1660,7 @@
 
 <!-- LOGIN_CARD_CENTER_V1_END -->
 
-<script defer src="/admin/static/js/dashboard-desktop-size.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-desktop-size.js 已併入 dashboard-ui.js -->
 
 <style id="MOBILE_HERO_TEXT_V1">
   .hero .hero-copy{min-width:0;width:100%}
@@ -1745,7 +1746,7 @@
 <body class="logged-in auth-ok dash-auth-ok">
 
 <header class="topbar"><div class="brand"><div class="mark">D</div><div><div class="title">Tronclass Dashboard</div><div id="brandSub" class="sub">請先登入</div></div></div><div class="top-actions"><!-- TOPBAR_LOGOUT_ONLY_V1: 頂欄僅保留登出（meLink 原已被 CSS 隱藏） --><a id="meLink" class="button secondary" href="/admin/me">我的頁面</a><button id="logoutBtn" class="secondary" type="button">登出</button><button id="refreshAll" class="icon" type="button">↻</button></div></header>
-<main><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel mb14"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="creditsQuickLink" class="button secondary" href="/admin/credits">學分狀態</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div><!-- ACCOUNT_HOT_ADD_FEEDBACK_V1：在資料庫但沒在監控的帳號（管理員） --><div id="inactiveAccountsBox" class="inactive-box hidden-init"><div class="inactive-title">未在監控的帳號</div><div class="small mb8">這些帳號已存在資料庫，但目前沒有監控循環在跑（新增時登入失敗、或以 CLI 離線新增）。修正後按「啟動監控」重試，不必重啟服務。</div><div id="inactiveAccountsList" class="list"></div></div></div></section><section id="view-rollcall" class="view"><div class="panel mb14"><div class="toolbar"><div><h2>出席統計</h2><div class="small" id="attHint">依課程統計點名送出次數與成功率（每次送出後自動累積，重啟不會消失）。</div></div><div class="toolbar-right"><select id="attRange" aria-label="統計範圍"><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="90" selected>近 90 天</option><option value="0">全部</option></select><button id="attReload" class="secondary" type="button">重新整理</button></div></div><div id="attSummary" class="grid cards"></div><div id="attBody"></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary hidden-init">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" class="health-pre">尚未讀取</pre><div class="quick mt12"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" class="w760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
+<main><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel mb14"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="creditsQuickLink" class="button secondary" href="/admin/credits">學分狀態</a><a id="stockQuickLink" class="button secondary" href="/admin/stock">智選股</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div><!-- ACCOUNT_HOT_ADD_FEEDBACK_V1：在資料庫但沒在監控的帳號（管理員） --><div id="inactiveAccountsBox" class="inactive-box hidden-init"><div class="inactive-title">未在監控的帳號</div><div class="small mb8">這些帳號已存在資料庫，但目前沒有監控循環在跑（新增時登入失敗、或以 CLI 離線新增）。修正後按「啟動監控」重試，不必重啟服務。</div><div id="inactiveAccountsList" class="list"></div></div></div></section><section id="view-rollcall" class="view"><div class="panel mb14"><div class="toolbar"><div><h2>出席統計</h2><div class="small" id="attHint">依課程統計點名送出次數與成功率（每次送出後自動累積，重啟不會消失）。</div></div><div class="toolbar-right"><select id="attRange" aria-label="統計範圍"><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="90" selected>近 90 天</option><option value="0">全部</option></select><button id="attReload" class="secondary" type="button">重新整理</button></div></div><div id="attSummary" class="grid cards"></div><div id="attBody"></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary hidden-init">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" class="health-pre">尚未讀取</pre><div class="quick mt12"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mStock" class="button secondary" href="/admin/stock">智選股</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" class="w760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
 <div id="addAccountModal" class="modal-backdrop">
   <div class="modal modal-520">
     <div class="modal-head"><div class="w760">新增帳號</div><button id="closeAddAccount" class="icon" type="button">×</button></div>
@@ -2127,7 +2128,7 @@ window.setTimeout(function(){
     if (!q('mobileMoreFinalV2')) {
       var sheet = document.createElement('div');
       sheet.id = 'mobileMoreFinalV2';
-      sheet.innerHTML = '<div class="sheet"><h3>更多功能</h3><div class="more-grid"><a id="moreSettingsFinalV2" class="button secondary" href="/admin/settings">設定</a><a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a><a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a><a id="moreCreditsFinalV2" class="button secondary" href="/admin/credits">學分狀態</a><a id=\"moreBulletinsFinalV2\" class=\"button secondary\" href=\"/admin/bulletins\">學校公告</a><a id=\"moreAiFinalV2\" class=\"button secondary\" href=\"/admin/ai\">AI 對話</a><a id="moreActivityFinalV2" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><a id="moreBlacklistFinalV2" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a><a id="moreRadarFinalV2" class="button secondary" data-admin-only="1" href="/admin/radar">雷達點名</a><button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button><a id="moreDetectionScheduleFinalV2" class="button secondary" data-detection-schedule-entry="1" href="/admin/detection-schedule">點名排程</a><button id="moreLogoutFinalV2" class="danger" type="button">登出</button></div></div>';
+      sheet.innerHTML = '<div class="sheet"><h3>更多功能</h3><div class="more-grid"><a id="moreSettingsFinalV2" class="button secondary" href="/admin/settings">設定</a><a id="moreHomeworkFinalV2" class="button secondary" href="/admin/homework">作業截止時間</a><a id="moreDriveFinalV2" class="button secondary" href="/admin/files">雲端硬碟</a><a id="moreCreditsFinalV2" class="button secondary" href="/admin/credits">學分狀態</a><a id="moreStockFinalV2" class="button secondary" href="/admin/stock">智選股</a><a id=\"moreBulletinsFinalV2\" class=\"button secondary\" href=\"/admin/bulletins\">學校公告</a><a id=\"moreAiFinalV2\" class=\"button secondary\" href=\"/admin/ai\">AI 對話</a><a id="moreActivityFinalV2" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><a id="moreBlacklistFinalV2" class="button secondary" data-admin-only="1" href="/admin/blacklist">黑名單</a><a id="moreRadarFinalV2" class="button secondary" data-admin-only="1" href="/admin/radar">雷達點名</a><button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button><a id="moreDetectionScheduleFinalV2" class="button secondary" data-detection-schedule-entry="1" href="/admin/detection-schedule">點名排程</a><button id="moreLogoutFinalV2" class="danger" type="button">登出</button></div></div>';
       document.body.appendChild(sheet);
       sheet.onclick = function(ev){ if (ev.target === sheet) closeMore(); };
       sheet.querySelectorAll('[data-sheet-view]').forEach(function(btn){ btn.onclick = function(){ closeMore(); switchView(btn.dataset.sheetView); }; });
@@ -2136,6 +2137,7 @@ window.setTimeout(function(){
     }
     if(q('moreDriveFinalV2')) q('moreDriveFinalV2').href = withToken('/admin/files');
     if(q('moreCreditsFinalV2')) q('moreCreditsFinalV2').href = withToken('/admin/credits');
+    if(q('moreStockFinalV2')) q('moreStockFinalV2').href = withToken('/admin/stock');
     if(q('moreBulletinsFinalV2')) q('moreBulletinsFinalV2').href = withToken('/admin/bulletins');
     if(q('moreAiFinalV2')) q('moreAiFinalV2').href = withToken('/admin/ai');
     if(q('moreActivityFinalV2')) q('moreActivityFinalV2').href = withToken('/admin/activity');
@@ -2162,7 +2164,7 @@ window.setTimeout(function(){
 
 <!-- DASHBOARD_DESKTOP_NAV_MAINTENANCE_FIX_V1_START -->
 <!-- MAINTENANCE_COMPONENTS_CSS_PHASE3B4: dashboardDesktopNavMaintenanceFixStyleV1 -->
-<link rel="stylesheet" href="/admin/static/maintenance-components.css?v=20260826c" data-dashboard-style="maintenance-phase3b4">
+<!-- DASHBOARD_UI_BUNDLE_V1：maintenance-components.css 已併入 dashboard-extras.css -->
 <!-- MAINTENANCE_IMPLEMENTATION_PHASE4A5 -->
 <script async fetchpriority="low" src="/admin/static/maintenance-implementation.js?v=20260822b" data-dashboard-module="maintenance-implementation"></script>
 <!-- DASHBOARD_DESKTOP_NAV_MAINTENANCE_FIX_V1_END -->
@@ -2217,7 +2219,7 @@ window.setTimeout(function(){
 
 <!-- NON_ADMIN_MOBILE_PERMISSIONS_FIX_V1_START -->
 <!-- ACCOUNT_COMPONENTS_CSS_PHASE3B3: nonAdminMobilePermissionsFixStyleV1 -->
-<script src="/admin/static/js/dashboard-permissions.js?v=dashmod2"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-permissions.js 已併入 dashboard-ui.js -->
 <!-- NON_ADMIN_MOBILE_PERMISSIONS_FIX_V1_END -->
 
 
@@ -2446,13 +2448,13 @@ window.setTimeout(function(){
 
 <!-- SCHOOL_COOKIE_STATUS_BADGE_V2_START -->
 <!-- ACCOUNT_COMPONENTS_CSS_PHASE3B3: schoolCookieStatusBadgeStyleV2 -->
-<script src="/admin/static/js/dashboard-cookie-badge.js?v=dashmod2"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-cookie-badge.js 已併入 dashboard-ui.js -->
 <!-- SCHOOL_COOKIE_STATUS_BADGE_V2_END -->
 
 
 <!-- TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1_START -->
 <!-- DASHBOARD_CSS_PHASE2: dashboard-components.css -->
-<link rel="stylesheet" href="/admin/static/dashboard-components.css?v=20260826b" data-dashboard-style="css-phase2-dashboard-components">
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-components.css 已併入 dashboard-extras.css -->
 <!-- TIMETABLE_UI_MODULE_PHASE4B: timetableCourseRollcallHistoryLinkScriptV1 moved to timetable.js -->
 <!-- TIMETABLE_COURSE_ROLLCALL_HISTORY_LINK_V1_END -->
 
@@ -2469,23 +2471,23 @@ window.setTimeout(function(){
 
 
 <!-- MORE_BUTTONS_NOW_CSS_V1 moved to static/css/dashboard-mobile.css -->
-<script src="/admin/static/js/dashboard-more-buttons.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-more-buttons.js 已併入 dashboard-ui.js -->
 
 <!-- MORE_MOBILE_LINKS_CSS_V1 moved to static/css/dashboard-mobile.css -->
 
-<script src="/admin/static/js/dashboard-more-links.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-more-links.js 已併入 dashboard-ui.js -->
 
-<script src="/admin/static/js/dashboard-modal.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-modal.js 已併入 dashboard-ui.js -->
 
-<script src="/admin/static/js/dashboard-more-pages.js?v=dashmod3"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-more-pages.js 已併入 dashboard-ui.js -->
 <!-- ROLLCALL_QUICK_ALERT_V1 -->
 <!-- rollcallQuickAlertStyleV1 moved to static/css/dashboard-components.css -->
 <div id="rollcallQuickAlert" role="dialog" aria-modal="true" aria-labelledby="rollcallQuickAlertTitle"><div class="rcqa-card"><div class="rcqa-badge"><span class="rcqa-dot"></span>偵測到可處理的點名</div><h2 id="rollcallQuickAlertTitle">新點名</h2><div id="rollcallQuickAlertMeta" class="rcqa-meta"></div><div class="rcqa-actions"><a id="rollcallQuickAlertGo" class="rcqa-go" target="_blank" rel="noopener">立即前往點名</a><button id="rollcallQuickAlertNotify" class="rcqa-secondary" type="button" data-enable-web-push="1">啟用 iPhone 推播</button><button id="rollcallQuickAlertClose" class="rcqa-secondary" type="button">稍後處理</button></div></div></div>
-<script src="/admin/static/js/dashboard-live-alerts.js?v=dashmod1"></script>
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-live-alerts.js 已併入 dashboard-ui.js -->
 
 <!-- NON_ADMIN_MORE_MENU_HARD_HIDE_V1 -->
 <!-- DASHBOARD_CSS_PHASE2: dashboard-access.css -->
-<link rel="stylesheet" href="/admin/static/dashboard-access.css?v=20260826b" data-dashboard-style="css-phase2-dashboard-access">
+<!-- DASHBOARD_UI_BUNDLE_V1：dashboard-access.css 已併入 dashboard-extras.css -->
 
 <!-- detectionScheduleDesktopNavStyle moved to static/css/dashboard-components.css -->
 <script id="detectionScheduleDesktopNavScript">

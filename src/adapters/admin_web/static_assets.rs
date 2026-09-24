@@ -75,6 +75,18 @@ pub(super) async fn admin_dashboard_access_css_handler() -> Response {
     admin_static_asset("text/css; charset=utf-8", pages::DASHBOARD_ACCESS_CSS)
 }
 
+// DASHBOARD_UI_BUNDLE_V1
+pub(super) async fn admin_dashboard_ui_js_handler() -> Response {
+    admin_static_asset(
+        "application/javascript; charset=utf-8",
+        pages::DASHBOARD_UI_JS,
+    )
+}
+
+pub(super) async fn admin_dashboard_extras_css_handler() -> Response {
+    admin_static_asset("text/css; charset=utf-8", pages::DASHBOARD_EXTRAS_CSS)
+}
+
 pub(super) async fn admin_dashboard_runtime_handler() -> Response {
     admin_static_asset(
         "application/javascript; charset=utf-8",

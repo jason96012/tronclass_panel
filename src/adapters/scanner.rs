@@ -145,7 +145,7 @@ pub struct QrScannerRegistry {
     radar_inner: Arc<Mutex<HashMap<PendingNumberKey, PendingRadarEntry>>>,
     /// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：班上點名進度快取（key 同數字點名），
     /// 值＝(讀取時間, 進度)。多帳號共用同一份，避免變成 13 倍讀取。
-    progress_cache: Arc<Mutex<HashMap<PendingNumberKey, (Instant, Option<RollcallProgress>)>>>,
+    progress_cache: Arc<Mutex<HashMap<PendingNumberKey, (Instant, Option<RollcallProgress>, Option<ApiClient>)>>>,
 }
 
 #[derive(Clone)]
@@ -666,8 +666,9 @@ impl QrScannerRegistry {
         let now = Instant::now();
         {
             let mut cache = self.progress_cache.lock().await;
-            cache.retain(|_, (at, _)| now.saturating_duration_since(*at) < CLASS_PROGRESS_CACHE_TTL);
-            if let Some((at, progress)) = cache.get(&key) {
+            cache.retain(|_, (at, _, _)| now.saturating_duration_since(*at) < CLASS_PROGRESS_CACHE_TTL);
+            if let Some((at, progress, stored_api)) = cache.get_mut(&key) {
+                *stored_api = Some(api.clone());
                 if now.saturating_duration_since(*at) < CLASS_PROGRESS_TTL {
                     return progress.clone();
                 }
@@ -687,26 +688,33 @@ impl QrScannerRegistry {
         };
 
         let mut cache = self.progress_cache.lock().await;
-        cache.insert(key, (Instant::now(), progress.clone()));
+        cache.insert(key, (Instant::now(), progress.clone(), Some(api.clone())));
         progress
     }
 
-    /// CLASS_COUNT_ON_PAGES_V1：**只讀快取、不打學校 API** 的班上進度。
+    /// CLASS_COUNT_LIVE_V1：給點名頁的班上進度。
     ///
-    /// 點名頁（數字／QR）每一兩秒就輪詢一次狀態，不可能每次都去打學校；
-    /// 監控流程本來就每 [`CLASS_PROGRESS_TTL`] 秒會讀一次（見 [`Self::class_progress`]），
-    /// 這裡只是把那份結果拿出來給頁面顯示「目前班上已點人數」。
-    /// 沒讀過、或放太久（超過 [`CLASS_PROGRESS_CACHE_TTL`]）就回 `None`（頁面顯示讀取中）。
+    /// 頁面每一兩秒輪詢一次狀態。快取仍新鮮（[`CLASS_PROGRESS_TTL`] 內）就只讀快取；
+    /// 過期且監控流程已經把該場的 `ApiClient` 留下來時，沿用同一組 session 重讀學校
+    /// （瀏覽器仍然不打學校 API，符合「不得從不同 IP 送出」）。
+    /// 還沒有任何監控流程讀過 → `None`（頁面顯示讀取中）。
     pub async fn cached_class_progress(
         &self,
         provider: &str,
         rollcall_id: u64,
     ) -> Option<RollcallProgress> {
         let key = PendingNumberKey::new(provider, rollcall_id);
+        let api = {
+            let cache = self.progress_cache.lock().await;
+            cache.get(&key).and_then(|(_, _, api)| api.clone())
+        };
+        if let Some(api) = api {
+            return self.class_progress(&api, provider, rollcall_id).await;
+        }
         let now = Instant::now();
         let cache = self.progress_cache.lock().await;
         match cache.get(&key) {
-            Some((at, progress))
+            Some((at, progress, _))
                 if now.saturating_duration_since(*at) < CLASS_PROGRESS_CACHE_TTL =>
             {
                 progress.clone()
@@ -840,8 +848,10 @@ impl QrScannerRegistry {
         // CLASS_COUNT_ON_PAGES_V1：這一場的處理流程還沒回報過進度時，退回共用快取
         // （多帳號只會有其中一個帳號的流程在跑，頁面照樣看得到數字）。
         drop(inner);
-        if result.class_progress.is_none() {
-            result.class_progress = self.cached_class_progress(provider, query.rollcall_id).await;
+        // CLASS_COUNT_LIVE_V1：雷達演算期間 entry.class_progress 不會更新；
+        // 一律以共用快取（過期會重讀學校）為準，上方人數條才會跟著動。
+        if let Some(live) = self.cached_class_progress(provider, query.rollcall_id).await {
+            result.class_progress = Some(live);
         }
         Ok(result)
     }
