@@ -656,3 +656,182 @@ def load_latest_twse_closes() -> dict[str, float]:
         if closes:
             return closes
     return {}
+
+def _is_listed_equity_code(code: str) -> bool:
+    """上市普通股：四碼數字，排除 00xx ETF／指數。"""
+    return code.isdigit() and len(code) == 4 and not code.startswith("00")
+
+
+def load_twse_industry_map() -> dict[str, str]:
+    """openapi t187ap03_L 產業類別。失敗回空。"""
+    path = CACHE / "t86" / "industry.json"
+    cached = _read_json(path, 7 * 86400)
+    if cached is not None:
+        return cached
+    url = "https://openapi.twse.com.tw/v1/opendata/t187ap03_L"
+    try:
+        r = httpx.get(url, headers=HEADERS, timeout=30)
+        rows = r.json()
+    except Exception:
+        return {}
+    if not isinstance(rows, list):
+        return {}
+    out: dict[str, str] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        code = str(row.get("公司代號") or "").strip()
+        if not _is_listed_equity_code(code):
+            continue
+        sector = str(row.get("產業類別") or row.get("產業別") or "").strip()
+        if sector:
+            out[code] = sector
+    if out:
+        _write_json(path, out)
+    return out
+
+
+def load_twse_session_bars(date_yyyymmdd: str) -> dict | None:
+    """當日上市 OHLC。{code: {name,open,high,low,close,volume}}；{}=休市；None=失敗。"""
+    path = CACHE / "twse_bar" / f"{date_yyyymmdd}.json"
+    cached = _read_json(path, 10 * 365 * 86400)
+    if cached is not None:
+        return cached
+    url = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"
+    try:
+        r = httpx.get(
+            url,
+            params={"response": "json", "type": "ALLBUT0999", "date": date_yyyymmdd},
+            headers=HEADERS,
+            timeout=30,
+        )
+        payload = r.json()
+    except Exception:
+        return None
+    if payload.get("stat") != "OK":
+        _write_json(path, {})
+        return {}
+    out: dict = {}
+    for table in payload.get("tables") or []:
+        fields = table.get("fields") or []
+        need = ("證券代號", "開盤價", "最高價", "最低價", "收盤價")
+        if any(k not in fields for k in need):
+            continue
+        ci = fields.index("證券代號")
+        oi = fields.index("開盤價")
+        hi = fields.index("最高價")
+        li = fields.index("最低價")
+        pi = fields.index("收盤價")
+        ni = fields.index("證券名稱") if "證券名稱" in fields else None
+        vi = fields.index("成交股數") if "成交股數" in fields else None
+        for row in table.get("data") or []:
+            if not row or len(row) <= max(ci, oi, hi, li, pi):
+                continue
+            code = str(row[ci]).strip()
+            if not _is_listed_equity_code(code):
+                continue
+            close = _parse_num(row[pi])
+            if not close:
+                continue
+            open_px = _parse_num(row[oi]) or close
+            high = _parse_num(row[hi]) or close
+            low = _parse_num(row[li]) or close
+            vol = _parse_int(row[vi]) if vi is not None and len(row) > vi else 0
+            name = str(row[ni]).strip() if ni is not None and len(row) > ni else ""
+            out[code] = {
+                "name": name,
+                "open": open_px,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": vol,
+            }
+        if out:
+            break
+    if not out:
+        return None
+    _write_json(path, out)
+    return out
+
+
+def load_twse_listed_rows() -> list[dict]:
+    """最新交易日全部上市普通股（代號／名稱／產業）。"""
+    industry = load_twse_industry_map()
+    today = datetime.now(TAIPEI).date()
+    bars = None
+    d = today
+    for _ in range(14):
+        if d.weekday() < 5:
+            got = load_twse_session_bars(d.strftime("%Y%m%d"))
+            if got:
+                bars = got
+                break
+        d -= timedelta(days=1)
+    if not bars:
+        return []
+    rows = []
+    for code, rec in sorted(bars.items()):
+        rows.append(
+            {
+                "symbol": f"{code}.TW",
+                "name": rec.get("name") or code,
+                "sector": industry.get(code) or "",
+                "market": "TW",
+            }
+        )
+    return rows
+
+
+def load_twse_market_ohlcv(lookback: int = 260, max_new: int = 80) -> dict[str, pd.DataFrame]:
+    """用 MI_INDEX 日K組全市場 DataFrame（鍵為 2330.TW）。首次會補歷史，之後走快取。"""
+    bar_dir = CACHE / "twse_bar"
+    n_cached = len(list(bar_dir.glob("*.json"))) if bar_dir.exists() else 0
+    want = lookback
+    cap_new = max_new if n_cached >= 40 else max(max_new, 120)
+    today = datetime.now(TAIPEI).date()
+    sessions: list[tuple[str, dict]] = []
+    d = today
+    tries = 0
+    new_dl = 0
+    while len(sessions) < want and tries < want + 80:
+        tries += 1
+        d -= timedelta(days=1)
+        if d.weekday() >= 5:
+            continue
+        ds = d.strftime("%Y%m%d")
+        was = (bar_dir / f"{ds}.json").exists()
+        bars = load_twse_session_bars(ds)
+        if bars is None:
+            time.sleep(0.12)
+            continue
+        if bars:
+            sessions.append((ds, bars))
+        if not was:
+            new_dl += 1
+            time.sleep(0.12)
+            if new_dl >= cap_new and len(sessions) >= 40:
+                break
+    sessions.reverse()
+    if len(sessions) < 40:
+        return {}
+    by_code: dict[str, list] = {}
+    for ds, bars in sessions:
+        ts = pd.Timestamp(ds)
+        for code, rec in bars.items():
+            by_code.setdefault(code, []).append(
+                {
+                    "date": ts,
+                    "open": rec["open"],
+                    "high": rec["high"],
+                    "low": rec["low"],
+                    "close": rec["close"],
+                    "volume": rec.get("volume") or 0,
+                }
+            )
+    out: dict[str, pd.DataFrame] = {}
+    for code, rows in by_code.items():
+        if len(rows) < 40:
+            continue
+        df = pd.DataFrame(rows).set_index("date").sort_index()
+        out[f"{code}.TW"] = df
+    return out

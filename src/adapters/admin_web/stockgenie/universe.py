@@ -1,4 +1,5 @@
-"""股票池：台股 56 檔主流權重 + 美股 58 檔大盤股。"""
+"""股票池：台股上市全市場（MI_INDEX，排除 00xx ETF）；美股仍為精選大盤股。
+硬編碼 TW/US 清單當證交所資料尚未就緒時的後備。"""
 
 TW = [
     ("2330.TW", "台積電", "半導體"),
@@ -259,8 +260,31 @@ def all_rows():
     return out
 
 
+_listed_tw_cache: list | None = None
+_listed_tw_by_sym: dict | None = None
+
+
+def listed_tw_rows() -> list:
+    global _listed_tw_cache, _listed_tw_by_sym
+    if _listed_tw_cache is not None:
+        return _listed_tw_cache
+    try:
+        from data import load_twse_listed_rows
+
+        rows = load_twse_listed_rows() or []
+    except Exception:
+        rows = []
+    _listed_tw_cache = rows
+    _listed_tw_by_sym = {r["symbol"]: r for r in rows}
+    return rows
+
+
 def by_market(market: str):
     m = (market or "TW").upper()
+    if m == "TW":
+        listed = listed_tw_rows()
+        if listed:
+            return listed
     return [r for r in all_rows() if r["market"] == m]
 
 
@@ -290,4 +314,10 @@ def meta(symbol: str):
     for r in ranking_rows():
         if r["symbol"] == symbol:
             return r
+    if (symbol or "").endswith(".TW") or str(symbol).isdigit():
+        want = symbol if str(symbol).endswith(".TW") else f"{symbol}.TW"
+        listed_tw_rows()
+        if _listed_tw_by_sym and want in _listed_tw_by_sym:
+            return _listed_tw_by_sym[want]
+        return {"symbol": want, "name": symbol, "sector": "", "market": "TW"}
     return {"symbol": symbol, "name": symbol, "sector": "", "market": "US" if "." not in symbol else "TW"}

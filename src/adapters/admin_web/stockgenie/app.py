@@ -25,6 +25,7 @@ from data import (
     load_t86_history,
     load_twse_rps,
     load_latest_twse_closes,
+    load_twse_market_ohlcv,
     summarize_intraday,
     t86_by_code,
 )
@@ -136,11 +137,28 @@ def scan_market(market: str, force: bool = False) -> None:
     market = market.upper()
     rows = by_market(market)
     symbols = [r["symbol"] for r in rows]
-    _set(phase="download", progress=5, message=f"下載{market}日線 2 年（看板＋RPS 擴充池）…", error=None)
-    rank_syms = ranking_symbols(market)
-    all_syms = list(dict.fromkeys(symbols + rank_syms))
-    ohlcv_all = load_ohlcv_many(all_syms, period="2y")
-    ohlcv = {s: ohlcv_all[s] for s in symbols if s in ohlcv_all}
+    if market == "TW":
+        _set(phase="download", progress=5, message="載入上市全市場日K（證交所 MI_INDEX）…", error=None)
+        ohlcv_all = load_twse_market_ohlcv(lookback=260)
+        idx_need = [s for s in ("^TWII", "0050.TW") if s not in ohlcv_all]
+        if idx_need:
+            ohlcv_all.update(load_ohlcv_many(idx_need, period="2y"))
+        ohlcv = {s: ohlcv_all[s] for s in symbols if s in ohlcv_all and len(ohlcv_all[s]) >= 40}
+        if len(ohlcv) < 40:
+            _set(phase="download", progress=8, message="全市場日K不足，改抓 Yahoo 後備池…")
+            rank_syms = ranking_symbols(market)
+            all_syms = list(dict.fromkeys(symbols[:80] + rank_syms))
+            yf_map = load_ohlcv_many(all_syms, period="2y")
+            ohlcv_all.update(yf_map)
+            ohlcv = {s: ohlcv_all[s] for s in symbols if s in ohlcv_all and len(ohlcv_all[s]) >= 40}
+            if not ohlcv:
+                ohlcv = dict(yf_map)
+    else:
+        _set(phase="download", progress=5, message=f"下載{market}日線 2 年（看板＋RPS 擴充池）…", error=None)
+        rank_syms = ranking_symbols(market)
+        all_syms = list(dict.fromkeys(symbols + rank_syms))
+        ohlcv_all = load_ohlcv_many(all_syms, period="2y")
+        ohlcv = {s: ohlcv_all[s] for s in symbols if s in ohlcv_all}
     with _lock:
         _ohlcv.update(ohlcv_all)
 
