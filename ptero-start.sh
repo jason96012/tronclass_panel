@@ -689,11 +689,16 @@ start_stockgenie() {
     return 0
   fi
   mkdir -p logs run
-  # STOCKGENIE_PYTHON_BOOTSTRAP_V1：映像沒有系統 python3 時，把獨立 CPython
-  # 裝進 run/stockgenie-venv。失敗只記 log，不擋點名／編譯。
-  if ! bash "$STOCKGENIE_DIR/bootstrap.sh" >> logs/stockgenie-bootstrap.log 2>&1; then
-    echo "[ptero-start] 智選 Python 環境安裝失敗（詳見 logs/stockgenie-bootstrap.log）；面板其餘功能不受影響"
-    return 0
+  # STOCKGENIE_BOOTSTRAP_SKIP_IF_PRESENT_V1：venv 已在就不要再跑安裝（避免每次開機下載）。
+  if [[ -x run/stockgenie-venv/bin/python || -x run/stockgenie-venv/bin/python3 ]]; then
+    echo "[ptero-start] 智選 Python 已存在，略過下載"
+  else
+    # STOCKGENIE_PYTHON_BOOTSTRAP_V1：映像沒有系統 python3 時，把獨立 CPython
+    # 裝進 run/stockgenie-venv。失敗只記 log，不擋點名／編譯。
+    if ! bash "$STOCKGENIE_DIR/bootstrap.sh" >> logs/stockgenie-bootstrap.log 2>&1; then
+      echo "[ptero-start] 智選 Python 環境安裝失敗（詳見 logs/stockgenie-bootstrap.log）；面板其餘功能不受影響"
+      return 0
+    fi
   fi
   local py=""
   py="$(tr -d '\r\n' < run/stockgenie-python-bin.txt 2>/dev/null || true)"
@@ -737,7 +742,12 @@ start_stockgenie() {
   disown || true
 }
 
-start_stockgenie
+# STOCKGENIE_BOOT_BG_V1：venv／sidecar 放到背景，不擋面板入口與點名。
+# 已有 run/stockgenie-venv 時 start_stockgenie 幾乎立刻結束；首次安裝才會下載。
+mkdir -p logs run
+echo "[ptero-start] 智選在背景啟動（venv 下載不擋面板）"
+start_stockgenie >> logs/stockgenie-boot.log 2>&1 &
+echo $! > logs/stockgenie-boot.pid
 
 # At-rest encryption master key for the accounts database. Encrypts upstream
 # passwords and session cookies with AES-256-GCM before storing them.
@@ -1017,6 +1027,17 @@ watchdog_start_stockgenie() {
   if watchdog_pid_alive logs/stockgenie.pid; then
     return 0
   fi
+  # 首次 venv 安裝中：不要再同步跑一次 bootstrap，以免看門狗卡住數分鐘。
+  if [[ -d run/stockgenie-bootstrap.lock ]]; then
+    return 0
+  fi
+  if [[ -s logs/stockgenie-boot.pid ]]; then
+    local boot_pid
+    boot_pid="$(cat logs/stockgenie-boot.pid 2>/dev/null || true)"
+    if [[ "$boot_pid" =~ ^[0-9]+$ ]] && kill -0 "$boot_pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
   local now last=0
   now="$(date +%s)"
   last="$(cat logs/stockgenie-watchdog.last 2>/dev/null || echo 0)"
@@ -1026,7 +1047,8 @@ watchdog_start_stockgenie() {
   fi
   printf '%s\n' "$now" > logs/stockgenie-watchdog.last
   echo "[watchdog] 智選 sidecar 不存在，重新啟動（$(date -Iseconds)）" >> logs/stockgenie-watchdog.log
-  start_stockgenie
+  start_stockgenie >> logs/stockgenie-boot.log 2>&1 &
+  echo $! > logs/stockgenie-boot.pid
 }
 
 watchdog_restart_filebrowser() {
@@ -1056,7 +1078,11 @@ watchdog_check_filebrowser() {
 # 因此改比對「內容 hash」：任何 .rs / static / Cargo 檔的內容或增刪都會被偵測。
 src_hash() {
   local h
-  h="$(find src Cargo.toml Cargo.lock -type f -print0 2>/dev/null \
+  # STOCKGENIE_SRC_HASH_SKIP_V1：智選 Python／HTML 從磁碟讀、不編進 binary。
+  # 只換 stockgenie 時不要觸發 cargo（否則每次 overlay zip 都要等數分鐘才能進面板）。
+  h="$(find src Cargo.toml Cargo.lock -type f \
+        ! -path 'src/adapters/admin_web/stockgenie/*' \
+        -print0 2>/dev/null \
         | xargs -0 sha256sum 2>/dev/null \
         | sort \
         | sha256sum \

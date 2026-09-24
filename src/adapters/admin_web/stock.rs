@@ -35,6 +35,7 @@ const STOCK_UPSTREAM_TIMEOUT_SECS: u64 = 180;
 
 static SIDECAR_LOCK: Mutex<()> = Mutex::const_new(());
 static SIDECAR_READY: AtomicBool = AtomicBool::new(false);
+static BOOTSTRAP_SPAWNED: AtomicBool = AtomicBool::new(false);
 
 fn stockgenie_python_candidates() -> Vec<PathBuf> {
     let mut cands: Vec<PathBuf> = Vec::new();
@@ -220,22 +221,22 @@ async fn spawn_uvicorn(dir: &std::path::Path, bin: &std::path::Path) -> Result<t
         .map_err(|e| format!("無法啟動 {}：{e}", bin.display()))
 }
 
-async fn bootstrap_stockgenie_python() -> Result<PathBuf, String> {
-    if let Some(existing) = resolve_stockgenie_python() {
-        return Ok(existing);
+/// STOCKGENIE_BOOTSTRAP_ASYNC_V1：第一次裝 venv 可能要幾分鐘，不能卡住
+/// `/admin/stock-api`。丟到背景，API 立刻回「安裝中」。
+fn spawn_bootstrap_detached() {
+    if BOOTSTRAP_SPAWNED.swap(true, Ordering::SeqCst) {
+        return;
     }
-    let script = bootstrap_script_path().ok_or_else(|| {
-        "容器沒有 python3，且找不到 stockgenie/bootstrap.sh".to_string()
-    })?;
+    let Some(script) = bootstrap_script_path() else {
+        return;
+    };
     let _ = std::fs::create_dir_all("logs");
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open("logs/stockgenie-bootstrap.log");
-    let mut cmd = Command::new("bash");
-    cmd.arg(&script)
-        .stdin(Stdio::null())
-        .kill_on_drop(false);
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(&script).stdin(Stdio::null());
     match log {
         Ok(file) => match file.try_clone() {
             Ok(clone) => {
@@ -249,20 +250,29 @@ async fn bootstrap_stockgenie_python() -> Result<PathBuf, String> {
             cmd.stdout(Stdio::null()).stderr(Stdio::null());
         }
     }
-    tracing::info!("stockgenie bootstrap starting");
-    let status = cmd
-        .status()
-        .await
-        .map_err(|e| format!("無法執行 bootstrap.sh：{e}"))?;
-    if !status.success() {
-        return Err(
-            "智選 Python 環境安裝失敗（容器沒有系統 python3；詳見 logs/stockgenie-bootstrap.log）"
-                .to_string(),
-        );
+    tracing::info!("stockgenie bootstrap starting in background");
+    match cmd.spawn() {
+        Ok(child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "無法背景執行 bootstrap.sh");
+            BOOTSTRAP_SPAWNED.store(false, Ordering::SeqCst);
+        }
     }
-    resolve_stockgenie_python().ok_or_else(|| {
-        "bootstrap 完成後仍找不到 run/stockgenie-venv/bin/python".to_string()
-    })
+}
+
+async fn bootstrap_stockgenie_python() -> Result<PathBuf, String> {
+    if let Some(existing) = resolve_stockgenie_python() {
+        return Ok(existing);
+    }
+    if bootstrap_script_path().is_none() {
+        return Err("容器沒有 python3，且找不到 stockgenie/bootstrap.sh".to_string());
+    }
+    spawn_bootstrap_detached();
+    Err("智選 Python 環境安裝中（第一次較久，完成後重新整理即可；面板其餘功能可先用）".to_string())
 }
 
 async fn wait_sidecar_health() -> bool {

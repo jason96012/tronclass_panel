@@ -5,6 +5,7 @@
 #
 # STOCKGENIE_BOOTSTRAP_SKIP_IF_PRESENT_V1：run/stockgenie-venv 裡只要已有
 # python 可執行檔，開機就沿用，絕不重抓 uv / CPython / pip。
+# STOCKGENIE_BOOTSTRAP_PIECEWISE_V1：若只缺其中一段，只補那一段；已有的不重抓。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -24,6 +25,8 @@ UV_DIR="$ROOT/run/uv"
 UV="$UV_DIR/uv"
 LOCK="$ROOT/run/stockgenie-bootstrap.lock"
 REQ="$SCRIPT_DIR/requirements.txt"
+UV_CACHE_DIR="$ROOT/run/uv-cache"
+UV_PYTHON_INSTALL_DIR="$ROOT/run/stockgenie-python"
 
 mkdir -p "$ROOT/run" "$ROOT/logs"
 
@@ -32,20 +35,30 @@ write_bin() {
   echo "[stockgenie-bootstrap] python = $1"
 }
 
-# 已裝過：只認「venv 裡有可執行的 python」，不 import、不連網。
-reuse_existing() {
-  local bin=""
+venv_python() {
   if [[ -x "$PYBIN" ]]; then
-    bin="$PYBIN"
-  elif [[ -x "$VENV/bin/python3" ]]; then
-    bin="$VENV/bin/python3"
-  elif [[ -s "$BINFILE" ]]; then
+    printf '%s\n' "$PYBIN"
+    return 0
+  fi
+  if [[ -x "$VENV/bin/python3" ]]; then
+    printf '%s\n' "$VENV/bin/python3"
+    return 0
+  fi
+  if [[ -s "$BINFILE" ]]; then
     local listed
     listed="$(tr -d '\r\n' < "$BINFILE" 2>/dev/null || true)"
     if [[ -n "$listed" && -x "$listed" ]]; then
-      bin="$listed"
+      printf '%s\n' "$listed"
+      return 0
     fi
   fi
+  return 1
+}
+
+# 已裝過：只認「venv 裡有可執行的 python」，不 import、不連網。
+reuse_existing() {
+  local bin=""
+  bin="$(venv_python 2>/dev/null || true)"
   if [[ -z "$bin" ]]; then
     return 1
   fi
@@ -105,15 +118,17 @@ esac
 dl() {
   local url="$1" out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 3 --retry-all-errors -o "$out" "$url" && return 0
+    curl -fL --connect-timeout 15 --max-time 180 --retry 3 --retry-all-errors -o "$out" "$url" && return 0
   fi
   if command -v wget >/dev/null 2>&1; then
-    wget -O "$out" "$url" && return 0
+    wget -T 180 -t 3 -O "$out" "$url" && return 0
   fi
   return 1
 }
 
-if [[ ! -x "$UV" ]]; then
+if [[ -x "$UV" ]]; then
+  echo "[stockgenie-bootstrap] 沿用已有 uv"
+else
   echo "[stockgenie-bootstrap] 下載 uv（$uv_arch）"
   mkdir -p "$UV_DIR"
   tgz="$UV_DIR/uv.tgz"
@@ -134,23 +149,47 @@ if [[ ! -x "$UV" ]]; then
   fi
   chmod +x "$UV"
   rm -f "$tgz"
-else
-  echo "[stockgenie-bootstrap] 沿用已有 uv"
 fi
 
-export UV_CACHE_DIR="$ROOT/run/uv-cache"
-export UV_PYTHON_INSTALL_DIR="$ROOT/run/stockgenie-python"
+export UV_CACHE_DIR
+export UV_PYTHON_INSTALL_DIR
 mkdir -p "$UV_CACHE_DIR" "$UV_PYTHON_INSTALL_DIR"
 
-echo "[stockgenie-bootstrap] 安裝 CPython 3.12（僅首次）"
-"$UV" python install 3.12
-echo "[stockgenie-bootstrap] 建立 venv（不 --clear，以免下次開機把已裝環境清掉）"
-"$UV" venv "$VENV" --python 3.12
-echo "[stockgenie-bootstrap] 安裝智選套件（僅首次）"
-if [[ -f "$REQ" ]]; then
-  "$UV" pip install --python "$PYBIN" -r "$REQ"
+cpython_present() {
+  find "$UV_PYTHON_INSTALL_DIR" \( -type f -o -type l \) \
+    \( -name python -o -name python3 -o -name 'python3.12' \) \
+    -print 2>/dev/null | head -1 | grep -q .
+}
+
+if cpython_present; then
+  echo "[stockgenie-bootstrap] 沿用已有 CPython"
 else
-  "$UV" pip install --python "$PYBIN" fastapi uvicorn yfinance pandas numpy httpx
+  echo "[stockgenie-bootstrap] 安裝 CPython 3.12（僅首次）"
+  "$UV" python install 3.12
+fi
+
+if venv_python >/dev/null; then
+  echo "[stockgenie-bootstrap] 沿用已有 venv"
+else
+  echo "[stockgenie-bootstrap] 建立 venv（不 --clear，以免下次開機把已裝環境清掉）"
+  "$UV" venv "$VENV" --python 3.12
+fi
+
+pkgs_ok() {
+  local sp=""
+  sp="$(ls -d "$VENV"/lib/python3.*/site-packages 2>/dev/null | head -1 || true)"
+  [[ -n "$sp" && -d "$sp/fastapi" && -d "$sp/pandas" && -d "$sp/uvicorn" ]]
+}
+
+if pkgs_ok; then
+  echo "[stockgenie-bootstrap] 套件已在，略過 pip"
+else
+  echo "[stockgenie-bootstrap] 安裝智選套件（僅缺件時；沿用 uv cache）"
+  if [[ -f "$REQ" ]]; then
+    "$UV" pip install --python "$PYBIN" -r "$REQ"
+  else
+    "$UV" pip install --python "$PYBIN" fastapi uvicorn yfinance pandas numpy httpx
+  fi
 fi
 
 if [[ ! -x "$PYBIN" && ! -x "$VENV/bin/python3" ]]; then
