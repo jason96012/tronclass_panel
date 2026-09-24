@@ -41,7 +41,7 @@ button{cursor:pointer}
 .meta b{color:var(--text);font-weight:650}
 .wrap{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(380px,.9fr);min-height:calc(100vh - 64px)}
 .left{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
-.toolbar{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);align-items:center}
+.toolbar{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);align-items:center;overflow:visible}
 .chip{border:1px solid var(--line);background:var(--panel2);border-radius:999px;padding:5px 11px;color:var(--muted);font-size:12px}
 .chip.on{border-color:#3a6a68;color:var(--cyan);background:#132428}
 .search-wrap{position:relative;flex:1;min-width:200px;display:flex;gap:6px;align-items:center}
@@ -230,6 +230,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
 (function(){
   const $ = (id) => document.getElementById(id);
   let market = 'TW', tab = 'board', filter = 'all', rows = [], sel = null, detail = null, timer = 0;
+  let openFail = {};
 
   const toneClass = (t) => t==='good'?'good':t==='bad'?'bad':t==='warn'?'warn':'neutral';
   const fmt = (n, d=2) => n==null || n!==n ? '—' : Number(n).toLocaleString('zh-Hant', {maximumFractionDigits:d, minimumFractionDigits:0});
@@ -250,9 +251,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   }
 
   function applyFilter(list){
-    const q = ($('q').value||'').trim().toLowerCase();
     return list.filter(r => {
-      if (q && !(r.symbol.toLowerCase().includes(q) || (r.name||'').includes(q))) return false;
       if (filter==='buy') return r.verdict_key==='buy' || r.verdict_key==='plan' || r.verdict_key==='buy_breakout';
       if (filter==='brk') return r.verdict_key==='buy_breakout' || r.setup_kind==='breakout' || r.breakout_grade;
       if (filter==='pb') return r.setup_kind==='pullback' || r.verdict_key==='plan' || r.verdict_key==='buy';
@@ -272,17 +271,19 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       return `<tr class="${on}" data-s="${r.symbol}">
         <td><span class="sym">${r.symbol.replace('.TW','')}</span><span class="sub">${r.name} · ${r.sector||''}</span></td>
         <td><span class="tag ${toneClass(r.tone)}">${r.verdict}</span>${r.resonance?' <span class="tag good">共振</span>':''}</td>
+        <td><span class="sub">${r.setup_kind||r.bias||''}</span></td>
         <td><b>${fmt(r.composite,1)}</b><span class="sub">${r.bias}</span></td>
         <td>${fmt(r.tech,1)}</td>
         <td>${r.fund==null?'—':fmt(r.fund,1)}</td>
         <td>${r.chips==null?'—':fmt(r.chips,1)}</td>
         <td>${r.rps==null?'—':r.rps}</td>
+        <td>${r.rvol==null?'—':fmt(r.rvol,2)}</td>
         <td>${px(r.buy_mid)}</td>
         <td class="num dn">${px(r.stop)}</td>
         <td class="num up">${px(r.target_mid)}</td>
         <td>${r.rr==null?'—':fmt(r.rr,2)}</td>
       </tr>`;
-    }).join('') || `<tr><td colspan="11" class="empty">沒有符合條件的股票。可在上方輸入代號或名稱查詢任意上市股票。</td></tr>`;
+    }).join('') || `<tr><td colspan="13" class="empty">沒有符合條件的股票。可在上方輸入代號或名稱查詢任意上市股票。</td></tr>`;
   }
 
   function hideSuggest(){
@@ -295,7 +296,22 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     const t = (raw||'').trim().toUpperCase().replace(/．/g,'.');
     if (!t) return '';
     if (/^\d{3,6}$/.test(t)) return t + '.TW';
+    if (/^\d{4,6}[A-Z]$/.test(t)) return t + '.TW';
     return t;
+  }
+  function localHits(q){
+    const raw = (q||'').trim();
+    const ql = raw.toLowerCase();
+    if (!ql) return [];
+    const hits = [];
+    rows.forEach(r => {
+      if ((r.symbol||'').toLowerCase().includes(ql) || (r.name||'').toLowerCase().includes(ql) || (r.name||'').includes(raw))
+        hits.push({symbol:r.symbol, name:r.name, market:r.market||market, sector:r.sector||''});
+    });
+    const g = guessSymbol(raw);
+    if (g && !hits.some(h => String(h.symbol||'').toUpperCase()===g))
+      hits.unshift({symbol:g, name:raw, market:/^\d/.test(g)?'TW':market, sector:''});
+    return hits.slice(0,12);
   }
   function renderSuggest(hits){
     const box = $('suggest');
@@ -315,24 +331,21 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   async function lookupGo(openFirst){
     const q = ($('q').value||'').trim();
     if (!q){ hideSuggest(); return; }
-    const box = $('suggest');
-    if (box && !openFirst){
-      box.innerHTML = '<button type="button" disabled>上網查詢中…</button>';
-      box.classList.add('on');
+    const local = localHits(q);
+    renderSuggest(local);
+    if (openFirst){
+      const pick = (local[0] && local[0].symbol) || guessSymbol(q);
+      hideSuggest();
+      if (pick) open(pick);
+      return;
     }
     try{
       const d = await fetchLookup(q);
-      const hits = d.hits || [];
+      if (($('q').value||'').trim() !== q) return;
+      const hits = (d && d.hits && d.hits.length) ? d.hits : local;
       renderSuggest(hits);
-      const pick = (hits[0] && hits[0].symbol) || guessSymbol(q);
-      if (openFirst && pick){
-        hideSuggest();
-        open(pick);
-      }
     }catch(e){
-      const pick = guessSymbol(q);
-      if (openFirst && pick){ hideSuggest(); open(pick); }
-      else hideSuggest();
+      renderSuggest(local);
     }
   }
 
@@ -505,6 +518,16 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   }
 
   function renderDetail(d){
+    if (!d || !d.verdict) {
+      $('detail').innerHTML = '<div class="empty">讀取失敗：'+(d && (d.error||d.detail) || '沒有詳情')+'</div>';
+      return;
+    }
+    d.plan = d.plan || {};
+    d.targets = d.targets || {};
+    d.targets.analyst = d.targets.analyst || {};
+    d.composite = d.composite || {score:null, bias:'—'};
+    d.tech = d.tech || {score:0, items:[]};
+    d.fund = d.fund || {available:false, items:[]};
     detail = d;
     const v = d.verdict, p = d.plan, t = d.targets;
     const ps = posSize(v.entry, v.stop);
@@ -595,21 +618,26 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       }
       rows = data.rows||[];
       renderTable();
-      if (!sel && rows.length) open(rows[0].symbol);
-      else if (sel && !detail) open(sel);
+      if (!sel && rows.length && !openFail[rows[0].symbol]) open(rows[0].symbol);
     }catch(e){
       $('meta').textContent = '載入失敗：'+e.message;
     }
   }
 
   async function open(symbol){
+    if (!symbol) return;
     sel = symbol;
     renderTable();
     $('detail').innerHTML = '<div class="empty">計算買賣點與風控…</div>';
+    const token = symbol;
     try{
       const d = await j('/admin/stock-api/stock/'+encodeURIComponent(symbol));
+      if (sel !== token) return;
+      delete openFail[symbol];
       renderDetail(d);
     }catch(e){
+      if (sel !== token) return;
+      openFail[symbol] = e.message;
       $('detail').innerHTML = '<div class="empty">讀取失敗：'+e.message+'</div>';
     }
   }
@@ -698,11 +726,11 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   });
   let suggestTimer = 0;
   $('q').addEventListener('input', () => {
-    renderTable();
     const q = ($('q').value||'').trim();
     clearTimeout(suggestTimer);
     if (!q){ hideSuggest(); return; }
-    suggestTimer = setTimeout(() => lookupGo(false), 220);
+    renderSuggest(localHits(q));
+    suggestTimer = setTimeout(() => lookupGo(false), 180);
   });
   $('q').addEventListener('keydown', e => {
     if (e.key === 'Enter'){ e.preventDefault(); lookupGo(true); }

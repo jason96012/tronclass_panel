@@ -569,20 +569,36 @@ def _bar_vol(row) -> int:
 
 
 def bars_payload(df: pd.DataFrame, n: int = 180) -> list[dict]:
+    if df is None or len(df) == 0:
+        return []
     tail = df.iloc[-n:]
     out = []
     for ts, row in tail.iterrows():
-        out.append(
-            {
-                "t": ts.strftime("%Y-%m-%d"),
-                "o": round(float(row["open"]), 4),
-                "h": round(float(row["high"]), 4),
-                "l": round(float(row["low"]), 4),
-                "c": round(float(row["close"]), 4),
-                "v": _bar_vol(row),
-                "ma20": None if pd.isna(row.get("ma20", np.nan)) else round(float(row["ma20"]), 4),
-                "ma60": None if pd.isna(row.get("ma60", np.nan)) else round(float(row["ma60"]), 4),
-                "ma120": None if pd.isna(row.get("ma120", np.nan)) else round(float(row["ma120"]), 4),
-            }
-        )
+        try:
+            if hasattr(ts, "strftime"):
+                t = ts.strftime("%Y-%m-%d")
+            else:
+                t = str(ts)[:10]
+            o = round(float(row["open"]), 4)
+            h = round(float(row["high"]), 4)
+            l = round(float(row["low"]), 4)
+            c = round(float(row["close"]), 4)
+            if any(x != x or x in (float("inf"), float("-inf")) for x in (o, h, l, c)):
+                continue
+            ma = lambda k: None if pd.isna(row.get(k, np.nan)) else round(float(row[k]), 4)
+            out.append(
+                {
+                    "t": t,
+                    "o": o,
+                    "h": h,
+                    "l": l,
+                    "c": c,
+                    "v": _bar_vol(row),
+                    "ma20": ma("ma20"),
+                    "ma60": ma("ma60"),
+                    "ma120": ma("ma120"),
+                }
+            )
+        except Exception:
+            continue
     return out

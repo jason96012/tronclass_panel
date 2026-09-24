@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import threading
 import time
@@ -43,8 +44,37 @@ ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "static"
 TAIPEI = timezone(timedelta(hours=8))
 
-app = FastAPI(title="StockGenie", version="2.0")
+class SafeJSON(JSONResponse):
+    """numpy／NaN／Timestamp 不能直接 json.dumps，否則詳情 HTTP 500。"""
+
+    def render(self, content) -> bytes:
+        cleaned = _clean_json(content)
+        try:
+            text = json.dumps(cleaned, ensure_ascii=False, allow_nan=False, default=str)
+        except Exception:
+            try:
+                text = json.dumps(cleaned, ensure_ascii=False, allow_nan=True, default=str)
+                text = (
+                    text.replace(": NaN", ": null")
+                    .replace(": Infinity", ": null")
+                    .replace(": -Infinity", ": null")
+                )
+            except Exception as exc:
+                text = json.dumps({"error": f"序列化失敗：{exc}"}, ensure_ascii=False)
+        return text.encode("utf-8")
+
+
+app = FastAPI(title="StockGenie", version="2.0", default_response_class=SafeJSON)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
+
+
+@app.exception_handler(Exception)
+def _unhandled(_, exc):
+    if isinstance(exc, HTTPException):
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return SafeJSON({"error": detail}, status_code=exc.status_code)
+    traceback.print_exc()
+    return SafeJSON({"error": str(exc) or exc.__class__.__name__}, status_code=500)
 
 _lock = threading.Lock()
 _state = {
@@ -95,27 +125,45 @@ def _code_of(symbol: str) -> str:
     return symbol.split(".")[0]
 
 
-def _clean_json(obj):
-    if isinstance(obj, dict):
-        return {str(k): _clean_json(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_clean_json(v) for v in obj]
-    if obj is None or isinstance(obj, (bool, str)):
+def _clean_json(obj, depth: int = 0):
+    if depth > 40:
+        return str(obj)
+    if obj is None or isinstance(obj, (str, bool)):
         return obj
     if isinstance(obj, int) and not isinstance(obj, bool):
         return int(obj)
-    try:
-        if hasattr(obj, "item") and type(obj).__module__.startswith("numpy"):
-            obj = obj.item()
-    except Exception:
-        pass
     if isinstance(obj, float):
         if math.isnan(obj) or math.isinf(obj):
             return None
         return float(obj)
+    if isinstance(obj, dict):
+        return {str(k): _clean_json(v, depth + 1) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_clean_json(v, depth + 1) for v in obj]
     if isinstance(obj, datetime):
         return obj.strftime("%Y-%m-%d %H:%M:%S")
-    return obj
+    name = type(obj).__name__
+    mod = type(obj).__module__ or ""
+    if name in ("NAType", "NaTType"):
+        return None
+    if name in ("Timestamp", "datetime64", "date", "time"):
+        try:
+            if hasattr(obj, "strftime"):
+                return obj.strftime("%Y-%m-%d")
+            return obj.isoformat()
+        except Exception:
+            return str(obj)
+    if mod.startswith("numpy") or name in ("int64", "int32", "float64", "float32", "bool_", "bool8"):
+        try:
+            if hasattr(obj, "shape") and getattr(obj, "shape", None) == ():
+                return _clean_json(obj.item(), depth + 1)
+            if hasattr(obj, "tolist"):
+                return _clean_json(obj.tolist(), depth + 1)
+            if hasattr(obj, "item"):
+                return _clean_json(obj.item(), depth + 1)
+        except Exception:
+            return str(obj)
+    return str(obj)
 
 
 def _norm_symbol(symbol: str) -> str:
@@ -355,7 +403,8 @@ def scan_market(market: str, force: bool = False) -> None:
         full["beta"] = None if b is None else round(b, 2)
     apply_portfolio(packed, list_open())
 
-    keep = {"^TWII", "0050.TW", "^GSPC", "^VIX"}
+    # 每日約 30 檔日K留著給詳情；不要掃完就丟，否則點開又上網逾時 502。
+    keep = {"^TWII", "0050.TW", "^GSPC", "^VIX"} | set(packed.keys())
     with _lock:
         _cache[market] = packed
         drop = [k for k in _hist if uni_meta(k)["market"] == market]
@@ -400,9 +449,30 @@ def health():
 
 @app.get("/api/lookup")
 def api_lookup(q: str = "", market: str = "TW"):
-    """STOCKGENIE_LOOKUP_V1：代號／名稱建議。不觸發全市場掃描。"""
+    """STOCKGENIE_LOOKUP_V1：代號／名稱建議。名單沒有就上網。永不 500。"""
     q = (q or "").strip()
-    hits = search_symbols(q)
+    hits = []
+    try:
+        hits = search_symbols(q)
+    except Exception:
+        traceback.print_exc()
+        hits = []
+    if not hits:
+        try:
+            from data import guess_yahoo_symbol
+
+            g = guess_yahoo_symbol(q)
+            if g:
+                hits = [
+                    {
+                        "symbol": g,
+                        "name": q,
+                        "sector": "",
+                        "market": "TW" if g.endswith(".TW") or g.endswith(".TWO") else "US",
+                    }
+                ]
+        except Exception:
+            pass
     m = (market or "TW").upper()
     if m in ("TW", "US") and hits:
         prefer = [h for h in hits if h.get("market") == m]
@@ -436,76 +506,171 @@ def api_scan(market: str = "TW"):
     return {"state": st, "market": market, "regime": regime, "rows": rows, "count": len(rows)}
 
 
-@app.get("/api/stock/{symbol}")
+@app.get("/api/stock/{symbol:path}")
 def api_stock(symbol: str):
-    """池內走快取；沒有就單檔上網 Yahoo。不掃全市場。"""
+    """池內重用掃描結果；池外單檔日K。永不 502（gateway 會把 502 顯示成空白失敗）。"""
     try:
         return _pack_detail(symbol)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-        return JSONResponse({"error": detail}, status_code=exc.status_code)
+        return _stub_detail(_norm_symbol(symbol), str(detail))
     except Exception as exc:
         traceback.print_exc()
-        return JSONResponse({"error": f"計算失敗：{exc}"}, status_code=502)
+        return _stub_detail(_norm_symbol(symbol), f"計算失敗：{exc}")
+
+
+def _stub_detail(symbol: str, reason: str) -> dict:
+    meta = {}
+    try:
+        meta = uni_meta(symbol) or {}
+    except Exception:
+        meta = {}
+    return _clean_json(
+        {
+            "symbol": symbol,
+            "name": meta.get("name") or symbol,
+            "sector": meta.get("sector") or "",
+            "market": meta.get("market") or ("TW" if str(symbol).endswith(".TW") else "US"),
+            "price": None,
+            "asof": None,
+            "tech": {"score": 0, "items": [], "rsi": None},
+            "fund": {"score": 0, "available": False, "items": []},
+            "chips": None,
+            "composite": {"score": 0, "bias": "—", "bias_key": "neutral"},
+            "plan": {"buy": None, "stop": None, "target": None, "rr_plan": None},
+            "setup": {},
+            "regime": None,
+            "signals": [],
+            "patterns": [],
+            "cyq": None,
+            "rps": None,
+            "checklist": [],
+            "checks_ok": 0,
+            "checks_n": 0,
+            "resonance": False,
+            "verdict": {
+                "key": "wait",
+                "title": "無法計算買賣點",
+                "tone": "warn",
+                "reason": reason,
+                "flags": [],
+                "entry": None,
+                "stop": None,
+                "target": None,
+            },
+            "targets": {
+                "analyst": {"mean": None, "count": 0, "high": None, "low": None, "upside_pct": None},
+                "valuation": None,
+                "disclaimer": reason,
+            },
+            "integrity": None,
+            "vp40": None,
+            "beta": None,
+            "hist": {"n": 0},
+            "forecast": {"ok": False, "bias_label": reason},
+            "bars": [],
+            "error": reason,
+        }
+    )
+
+
+def _attach_bars(full: dict, df) -> dict:
+    if df is None:
+        full.setdefault("bars", [])
+        return full
+    try:
+        from engine import add_indicators, bars_payload
+
+        full["bars"] = bars_payload(add_indicators(df), 180)
+    except Exception:
+        full["bars"] = []
+    return full
 
 
 def _pack_detail(symbol: str) -> dict:
-    from data import load_info, resolve_yahoo_meta
+    from data import cached_quote_meta
+    from engine import add_indicators, bars_payload
 
     symbol = _norm_symbol(symbol)
     meta = uni_meta(symbol)
-    name = (meta.get("name") or "").strip()
-    code = _code_of(symbol)
-    if name in ("", symbol, code):
-        try:
-            live = resolve_yahoo_meta(symbol)
-            if live and live.get("name"):
-                meta = {**meta, **{k: live[k] for k in ("name", "sector", "market") if live.get(k)}}
-        except Exception:
-            pass
+    try:
+        live = cached_quote_meta(symbol)
+        if live and live.get("name"):
+            meta = {**meta, **{k: live[k] for k in ("name", "sector", "market") if live.get(k)}}
+    except Exception:
+        pass
     market = meta.get("market") or ("TW" if symbol.endswith(".TW") or symbol.endswith(".TWO") else "US")
     with _lock:
         cached = (_cache.get(market) or {}).get(symbol)
         t86 = dict(_t86)
         regime = _regime.get(market)
     df = _df_of(symbol)
+    # 看板已算過：只補 K 線，避免再打 Yahoo info／60分／證交所而逾時 502
+    if cached and cached.get("verdict"):
+        full = dict(cached)
+        if meta.get("name"):
+            full["name"] = meta["name"]
+            full["sector"] = meta.get("sector") or full.get("sector") or ""
+        full = _attach_bars(full, df)
+        if not full.get("hist"):
+            try:
+                full["hist"] = _hist_for(symbol, df, market) if df is not None else {"n": 0}
+            except Exception:
+                full["hist"] = {"n": 0}
+        if not full.get("forecast"):
+            try:
+                full["forecast"] = build_forecast(
+                    df,
+                    plan=full.get("plan"),
+                    setup=full.get("setup"),
+                    regime=full.get("regime"),
+                    hist=full.get("hist"),
+                    tech=full.get("tech"),
+                )
+            except Exception:
+                full["forecast"] = {"ok": False, "bias_label": "路徑計算失敗"}
+        return _clean_json(full)
     if df is None:
-        raise HTTPException(404, f"找不到 {symbol} 的日線（已上網查詢 Yahoo）")
-    info = load_info(symbol)
+        return _stub_detail(symbol, f"找不到 {symbol} 的日線（Yahoo／證交所皆無）")
+    info = {}
     series = t86_by_code(t86, _code_of(symbol)) if market == "TW" else []
     rps = None if not cached else cached.get("rps")
     sector_rs = None if not cached else cached.get("sector_rs")
     factor_rank = None if not cached else cached.get("factor_rank")
     code = _code_of(symbol)
-    margin = load_margin_map().get(code) if market == "TW" else None
-    exdiv = load_exrights_upcoming().get(code) if market == "TW" else None
-    monthly = load_monthly_revenue().get(code) if market == "TW" else None
-    full = analyze(
-        symbol, df, info, series, rps, include_chart=True,
-        regime=regime, sector_rs=sector_rs, factor_rank=factor_rank,
-        margin=margin, exdiv=exdiv, monthly=monthly,
-        official_close=(load_latest_twse_closes().get(code) if market == "TW" else None),
-    )
+    margin = exdiv = monthly = official = None
+    try:
+        if market == "TW":
+            margin = load_margin_map().get(code)
+            exdiv = load_exrights_upcoming().get(code)
+            monthly = load_monthly_revenue().get(code)
+            official = load_latest_twse_closes().get(code)
+    except Exception:
+        pass
+    try:
+        full = analyze(
+            symbol, df, info, series, rps, include_chart=True,
+            regime=regime, sector_rs=sector_rs, factor_rank=factor_rank,
+            margin=margin, exdiv=exdiv, monthly=monthly,
+            official_close=official,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        stub = _stub_detail(symbol, f"計算失敗：{exc}")
+        try:
+            stub["bars"] = bars_payload(add_indicators(df), 180)
+            stub["price"] = round(float(df["close"].iloc[-1]), 4)
+        except Exception:
+            pass
+        return stub
     if meta.get("name"):
         full["name"] = meta["name"]
         full["sector"] = meta.get("sector") or full.get("sector") or ""
+    full["intraday"] = None
     try:
-        intra = summarize_intraday(load_intraday_60m(symbol))
+        full["hist"] = _hist_for(symbol, df, market)
     except Exception:
-        intra = None
-    full["intraday"] = intra
-    v = full.get("verdict") or {}
-    if intra and intra.get("weak_close") and v.get("key") in ("buy", "buy_breakout") and not v.get("hold"):
-        v["key"] = "wait"
-        v["title"] = "觀望 · 60分收弱"
-        v["tone"] = "warn"
-        v["reason"] = f"60 分 K 收在當日振幅 {intra.get('close_loc', 0):.0%}，盤中刺穿未守住。不當突破確認。"
-        flags = list(v.get("flags") or [])
-        if "60分收弱" not in flags:
-            flags.append("60分收弱")
-        v["flags"] = flags
-        full["verdict"] = v
-    full["hist"] = _hist_for(symbol, df, market)
+        full["hist"] = {"n": 0}
     try:
         full["forecast"] = build_forecast(
             df,
