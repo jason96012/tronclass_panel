@@ -118,10 +118,6 @@ f3a6439213f95a5b03c83d0f1391e8f65adfd35755917a5f91048c6321e85a9a  ./adapters/adm
 32dae57af0ed2caf1c09f0ec06d388f72801d7a53111e8b94a7441f2a141506b  ./adapters/admin_web/static_assets.rs
 4fa607f5f1820e577006938c6fd70a24403dbc92df9a6682969ccba1dbcea148  ./adapters/admin_web/status.rs
 141efc946afc15232caeebcd8cb20a66163427572105bc86b433cfbcc1973454  ./adapters/admin_web/stock.rs
-2e99beef50bd584f98adf817384e7027a250a1c44d930f41e39bcde8e53bbe57  ./adapters/admin_web/stockgenie/__pycache__/app.cpython-313.pyc
-0b4304a5dfcb37689116fc020ee467f1b6544907211999d357ae2674b5a2afc5  ./adapters/admin_web/stockgenie/__pycache__/data.cpython-313.pyc
-2a26aa7c64b6ef319658c7784a0c134c7647b287903efff23374633416041954  ./adapters/admin_web/stockgenie/__pycache__/engine.cpython-313.pyc
-d3b43cb33619325117289b002e9bf351a66cde4328e35cf13430214d5dd309b9  ./adapters/admin_web/stockgenie/__pycache__/universe.cpython-313.pyc
 2d1984d54f335375a485fbaab877514f668c5111f57c43aba84b1d8c442e813c  ./adapters/admin_web/stockgenie/app.py
 3c1352613b9379e0772fc7bc42742ff2e26d1fffd8c03f42989fb03dabb09e16  ./adapters/admin_web/stockgenie/backtest.py
 057f136625942205cb31793181a5167636b04662a79b70221fc4651a75d5fe33  ./adapters/admin_web/stockgenie/bootstrap.sh
@@ -151,7 +147,7 @@ d1a92b509f81173e4770bd41e4eebdc743862b6cde012ac28947f6b33e110c8f  ./adapters/adm
 e0a966eda7f151303a8bfbe95091a381441b0613dd3c066cdb7abb584b4e7a01  ./adapters/admin_web/update_times.rs
 ef0b52a439d5f13b25c7f7613ee7e30d743df3493506ad43c4331137072cf643  ./adapters/admin_web/utils.rs
 1b504e06e568fa1b97573759b0d53f0b3fc28714376947647171eccda391671e  ./adapters/admin_web/web_push.rs
-3db5134bd00bd6ed3014ccaf3e569ae3415f1be967721433cc7dba50cff3423b  ./adapters/discord.rs
+500ce1c84943a4acbb7e2675b11beba47c28358747283756bd13ad88d8cea906  ./adapters/discord.rs
 a26f07ed75be2647affd8e0c2f0a728399f4ee4f543a76754423cfa6d956262e  ./adapters/events.rs
 95222a74a480045d4c86ab3607f7cbf2681cb78269c95890b6bcdce2fab31a65  ./adapters/line/client.rs
 32214c74ee92d37de6d88276987690d996ce757668e82ca1709dba5e0be9fcce  ./adapters/line/jsQR.min.js

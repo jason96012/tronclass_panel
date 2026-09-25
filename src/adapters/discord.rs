@@ -1494,7 +1494,7 @@ async fn send_outbound_to_channel(
     message: &OutboundMessage,
 ) -> Result<()> {
     throttle_discord_http().await;
-    // DISCORD_NOTIFY_UNIFY_V1：統一 payload（純文字或 embed 卡片）。
+    // DISCORD_NOTIFY_UNIFY_V1／DISCORD_NOTIFY_ALL_CARDS_V1：一律 embed 卡片。
     let payload = render_discord_payload(message);
     let mut builder = CreateMessage::new()
         .content(payload.content)
@@ -1850,19 +1850,13 @@ fn render_pending_account_request(request: &PendingAccountRequest) -> String {
     )
 }
 
-// ─── DISCORD_NOTIFY_UNIFY_V1：統一通知模板 ─────────────────────────────────
+// ─── DISCORD_NOTIFY_UNIFY_V1 + DISCORD_NOTIFY_ALL_CARDS_V1 ──────────────────
 //
 // 所有 Discord 出口（DM、管理員頻道、slash 回覆、按鈕回覆）都經過
-// `render_discord_payload`。兩種呈現方式：
-//
-// * **純文字**：急件（點名偵測／需要輸入代碼／點名結果／安全警示）與指令回覆。
-//   手機鎖屏預覽能看到完整內容，不受 embed 只顯示標題的限制。
-// * **Embed 卡片**：其餘背景通知（作業、公告、上課提醒、課表更新、監控事件、
-//   管理員警示、推播失效、系統啟動）。依類別上色、欄位對齊，頻道內一眼可分類。
-//
-// 兩種格式共用 `NoticeCard`：標題／類別／帳號／欄位／結尾提示，文字版由同一
-// 張卡片攤平而成，確保 DM 與頻道、Discord 與 log 說的是同一件事。
-// 不使用表情符號（與專案通知規範一致），改以 embed 顏色與類別文字區分。
+// `render_discord_payload`，**一律 embed 卡片**（含點名急件與指令回覆）。
+// content 仍放「類別｜標題」一行，鎖屏預覽與關閉 embed 的使用者看得到。
+// 純文字 `render_discord_message` 只當 fallback（測試／攤平）。
+// 不使用表情符號，改以 embed 顏色與類別文字區分。 LINE 文案不動。
 
 /// 通知類別：決定 embed 顏色與 footer 文字。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1911,7 +1905,7 @@ impl NoticeCategory {
     }
 }
 
-/// 統一卡片：所有背景通知都先組成這個結構，再依出口決定 embed 或純文字。
+/// 統一卡片：所有 Discord 通知都先組成這個結構，再編成 embed（純文字由 to_text 攤平）。
 struct NoticeCard {
     category: NoticeCategory,
     title: String,
@@ -2034,19 +2028,18 @@ fn truncate_embed(value: &str, max_chars: usize) -> String {
     crate::text_utils::truncate_chars(value, max_chars).to_string()
 }
 
-/// 一次 Discord 送出的內容：`content` 一定有（純文字或 embed 的一行標題），
-/// `embed` 只在卡片式通知時存在。
+/// 一次 Discord 送出的內容：`content` 一定有（「類別｜標題」鎖屏預覽），
+/// `embed` 在 DISCORD_NOTIFY_ALL_CARDS_V1 下每則通知都有。
 struct DiscordPayload {
     content: String,
     embed: Option<CreateEmbed>,
 }
 
-/// 把 OutboundMessage 轉成 Discord payload。卡片式通知回 embed＋一行 content
-/// （手機通知預覽顯示這一行），其餘回純文字。
+/// 把 OutboundMessage 轉成 Discord payload。DISCORD_NOTIFY_ALL_CARDS_V1：
+/// 一律 embed 卡片＋一行 content（鎖屏預覽）。
 fn render_discord_payload(message: &OutboundMessage) -> DiscordPayload {
     match notice_card_for(message) {
         Some(card) => DiscordPayload {
-            // content 放「類別｜標題」一行，讓推播預覽與關閉 embed 的使用者也看得懂。
             content: format!("{}｜{}", card.category.label(), card.title),
             embed: Some(card.to_embed()),
         },
@@ -2057,7 +2050,8 @@ fn render_discord_payload(message: &OutboundMessage) -> DiscordPayload {
     }
 }
 
-/// 哪些訊息走 embed 卡片。急件（點名相關、安全警示）與指令回覆刻意回 None → 純文字。
+/// 每則 OutboundMessage 編成一張卡片。DISCORD_NOTIFY_ALL_CARDS_V1：
+/// 點名急件與指令回覆也走 embed；content 仍放「類別｜標題」給鎖屏預覽。
 fn notice_card_for(message: &OutboundMessage) -> Option<NoticeCard> {
     match message {
         OutboundMessage::SystemStarted(event) => Some(
@@ -2170,11 +2164,200 @@ fn notice_card_for(message: &OutboundMessage) -> Option<NoticeCard> {
                     .description(&event.body),
             )
         }
-        _ => None,
+        OutboundMessage::RollcallDetected(event) => Some(
+            NoticeCard::new(NoticeCategory::Rollcall, "偵測到新簽到", &event.account)
+                .field("課程", &event.course_name, true)
+                .field("教師", &event.teacher_name, true)
+                .field("類型", &event.attendance_type, true)
+                .field("點名 ID", event.rollcall_id.to_string(), true),
+        ),
+        OutboundMessage::NumberCodeRequested(request) => {
+            let mut card = NoticeCard::new(NoticeCategory::Rollcall, "需要數字點名碼", &request.account)
+                .field("課程", &request.course_name, true)
+                .field("教師", &request.teacher_name, true)
+                .field("點名 ID", request.rollcall_id.to_string(), true)
+                .field("時限", format!("{} 秒", request.timeout_secs), true);
+            if !request.input_url.trim().is_empty() {
+                card = card.field("數字點名頁", request.input_url.trim(), false);
+            }
+            if !request.alt_input_url.trim().is_empty() {
+                card = card.field("備用頁", request.alt_input_url.trim(), false);
+            }
+            Some(card.hint(
+                "預設不會自動讀取代碼。請手動輸入 /num code:1234，或開啟數字點名頁／按「自動讀取代碼」。",
+            ))
+        }
+        OutboundMessage::QrCodeRequested(request) => {
+            let mut card = NoticeCard::new(NoticeCategory::Rollcall, "需要 QR Code 簽到", &request.account)
+                .field("課程", &request.course_name, true)
+                .field("教師", &request.teacher_name, true)
+                .field("點名 ID", request.rollcall_id.to_string(), true)
+                .field("時限", format!("{} 秒", request.timeout_secs), true);
+            if !request.scan_url.trim().is_empty() {
+                card = card.field("掃碼頁", request.scan_url.trim(), false);
+            }
+            if !request.alt_scan_url.trim().is_empty() {
+                card = card.field("備用掃碼頁", request.alt_scan_url.trim(), false);
+            }
+            Some(card.hint("請在時限內開啟掃碼頁，或把 QR Code 圖片傳給我。"))
+        }
+        OutboundMessage::RollcallFinished(event) => {
+            let title = if event.success {
+                "你已完成點名"
+            } else {
+                "點名尚未完成"
+            };
+            let hint = if event.success {
+                "你可以到 Web Admin 或 /status 查看紀錄。"
+            } else {
+                "請重新送出資料、開啟點名頁，或聯絡管理員確認。"
+            };
+            let elapsed = if event.elapsed_ms >= 1000 {
+                format!("{:.1} 秒", event.elapsed_ms as f64 / 1000.0)
+            } else {
+                format!("{} ms", event.elapsed_ms)
+            };
+            Some(
+                NoticeCard::new(NoticeCategory::Rollcall, title, &event.account)
+                    .field("課程", &event.course_name, true)
+                    .field("類型", &event.attendance_type, true)
+                    .field("點名 ID", event.rollcall_id.to_string(), true)
+                    .field("結果", strip_leading_emoji(&event.result), false)
+                    .field("耗時", elapsed, true)
+                    .hint(hint),
+            )
+        }
+        OutboundMessage::RollcallInputReminder(event) => {
+            let title = if event.is_number() {
+                "還沒收到數字點名碼"
+            } else {
+                "還沒收到 QR Code"
+            };
+            let mut card = NoticeCard::new(NoticeCategory::Rollcall, title, &event.account)
+                .field("課程", &event.course_name, true)
+                .field("類型", &event.attendance_type, true)
+                .field("點名 ID", event.rollcall_id.to_string(), true)
+                .field("已等待", format!("{} 秒", event.waited_secs), true)
+                .field("剩餘", format!("{} 秒", event.remaining_secs), true);
+            if !event.input_url.trim().is_empty() {
+                let label = if event.is_number() {
+                    "數字點名頁"
+                } else {
+                    "掃碼頁"
+                };
+                card = card.field(label, event.input_url.trim(), false);
+            }
+            Some(card.hint("逾時後這次點名就會失敗。"))
+        }
+        OutboundMessage::SecurityAlert(event) => {
+            let action = if event.ip_is_blacklisted {
+                "此 IP 已因登入失敗超過十次自動加入黑名單；如需恢復，請按「移除黑名單」。"
+            } else if event.login_locked {
+                "此帳號的密碼登入已暫時鎖定 10 分鐘（通行密鑰不受影響）。若是你本人：按「取消這次鎖定」。若不是你：按「封鎖此 IP」。"
+            } else {
+                "請確認後按下「加入黑名單」。"
+            };
+            Some(
+                NoticeCard::new(NoticeCategory::Security, "Dashboard 安全警示：連續密碼錯誤", "")
+                    .field("帳號", &event.username, true)
+                    .field("來源 IP", &event.ip, true)
+                    .field("帳號失敗次數", event.user_failures.to_string(), true)
+                    .field("IP 失敗次數", event.ip_failures.to_string(), true)
+                    .field("時間", &event.timestamp, false)
+                    .hint(format!(
+                        "{action}\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist"
+                    )),
+            )
+        }
+        OutboundMessage::Text(text) => {
+            let text = strip_leading_emoji(text);
+            let (title, desc) = match text.split_once('\n') {
+                Some((first, rest)) if !first.trim().is_empty() => {
+                    (first.trim().to_string(), rest.trim().to_string())
+                }
+                _ => {
+                    let trimmed = text.trim();
+                    if trimmed.is_empty() {
+                        ("通知".to_string(), String::new())
+                    } else {
+                        (trimmed.to_string(), String::new())
+                    }
+                }
+            };
+            let mut card = NoticeCard::new(NoticeCategory::System, title, "");
+            if !desc.is_empty() {
+                card = card.description(desc);
+            }
+            Some(card)
+        }
+        OutboundMessage::Help => Some(
+            NoticeCard::new(NoticeCategory::System, "指令說明", "").description(help_text()),
+        ),
+        OutboundMessage::Welcome => Some(
+            NoticeCard::new(NoticeCategory::System, "歡迎使用 Tronclass Rollcall", "")
+                .description(help_text()),
+        ),
+        OutboundMessage::UnsupportedMedia => Some(
+            NoticeCard::new(NoticeCategory::Warning, "不支援的檔案", "")
+                .description("不支援媒體訊息，請傳送文字指令。"),
+        ),
+        OutboundMessage::LocationReceived {
+            latitude,
+            longitude,
+        } => Some(
+            NoticeCard::new(NoticeCategory::System, "已收到位置", "").description(format!(
+                "{latitude:.6}, {longitude:.6}（位置功能尚未實作）"
+            )),
+        ),
+        OutboundMessage::Status(status) => Some(
+            NoticeCard::new(NoticeCategory::Monitor, "帳號狀態", "")
+                .description(render_status_message(status)),
+        ),
+        OutboundMessage::NotAuthorized => Some(
+            NoticeCard::new(NoticeCategory::Warning, "權限不足", "")
+                .description("你可以查詢自己的帳號狀態，但此操作僅限管理員使用。"),
+        ),
+        OutboundMessage::MonitorPaused => Some(
+            NoticeCard::new(NoticeCategory::Monitor, "簽到監控已暫停", "")
+                .hint("暫停期間不會自動點名。用 /start 恢復。"),
+        ),
+        OutboundMessage::MonitorResumed => Some(
+            NoticeCard::new(NoticeCategory::Success, "簽到監控已恢復", "")
+                .hint("立即執行一次簽到檢查。"),
+        ),
+        OutboundMessage::ForcePollTriggered => Some(
+            NoticeCard::new(NoticeCategory::Monitor, "已觸發立即簽到檢查", ""),
+        ),
+        OutboundMessage::ReauthTriggered => Some(
+            NoticeCard::new(NoticeCategory::Monitor, "已觸發重新認證", ""),
+        ),
+        OutboundMessage::QrAccepted => Some(
+            NoticeCard::new(NoticeCategory::Rollcall, "已收到 QR Code", "")
+                .hint("正在嘗試簽到。"),
+        ),
+        OutboundMessage::QrAmbiguousTarget => Some(
+            NoticeCard::new(NoticeCategory::Warning, "QR Code 目標不明", "")
+                .description("多帳號模式下請由綁定該帳號的使用者傳送 QR Code。"),
+        ),
+        OutboundMessage::QrNoBoundAccount => Some(
+            NoticeCard::new(NoticeCategory::Warning, "尚未綁定帳號", "")
+                .description("找不到與你的 Discord 綁定的 Tronclass 帳號。"),
+        ),
+        OutboundMessage::QrNoPendingRequest => Some(
+            NoticeCard::new(NoticeCategory::Warning, "目前沒有待處理的 QR 點名", "")
+                .description("目前沒有等待 QR Code 的簽到，或簽到已逾時。"),
+        ),
+        OutboundMessage::UnknownCommand { text } => Some(
+            NoticeCard::new(NoticeCategory::System, "未知指令", "").description(format!(
+                "不認識的指令：{}\n\n{}",
+                text.chars().take(80).collect::<String>(),
+                help_text()
+            )),
+        ),
     }
 }
 
-/// 純文字 render（急件、指令回覆，以及所有沒有卡片的訊息）。
+/// 純文字 render（測試／攤平 fallback；Discord 送出一律走 notice_card_for）。
 fn render_discord_message(message: &OutboundMessage) -> String {
     match message {
         // DISCORD_NOTIFY_UNIFY_V1：Text 仍有多處呼叫端（同時送 LINE 與 Discord），
@@ -2475,7 +2658,7 @@ mod tests {
     }
 
     #[test]
-    fn unify_urgent_messages_are_plain_text() {
+    fn unify_urgent_messages_are_cards() {
         let detected = OutboundMessage::RollcallDetected(crate::adapters::events::RollcallEvent {
             rollcall_id: 1,
             account: "student001".to_string(),
@@ -2484,8 +2667,10 @@ mod tests {
             attendance_type: "數字".to_string(),
         });
         let payload = render_discord_payload(&detected);
-        assert!(payload.embed.is_none(), "點名偵測必須是純文字");
-        assert!(payload.content.starts_with("[點名] "));
+        assert!(payload.embed.is_some(), "點名偵測應為 embed 卡片");
+        assert!(payload.content.contains('｜'), "content 需為「類別｜標題」：{}", payload.content);
+        assert!(payload.content.contains("點名"));
+        assert!(payload.content.contains("偵測到新簽到"));
         assert!(!has_emoji(&payload.content));
 
         let alert = OutboundMessage::SecurityAlert(crate::adapters::events::SecurityAlertEvent {
@@ -2500,9 +2685,43 @@ mod tests {
             login_locked: false,
         });
         let payload = render_discord_payload(&alert);
-        assert!(payload.embed.is_none(), "安全警示必須是純文字");
-        assert!(payload.content.starts_with("[安全] "));
+        assert!(payload.embed.is_some(), "安全警示應為 embed 卡片");
+        assert!(payload.content.contains('｜'), "content 需為「類別｜標題」：{}", payload.content);
+        assert!(payload.content.contains("安全"));
         assert!(!has_emoji(&payload.content));
+    }
+
+    #[test]
+    fn unify_rollcall_finish_and_number_code_are_cards() {
+        let finished = OutboundMessage::RollcallFinished(crate::adapters::events::RollcallResultEvent {
+            rollcall_id: 99,
+            account: "student001".to_string(),
+            course_name: "資料結構".to_string(),
+            attendance_type: "數字簽到".to_string(),
+            success: true,
+            result: "✅ 已送出".to_string(),
+            elapsed_ms: 1200,
+        });
+        let payload = render_discord_payload(&finished);
+        assert!(payload.embed.is_some(), "完成點名應為 embed 卡片");
+        assert!(payload.content.contains("點名"));
+        assert!(payload.content.contains("你已完成點名"));
+        assert!(!has_emoji(&payload.content));
+
+        let number = OutboundMessage::NumberCodeRequested(crate::adapters::events::NumberCodeRequest {
+            rollcall_id: 42,
+            account: "acc1".to_string(),
+            course_name: "資料結構".to_string(),
+            teacher_name: "王老師".to_string(),
+            input_url: "https://example.test/number".to_string(),
+            alt_input_url: String::new(),
+            timeout_secs: 60,
+        });
+        let payload = render_discord_payload(&number);
+        assert!(payload.embed.is_some(), "需要數字碼應為 embed 卡片");
+        assert!(payload.content.contains("點名"));
+        assert!(payload.content.contains("需要數字點名碼"));
+        assert!(!action_rows_for_message(&number).is_empty());
     }
 
     #[test]
@@ -2557,8 +2776,9 @@ mod tests {
         assert_eq!(strip_leading_emoji("內文中的 ✅ 保留"), "內文中的 ✅ 保留");
         assert_eq!(strip_leading_emoji("✅"), "✅");
         let payload = render_discord_payload(&OutboundMessage::Text("❌ 失敗：x".to_string()));
-        assert_eq!(payload.content, "失敗：x");
-        assert!(payload.embed.is_none());
+        assert!(payload.content.contains("失敗：x"), "content={}", payload.content);
+        assert!(payload.embed.is_some(), "Text 通知也應為 embed 卡片");
+        assert!(!has_emoji(&payload.content));
     }
 
     #[test]
