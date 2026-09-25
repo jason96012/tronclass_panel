@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>分享連結管理</title>
+<script defer src="/admin/static/js/qrcode.min.js?v=qrshare1"></script>
+<script defer src="/admin/static/js/shares-admin.js?v=shares3"></script>
+<style>
+  /* THEME_AWARE_V2: 用 dashboard 主題變數（--card/--text/--line/...），支援深淺色。 */
+  *{box-sizing:border-box}
+  html,body{ margin:0; min-height:100vh; background:var(--bg,#f4f5f7); color:var(--text,#111);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif; }
+  /* 與雲端硬碟相同的藍色光暈漸層背景 */
+  body{isolation:isolate}
+  body::before{
+    content:''; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background:
+      radial-gradient(circle at 18% 18%, rgba(96,165,250,.16), transparent 34%),
+      radial-gradient(circle at 78% 28%, rgba(37,99,235,.14), transparent 30%),
+      radial-gradient(circle at 50% 115%, rgba(59,130,246,.10), transparent 38%),
+      linear-gradient(135deg,#f8fafc 0%,#eef2ff 50%,#eff6ff 100%);
+  }
+  @media(prefers-color-scheme:dark){
+    body::before{ background:
+      radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+      radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+      radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
+      linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%); }
+  }
+  html[data-theme="dark"] body::before{ background:
+      radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+      radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+      radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
+      linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%); }
+  #sharesBgParticlesV1{ position:fixed;inset:0;width:100vw;height:100vh;z-index:0;pointer-events:none;display:block; }
+  .wrap { position:relative; z-index:1; max-width: 960px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 20px; margin: 8px 0 4px; color:var(--text,#111); }
+  .sub { color:var(--muted,#666); font-size: 13px; margin-bottom: 16px; }
+  .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+  .toolbar a { text-decoration:none; }
+  /* MOBILE_ERGO_V2: theme.css 手機版會把 .toolbar 變 column+stretch（整行），
+     這裡用同選擇器+!important+更後順序覆寫回橫排、自動寬度。 */
+  .toolbar button, .toolbar a { width:auto !important; flex:0 0 auto; }
+  @media(max-width:820px){
+    .toolbar{flex-direction:row!important;align-items:center!important;flex-wrap:wrap!important}
+    .toolbar button{min-height:40px}
+  }
+  button { padding:8px 14px; border-radius:8px; border:1px solid var(--line,#ccc); background:var(--card,#fff); color:var(--text,#333); font-size:13px; cursor:pointer; }
+  button.primary { background:var(--primary,#2563eb); color:var(--primaryText,#fff); border-color:var(--primary,#2563eb); }
+  button.danger { background:transparent; color:var(--bad,#b91c1c); border-color:var(--bad,#b91c1c); }
+  table { width:100%; border-collapse: collapse; background:var(--card,#fff); border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.18); }
+  th, td { text-align:left; padding:10px 12px; font-size:13px; border-bottom:1px solid var(--line2,#eee); vertical-align: top; color:var(--text,#111); }
+  th { background:var(--soft,#fafafa); font-weight:600; }
+  .path { word-break: break-all; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:11px; color:#fff; white-space:nowrap; }
+  .ok { background:var(--ok,#1a7f37); color:#fff; }
+  .rev { background:var(--bad,#b91c1c); color:#fff; }
+  .exp { background:var(--soft2,#94a3b8); color:var(--text,#fff); }
+  .empty { padding:40px; text-align:center; color:var(--muted,#888); }
+  .modal-bg { position:fixed; inset:0; background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; z-index:9999; padding:16px; }
+  .modal { background:var(--card,#fff); color:var(--text,#111); border-radius:14px; max-width:420px; width:100%; padding:20px; text-align:center; }
+  .linkbox { word-break:break-all; font-size:12px; color:var(--muted,#555); background:var(--soft,#f5f5f5); border-radius:8px; padding:8px; text-align:left; max-height:84px; overflow:auto; margin:10px 0; }
+  @media (max-width:640px){
+    table { display:block; overflow-x:auto; max-width:100%; }
+    th, td { font-size:12px; padding:8px; }
+  }
+
+  /* CSP_STYLE_ATTR_STAGED_V1：供外部 JS（注入本頁 DOM）使用的 class，取代 inline style */
+  .share-modal-title{font-size:16px;font-weight:600;margin-bottom:6px}
+  .share-qr-box{display:flex;justify-content:center;margin:10px 0}
+  .share-actions{display:flex;gap:8px;justify-content:center}
+  .td-nowrap{white-space:nowrap}
+</style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區（無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:env(safe-area-inset-top,0px)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>分享連結管理</h1>
+  <div class="sub">此頁僅管理員可見。列出所有已發出的免登入分享連結，可複製、產生 QR code 或撤銷。</div>
+  <div class="toolbar">
+    <button id="refresh" class="primary" type="button">重新整理</button>
+    <a href="/admin/files"><button type="button">回雲端硬碟</button></a>
+    <a href="/admin"><button type="button">返回控制台</button></a>
+  </div>
+  <div id="content"><div class="empty">載入中…</div></div>
+</div>
+<script id="sharesParticlesV1">
+/* 與雲端硬碟相同的粒子光點動畫 */
+(function(){
+  'use strict';
+  if(window.SHARES_PARTICLES_V1) return;
+  window.SHARES_PARTICLES_V1 = true;
+  var raf = 0, particles = [];
+  function q(id){ return document.getElementById(id); }
+  function darkMode(){
+    return document.documentElement.getAttribute('data-theme')==='dark' ||
+      document.documentElement.classList.contains('dark-mode') ||
+      (window.matchMedia && matchMedia('(prefers-color-scheme:dark)').matches);
+  }
+  function resize(c){
+    var dpr = Math.min(window.devicePixelRatio||1, 2);
+    c.width = Math.floor(window.innerWidth*dpr);
+    c.height = Math.floor(window.innerHeight*dpr);
+    c.style.width = window.innerWidth+'px';
+    c.style.height = window.innerHeight+'px';
+    var ctx = c.getContext('2d'); if(ctx) ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  function init(c){
+    particles = [];
+    var count = Math.min(90, Math.floor((window.innerWidth*window.innerHeight)/16000));
+    for(var i=0;i<count;i++){
+      particles.push({ x: Math.random()*window.innerWidth, y: Math.random()*window.innerHeight,
+        s: Math.random()*2.2+.8, vx:(Math.random()-.5)*.36, vy:(Math.random()-.5)*.36, a: Math.random()*.18+.05 });
+    }
+  }
+  function loop(){
+    var c = q('sharesBgParticlesV1');
+    if(!c){ raf = 0; return; }
+    var ctx = c.getContext('2d');
+    ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+    var fill = darkMode() ? 'rgba(226,239,255,' : 'rgba(37,99,235,';
+    for(var i=0;i<particles.length;i++){
+      var p = particles[i];
+      p.x += p.vx; p.y += p.vy;
+      if(p.x<0) p.x=window.innerWidth; if(p.x>window.innerWidth) p.x=0;
+      if(p.y<0) p.y=window.innerHeight; if(p.y>window.innerHeight) p.y=0;
+      ctx.fillStyle = fill + p.a + ')';
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.s,0,Math.PI*2); ctx.fill();
+    }
+    raf = requestAnimationFrame(loop);
+  }
+  function start(){
+    if(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var c = q('sharesBgParticlesV1');
+    if(!c){
+      c = document.createElement('canvas');
+      c.id = 'sharesBgParticlesV1';
+      c.setAttribute('aria-hidden','true');
+      document.body.appendChild(c);
+    }
+    resize(c); init(c);
+    window.addEventListener('resize', function(){ resize(c); init(c); });
+    if(!raf) loop();
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', start); else start();
+})();
+</script>
+<script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
+</body>
+</html>

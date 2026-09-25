@@ -1,0 +1,828 @@
+<!doctype html>
+<html lang="zh-Hant" class="tron-auth">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>外觀與設定｜Tronclass Dashboard</title>
+<style>
+  :root{color-scheme:light dark;--bg:#f4f7fb;--card:#fff;--text:#172033;--muted:#64748b;--line:#dbe3ef;--soft:#f1f5f9;--primary:#2563eb;--ok:#15803d}
+  @media(prefers-color-scheme:dark){:root{--bg:#090d16;--card:#131b2a;--text:#f1f5f9;--muted:#94a3b8;--line:#334155;--soft:#1e293b;--primary:#3b82f6}}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif}
+  /* TOP_HEADER_V2: 與點名偵測排程頁相同之 header 樣式 */
+  .top{max-width:720px;margin:0 auto;padding:22px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+  .brand{display:flex;align-items:center;gap:12px;min-width:0}
+  .brand b{color:var(--text)}
+  .brand .meta{color:var(--muted);font-size:13px;margin-top:3px;line-height:1.4}
+  .logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#38bdf8,#4f46e5);display:grid;place-items:center;color:#fff;font-weight:900;box-shadow:0 10px 26px rgba(37,99,235,.28);flex:0 0 auto}
+  .top a{display:inline-flex;align-items:center;justify-content:center;min-height:42px;color:var(--text)!important;text-decoration:none;border:1px solid var(--line)!important;background:var(--card)!important;padding:0 16px;border-radius:999px;font-weight:760;box-shadow:0 1px 2px rgba(15,23,42,.03);white-space:nowrap}
+  .top a:hover{border-color:#60a5fa!important;color:#2563eb!important}
+  main{max-width:720px;margin:0 auto;padding:18px 16px 48px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px 18px 18px;box-shadow:0 16px 40px rgba(15,23,42,.08);margin-bottom:16px}
+  h1{margin:0 0 6px;font-size:22px}
+  h2{margin:18px 0 8px;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+  p.hint{margin:0 0 6px;color:var(--muted);font-size:13px;line-height:1.55;font-weight:650}
+  /* ── 主題選擇卡 ── */
+  .theme-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:4px}
+  .theme-card{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:16px;border:2px solid var(--line);background:var(--soft);color:var(--text);cursor:pointer;font:inherit;text-align:left}
+  .theme-card:hover{filter:brightness(.98)}
+  .theme-card.active{border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 22%,transparent)}
+  .theme-card b{font-size:14px;font-weight:850}
+  .theme-card i{font-style:normal;font-size:12px;color:var(--muted);font-weight:650}
+  .mini{display:block;height:64px;border-radius:10px;overflow:hidden;border:1px solid var(--line);position:relative;background:#F6F8FC}
+  .mini .bar{position:absolute;top:0;left:0;right:0;height:14px;background:#FFFFFF;border-bottom:1px solid #E2E8F0}
+  .mini .dot{position:absolute;top:4px;left:8px;width:22px;height:6px;border-radius:99px;background:#CBD5E1}
+  .mini .line{position:absolute;width:46%;height:6px;border-radius:99px;background:#E2E8F0}
+  .mini .l1{top:26px;left:10px}.mini .l2{top:38px;left:10px}.mini .l3{top:50px;left:10px}
+  .mini .blk{position:absolute;top:24px;right:10px;bottom:8px;width:32%;border-radius:8px;background:#FFFFFF;border:1px solid #E2E8F0}
+  .mini.dark{background:#0B0F19;border-color:#334155}
+  .mini.dark .bar{background:#182232;border-bottom-color:#334155}
+  .mini.dark .dot{background:#475569}
+  .mini.dark .line{background:#1E293B}
+  .mini.dark .blk{background:#182232;border-color:#334155}
+  .mini.auto .half-l{position:absolute;inset:0;background:#F6F8FC}
+  .mini.auto .half-d{position:absolute;top:0;bottom:0;right:0;width:50%;background:#0B0F19;border-left:2px solid var(--line)}
+  /* ── 強調色 ── */
+  .swatches{display:flex;flex-wrap:wrap;gap:12px;margin-top:4px}
+  .swatch{width:38px;height:38px;border-radius:50%;border:2px solid transparent;background:var(--sw);cursor:pointer;padding:0;position:relative}
+  .swatch:hover{transform:scale(1.06)}
+  .swatch.active{outline:3px solid color-mix(in srgb,var(--sw) 45%,transparent);outline-offset:2px;border-color:var(--text)}
+  /* CSP_STYLE_ATTR_STAGED_V1：色票顏色原為 inline style="--sw:…"，
+     會觸發 Report-Only 標頭的 style-src-attr 回報；改由既有的
+     data-set-accent 屬性選擇器供給，外觀計算結果完全相同。 */
+  .swatch[data-set-accent="blue"]{--sw:#2563EB}
+  .swatch[data-set-accent="indigo"]{--sw:#6366F1}
+  .swatch[data-set-accent="green"]{--sw:#059669}
+  .swatch[data-set-accent="amber"]{--sw:#D97706}
+  .swatch[data-set-accent="purple"]{--sw:#7C3AED}
+  .swatch[data-set-accent="rose"]{--sw:#E11D48}
+  .swatch[data-set-accent="cyan"]{--sw:#0E7490}
+  /* ── 字體大小分段控制 ── */
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:2px}
+  .seg button{min-width:88px;min-height:42px;border:0;background:var(--soft);color:var(--text);font:inherit;font-weight:800;font-size:14px;cursor:pointer;padding:0 16px}
+  .seg button+button{border-left:1px solid var(--line)}
+  .seg button.active{background:var(--primary);color:#fff}
+  /* ── 減少動畫開關 ── */
+  .switch-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-top:4px;cursor:pointer}
+  .switch-row b{display:block;font-size:14px;font-weight:850}
+  .switch-row i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
+  .switch-wrap{position:relative;width:52px;height:30px;flex:0 0 auto}
+  .switch-wrap input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+  .slider{position:absolute;inset:0;border-radius:99px;background:var(--line);transition:background .15s;pointer-events:none}
+  .slider::after{content:'';position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.3);transition:transform .15s}
+  .switch-wrap input:checked+.slider{background:var(--primary)}
+  .switch-wrap input:checked+.slider::after{transform:translateX(22px)}
+  /* ── 其他設定連結 ── */
+  .links{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin-top:4px}
+  .links a{display:flex;align-items:center;gap:8px;min-height:46px;padding:0 14px;border-radius:14px;border:1px solid var(--line);background:var(--soft);color:var(--text);text-decoration:none;font-weight:750;font-size:14px}
+  .links a:hover{filter:brightness(.97)}
+  .foot-row{margin-top:14px;display:flex;justify-content:flex-end}
+  button.ghost{min-height:40px;padding:0 16px;border-radius:12px;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-weight:800;font-size:13px;cursor:pointer}
+  button.ghost:hover{color:var(--text);filter:brightness(.98)}
+  p.note{margin:14px 0 0;color:var(--muted);font-size:12px;line-height:1.6;font-weight:650}
+  @media(max-width:560px){.links{grid-template-columns:1fr}.seg{width:100%}.seg button{flex:1;min-width:0}}
+  /* SETTINGS_RESPONSIVE_V1: 電腦版/手機版雙版型 */
+  .pref-duo{display:block}
+  @media(min-width:960px){
+    .top{max-width:1000px;padding:26px 24px 12px}
+    main{max-width:1000px;padding:26px 24px 56px}
+    .card{padding:28px 26px 24px;margin-bottom:18px}
+    h1{font-size:26px}
+    .theme-grid{grid-template-columns:repeat(3,1fr);gap:16px}
+    .mini{height:96px}
+    .pref-duo{display:grid;grid-template-columns:1fr 1fr;column-gap:36px;align-items:start}
+    .pref-col+.pref-col{border-left:1px solid var(--line);padding-left:36px}
+    .links{grid-template-columns:repeat(2,1fr)}
+  }
+  @media(max-width:640px){
+    main{padding:14px 12px 44px}
+    .card{padding:18px 14px 16px;border-radius:18px;margin-bottom:14px}
+    h1{font-size:20px}
+    .theme-grid{grid-template-columns:1fr}
+    .mini{height:76px}
+    .swatch{width:42px;height:42px}
+  }
+  @media(max-width:760px){.top{min-height:70px;padding:14px 12px 8px}.brand{gap:13px}.logo{width:48px;height:48px;font-size:20px}.brand b{display:block;font-size:19px;line-height:1.2}.brand .meta{font-size:13px;margin-top:3px}.top a{min-height:46px;padding:0 16px;font-size:14px}}
+  @media(max-width:390px){.top{padding-inline:12px}.brand{gap:9px}.logo{width:44px;height:44px}.brand b{font-size:17px}.brand .meta{font-size:11px}.top a{min-height:42px;padding:0 11px;font-size:12px}}
+  /* ── 測試通知卡（TEST_NOTIFICATION_CARD_V1）── */
+  .test-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-top:4px}
+  .test-row+.test-row{margin-top:10px}
+  .test-row b{display:block;font-size:14px;font-weight:850}
+  .test-row i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
+  /* CSP_STYLE_ATTR_STAGED_V1：以下 class 取代原本的 inline style 屬性
+     （避免 Report-Only 標頭的 style-src-attr 回報）；宣告內容逐一對應原 inline 值。 */
+  .test-row.wrap{flex-wrap:wrap;gap:8px}
+  .test-row .span-full{flex:1 1 100%}
+  .test-row .test-input{flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit}
+  .test-row .chk{width:22px;min-height:22px}
+  .test-row.end{justify-content:flex-end}
+  .tbtn{flex:0 0 auto;min-height:40px;padding:0 18px;border:0;border-radius:999px;background:var(--primary);color:#fff;font:inherit;font-weight:800;font-size:13px;cursor:pointer}
+  .tbtn:hover{filter:brightness(1.08)}
+  .tbtn:disabled{opacity:.55;cursor:default}
+  .tmsg{min-height:18px;margin-top:10px;font-size:13px;font-weight:800;color:var(--muted);white-space:pre-line}
+  .tmsg.ok{color:var(--ok)}
+  .tmsg.bad{color:#b91c1c}
+  @media(max-width:640px){.test-row{flex-direction:column;align-items:stretch}.tbtn{width:100%}}
+  /* MOBILE_OVERFLOW_V1（fix107）：卡片裡的網址與 IndexNow 金鑰是「沒有空白的長字串」，
+     預設不會斷行 → 整張卡（連帶整頁）被撐出畫面（手機實測 320px 寬時溢出 189px）。
+     ① .test-row 是 flex；子項的 min-width:auto 讓它無法縮到比「最長的不可斷行字串」更窄 → 給 0。
+     ② overflow-wrap:anywhere 讓長字串能在任何位置斷行；它同時會影響 min-content 寬度，
+        所以①的縮小才真的有效（overflow-wrap:break-word 不會影響 min-content）。 */
+  .test-row>span{min-width:0}
+  .test-row i,.test-row b,.test-row .test-input,p.hint{overflow-wrap:anywhere}
+  /* ── SETTINGS_PICKER_VISIBILITY_V1：深色下 theme.css 通用按鈕規則會蓋掉本頁樣式，以更高優先權還原 ── */
+  html[data-theme="dark"] button.theme-card{background:var(--soft)!important;color:var(--text)!important}
+  html[data-theme="dark"] button.theme-card.active{background:var(--card)!important;border-color:var(--primary)!important;box-shadow:0 0 0 3px rgba(59,130,246,.35)!important}
+  html[data-theme="dark"] button.swatch.swatch.swatch{background:var(--sw)!important}
+  html[data-theme="dark"] button.swatch.swatch.swatch.active{border-color:var(--text)!important}
+  html[data-theme="dark"] .seg button{background:var(--soft)!important;color:var(--text)!important}
+  html[data-theme="dark"] .seg button.active{background:var(--primary)!important;color:#fff!important;border-color:var(--primary)!important}
+  html[data-theme="dark"] button.tbtn{background:var(--primary)!important;color:#fff!important}
+  /* 所有模式：未選卡片降透明度、選中卡片加「使用中」徽章，一眼可辨 */
+  .theme-card{position:relative;opacity:.6}
+  .theme-card:hover{opacity:.85}
+  .theme-card.active{opacity:1;border-color:var(--primary)!important;box-shadow:0 0 0 3px rgba(59,130,246,.30)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 35%,transparent)}
+  .theme-card.active::after{content:'使用中';position:absolute;top:10px;right:10px;padding:3px 10px;border-radius:999px;background:var(--primary);color:#fff;font-size:11px;font-weight:850;letter-spacing:.02em}
+  .swatch:not(.active){opacity:.8}
+  .swatch.active{border-color:var(--text)!important;box-shadow:0 0 0 3px rgba(120,120,128,.32)!important}
+</style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區（無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:env(safe-area-inset-top,0px)}
+</style>
+</head>
+<body>
+<header class="top"><div class="brand"><div class="logo">D</div><div><b>Tronclass</b><div class="meta">Settings</div></div></div><a href="/admin#overview" aria-label="返回 Dashboard 總覽">返回 Dashboard</a></header>
+<main id="appSettingsRoot">
+  <section class="card">
+    <h1>外觀</h1>
+    <p class="hint">變更立即套用，並自動套用到此裝置上的所有 Dashboard 頁面。</p>
+
+    <h2>主題</h2>
+    <div class="theme-grid">
+      <button class="theme-card" data-set-theme="auto" type="button">
+        <span class="mini auto" aria-hidden="true"><span class="half-l"></span><span class="half-d"></span></span>
+        <b>跟隨系統</b><i>自動切換深淺色</i>
+      </button>
+      <button class="theme-card" data-set-theme="light" type="button">
+        <span class="mini" aria-hidden="true"><span class="bar"><span class="dot"></span></span><span class="line l1"></span><span class="line l2"></span><span class="line l3"></span><span class="blk"></span></span>
+        <b>淺色</b><i>明亮背景</i>
+      </button>
+      <button class="theme-card" data-set-theme="dark" type="button">
+        <span class="mini dark" aria-hidden="true"><span class="bar"><span class="dot"></span></span><span class="line l1"></span><span class="line l2"></span><span class="line l3"></span><span class="blk"></span></span>
+        <b>深色</b><i>暗夜背景</i>
+      </button>
+    </div>
+
+    <div class="pref-duo">
+    <div class="pref-col">
+    <h2>強調色</h2>
+    <div class="swatches">
+      <button class="swatch" data-set-accent="blue"   type="button" aria-label="藍色（預設）" title="藍色（預設）"></button>
+      <button class="swatch" data-set-accent="indigo" type="button" aria-label="靛色" title="靛色"></button>
+      <button class="swatch" data-set-accent="green"  type="button" aria-label="綠色" title="綠色"></button>
+      <button class="swatch" data-set-accent="amber"  type="button" aria-label="琥珀色" title="琥珀色"></button>
+      <button class="swatch" data-set-accent="purple" type="button" aria-label="紫色" title="紫色"></button>
+      <button class="swatch" data-set-accent="rose"   type="button" aria-label="玫瑰色" title="玫瑰色"></button>
+      <button class="swatch" data-set-accent="cyan"   type="button" aria-label="青色" title="青色"></button>
+    </div>
+    </div>
+    <div class="pref-col">
+    <h2>字體大小</h2>
+    <div class="seg">
+      <button data-set-fontscale="std" type="button">標準</button>
+      <button data-set-fontscale="lg" type="button">大</button>
+      <button data-set-fontscale="xl" type="button">特大</button>
+    </div>
+
+    <h2>動畫</h2>
+    <label class="switch-row">
+      <span><b>減少動畫</b><i>停用轉場與動畫效果，適合容易暈眩或偏好靜態介面的使用者。</i></span>
+      <span class="switch-wrap">
+        <input id="motionToggle" type="checkbox" role="switch">
+        <span class="slider"></span>
+      </span>
+    </label>
+    </div>
+    </div>
+  </section>
+
+  <!-- RUNTIME_SEMESTER_OVERRIDE_V1: 網頁即時調整學期判定（僅管理員；持久化於 config/runtime_settings.json） -->
+  <section class="card" id="semesterCard" hidden>
+    <h1>學期判定</h1>
+    <p class="hint">決定作業學期過濾、課程學期判定與淡江課表同步以哪個學期為準。調整即時生效並永久保存（重啟後仍沿用）；按「恢復自動」才會退回 config.toml 設定（若有的話）或依日期自動推算。</p>
+    <div class="test-row"><span><b>目前生效</b><i id="semesterStatus">讀取中…</i></span></div>
+    <div class="test-row wrap" id="semesterPresets">
+      <span class="span-full"><b>快速選擇</b><i>點一下填入下方欄位（國曆年自動換算民國學年）</i></span>
+    </div>
+    <div class="test-row">
+      <span><b>學期覆蓋</b><i>格式例：1151、115-2、115上、115下、2026-1、2026 Fall</i></span>
+      <input id="semesterInput" class="test-input" type="text" inputmode="text" placeholder="例：1151">
+    </div>
+    <div class="test-row wrap">
+      <button id="semesterApply" class="tbtn" type="button">套用</button>
+      <button id="semesterAuto" class="ghost" type="button">恢復自動</button>
+    </div>
+    <div id="semesterMsg" class="tmsg"></div>
+  </section>
+
+  <!-- GROUP_SUBMIT_RELAY_V1: 多帳號點名送出節奏（僅管理員；走 /admin/api/action runtime_settings，
+     設定持久化於 config/runtime_settings.json → 重啟後仍沿用） -->
+  <section class="card" id="groupSubmitCard" hidden>
+    <h1>多帳號點名送出節奏</h1>
+    <p class="hint">同一場點名由多個帳號送出時，用「下一個可送出時間」的游標把時間錯開：第一位立即送出，之後每位間隔 <b>基準 + 隨機(0～上限)</b> 毫秒。順序不會亂，且兩人至少間隔「基準」；若某人回應較慢，也不會卡住後面的人。<b>數字、QR Code、雷達</b>各有自己的參數；同一個帳號在同一場點名重試不會重新排隊。設定即時生效並<b>永久保存</b>（<code>config/runtime_settings.json</code>），服務重啟後仍會沿用；要回預設請按「恢復預設」。</p>
+    <div class="test-row"><span><b>目前生效</b><i id="gsStatus">讀取中…</i></span></div>
+    <div class="test-row">
+      <span><b>數字點名：基準間隔（毫秒）</b><i>600 ＝ 0.6 秒；0 ＝ 不等待（多位會同時送出，僅建議單帳號）</i></span>
+      <input id="gsBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
+    </div>
+    <div class="test-row">
+      <span><b>數字點名：隨機上限（毫秒）</b><i>實際間隔會在「基準 ～ 基準＋此值」之間隨機；0 ＝ 固定間隔</i></span>
+      <input id="gsJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="2000">
+    </div>
+    <div class="test-row">
+      <span><b>QR Code：基準間隔（毫秒）</b><i>QR 預設與數字相同（600），但隨機上限較小</i></span>
+      <input id="gsQrBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
+    </div>
+    <div class="test-row">
+      <span><b>QR Code：隨機上限（毫秒）</b><i>建議維持較小（例如 600）；送出前會自動改用<strong>最新的 QR payload</strong>，不會送過期的碼</i></span>
+      <input id="gsQrJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="600">
+    </div>
+    <div class="test-row">
+      <span><b>雷達點名：基準間隔（毫秒）</b><i>雷達也跟著「每位間隔」走：同一場點名第一位立即送出，之後每位間隔這個基準 + 隨機值</i></span>
+      <input id="gsRadarBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
+    </div>
+    <div class="test-row">
+      <span><b>雷達點名：隨機上限（毫秒）</b><i>0 ＝ 固定間隔；雷達的等待最多 30 秒就會送出，不會因為帳號多而無限延後</i></span>
+      <input id="gsRadarJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="2000">
+    </div>
+    <div class="test-row wrap">
+      <button id="gsApply" class="tbtn" type="button">套用</button>
+      <button id="gsReset" class="ghost" type="button">恢復預設</button>
+    </div>
+    <div id="gsMsg" class="tmsg"></div>
+  </section>
+
+  <!-- INDEXNOW_V1: 搜尋引擎收錄（Bing）——僅管理員；走 /admin/api/action indexnow_submit -->
+  <section class="card" id="seoCard" hidden>
+    <h1>搜尋引擎收錄（Bing）</h1>
+    <p class="hint">Google 會自己找到首頁；<b>Bing 不會</b>——這裡用 Bing 官方支援的 <b>IndexNow</b> 主動告訴它「首頁在這裡」，按一下就會送出（同一個網址一天最多自動送一次；手動不受限）。送出後通常幾小時～幾天內會出現在 Bing 的搜尋結果。想看收錄狀況與提交 sitemap，請到 Bing Webmaster Tools 驗證站台：把它給的字串設成部署環境變數 <code>BING_SITE_VERIFICATION</code>，重新編譯並重啟後，下面會顯示「已設定」。</p>
+    <div class="test-row"><span><b>要提交的網址</b><i id="seoLanding">讀取中…</i></span></div>
+    <div class="test-row"><span><b>Bing 站台驗證</b><i id="seoBing">讀取中…</i></span></div>
+    <div class="test-row"><span><b>Google 站台驗證</b><i id="seoGoogle">讀取中…</i></span></div>
+    <div class="test-row"><span><b>IndexNow 金鑰</b><i id="seoKey">讀取中…</i></span></div>
+    <div class="test-row"><span><b>最近一次提交</b><i id="seoLast">讀取中…</i></span></div>
+    <div class="test-row wrap">
+      <button id="seoSubmit" class="tbtn" type="button">立即提交給 Bing</button>
+      <button id="seoWmt" class="ghost" type="button">開啟 Bing Webmaster Tools</button>
+    </div>
+    <div id="seoMsg" class="tmsg"></div>
+  </section>
+
+  <!-- MORNING_DIGEST_V1: 晨間摘要推送設定（僅管理員；持久化於 config/digest.json） -->
+  <section class="card" id="digestCard" hidden>
+    <h1>晨間摘要推送</h1>
+    <p class="hint">每天定時推送一則摘要：48 小時內截止作業與最新公告（送到各帳號已訂閱推播的裝置）。週六、週日不發送；各帳號可在「通知設定」頁個別關閉。資料取自背景快取，不對學校發額外請求；設定即時生效並永久保存。</p>
+    <div class="test-row">
+      <span><b>啟用</b><i>關閉後完全不發送晨間摘要</i></span>
+      <input id="digestEnabled" class="chk" type="checkbox" checked>
+    </div>
+    <div class="test-row">
+      <span><b>通知時間</b><i>伺服器本地時間（HH:MM）。小技巧：把時間設為「下一分鐘」即可立即測試推送</i></span>
+      <input id="digestTime" class="test-input" type="time" value="08:00">
+    </div>
+    <!-- DIGEST_SAVE_RIGHT_V1：儲存鈕靠右；測試鈕已移至下方「測試通知」卡（DIGEST_TEST_IN_TEST_CARD_V1） -->
+    <div class="test-row end">
+      <button id="digestSave" class="tbtn" type="button">儲存</button>
+    </div>
+    <div id="digestMsg" class="tmsg"></div>
+  </section>
+
+  <!-- TEST_NOTIFICATION_CARD_V1: 集中所有測試通知按鈕 -->
+  <section class="card">
+    <h1>測試通知</h1>
+    <p class="hint">集中各管道的測試按鈕，快速確認通知是否暢通。</p>
+    <div class="test-row">
+      <span><b>Discord / LINE 測試通知</b><i>以一則測試作業走真實通知路徑（含偏好檢查），確認綁定與通知偏好設定正確。</i></span>
+      <button id="testDiscordBtn" class="tbtn" type="button">發送測試</button>
+    </div>
+    <div class="test-row">
+      <span><b>iPhone 背景推播測試</b><i>安排 10 秒後發送推播；按下後請立刻把 App 從多工畫面往上滑掉，以測試背景送達。</i></span>
+      <button id="testPushBtn" class="tbtn" type="button">發送測試</button>
+    </div>
+    <div class="test-row">
+      <span><b>課程公告通知測試</b><i>走真實公告推播路徑，確認有新公告時手機能收到「新公告」通知並開啟公告頁。</i></span>
+      <button id="testBulletinBtn" class="tbtn" type="button">發送測試</button>
+    </div>
+    <!-- DIGEST_TEST_IN_TEST_CARD_V1：晨間摘要測試推送（送到目前登入者已訂閱推播的裝置） -->
+    <div class="test-row" id="testDigestRow">
+      <span><b>晨間摘要推送測試</b><i>立即以真實摘要內容（48 小時內作業、最新公告）推送到此帳號已訂閱背景推播的裝置；不受週末與每帳號開關限制。</i></span>
+      <button id="testDigestBtn" class="tbtn" type="button">發送測試</button>
+    </div>
+    <div class="test-row">
+      <span><b>點名提示音測試</b><i>以此裝置目前儲存的音效與音量播放，與控制台及通知頁的提示音設定共用。</i></span>
+      <button id="testSoundBtn" class="tbtn" type="button">播放音效</button>
+    </div>
+    <div id="testNotifyMsg" class="tmsg"></div>
+  </section>
+  <section class="card">
+    <h1>其他設定</h1>
+    <p class="hint">通知、推播與帳號安全等功能設定在各自的頁面。</p>
+    <div class="links">
+      <a href="/admin/notifications">通知設定</a>
+      <a href="/admin/push-status">手機推播狀態</a>
+      <a href="/admin/password">變更 Dashboard 密碼</a>
+      <a href="/admin/passkey">通行密鑰（Passkey）</a>
+      <!-- REST_DAY_PAGE_V1：休息日與寒暑假（週末／國定假日／寒暑假不自動輪詢） -->
+      <a href="/admin/rest-days">休息日與寒暑假</a>
+      <!-- LOGIN_DEVICES_V1：列出所有有效登入，可登出其他裝置 -->
+      <a href="/admin/devices">登入裝置管理</a>
+      <!-- UPDATE_TIMES_PAGE_V1：公告／作業／課表／點名輪詢與各排程器的最後更新時間 -->
+      <a href="/admin/update-times">資料更新時間</a>
+    </div>
+    <div class="foot-row">
+      <button id="resetBtn" class="ghost" type="button">回復外觀預設值</button>
+    </div>
+    <p class="note">以上外觀偏好僅儲存在此裝置的瀏覽器（localStorage），不會上傳到伺服器，也不會影響其他裝置。清除瀏覽器資料時會一併清除。</p>
+  </section>
+</main>
+<script src="/admin/static/app-settings.js?v=20260829settings9"></script>
+
+<script>
+/* TEST_NOTIFICATION_CARD_V1: 邏輯直接內嵌本頁——HTML no-store 永遠新鮮，不受 static 快取影響 */
+(function () {
+  'use strict';
+  function init() {
+    var discordBtn = document.getElementById('testDiscordBtn');
+    var pushBtn = document.getElementById('testPushBtn');
+    var soundBtn = document.getElementById('testSoundBtn');
+    var bulletinBtn = document.getElementById('testBulletinBtn');
+    var digestBtn = document.getElementById('testDigestBtn'); /* DIGEST_TEST_IN_TEST_CARD_V1 */
+    var msg = document.getElementById('testNotifyMsg');
+    if (!discordBtn && !pushBtn && !soundBtn) return;
+    function show(text, kind) {
+      if (!msg) return;
+      msg.textContent = text || '';
+      msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+    }
+    async function postJson(path) {
+      var res = await fetch(path, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' }
+      });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+      return body;
+    }
+    async function runButton(btn, fn) {
+      if (!btn || btn.disabled) return;
+      var old = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '處理中…';
+      try { await fn(); }
+      catch (e) { show('測試失敗：' + (e && e.message ? e.message : e), 'bad'); }
+      finally { btn.disabled = false; btn.textContent = old; }
+    }
+    if (discordBtn) discordBtn.addEventListener('click', function () {
+      runButton(discordBtn, async function () {
+        show('傳送中…');
+        var r = await postJson('/admin/api/homework/test-notification');
+        var sent = Array.isArray(r.channels) ? r.channels : [];
+        var skipped = Array.isArray(r.skipped) ? r.skipped : [];
+        if (sent.length > 0) {
+          show('已發送至：' + sent.join('、') + (skipped.length > 0 ? '\n未發送：' + skipped.join('；') : ''), 'ok');
+        } else {
+          show('沒有任何可用的通知管道' + (skipped.length > 0 ? '：' + skipped.join('；') : ''), 'bad');
+        }
+      });
+    });
+    if (pushBtn) pushBtn.addEventListener('click', function () {
+      runButton(pushBtn, async function () {
+        show('安排測試中…');
+        var r = await postJson('/admin/api/push/test');
+        if (r && r.ok === false) throw new Error(r.error || '無法安排測試');
+        show('已安排 ' + ((r && r.delay_secs) || 10) + ' 秒後發送推播，請立刻把 App 從多工畫面往上滑掉。', 'ok');
+      });
+    });
+    if (bulletinBtn) bulletinBtn.addEventListener('click', function () {
+      runButton(bulletinBtn, async function () {
+        show('傳送中…');
+        var r = await postJson('/admin/api/bulletins/test');
+        if (r && r.ok === false) throw new Error(r.error || '無法發送測試');
+        show('已發送公告測試推播到此帳號的訂閱裝置，點通知會開啟課程公告頁。', 'ok');
+      });
+    });
+    /* DIGEST_TEST_IN_TEST_CARD_V1：晨間摘要測試——走 /admin/api/action { action: 'digest_test' }，只推給目前登入者 */
+    if (digestBtn) digestBtn.addEventListener('click', function () {
+      runButton(digestBtn, async function () {
+        show('推送中…');
+        var res = await fetch('/admin/api/action', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ action: 'digest_test' })
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+        var n = Number(body.devices || 0);
+        if (n > 0) show('測試摘要已推送到你的 ' + n + ' 台裝置', 'ok');
+        else show('沒有可推送的裝置：請先在手機 Dashboard 訂閱背景推播', 'bad');
+      });
+    });
+    if (soundBtn) soundBtn.addEventListener('click', function () {
+      try {
+        var Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) { show('此瀏覽器不支援音效播放', 'bad'); return; }
+        var cfg = {};
+        try { cfg = JSON.parse(localStorage.getItem('tronclass_rollcall_sound_settings_v1')) || {}; } catch (_) { cfg = {}; }
+        var ctx = new Ctx();
+        var gain = ctx.createGain();
+        gain.gain.value = Math.max(0.0001, Number(cfg.volume == null ? 0.35 : cfg.volume));
+        gain.connect(ctx.destination);
+        var notes = cfg.pattern === 'chime' ? [660, 880, 1100] : [880, 880];
+        notes.forEach(function (freq, i) {
+          var osc = ctx.createOscillator();
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          osc.connect(gain);
+          var t0 = ctx.currentTime + i * 0.18;
+          osc.start(t0);
+          osc.stop(t0 + 0.15);
+        });
+        setTimeout(function () { ctx.close().catch(function () { }); }, 900);
+        show('已播放：' + (cfg.pattern === 'chime' ? '三音提示' : '雙提示音'), 'ok');
+      } catch (_) { show('播放失敗', 'bad'); }
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+<script>
+/* GROUP_SUBMIT_RELAY_V1: 多帳號點名送出節奏（僅管理員；走 /admin/api/action runtime_settings） */
+(function () {
+  'use strict';
+  var DEFAULT_BASE = 600, DEFAULT_JITTER = 2000, MAX_BASE = 10000, MAX_JITTER = 5000;
+  var DEFAULT_QR_BASE = 600, DEFAULT_QR_JITTER = 600;
+  var DEFAULT_RADAR_BASE = 600, DEFAULT_RADAR_JITTER = 2000;
+  function init() {
+    var card = document.getElementById('groupSubmitCard');
+    if (!card) return;
+    var statusEl = document.getElementById('gsStatus');
+    var baseInput = document.getElementById('gsBaseInput');
+    var jitterInput = document.getElementById('gsJitterInput');
+    var qrBaseInput = document.getElementById('gsQrBaseInput');
+    var qrJitterInput = document.getElementById('gsQrJitterInput');
+    var radarBaseInput = document.getElementById('gsRadarBaseInput');
+    var radarJitterInput = document.getElementById('gsRadarJitterInput');
+    var msg = document.getElementById('gsMsg');
+    function show(text, kind) {
+      if (!msg) return;
+      msg.textContent = text || '';
+      msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+    }
+    function clampInt(value, fallback, max) {
+      var n = parseInt(value, 10);
+      if (!isFinite(n) || n < 0) return fallback;
+      return Math.min(n, max);
+    }
+    function describe(base, jitter) {
+      var low = (base / 1000).toFixed(2), high = ((base + jitter) / 1000).toFixed(2);
+      if (base <= 0 && jitter <= 0) return '不等待（多位會同時送出）';
+      if (jitter <= 0) return '固定 ' + low + ' 秒';
+      return low + ' ～ ' + high + ' 秒（隨機）';
+    }
+    /* fix69：預估改成依「實際帳號數」計算（拿不到數量時退回「每多一個帳號最多 +X 秒」）。 */
+    function estimate(base, jitter, count) {
+      if (count > 0) {
+        if (count <= 1) return '單一帳號：立即送出';
+        return count + ' 個帳號最壞約 ' + (((base + jitter) * (count - 1)) / 1000).toFixed(1) + ' 秒';
+      }
+      return '每多一個帳號最多 +' + ((base + jitter) / 1000).toFixed(2) + ' 秒';
+    }
+    function render(base, jitter, qrBase, qrJitter, radarBase, radarJitter, accountCount) {
+      if (baseInput) baseInput.value = String(base);
+      if (jitterInput) jitterInput.value = String(jitter);
+      if (qrBaseInput) qrBaseInput.value = String(qrBase);
+      if (qrJitterInput) qrJitterInput.value = String(qrJitter);
+      if (radarBaseInput) radarBaseInput.value = String(radarBase);
+      if (radarJitterInput) radarJitterInput.value = String(radarJitter);
+      var count = (typeof accountCount === 'number' && accountCount > 0) ? accountCount : 0;
+      if (statusEl) {
+        statusEl.textContent = '數字 ' + describe(base, jitter) + '（' + estimate(base, jitter, count) + '）'
+          + '｜QR ' + describe(qrBase, qrJitter) + '（' + estimate(qrBase, qrJitter, count)
+          + '，送出前會取最新 payload）'
+          + '｜雷達 ' + describe(radarBase, radarJitter) + '（' + estimate(radarBase, radarJitter, count)
+          + '，最多等 30 秒）';
+      }
+    }
+    async function loadStatus() {
+      try {
+        var res = await fetch('/admin/api/status', {
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var body = await res.json();
+        if (!body || !body.is_admin) { card.hidden = true; return; }
+        card.hidden = false;
+        var s = body.settings || {};
+        var base = (typeof s.group_submit_interval_ms === 'number') ? s.group_submit_interval_ms : DEFAULT_BASE;
+        var jitter = (typeof s.group_submit_jitter_ms === 'number') ? s.group_submit_jitter_ms : DEFAULT_JITTER;
+        var qrBase = (typeof s.group_submit_qrcode_interval_ms === 'number') ? s.group_submit_qrcode_interval_ms : DEFAULT_QR_BASE;
+        var qrJitter = (typeof s.group_submit_qrcode_jitter_ms === 'number') ? s.group_submit_qrcode_jitter_ms : DEFAULT_QR_JITTER;
+        var radarBase = (typeof s.group_submit_radar_interval_ms === 'number') ? s.group_submit_radar_interval_ms : DEFAULT_RADAR_BASE;
+        var radarJitter = (typeof s.group_submit_radar_jitter_ms === 'number') ? s.group_submit_radar_jitter_ms : DEFAULT_RADAR_JITTER;
+        // fix69：用實際帳號數算預估（管理員看到的 accounts 就是全部帳號）。
+        var accountCount = (body && Array.isArray(body.accounts)) ? body.accounts.length : 0;
+        render(base, jitter, qrBase, qrJitter, radarBase, radarJitter, accountCount);
+      } catch (e) {
+        if (statusEl) statusEl.textContent = '讀取失敗：' + (e && e.message ? e.message : e);
+      }
+    }
+    async function apply(base, jitter, qrBase, qrJitter, radarBase, radarJitter) {
+      show('套用中…');
+      try {
+        var res = await fetch('/admin/api/action', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ action: 'runtime_settings', group_submit_interval_ms: base, group_submit_jitter_ms: jitter, group_submit_qrcode_interval_ms: qrBase, group_submit_qrcode_jitter_ms: qrJitter, group_submit_radar_interval_ms: radarBase, group_submit_radar_jitter_ms: radarJitter })
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+        /* PERSISTED_RUNTIME_SETTINGS_V1（fix104）：設定會寫檔；寫檔失敗時要講清楚（不要讓人以為存好了）。 */
+        var savedNote = body.persist_error
+          ? '，但寫檔失敗：' + body.persist_error + '（重啟後會回到上次成功保存的值）'
+          : '（已永久保存，重啟後仍沿用）';
+        show('已套用：數字 ' + describe(base, jitter) + '、QR ' + describe(qrBase, qrJitter) + '、雷達 ' + describe(radarBase, radarJitter) + '（即時生效' + savedNote + '）', body.persist_error ? 'bad' : 'ok');
+        loadStatus();
+      } catch (e) {
+        show('套用失敗：' + (e && e.message ? e.message : e), 'bad');
+      }
+    }
+    var applyBtn = document.getElementById('gsApply');
+    if (applyBtn) applyBtn.addEventListener('click', function () {
+      apply(
+        clampInt(baseInput && baseInput.value, DEFAULT_BASE, MAX_BASE),
+        clampInt(jitterInput && jitterInput.value, DEFAULT_JITTER, MAX_JITTER),
+        clampInt(qrBaseInput && qrBaseInput.value, DEFAULT_QR_BASE, MAX_BASE),
+        clampInt(qrJitterInput && qrJitterInput.value, DEFAULT_QR_JITTER, MAX_JITTER),
+        clampInt(radarBaseInput && radarBaseInput.value, DEFAULT_RADAR_BASE, MAX_BASE),
+        clampInt(radarJitterInput && radarJitterInput.value, DEFAULT_RADAR_JITTER, MAX_JITTER)
+      );
+    });
+    var resetBtn = document.getElementById('gsReset');
+    if (resetBtn) resetBtn.addEventListener('click', function () { apply(DEFAULT_BASE, DEFAULT_JITTER, DEFAULT_QR_BASE, DEFAULT_QR_JITTER, DEFAULT_RADAR_BASE, DEFAULT_RADAR_JITTER); });
+    loadStatus();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+<script>
+/* INDEXNOW_V1（fix105）：搜尋引擎收錄卡片——僅管理員。
+   顯示 Bing／Google 站台驗證是否已設定、IndexNow 金鑰與最近一次提交結果，
+   並提供「立即提交給 Bing」按鈕（走 /admin/api/action indexnow_submit）。 */
+(function () {
+  'use strict';
+  function init() {
+    var card = document.getElementById('seoCard');
+    if (!card) return;
+    var landingEl = document.getElementById('seoLanding');
+    var bingEl = document.getElementById('seoBing');
+    var googleEl = document.getElementById('seoGoogle');
+    var keyEl = document.getElementById('seoKey');
+    var lastEl = document.getElementById('seoLast');
+    var msg = document.getElementById('seoMsg');
+    function setText(el, text) { if (el) el.textContent = text; }
+    function show(text, kind) {
+      if (!msg) return;
+      msg.textContent = text || '';
+      msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+    }
+    function verText(on) {
+      return on
+        ? '已設定（首頁會帶驗證 meta）'
+        : '未設定（要用的話，把 Bing／Google 給的字串設成部署環境變數後重新建置）';
+    }
+    async function loadStatus() {
+      try {
+        var res = await fetch('/admin/api/status', {
+          credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' }
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var body = await res.json();
+        if (!body || !body.is_admin) { card.hidden = true; return; }
+        card.hidden = false;
+        var seo = body.seo || {};
+        var ix = seo.indexnow || {};
+        setText(landingEl, seo.landing || '—');
+        setText(bingEl, verText(!!seo.bing_verification));
+        setText(googleEl, verText(!!seo.google_verification));
+        setText(keyEl, ix.key
+          ? (ix.key + '（金鑰檔：' + (ix.key_path || '') + '）')
+          : '尚未產生（重啟服務後會自動產生並寫入 config/indexnow.json）');
+        if (ix.last_submit) {
+          setText(lastEl, (ix.last_ok ? '✅ ' : '❌ ') + ix.last_submit
+            + (ix.last_status == null ? '' : '（HTTP ' + ix.last_status + '）')
+            + '：' + (ix.last_message || ''));
+        } else {
+          setText(lastEl, '還沒有提交過（服務啟動後會自動送一次）');
+        }
+      } catch (e) {
+        setText(lastEl, '讀取失敗：' + (e && e.message ? e.message : e));
+      }
+    }
+    async function submitNow() {
+      show('提交中…');
+      try {
+        var res = await fetch('/admin/api/action', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ action: 'indexnow_submit' })
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (res.ok && body.ok !== false) show(body.message || '已提交', 'ok');
+        else show(body.error || body.message || ('HTTP ' + res.status), 'bad');
+        loadStatus();
+      } catch (e) {
+        show('提交失敗：' + (e && e.message ? e.message : e), 'bad');
+      }
+    }
+    var submitBtn = document.getElementById('seoSubmit');
+    if (submitBtn) submitBtn.addEventListener('click', submitNow);
+    var wmtBtn = document.getElementById('seoWmt');
+    if (wmtBtn) wmtBtn.addEventListener('click', function () {
+      // 外部連結用 window.open（CSP 只限制資源載入，不擋導覽）。
+      window.open('https://www.bing.com/webmasters/', '_blank', 'noopener');
+    });
+    loadStatus();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+
+<script>
+/* RUNTIME_SEMESTER_OVERRIDE_V1: 學期判定卡片——僅管理員；走 /admin/api/action runtime_settings */
+(function () {
+  'use strict';
+  function init() {
+    var card = document.getElementById('semesterCard');
+    if (!card) return;
+    var statusEl = document.getElementById('semesterStatus');
+    var input = document.getElementById('semesterInput');
+    var msg = document.getElementById('semesterMsg');
+    var presetsBox = document.getElementById('semesterPresets');
+
+    function show(text, kind) {
+      if (!msg) return;
+      msg.textContent = text || '';
+      msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+    }
+    // 台北時間的「目前學期」[民國學年, 學期]，與後端推算規則一致
+    function currentSem() {
+      var now = new Date(Date.now() + 8 * 3600 * 1000);
+      var y = now.getUTCFullYear(), m = now.getUTCMonth() + 1;
+      if (m >= 8) return [y - 1911, 1];
+      if (m <= 1) return [y - 1912, 1];
+      return [y - 1912, 2];
+    }
+    function shift(sem, delta) {
+      var roc = sem[0], term = sem[1], i;
+      for (i = 0; i < Math.abs(delta); i++) {
+        if (delta > 0) { if (term === 1) term = 2; else { roc += 1; term = 1; } }
+        else { if (term === 2) term = 1; else { roc -= 1; term = 2; } }
+      }
+      return [roc, term];
+    }
+    function semCode(sem) { return String(sem[0]) + String(sem[1]); }
+    function semLabel(sem) { return '民國' + sem[0] + (sem[1] === 1 ? '上' : '下') + '（' + semCode(sem) + '）'; }
+
+    // 快速選擇：上一學期 / 本學期 / 下一學期
+    [['上一學期', -1], ['本學期', 0], ['下一學期', 1]].forEach(function (item) {
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ghost';
+      var sem = shift(currentSem(), item[1]);
+      btn.textContent = item[0] + '：' + semLabel(sem);
+      btn.addEventListener('click', function () { if (input) { input.value = semCode(sem); show('已填入 ' + semLabel(sem) + '，按「套用」生效'); } });
+      if (presetsBox) presetsBox.appendChild(btn);
+    });
+
+    async function loadStatus() {
+      try {
+        var res = await fetch('/admin/api/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        var body = await res.json();
+        if (!body || !body.is_admin) { card.hidden = true; return; }
+        card.hidden = false;
+        var cur = currentSem();
+        var raw = body.settings && body.settings.semester_override;
+        if (raw) {
+          statusEl.textContent = '覆蓋中：' + raw + '（自動推算為 ' + semLabel(cur) + '）';
+        } else {
+          statusEl.textContent = '自動推算：' + semLabel(cur);
+        }
+      } catch (e) {
+        statusEl.textContent = '讀取失敗：' + (e && e.message ? e.message : e);
+      }
+    }
+    async function applyOverride(value) {
+      show('套用中…');
+      try {
+        var res = await fetch('/admin/api/action', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({ action: 'runtime_settings', semester_override: value })
+        });
+        var body = await res.json().catch(function () { return {}; });
+        if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+        /* PERSISTED_RUNTIME_SETTINGS_V1（fix104）：會寫檔；寫檔失敗要看得出來。 */
+        var saved = body.persist_error ? '，但寫檔失敗：' + body.persist_error : '，已永久保存';
+        if (value) show('已套用學期覆蓋：' + value + '（即時生效' + saved + '）', body.persist_error ? 'bad' : 'ok');
+        else show('已恢復自動推算（即時生效' + saved + '）', body.persist_error ? 'bad' : 'ok');
+        loadStatus();
+      } catch (e) {
+        show('套用失敗：' + (e && e.message ? e.message : e), 'bad');
+      }
+    }
+    var applyBtn = document.getElementById('semesterApply');
+    if (applyBtn) applyBtn.addEventListener('click', function () {
+      var v = (input && input.value ? input.value : '').trim();
+      if (!v) { show('請先輸入學期（例：1151），或點「恢復自動」', 'bad'); return; }
+      applyOverride(v);
+    });
+    var autoBtn = document.getElementById('semesterAuto');
+    if (autoBtn) autoBtn.addEventListener('click', function () { applyOverride(''); });
+    loadStatus();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+<style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){.top a[href^="/admin"]{display:none!important}}</style>
+<script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
+
+<script>
+/* MORNING_DIGEST_V1: 晨間摘要設定卡片 */
+(function () {
+  'use strict';
+  var card = document.getElementById('digestCard');
+  if (!card) return;
+  var enabledEl = document.getElementById('digestEnabled');
+  var timeEl = document.getElementById('digestTime');
+  var msg = document.getElementById('digestMsg');
+  function show(text, kind) {
+    if (!msg) return;
+    msg.textContent = text || '';
+    msg.className = 'tmsg' + (kind ? ' ' + kind : '');
+  }
+  async function load() {
+    try {
+      var res = await fetch('/admin/api/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var body = await res.json();
+      if (!body || !body.is_admin) { card.hidden = true; return; }
+      card.hidden = false;
+      var digest = body.digest || {};
+      if (enabledEl) enabledEl.checked = digest.enabled !== false;
+      if (timeEl && digest.time) timeEl.value = digest.time;
+    } catch (e) {
+      show('讀取失敗：' + (e && e.message ? e.message : e), 'bad');
+    }
+  }
+  var saveBtn = document.getElementById('digestSave');
+  if (saveBtn) saveBtn.addEventListener('click', async function () {
+    show('儲存中…');
+    try {
+      var res = await fetch('/admin/api/action', {
+        method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({
+          action: 'digest_settings',
+          digest_enabled: !!(enabledEl && enabledEl.checked),
+          digest_time: (timeEl && timeEl.value ? timeEl.value : '').trim()
+        })
+      });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+      var t = body.digest && body.digest.time ? body.digest.time : '';
+      show('已儲存：每天 ' + (t || '08:00') + ' 推送晨間摘要（即時生效）', 'ok');
+    } catch (e) {
+      show('儲存失敗：' + (e && e.message ? e.message : e), 'bad');
+    }
+  });
+  /* DIGEST_TEST_IN_TEST_CARD_V1：測試按鈕邏輯已移至上方「測試通知」卡的腳本 */
+  load();
+})();
+</script>
+</body>
+</html>

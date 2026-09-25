@@ -1,0 +1,1299 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Tronclass Radar Rollcall</title>
+  <style>
+    /* 這一頁與數字點名輸入頁（number.html）同一套外觀：倒數列 → 取位置卡 → 地圖卡 → 狀態卡。
+       RADAR_MAP_PAGE_V1（fix71 追加）：**不讓使用者輸入座標**——系統自動偵測位置（以目前位置為主），
+       另外給一顆「用教室座標」的按鈕處理室內 GPS 誤差；地圖畫出目前位置（含誤差圈）、教室座標、
+       已送出的座標與點名進度。 */
+    :root { color-scheme: light dark; --bg:#f7f8fb; --text:#172033; --muted:#667085; --panel:#fff; --border:#d7dce5; --accent:#2563eb; --ok:#15803d; --error:#b91c1c; --warn:#b45309; --badge-text:#fff; }
+    @media (prefers-color-scheme: dark) { :root { --bg:#10141f; --text:#eef2ff; --muted:#aab4c8; --panel:#171d2b; --border:#30394f; --accent:#60a5fa; --ok:#4ade80; --error:#f87171; --warn:#fbbf24; --badge-text:#0b1220; } }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); }
+    main { width:min(760px,100%); margin:0 auto; padding:20px; }
+    h1 { margin:0 0 6px; font-size:24px; line-height:1.2; }
+    h2 { margin:0; font-size:17px; }
+    p { margin:0; color:var(--muted); line-height:1.55; }
+    .panel { margin-top:18px; padding:16px; border:1px solid var(--border); border-radius:8px; background:var(--panel); }
+    .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
+    button { min-height:44px; border:0; border-radius:8px; padding:0 14px; background:var(--accent); color:white; font-size:15px; font-weight:650; }
+    button.secondary { border:1px solid var(--border); background:transparent; color:var(--text); }
+    #status { margin-top:12px; font-weight:650; }
+    #status.ok { color:var(--ok); }
+    #status.error { color:var(--error); }
+    .error-box { margin-top:12px; padding:12px; border:1px solid rgba(185,28,28,.35); border-radius:8px; background:rgba(185,28,28,.08); color:var(--error); font-weight:650; }
+    /* RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）→ 系統停手，用琥珀色橫幅說明。 */
+    .block-box { margin-top:12px; padding:12px; border:1px solid rgba(180,83,9,.38); border-radius:8px; background:rgba(245,158,11,.12); color:#b45309; font-weight:650; line-height:1.55; }
+    @media (prefers-color-scheme: dark) { .block-box { color:#fcd34d; } }
+    /* CLASS_COUNT_HEADER_V1：上方這一欄＝「目前班上已點人數」（大字）＋班上到課比例條；
+       原本的倒數縮成右下角一行小字（快到期／逾時一樣變色，逾時照樣鎖住輸入）。
+       資料來源＝/radar/status 的 class_progress（後端每 10 秒讀一次學校的班上進度）。 */
+    .countdown { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; padding:12px 14px; border:1px solid var(--border); border-radius:8px; background:var(--panel); }
+    .countdown .label { color:var(--muted); font-size:14px; }
+    .countdown .time { font-size:26px; font-weight:800; font-variant-numeric:tabular-nums; letter-spacing:1px; color:var(--text); }
+    .countdown.pass .time { color:var(--ok); }
+    .countdown .sub { margin-top:2px; font-size:12px; color:var(--muted); text-align:right; font-variant-numeric:tabular-nums; }
+    .countdown.warn .sub { color:#b45309; font-weight:700; }
+    .countdown.danger .sub, .countdown.expired .sub { color:var(--error); font-weight:700; }
+    .countdown.expired { border-color:rgba(185,28,28,.35); background:rgba(185,28,28,.08); }
+    .countdown .bar { position:relative; height:6px; margin-top:8px; border-radius:99px; background:var(--border); overflow:hidden; }
+    .countdown .bar > i { position:absolute; inset:0 auto 0 0; width:0%; background:var(--ok); transition:width .4s ease; }
+    .countdown.pass .bar > i { background:#2563eb; }
+    .cd-right { text-align:right; white-space:nowrap; }
+    @keyframes cdPulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+    .summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin-top:10px; }
+    .metric { padding:12px; border:1px solid var(--border); border-radius:8px; text-align:center; }
+    .metric strong { display:block; font-size:24px; color:var(--text); }
+    .metric span { color:var(--muted); font-size:13px; }
+    .lists { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px; }
+    .list h3 { margin:0 0 8px; font-size:15px; }
+    .list ul { min-height:48px; margin:0; padding:10px 10px 10px 28px; border:1px solid var(--border); border-radius:8px; }
+    .list.done h3 { color:var(--ok); }
+    .list.pending h3 { color:var(--error); }
+    .list li.you { font-weight:800; }
+    .list li.you::after { content:"（這個帳號）"; font-weight:500; color:var(--muted); font-size:12px; }
+    /* RADAR_MAP_PAGE_V1：取位置狀態列 */
+    .geo-state { display:flex; align-items:center; gap:12px; margin-top:12px; padding:12px 14px; border:1px solid var(--border); border-radius:12px; }
+    .geo-state .ping { flex:0 0 auto; width:12px; height:12px; border-radius:50%; background:var(--muted); }
+    .geo-state.good { border-color:rgba(21,128,61,.35); }
+    .geo-state.good .ping { background:var(--ok); animation:pingPulse 1.4s ease-in-out infinite; }
+    .geo-state.mid { border-color:rgba(180,83,9,.35); }
+    .geo-state.mid .ping { background:var(--warn); }
+    /* 誤差大是「室內常見」而不是錯誤 → 用提醒色（琥珀），紅色只留給真正的失敗。 */
+    .geo-state.bad { border-color:rgba(180,83,9,.40); }
+    .geo-state.bad .ping { background:var(--warn); }
+    .geo-state .grow { flex:1; min-width:0; }
+    .geo-main { font-weight:750; }
+    .geo-sub { font-size:13px; color:var(--muted); }
+    .geo-coords { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .geo-state button.mini { flex:0 0 auto; min-height:36px; padding:0 10px; font-size:13px; font-weight:600; border:1px solid var(--border); border-radius:10px; background:transparent; color:var(--text); }
+    @keyframes pingPulse { 0%,100% { box-shadow:0 0 0 0 rgba(21,128,61,.45); } 50% { box-shadow:0 0 0 7px rgba(21,128,61,0); } }
+    /* RADAR_SYSTEM_ONLY_V1：只有一顆送出按鈕（系統演算），所以是單欄滿版 */
+    .choice { display:grid; grid-template-columns:1fr; gap:10px; margin-top:12px; }
+    .choice-btn { display:flex; flex-direction:column; gap:4px; align-items:flex-start; min-height:66px; padding:12px 14px; border:1px solid var(--border); border-radius:14px; background:var(--panel); color:var(--text); text-align:left; }
+    .choice-btn .cb-title { font-size:16px; font-weight:750; }
+    .choice-btn .cb-sub { font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .choice-btn.primary { border-color:var(--accent); background:var(--accent); color:#fff; }
+    .choice-btn.primary .cb-sub { color:inherit; opacity:.9; }
+    .choice-btn.recommend { border-color:var(--warn); background:var(--warn); color:#fff; box-shadow:0 0 0 4px rgba(180,83,9,.16); }
+    .choice-btn.recommend .cb-sub { color:inherit; opacity:.9; }
+    /* RADAR_UI_CLARITY_V1：一眼看出「現在該按哪一個」——建議的那顆帶徽章，另一顆維持外框。 */
+    .choice-btn .cb-badge { display:none; align-self:flex-start; padding:2px 9px; border-radius:99px; background:rgba(255,255,255,.26); color:var(--badge-text); font-size:11px; font-weight:800; letter-spacing:.02em; }
+    .choice-btn.primary .cb-badge, .choice-btn.recommend .cb-badge { display:inline-block; }
+    .choice-btn .cb-coords { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .choice-btn.primary .cb-coords, .choice-btn.recommend .cb-coords { color:inherit; opacity:.8; }
+    .choice-btn:disabled { opacity:.5; }
+    .choice-btn:active { transform:scale(.99); }
+    .result { display:none; margin-top:12px; padding:14px; border-radius:12px; font-weight:700; text-align:center; }
+    .result.show { display:block; }
+    .result.sending { background:rgba(37,99,235,.10); color:var(--accent); }
+    .result.waiting { background:rgba(180,83,9,.10); color:var(--warn); }
+    .result.done { background:rgba(21,128,61,.12); color:var(--ok); font-size:18px; }
+    .result.fail { background:rgba(185,28,28,.08); color:var(--error); }
+    .result small { display:block; margin-top:4px; font-weight:500; opacity:.85; }
+    .spinner { display:inline-block; width:14px; height:14px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; animation:spin .7s linear infinite; vertical-align:-2px; margin-right:6px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .auto-hint { margin-top:10px; font-size:13px; color:var(--muted); }
+    .pending-note { margin-top:8px; font-size:13px; color:var(--muted); }
+    /* RADAR_UI_CLARITY_V1：一句話講清楚「現在按哪一個」（左側色條代表狀態）。 */
+    .advice { display:flex; gap:12px; align-items:flex-start; margin-top:16px; padding:14px 16px; border:1px solid var(--border); border-left:6px solid var(--muted); border-radius:12px; background:var(--panel); }
+    .advice .advice-icon { flex:0 0 auto; font-size:22px; line-height:1.25; }
+    .advice .advice-body { min-width:0; }
+    .advice .advice-main { font-size:17px; font-weight:800; line-height:1.4; }
+    .advice .advice-sub { margin-top:4px; font-size:13px; color:var(--muted); line-height:1.55; }
+    .advice.good { border-left-color:var(--ok); background:rgba(21,128,61,.07); }
+    .advice.mid { border-left-color:var(--warn); background:rgba(180,83,9,.07); }
+    .advice.bad { border-left-color:var(--warn); background:rgba(180,83,9,.10); }
+    .advice.lock { border-left-color:var(--error); background:rgba(185,28,28,.08); }
+    /* 地圖卡 */
+    .bar-label { flex:0 0 auto; min-width:66px; font-size:13px; font-weight:700; color:var(--muted); }
+    .progress-row { display:flex; align-items:center; gap:10px; margin-top:12px; }
+    .progress { flex:1; height:10px; border-radius:99px; background:var(--border); overflow:hidden; }
+    .progress > i { display:block; height:100%; width:0; background:var(--ok); transition:width .4s; }
+    .progress-row .ptext { font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums; }
+    /* AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：班級進度（和上面「你的帳號」分開顯示） */
+    .progress.class-progress > i { background:var(--accent); }
+    .progress-row .ptext.wrap { white-space:normal; }
+    #radarMap { display:block; width:100%; height:auto; margin-top:12px; border:1px solid var(--border); border-radius:12px; background:var(--panel); }
+    .legend { display:flex; flex-wrap:wrap; gap:12px; margin-top:10px; font-size:12px; color:var(--muted); }
+    .legend i { display:inline-block; width:10px; height:10px; margin-right:5px; border-radius:50%; vertical-align:-1px; }
+    .legend i.hollow { background:transparent; border:2px dashed var(--accent); width:12px; height:12px; }
+    /* RADAR_DEDUCE_TRACE_V1（fix75）：推估過程的圖例與說明（一行一步，用 pre-line） */
+    .legend i.probe-ring { background:transparent; border:2px dashed #7c3aed; width:12px; height:12px; }
+    .legend i.square { border-radius:2px; }
+    #probeHint { white-space:pre-line; }
+    @media (max-width:560px) { .summary,.lists,.choice { grid-template-columns:1fr; } .advice .advice-main { font-size:16px; } .bar-label { min-width:56px; font-size:12px; } .progress-row { gap:8px; } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation-duration:1.5s; } .countdown.danger .time { animation:none; } .geo-state.good .ping { animation:none; } }
+  </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區，標題與倒數列不再被鏡頭蓋住
+     （無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:env(safe-area-inset-top,0px)}
+</style>
+</head>
+<body>
+  <main>
+    <h1>Tronclass Radar Rollcall</h1>
+    <p>這一頁不用輸入任何數字：按下面那顆按鈕，系統就會用教室位置替你送出點名。定位只用來在小地圖上顯示你在哪裡。</p>
+    <!-- CLASS_COUNT_HEADER_V1：頁面上方這一欄＝目前班上已點人數（大字）＋倒數小字 -->
+    <div id="countdown" class="countdown">
+      <div style="flex:1">
+        <div class="label" id="countdownLabel">班上已點人數</div>
+        <div class="bar"><i id="countdownBar"></i></div>
+      </div>
+      <div class="cd-right">
+        <div class="time" id="countdownTime">--</div>
+        <div class="sub" id="countdownSub">讀取中…</div>
+      </div>
+    </div>
+
+    <!-- RADAR_UI_CLARITY_V1：一句話的「現在該按哪一個」（依定位精度自動更新） -->
+    <div id="advice" class="advice" role="status" aria-live="polite">
+      <span class="advice-icon" id="adviceIcon">📍</span>
+      <div class="advice-body">
+        <div class="advice-main" id="adviceMain">正在取得你的位置…</div>
+        <div class="advice-sub" id="adviceSub">系統會自動偵測；室內可能要等幾秒。</div>
+      </div>
+    </div>
+
+    <section class="panel">
+      <h2>你的位置（只顯示，不會送出）</h2>
+      <!-- RADAR_SYSTEM_ONLY_V1：自動定位只拿來畫地圖；送出點名一律用「系統演算」（教室位置）。 -->
+      <div id="geoState" class="geo-state">
+        <span class="ping"></span>
+        <div class="grow">
+          <div class="geo-main" id="geoMain">正在取得你的位置…</div>
+          <div class="geo-sub" id="geoSub">室內可能要等幾秒，系統會自動偵測。</div>
+          <div class="geo-coords" id="deviceCoords"></div>
+        </div>
+        <button id="geoRetry" class="mini" type="button">重新定位</button>
+      </div>
+      <div class="choice">
+        <button id="useClassroom" class="choice-btn primary" type="button" disabled>
+          <span class="cb-badge" id="classroomBadge">按這個送出</span>
+          <span class="cb-title">🧮 系統演算</span>
+          <span class="cb-sub" id="classroomHint">系統沒有提供教室位置</span>
+          <span class="cb-coords" id="classroomCoords"></span>
+        </button>
+      </div>
+      <div id="indoorHint" class="auto-hint">送出的是教室位置；定位只影響地圖上顯示你在哪裡。</div>
+      <div id="status">尚未送出</div>
+      <div id="result" class="result" role="status" aria-live="polite"></div>
+      <div id="lastError" class="error-box" style="display:none"></div>
+      <div id="schoolBlock" class="block-box" style="display:none"></div>
+    </section>
+
+    <section class="panel">
+      <h2>位置地圖與進度</h2>
+      <svg id="radarMap" viewBox="0 0 640 420" preserveAspectRatio="xMidYMid meet" role="img" aria-label="位置地圖：你的位置、教室位置與點名進度"></svg>
+      <div class="legend">
+        <span><i style="background:#2563eb"></i>你目前的位置</span>
+        <span><i class="hollow"></i>定位誤差範圍</span>
+        <span><i style="background:#15803d"></i>已送出的座標</span>
+        <span><i style="background:#b45309"></i>教室位置（系統設定）</span>
+        <!-- RADAR_DEDUCE_TRACE_V1（fix75）：推估過程的圖例（有紀錄才會顯示） -->
+        <span id="legendMeasure" style="display:none"><i class="probe-ring"></i>量測圓（教室一定在這個圓上）</span>
+        <span id="legendEstimate" style="display:none"><i style="background:#7c3aed"></i>系統推估的教室位置</span>
+        <span id="legendGrid" style="display:none"><i class="square" style="background:#94a3b8"></i>棋盤格掃過的格子</span>
+      </div>
+      <div class="actions">
+        <button id="recenter" class="secondary" type="button">回到我的位置</button>
+        <button id="toggleProbe" class="secondary" type="button" aria-pressed="true">🧭 推估過程</button>
+        <button id="toggleTiles" class="secondary" type="button" aria-pressed="true">🗺 關閉一般地圖</button>
+        <button id="toggleSatellite" class="secondary" type="button" aria-pressed="false">🛰 衛星影像</button>
+      </div>
+      <div class="progress-row">
+        <span class="bar-label">我的帳號</span>
+        <div class="progress"><i id="progressBar"></i></div>
+        <span class="ptext" id="progressText">已點到 0 / 0</span>
+      </div>
+      <!-- AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：班上點名進度；超過門檻系統會自己送 -->
+      <div class="progress-row">
+        <span class="bar-label">全班</span>
+        <div class="progress class-progress"><i id="classBar"></i></div>
+        <span class="ptext wrap" id="classText">班上進度：讀取中…</span>
+      </div>
+      <div id="classHint" class="auto-hint">全班超過 15% 的人點名成功後，系統會自動送出點名——你不按也沒關係。</div>
+      <!-- RADAR_DEDUCE_TRACE_V1（fix75）：系統是怎麼推算出教室位置的（逐步照實寫） -->
+      <div id="probeHint" class="auto-hint">🧭 還沒有推估紀錄：第一次送出就成功的話，系統不需要推估教室位置。</div>
+      <div id="mapHint" class="auto-hint">地圖以教室座標為中心，格線每一格是固定的實際距離（左下角有比例尺）。</div>
+    </section>
+
+    <section class="panel">
+      <h2>簽到狀態</h2>
+      <p style="margin-top:6px">「已點到」＝學校已回報成功；這一頁會自動更新。</p>
+      <div class="summary">
+        <div class="metric"><strong id="totalCount">0</strong><span>總帳號</span></div>
+        <div class="metric"><strong id="doneCount">0</strong><span>已點到</span></div>
+        <div class="metric"><strong id="pendingCount">0</strong><span>未點到</span></div>
+      </div>
+      <div class="lists">
+        <div class="list done"><h3>已點到</h3><ul id="doneList"><li>尚無</li></ul></div>
+        <div class="list pending"><h3>還沒點到</h3><ul id="pendingList"><li>尚無</li></ul></div>
+      </div>
+      <div id="pendingNote" class="pending-note"></div>
+    </section>
+  </main>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const provider = params.get("provider") || "";
+    const rollcallId = Number(params.get("rollcall_id") || "0");
+    const token = params.get("token") || "";
+    const accountId = params.get("account_id") || "";
+
+    const statusEl = document.getElementById("status");
+    const resultEl = document.getElementById("result");
+    const lastErrorEl = document.getElementById("lastError");
+    /* RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）時，這一條橫幅說明「系統已停手」。 */
+    const schoolBlockEl = document.getElementById("schoolBlock");
+    const geoStateEl = document.getElementById("geoState");
+    const geoMainEl = document.getElementById("geoMain");
+    const geoSubEl = document.getElementById("geoSub");
+    const geoRetryBtn = document.getElementById("geoRetry");
+    const useClassroomBtn = document.getElementById("useClassroom");
+    const deviceCoordsEl = document.getElementById("deviceCoords");
+    const classroomCoordsEl = document.getElementById("classroomCoords");
+    const classroomHintEl = document.getElementById("classroomHint");
+    const classroomBadgeEl = document.getElementById("classroomBadge");
+    const indoorHintEl = document.getElementById("indoorHint");
+    const adviceEl = document.getElementById("advice");
+    const adviceIconEl = document.getElementById("adviceIcon");
+    const adviceMainEl = document.getElementById("adviceMain");
+    const adviceSubEl = document.getElementById("adviceSub");
+    const totalCountEl = document.getElementById("totalCount");
+    const doneCountEl = document.getElementById("doneCount");
+    const pendingCountEl = document.getElementById("pendingCount");
+    const doneListEl = document.getElementById("doneList");
+    const pendingListEl = document.getElementById("pendingList");
+    const pendingNoteEl = document.getElementById("pendingNote");
+    const mapEl = document.getElementById("radarMap");
+    const progressBarEl = document.getElementById("progressBar");
+    const progressTextEl = document.getElementById("progressText");
+    const classBarEl = document.getElementById("classBar");
+    const classTextEl = document.getElementById("classText");
+    const classHintEl = document.getElementById("classHint");
+    const recenterBtn = document.getElementById("recenter");
+    const toggleTilesBtn = document.getElementById("toggleTiles");
+    const toggleProbeBtn = document.getElementById("toggleProbe");
+    const probeHintEl = document.getElementById("probeHint");
+    const legendMeasureEl = document.getElementById("legendMeasure");
+    const legendEstimateEl = document.getElementById("legendEstimate");
+    const legendGridEl = document.getElementById("legendGrid");
+    const toggleSatelliteBtn = document.getElementById("toggleSatellite");
+    const mapHintEl = document.getElementById("mapHint");
+    const countdownEl = document.getElementById("countdown");
+    const countdownTimeEl = document.getElementById("countdownTime");
+    const countdownBarEl = document.getElementById("countdownBar");
+    const countdownLabelEl = document.getElementById("countdownLabel");
+    const countdownSubEl = document.getElementById("countdownSub");
+
+    /* 座標一律由系統取得，這一頁不接受手動輸入。 */
+    const GEO_REFINE_MS = 20000;          // 這段時間內持續用 watchPosition 把精度拉高
+    const GEO_TIMEOUT_MS = 20000;
+    const ACCURACY_GOOD_METERS = 25;      // 好：≤25 公尺
+    const ACCURACY_POOR_METERS = 60;     // 室內常見誤差：>60 公尺就建議改用教室座標
+    const MAP_W = 640, MAP_H = 420, MAP_PAD = 40;
+    const MAP_MIN_SPAN_METERS = 30;       // 縮放下限：不要讓 3 公尺的差距畫滿整張圖
+    const MAP_MAX_TILES = 25;
+    /* SATELLITE_BASEMAP_V1：兩種外部底圖（都預設關閉，按下按鈕才連外）。
+       衛星影像用 Esri World Imagery（免金鑰、免帳號；Google 的圖磚需要 API key 且條款不允許抓取）。 */
+    const BASEMAP_STREET = "street";
+    const BASEMAP_SATELLITE = "satellite";
+    const BASEMAP_HINT_DEFAULT = "地圖以教室座標為中心，格線每一格是固定的實際距離（左下角有比例尺）。";
+    /* GRID_ONLY_WITHOUT_BASEMAP_V1：有底圖時**不畫格線**（格線是「沒有底圖」時的地圖本體；
+       疊在衛星影像上會變成一張密密麻麻的網子，反而看不清楚）。距離一律看左下角比例尺。 */
+    const BASEMAP_HINT = {
+      street: "一般底圖向 OpenStreetMap 讀取這一帶的圖磚（不會傳送你的座標）；底圖模式不疊格線，距離看左下角比例尺。讀不到圖磚時會自動回到格線圖。",
+      satellite: "衛星影像向 Esri World Imagery 讀取圖磚（Esri、Maxar、Earthstar Geographics 等；不會傳送你的座標）；底圖模式不疊格線，距離看左下角比例尺。讀不到圖磚時會自動回到格線圖。"
+    };
+    const BASEMAP_MAX_ZOOM = { street: 19, satellite: 19 };
+    /* 縮放下限不要太高：誤差圈很大時（例如 ±100 公里）整張圖會拉到上百公里，
+       若下限寫死 12，一個圖磚在畫面上只會佔十幾個單位＝等於看不到。
+       這裡讓下限低到 2，並用 basemapZoom() 算出「一個圖磚大約佔 160 個 SVG 單位」的縮放。 */
+    const BASEMAP_MIN_ZOOM = 2;
+    const BASEMAP_TILE_PX = 256;
+    const BASEMAP_TARGET_TILE_SVG = 160;
+    /* 連續幾張圖磚讀不到就自己回到格線圖（並說明原因），不留一張空白的底圖。 */
+    const BASEMAP_MAX_TILE_FAILURES = 3;
+    /* 選縮放：讓「一個圖磚」在畫面上大約占 BASEMAP_TARGET_TILE_SVG 個 SVG 單位，
+       這樣不管地圖拉到多大範圍（3 公尺～幾百公里），圖磚都會蓋滿畫面。
+       上下限＝[BASEMAP_MIN_ZOOM, 各底圖的 maxZoom]。 */
+    function basemapZoom(latRad, scale, maxZoom) {
+      const ideal = Math.log2(
+        156543.03392 * Math.cos(latRad) * scale * BASEMAP_TILE_PX / BASEMAP_TARGET_TILE_SVG
+      );
+      const rounded = Math.round(isFinite(ideal) ? ideal : 16);
+      return Math.max(BASEMAP_MIN_ZOOM, Math.min(maxZoom, rounded));
+    }
+    /* 圖磚網址：OSM 是 {z}/{x}/{y}，Esri 是 {z}/{y}/{x}（順序不同，別互換）。 */
+    function basemapTileUrl(kind, zoom, x, y) {
+      if (kind === BASEMAP_SATELLITE) {
+        return "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/" + zoom + "/" + y + "/" + x;
+      }
+      return "https://tile.openstreetmap.org/" + zoom + "/" + x + "/" + y + ".png";
+    }
+    const EARTH_RADIUS = 6371000;
+    const NS = "http://www.w3.org/2000/svg";
+
+    const state = {
+      configured: [],        // 系統（面板／設定檔）目前要用的教室座標
+      submitted: null,       // 這一場最後一次送出的座標
+      total: 0,
+      completed: 0,
+      pending: 0,
+      classProgress: null,   // 班上點名進度（後端讀到的；讀不到時 null）
+      autoPercent: 15,       // 超過這個百分比系統就會自動送出（後端 auto_submit_percent 會覆寫）
+      courseName: "",
+      lastError: null,
+      schoolBlock: null,     // 學校端擋下（429／403）的停手資訊（後端 school_block 帶的）
+      me: null,              // 目前為止最準的一次定位
+      meNow: null,           // 最新一次回報（畫圖用）
+      /* RADAR_BASEMAP_DEFAULT_STREET_V1（fix75）：預設就載入「一般地圖」（OpenStreetMap）。
+         只向圖磚伺服器要「教室附近那幾格」的圖（不會傳送你的 GPS 座標）；
+         讀不到就自動回到格線圖並說明原因（#48 的安全網不變）。 */
+      tiles: true,
+      basemap: BASEMAP_STREET,   // 外部底圖種類（tiles=false 時不載入）
+      probe: null,               // RADAR_DEDUCE_TRACE_V1：後端的推估過程紀錄
+      probeOn: true,             // 推估過程要不要畫在地圖上（預設畫）
+      tileFails: 0,              // 連續讀不到的圖磚數（到門檻就回格線圖）
+      basemapHint: "",           // 底圖相關的提示（例如讀不到時的原因）
+      locked: false,
+      cdExpired: false,
+      hasSubmitted: false,   // RADAR_SYSTEM_ONLY_V1：這一頁有沒有送出過（送出的一律是「系統演算」）
+      statusLoaded: false,   // 有沒有成功讀到後端狀態（讀到之前不要說「沒有教室位置」嚇人）
+      submittedAt: 0
+    };
+    let watchId = null, geoRefineUntil = 0, wasDoneCount = null, renderTimer = null;
+
+    /* 送出座標的來源標籤（畫地圖、狀態文字都用這個字串）。 */
+    const SYSTEM_LABEL = "系統演算";
+
+    function validParams() { return Boolean(provider && rollcallId && token && accountId); }
+    function setStatus(text, kind) { statusEl.textContent = text; statusEl.className = kind || ""; }
+    function vibrate(pattern) { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (_) {} }
+    function fmtCoord(lat, lon) { return Number(lat).toFixed(6) + ", " + Number(lon).toFixed(6); }
+    function show(el, text, cls) { if (!el) return; el.textContent = text == null ? "" : text; if (cls !== undefined) el.className = cls; }
+
+    /* ── 地理計算（與後端 rollcalls/radar.rs 同一套：Haversine ＋ 等角投影） ────── */
+    function distanceMeters(lat1, lon1, lat2, lon2) {
+      const toRad = (d) => d * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1), dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      return 2 * EARTH_RADIUS * Math.asin(Math.min(1, Math.sqrt(a)));
+    }
+    function toPlane(lat, lon, origin) {
+      const latRef = origin.latitude * Math.PI / 180;
+      return {
+        x: (lon - origin.longitude) * Math.PI / 180 * EARTH_RADIUS * Math.cos(latRef),
+        y: (lat - origin.latitude) * Math.PI / 180 * EARTH_RADIUS
+      };
+    }
+    /* 比例尺要整數（「25 公尺」而不是「25.0 公尺」）。 */
+    function fmtScale(step) {
+      return step >= 1000 ? (step / 1000) + " 公里" : step + " 公尺";
+    }
+    function fmtMeters(m) {
+      const v = Math.abs(Number(m) || 0);
+      if (v >= 1000) return (v / 1000).toFixed(2) + " 公里";
+      if (v >= 100) return Math.round(v) + " 公尺";
+      return v.toFixed(1) + " 公尺";
+    }
+
+    /* ── 取位置狀態列 ──────────────────────────────────────────────────────── */
+    function setGeoState(kind, main, sub) {
+      geoStateEl.className = "geo-state" + (kind ? " " + kind : "");
+      show(geoMainEl, main);
+      show(geoSubEl, sub);
+    }
+    function accuracyKind(accuracy) {
+      if (accuracy == null || !isFinite(accuracy)) return "mid";
+      if (accuracy <= ACCURACY_GOOD_METERS) return "good";
+      if (accuracy <= ACCURACY_POOR_METERS) return "mid";
+      return "bad";
+    }
+    function accuracyText(accuracy) {
+      if (accuracy == null || !isFinite(accuracy)) return "誤差未知";
+      const rounded = accuracy >= 100 ? Math.round(accuracy) : Math.round(accuracy * 10) / 10;
+      const kind = accuracyKind(accuracy);
+      if (kind === "good") return "誤差 ±" + rounded + " 公尺（很好）";
+      if (kind === "mid") return "誤差 ±" + rounded + " 公尺（一般）";
+      return "誤差 ±" + rounded + " 公尺（室內訊號較弱）";
+    }
+
+    /* 教室座標：面板／設定檔目前要用的那幾組。 */
+    function updateClassroomButton() {
+      if (state.configured.length === 0) {
+        useClassroomBtn.disabled = true;
+        classroomHintEl.textContent = "系統沒有提供教室位置";
+        return;
+      }
+      const first = state.configured[0];
+      // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下、停手中 → 先鎖住送出（後端也會直接拒絕）。
+      useClassroomBtn.disabled = state.locked || Boolean(state.schoolBlock);
+      classroomHintEl.textContent = "教室座標 " + fmtCoord(first[0], first[1]) +
+        (state.configured.length > 1 ? "（共 " + state.configured.length + " 組）" : "");
+      show(classroomCoordsEl, classroomDistanceText());
+    }
+    /* RADAR_SCHOOL_BLOCK_V1（fix77）：學校端回 429（限流）／403（禁止）時，後端會停手一段時間、
+       並推播管理員。頁面要把「現在不會再送」講清楚，免得使用者一直按送出卻沒反應。 */
+    function renderSchoolBlock() {
+      if (!schoolBlockEl) return;
+      const block = state.schoolBlock;
+      if (!block) {
+        schoolBlockEl.style.display = "none";
+        schoolBlockEl.textContent = "";
+        return;
+      }
+      const status = Number(block.status) || 0;
+      const label = status === 429 ? "429 限流" : (status === 403 ? "403 禁止" : ("HTTP " + status));
+      const secs = Number(block.stop_secs) || 0;
+      const wait = secs >= 60 ? (Math.round(secs / 60) + " 分鐘") : (secs + " 秒");
+      const detail = String(block.detail || "").trim();
+      schoolBlockEl.style.display = "block";
+      schoolBlockEl.textContent = "🚫 學校端擋下送出（" + label + "）：系統已停手約 " + wait +
+        "，這段時間不會再送出（時間到會自動再試一次）。" +
+        (detail ? "學校回覆：" + detail : "") +
+        (status === 403 ? " 若一直發生，請確認學校網站是否正常、或這個帳號是否需要重新登入。" : "");
+      classroomHintEl.textContent = "學校端擋下中，暫停送出（等停手時間過）";
+    }
+    /* RADAR_SYSTEM_ONLY_V1：定位只拿來顯示（地圖與距離參考），沒有「用自己的位置送出」這條路。 */
+    function updateDeviceInfo() {
+      const fix = state.me;
+      if (!fix) { show(deviceCoordsEl, ""); return; }
+      show(deviceCoordsEl, "座標 " + fmtCoord(fix.latitude, fix.longitude) + classroomDistanceText());
+    }
+    /* 室內誤差的說明：定位只影響地圖（圓圈＝可能範圍），送出固定用教室位置。 */
+    function updateIndoorAdvice() {
+      const fix = state.me;
+      const poor = fix ? accuracyKind(fix.accuracy) === "bad" : true;
+      if (state.configured.length === 0) {
+        show(indoorHintEl, "系統還沒有教室位置；請通知管理員設定，設定好就能按「系統演算」送出。");
+      } else if (!fix) {
+        show(indoorHintEl, "還沒拿到位置；不影響送出，按「系統演算」照樣會送出教室位置。");
+      } else if (poor) {
+        show(indoorHintEl, "現在 " + accuracyText(fix.accuracy) + "（室內常見）；定位只影響地圖，送出的是教室位置。");
+      } else {
+        show(indoorHintEl, "定位 " + accuracyText(fix.accuracy) + "，只影響地圖顯示；送出的是教室位置。");
+      }
+      updateAdvice();
+    }
+
+    /* 距教室多遠：有目前位置又有教室座標時給一句人話（地圖也有標，但這裡先講）。 */
+    /* 目前位置到「最近的一組教室座標」的距離（公尺）；沒有位置或沒有教室座標時 null。 */
+    function nearestClassroomMeters() {
+      const fix = state.me;
+      if (!fix || state.configured.length === 0) return null;
+      let best = null;
+      for (const pair of state.configured) {
+        if (!Array.isArray(pair) || pair.length < 2) continue;
+        const lat = Number(pair[0]), lon = Number(pair[1]);
+        if (!isFinite(lat) || !isFinite(lon)) continue;
+        const meters = distanceMeters(fix.latitude, fix.longitude, lat, lon);
+        if (best == null || meters < best) best = meters;
+      }
+      return best;
+    }
+    function classroomDistanceText() {
+      const meters = nearestClassroomMeters();
+      return meters == null ? "" : "距教室約 " + fmtMeters(meters);
+    }
+    /* RADAR_UI_CLARITY_V1：一句話回答「現在該按哪一個」（依定位精度／是否逾時自動更新）。
+       這一塊只影響文字與顏色，不動任何送出邏輯。 */
+    function updateAdvice() {
+      if (!adviceEl) return;
+      const fix = state.me;
+      const hasClassroom = state.configured.length > 0;
+      const dist = classroomDistanceText();
+      const tail = dist ? "・" + dist : "";
+      let kind = "", icon = "🧮", main = "", sub = "";
+      if (state.cdExpired) {
+        kind = "lock"; icon = "⏱";
+        main = "這次點名已逾時";
+        sub = "請重新開啟這一頁。";
+      } else if (!state.statusLoaded) {
+        kind = "mid"; icon = "🧮";
+        main = "正在讀取教室位置…";
+        sub = "讀到就會告訴你按哪一顆。";
+      } else if (state.hasSubmitted && (state.total === 0 || state.pending > 0)) {
+        kind = "good"; icon = "✅";
+        main = "已送出「" + SYSTEM_LABEL + "」";
+        sub = "送出的是教室位置" + tail;
+      } else if (!hasClassroom) {
+        kind = "bad"; icon = "🏫";
+        main = "系統還沒有教室位置";
+        sub = "請通知管理員設定，設定好就能按「系統演算」送出。";
+      } else {
+        kind = "good";
+        main = "按「" + SYSTEM_LABEL + "」送出";
+        // 定位只影響地圖：這裡誠實說明「有沒有定位都不影響送出」。
+        sub = (fix ? accuracyText(fix.accuracy) + "，僅供地圖顯示" : "不必等定位") + tail;
+      }
+      adviceEl.className = "advice" + (kind ? " " + kind : "");
+      show(adviceIconEl, icon);
+      show(adviceMainEl, main);
+      show(adviceSubEl, sub);
+    }
+
+    function startGeolocation() {
+      if (!navigator.geolocation) {
+        setGeoState("bad", "這個瀏覽器不支援自動定位", "不影響送出：按「系統演算」照樣會用教室位置簽到。");
+        updateClassroomButton();
+        updateDeviceInfo();
+        updateIndoorAdvice();
+        return;
+      }
+      if (watchId != null) { try { navigator.geolocation.clearWatch(watchId); } catch (_) {} watchId = null; }
+      state.me = null;
+      state.meNow = null;
+      geoRefineUntil = Date.now() + GEO_REFINE_MS;
+      setGeoState("", "正在取得你的位置…", "室內可能要等幾秒，系統會自動偵測。");
+      updateDeviceInfo();
+      updateIndoorAdvice();   // RADAR_UI_CLARITY_V1：重新定位時建議橫幅立刻跟著更新
+      try {
+        watchId = navigator.geolocation.watchPosition(onFix, onGeoError, {
+          enableHighAccuracy: true, timeout: GEO_TIMEOUT_MS, maximumAge: 0
+        });
+      } catch (_) {
+        onGeoError({ code: 2 });
+      }
+    }
+    function stopGeolocation() {
+      if (watchId != null) { try { navigator.geolocation.clearWatch(watchId); } catch (_) {} watchId = null; }
+    }
+    function onFix(position) {
+      const coords = position && position.coords ? position.coords : null;
+      if (!coords) return;
+      const lat = Number(coords.latitude), lon = Number(coords.longitude);
+      const accuracy = coords.accuracy == null ? null : Number(coords.accuracy);
+      if (!isFinite(lat) || !isFinite(lon)) return;
+      if (lat === 0 && lon === 0) return;                        // 幾乎一定是「拿不到位置」
+      const fix = { latitude: lat, longitude: lon, accuracy: accuracy, at: Date.now() };
+      state.meNow = fix;
+      // 「目前位置」以最準的一次為準：新的定位更準就取代舊的（GPS 定位會在幾秒內收斂）。
+      if (!state.me || (accuracy != null && (state.me.accuracy == null || accuracy < state.me.accuracy))) {
+        state.me = fix;
+      }
+      // 過了收斂時間且已經夠準就停止監聽（省電）；不夠準就繼續聽，等 GPS 收斂。
+      if (Date.now() > geoRefineUntil && state.me.accuracy != null && state.me.accuracy <= ACCURACY_GOOD_METERS) stopGeolocation();
+      const kind = accuracyKind(state.me.accuracy);
+      setGeoState(kind, "已取得你的位置 · " + accuracyText(state.me.accuracy),
+        "只顯示在地圖上；送出點名一律用教室位置（系統演算）。");
+      updateDeviceInfo();
+      updateClassroomButton();   // 定位一更新，「距教室多遠」也跟著更新（不必等下一次輪詢）
+      updateIndoorAdvice();
+      scheduleRender();
+    }
+    function onGeoError(error) {
+      let message = "取得位置失敗";
+      const code = error && error.code;
+      if (code === 1) message = "你拒絕了定位權限";
+      else if (code === 2) message = "目前拿不到位置（系統定位服務或訊號問題）";
+      else if (code === 3) message = "取得位置逾時";
+      setGeoState("bad", message, state.configured.length > 0 ? "不影響送出：按「系統演算」照樣會用教室位置簽到。" : "請按「重新定位」，或通知管理員設定。");
+      state.me = null;
+      updateDeviceInfo();
+      updateIndoorAdvice();
+      scheduleRender();
+    }
+    geoRetryBtn.addEventListener("click", () => {
+      if (state.locked) return;
+      setStatus("重新定位中…", "");
+      startGeolocation();
+      vibrate(8);
+    });
+
+    /* ── 送出（只有一條路：系統演算＝教室座標；from_device 固定 false） ─────── */
+    function validatePoint(point) {
+      if (!point) return "沒有可用的位置";
+      const lat = Number(point.latitude), lon = Number(point.longitude);
+      if (!isFinite(lat) || !isFinite(lon)) return "位置不完整，請重新定位";
+      if (lat < -90 || lat > 90) return "緯度必須在 -90 ～ 90 之間";
+      if (lon < -180 || lon > 180) return "經度必須在 -180 ～ 180 之間";
+      if (lat === 0 && lon === 0) return "座標 (0, 0) 幾乎一定是沒拿到位置，請重新定位";
+      return "";
+    }
+    /* RADAR_SYSTEM_ONLY_V1：唯一的一組送出座標＝面板／設定檔的第一組教室座標。 */
+    function classroomPoint() {
+      if (state.configured.length === 0) return null;
+      const pair = state.configured[0];
+      return { latitude: Number(pair[0]), longitude: Number(pair[1]), accuracy: null, from_device: false, label: SYSTEM_LABEL };
+    }
+    async function submitSystem() {
+      if (!validParams()) { setStatus("連結缺少必要參數", "error"); return; }
+      if (state.locked) { setStatus("等待輸入已逾時", "error"); return; }
+      if (phase === "sending") return;
+      const point = classroomPoint();
+      if (!point) {
+        const msg = "系統沒有提供教室位置";
+        setStatus(msg, "error"); setResult("fail", msg, ""); return;
+      }
+      const invalid = validatePoint(point);
+      if (invalid) { setStatus(invalid, "error"); setResult("fail", invalid, ""); vibrate(30); return; }
+      return submit(point);
+    }
+    async function submit(point) {
+      setStatus("正在送出...", "");
+      setResult("sending", "正在送出「" + point.label + "」" + fmtCoord(point.latitude, point.longitude) + "…");
+      state.locked = true;
+      lockInput(true);
+      try {
+        const res = await fetch("/radar/submit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider, rollcall_id: rollcallId, account_id: accountId, token,
+            latitude: point.latitude, longitude: point.longitude,
+            accuracy: point.accuracy == null ? null : point.accuracy,
+            from_device: !!point.from_device
+          })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || "送出失敗");
+        state.hasSubmitted = true;
+        state.submittedAt = Date.now();
+        wasDoneCount = null;
+        state.submitted = { latitude: point.latitude, longitude: point.longitude, accuracy: point.accuracy, from_device: false };
+        setStatus("已送出「" + point.label + "」給 " + (body.delivered_count || 0) + " 個帳號的等待流程。", "ok");
+        setResult("waiting", "已送出座標，等待 Tronclass 回應…", "監控流程會用這組座標再簽到一次。");
+        updateAdvice();
+        lockInput(false);
+        vibrate(15);
+        refreshStatus();
+      } catch (err) {
+        const msg = (err && err.message) || "送出失敗";
+        const expired = /逾時|過期|到期|expired/i.test(msg);
+        setStatus(msg, "error");
+        setResult("fail", msg, expired ? "" : "可以等一下再按「系統演算」。");
+        lockInput(expired);
+        if (expired) state.cdExpired = true;
+        vibrate([40, 60, 40]);
+      }
+    }
+    useClassroomBtn.addEventListener("click", () => submitSystem());
+    recenterBtn.addEventListener("click", () => {
+      mapFocus = mapFocus === "me" ? "classroom" : "me";
+      recenterBtn.textContent = mapFocus === "me" ? "以教室為中心" : "回到我的位置";
+      renderMap(true);
+      vibrate(8);
+    });
+    /* SATELLITE_BASEMAP_V1：兩顆按鈕＝兩種底圖，互斥；再按同一顆＝關掉回格線圖。 */
+    /* 圖磚讀不到時：連續失敗到門檻就自己關掉底圖並說明原因（不要留一張空白底圖）。 */
+    function noteTileFailure() {
+      state.tileFails = (state.tileFails || 0) + 1;
+      if (state.tileFails < BASEMAP_MAX_TILE_FAILURES || !state.tiles) return;
+      state.tiles = false;
+      state.basemapHint = "底圖讀不到（可能被網路或瀏覽器擋掉了），已回到格線圖；位置與距離仍然正確。";
+      syncBasemapButtons();
+      renderMap(true);
+    }
+    function syncBasemapButtons() {
+      const streetOn = state.tiles && state.basemap === BASEMAP_STREET;
+      const satelliteOn = state.tiles && state.basemap === BASEMAP_SATELLITE;
+      toggleTilesBtn.setAttribute("aria-pressed", streetOn ? "true" : "false");
+      toggleSatelliteBtn.setAttribute("aria-pressed", satelliteOn ? "true" : "false");
+      toggleTilesBtn.textContent = streetOn ? "🗺 關閉一般地圖" : "🗺 一般地圖";
+      toggleSatelliteBtn.textContent = satelliteOn ? "🛰 關閉衛星影像" : "🛰 衛星影像";
+      show(mapHintEl, state.basemapHint || (state.tiles ? BASEMAP_HINT[state.basemap] : BASEMAP_HINT_DEFAULT));
+    }
+    function toggleBasemap(kind) {
+      if (navigator.onLine === false) { show(mapHintEl, "目前沒有網路，維持格線圖。"); return; }
+      const alreadyOn = state.tiles && state.basemap === kind;
+      state.tiles = !alreadyOn;
+      state.basemap = kind;
+      state.tileFails = 0;       // 重新按＝重新試一次
+      state.basemapHint = "";
+      syncBasemapButtons();
+      renderMap(true);
+      vibrate(8);
+    }
+    toggleProbeBtn.addEventListener("click", () => {
+      state.probeOn = !state.probeOn;
+      toggleProbeBtn.setAttribute("aria-pressed", state.probeOn ? "true" : "false");
+      renderProbeInfo();
+      renderMap(true);
+      vibrate(8);
+    });
+    toggleTilesBtn.addEventListener("click", () => toggleBasemap(BASEMAP_STREET));
+    toggleSatelliteBtn.addEventListener("click", () => toggleBasemap(BASEMAP_SATELLITE));
+
+    /* CLASS_COUNT_HEADER_V1：頁面上方那一欄＝「目前班上已點人數」（大字＋班上比例條），
+       原本的倒數縮成右下角一行小字（快到期／逾時一樣變色，逾時照樣鎖住輸入）。
+       人數來源＝/radar/status 的 class_progress（後端每 10 秒讀一次學校的班上進度，
+       讀不到就顯示「讀取中…」，不影響「系統演算」送出）。 */
+    let cdDeadlineMs = null;
+    function fmtSecs(total) {
+      total = Math.max(0, Math.floor(total));
+      const m = Math.floor(total / 60), s = total % 60;
+      return m > 0 ? m + ":" + String(s).padStart(2, "0") : s + " 秒";
+    }
+    /* 班上已點人數：與下面「全班」那一列用同一份 state.classProgress，數字保證一致。 */
+    function renderClassCount() {
+      const progress = state.classProgress;
+      if (!progress || !progress.total) {
+        countdownTimeEl.textContent = "--";
+        countdownLabelEl.textContent = "班上已點人數（讀取中…）";
+        countdownBarEl.style.width = "0%";
+        countdownEl.classList.remove("pass");
+        return;
+      }
+      const pct = Math.max(0, Math.min(100, progress.completed / progress.total * 100));
+      const passed = progress.completed * 100 > progress.total * state.autoPercent;
+      countdownTimeEl.textContent = progress.completed + " / " + progress.total;
+      countdownLabelEl.textContent = "班上已點人數（" + Math.round(pct) + "%）"
+        + (passed ? "・已過 " + state.autoPercent + "%，系統會自動送出" : "");
+      countdownBarEl.style.width = pct.toFixed(1) + "%";
+      countdownEl.classList.toggle("pass", passed);
+    }
+    function syncCountdown(expiresInSecs) {
+      if (typeof expiresInSecs !== "number" || !isFinite(expiresInSecs)) return;
+      cdDeadlineMs = Date.now() + expiresInSecs * 1000;
+      countdownEl.style.display = "";
+      tickCountdown();
+    }
+    function tickCountdown() {
+      renderClassCount();
+      if (cdDeadlineMs == null) return;
+      const remain = Math.max(0, (cdDeadlineMs - Date.now()) / 1000);
+      countdownSubEl.textContent = remain > 0 ? ("剩餘輸入時間 " + fmtSecs(remain)) : "輸入時間已結束";
+      countdownEl.className = "countdown" + (countdownEl.classList.contains("pass") ? " pass" : "")
+        + (remain <= 0 ? " expired" : remain <= 10 ? " danger" : remain <= 30 ? " warn" : "");
+      if (remain <= 0 && !state.cdExpired) {
+        state.cdExpired = true;
+        lockInput(true);
+        stopGeolocation();
+        setStatus("等待輸入已逾時", "error");
+        updateAdvice();
+      }
+    }
+    setInterval(tickCountdown, 1000);
+
+    function renderList(el, items) {
+      el.replaceChildren();
+      if (!items || items.length === 0) { const li = document.createElement("li"); li.textContent = "尚無"; el.appendChild(li); return; }
+      for (const item of items) {
+        const li = document.createElement("li");
+        li.textContent = item;
+        if (item === accountId) li.className = "you";
+        el.appendChild(li);
+      }
+    }
+    let phase = "idle";
+    function setResult(kind, text, sub) {
+      phase = kind === "" ? "idle" : kind;
+      if (!kind) { resultEl.className = "result"; resultEl.replaceChildren(); return; }
+      resultEl.className = "result show " + kind;
+      resultEl.replaceChildren();
+      if (kind === "sending" || kind === "waiting") { const sp = document.createElement("span"); sp.className = "spinner"; resultEl.appendChild(sp); }
+      resultEl.appendChild(document.createTextNode(text));
+      if (sub) { const sm = document.createElement("small"); sm.textContent = sub; resultEl.appendChild(sm); }
+    }
+    function lockInput(locked) {
+      state.locked = locked || state.cdExpired;
+      useClassroomBtn.disabled = state.locked || state.configured.length === 0;
+      geoRetryBtn.disabled = state.locked;
+    }
+
+    /* ── 地圖（純 SVG，不需要外部圖庫；底圖可選） ────────────────────────────── */
+    let mapFocus = "classroom"; // classroom（預設，看得到離教室多遠）／me（以自己為中心）
+    function svgEl(name, attrs) {
+      const el = document.createElementNS(NS, name);
+      if (attrs) { for (const key in attrs) el.setAttribute(key, String(attrs[key])); }
+      return el;
+    }
+    function svgText(x, y, text, opts) {
+      const el = svgEl("text", Object.assign({
+        x: x, y: y, "font-size": 12, "font-family": "system-ui,sans-serif", fill: "#667085"
+      }, opts || {}));
+      el.textContent = text;
+      return el;
+    }
+    function marks() {
+      const list = [];
+      state.configured.slice(0, 4).forEach((pair, i) => {
+        if (!Array.isArray(pair) || pair.length < 2) return;
+        list.push({ kind: "classroom", label: state.configured.length > 1 ? "教室" + (i + 1) : "教室位置", latitude: Number(pair[0]), longitude: Number(pair[1]), accuracy: null });
+      });
+      const me = state.meNow || state.me;
+      if (me) list.push({ kind: "me", label: "你（±" + Math.round(me.accuracy == null ? 0 : me.accuracy) + " 公尺）", latitude: me.latitude, longitude: me.longitude, accuracy: me.accuracy });
+      if (state.submitted && state.submitted.latitude != null) {
+        list.push({ kind: "submitted", label: "已送出（" + SYSTEM_LABEL + "）", latitude: Number(state.submitted.latitude), longitude: Number(state.submitted.longitude), accuracy: null });
+      }
+      return list;
+    }
+    function pickOrigin(list) {
+      const classroom = list.find((m) => m.kind === "classroom");
+      const me = list.find((m) => m.kind === "me");
+      if (mapFocus === "me") return me || classroom || list[0] || null;
+      return classroom || me || list[0] || null;
+    }
+    /* 地圖只在「畫的東西變了」時重畫：定位微調會畫，狀態輪詢沒有變化就不重畫。 */
+    let lastMapSignature = "";
+    function mapSignature(list) {
+      const parts = list.map((m) => m.kind + ":" + m.latitude.toFixed(6) + ":" + m.longitude.toFixed(6) + ":" + (m.accuracy == null ? "-" : Math.round(m.accuracy)));
+      parts.push("focus:" + mapFocus, "tiles:" + (state.tiles ? state.basemap : "off"), "err:" + (state.lastError || ""));
+      // RADAR_DEDUCE_TRACE_V1：推估紀錄變了（例如又多了一個距離量測）就要重畫。
+      parts.push("probe:" + (state.probeOn && state.probe ? probeSignature() : "off"));
+      return parts.join("|");
+    }
+    /* GRID_STEP_LADDER_V1：每一格至少要有 GRID_MIN_CELL_SVG 個 SVG 單位，不然線會擠成一片。
+       階梯一路排到 500 公里——地圖被誤差圈拉到上百公里（例如 ±100 公里）時，
+       舊版用最大的 5000 公尺當步長，一格只有 3.7 個單位＝整張圖變成密密麻麻的網子。 */
+    const GRID_MIN_CELL_SVG = 44;
+    const GRID_STEPS_METERS = [5, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000];
+    function gridStep(scale) {
+      for (const step of GRID_STEPS_METERS) { if (step * scale >= GRID_MIN_CELL_SVG) return step; }
+      return GRID_STEPS_METERS[GRID_STEPS_METERS.length - 1];
+    }
+    /* 底圖圖磚：先挑一個「圖磚大約占 BASEMAP_TARGET_TILE_SVG 個單位」的縮放；
+       若這樣需要的張數超過 MAP_MAX_TILES，就把縮放再降一級（圖磚變大、張數變少），
+       最多降幾級就停——保證底圖一定蓋滿畫面，而且請求數有上限。 */
+    /* ── RADAR_DEDUCE_TRACE_V1（fix75）：把「教室位置是怎麼推出來的」畫在地圖上 ──
+       後端（rollcalls/radar.rs）真的跑過什麼，這裡就畫什麼，不會無中生有：
+         measurements＝每一次送出後學校回報「還差幾公尺」的量測
+           → 以那個座標為圓心、那個距離為半徑畫圓：教室一定在這個圓上
+         candidates ＝兩圓交會算出來的候選座標（紫菱形）
+         estimate    ＝多個距離做最小平方（三邊測量）的推估點（紫星）
+         grid        ＝以推估點為中心的棋盤格掃描，每 100 公尺一格（灰點）
+       沒有紀錄時整層不畫（頁面只顯示位置與進度）。 */
+    const PROBE_COLOR = "#7c3aed";
+    const PROBE_GRID_COLOR = "#94a3b8";
+    /* 量測圓最多讓地圖拉到 PROBE_EXTENT_MAX_METERS：一個「還差 3 公里」的圓若把整張圖
+       拉遠，反而看不到教室附近；超出的圓只會看到一段弧（誠實：教室在那個大圓上）。 */
+    const PROBE_EXTENT_MAX_METERS = 2000;
+    function probeSignature() {
+      const t = state.probe;
+      if (!t) return "none";
+      return [
+        "m" + (t.measurements || []).length,
+        "c" + (t.candidates || []).length,
+        "e" + (t.estimate ? 1 : 0),
+        "g" + (t.grid && t.grid.cells ? t.grid.cells.length : -1),
+        "s" + (t.success ? 1 : 0),
+        "a" + (t.account_id || "")
+      ].join(",");
+    }
+    /* 五角星（純 SVG path，不用外部圖庫）。 */
+    function starPath(cx, cy, outer, inner) {
+      let d = "";
+      for (let i = 0; i < 10; i += 1) {
+        const r = i % 2 === 0 ? outer : inner;
+        const a = -Math.PI / 2 + i * Math.PI / 5;
+        d += (i === 0 ? "M " : "L ") + (cx + r * Math.cos(a)).toFixed(2) + " " + (cy + r * Math.sin(a)).toFixed(2) + " ";
+      }
+      return d + "Z";
+    }
+    /* 推估過程佔的範圍（給地圖縮放用；單一項最多只放大到 PROBE_EXTENT_MAX_METERS）。 */
+    function probeExtentMeters(origin) {
+      if (!probeShown()) return 0;
+      const t = state.probe;
+      let need = 0;
+      const add = (lat, lon, extra) => {
+        const d = distanceMeters(origin.latitude, origin.longitude, Number(lat), Number(lon)) + (Number(extra) || 0);
+        need = Math.max(need, Math.min(d, PROBE_EXTENT_MAX_METERS));
+      };
+      for (const m of (t.measurements || [])) add(m.latitude, m.longitude, m.distance_m);
+      for (const c of (t.candidates || [])) add(c[0], c[1], 0);
+      if (t.estimate) add(t.estimate[0], t.estimate[1], 0);
+      if (t.grid && Array.isArray(t.grid.cells)) for (const cell of t.grid.cells) add(cell[0], cell[1], 0);
+      if (t.success) add(t.success[0], t.success[1], 0);
+      return need;
+    }
+    function probeShown() { return Boolean(state.probeOn && state.probe); }
+    function renderProbeLayer(toSvg, scale) {
+      if (!probeShown()) return;
+      const t = state.probe;
+      const layer = svgEl("g", {});
+      /* ① 棋盤格掃過的格子（先畫，才不會蓋住圓與標記）。 */
+      const grid = t.grid;
+      if (grid && Array.isArray(grid.cells)) {
+        for (const cell of grid.cells) {
+          const p = toSvg(Number(cell[0]), Number(cell[1]));
+          layer.appendChild(svgEl("rect", { x: p.x - 2.4, y: p.y - 2.4, width: 4.8, height: 4.8, fill: PROBE_GRID_COLOR, opacity: "0.9" }));
+        }
+      }
+      /* ② 量測圓：圓心＝試過的座標、半徑＝學校回報的距離。 */
+      (t.measurements || []).forEach((m, i) => {
+        const lat = Number(m.latitude), lon = Number(m.longitude), d = Number(m.distance_m);
+        if (!isFinite(lat) || !isFinite(lon) || !isFinite(d) || d <= 0) return;
+        const p = toSvg(lat, lon);
+        layer.appendChild(svgEl("circle", {
+          cx: p.x, cy: p.y, r: Math.max(6, d * scale), fill: "none", stroke: PROBE_COLOR,
+          "stroke-width": 1.6, "stroke-dasharray": "7 6", opacity: "0.8"
+        }));
+        layer.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 3.2, fill: PROBE_COLOR, opacity: "0.9" }));
+        const label = "圓心=" + (i + 1) + "、半徑=" + fmtMeters(d);
+        layer.appendChild(svgText(Math.min(Math.max(p.x + 6, 6), MAP_W - 150), p.y + 15, label,
+          { fill: PROBE_COLOR, "font-size": 11, "font-weight": 600 }));
+      });
+      /* ③ 兩圓交會的候選座標。 */
+      (t.candidates || []).forEach((c) => {
+        const p = toSvg(Number(c[0]), Number(c[1]));
+        layer.appendChild(svgEl("path", {
+          d: "M " + p.x + " " + (p.y - 5) + " l 5 5 l -5 5 l -5 -5 z",
+          fill: "#ffffff", stroke: PROBE_COLOR, "stroke-width": 2
+        }));
+      });
+      /* ④ 最小平方（三邊測量）推估出來的教室位置。 */
+      if (t.estimate) {
+        const p = toSvg(Number(t.estimate[0]), Number(t.estimate[1]));
+        layer.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 9, fill: "none", stroke: PROBE_COLOR, "stroke-width": 2, opacity: "0.9" }));
+        layer.appendChild(svgEl("path", { d: starPath(p.x, p.y, 10, 4.4), fill: PROBE_COLOR }));
+        layer.appendChild(svgText(Math.min(Math.max(p.x + 12, 6), MAP_W - 170), Math.max(p.y - 12, 12),
+          "系統推估的教室位置", { fill: PROBE_COLOR, "font-size": 12, "font-weight": 700 }));
+      }
+      mapEl.appendChild(layer);
+    }
+
+    /* 推估過程的逐步說明（照後端紀錄寫，沒有發生的步驟就不寫）。 */
+    function renderProbeInfo() {
+      const t = state.probe;
+      const showLegend = (el, on) => { if (el) el.style.display = on ? "" : "none"; };
+      if (!state.probeOn) {
+        show(probeHintEl, "🧭 推估過程已隱藏（只顯示位置與進度）。按「🧭 推估過程」可以再看。");
+        showLegend(legendMeasureEl, false); showLegend(legendEstimateEl, false); showLegend(legendGridEl, false);
+        return;
+      }
+      if (!t) {
+        show(probeHintEl, "🧭 還沒有推估紀錄：第一次送出就成功的話，系統不需要推估教室位置。");
+        showLegend(legendMeasureEl, false); showLegend(legendEstimateEl, false); showLegend(legendGridEl, false);
+        return;
+      }
+      const lines = ["🧭 教室位置是怎麼推出來的（最近一次推估：" + (t.account_id || "這個帳號") + "）"];
+      const measurements = t.measurements || [];
+      if (measurements.length === 0) {
+        lines.push("1. 第一次送出的座標就被學校接受，沒有產生距離量測（不需要推估）。");
+      } else {
+        measurements.slice(0, 6).forEach((m, i) => {
+          lines.push((i + 1) + ". 送出 " + fmtCoord(m.latitude, m.longitude) + " → 學校回「還差 " +
+            fmtMeters(m.distance_m) + "」（圖上第 " + (i + 1) + " 個紫圈＝教室一定在這個圓上）");
+        });
+        if (measurements.length > 6) lines.push("…還有 " + (measurements.length - 6) + " 個量測（圖上都有畫）");
+      }
+      const n = measurements.length + 1;
+      if ((t.candidates || []).length > 0) {
+        lines.push(n + ". 兩圓交會 → " + t.candidates.length + " 個候選座標（圖上的紫菱形）");
+      }
+      if (t.estimate) {
+        lines.push(n + ". 用 " + Math.max(2, measurements.length) + " 個距離做最小平方（三邊測量）→ 推估教室在 " +
+          fmtCoord(t.estimate[0], t.estimate[1]) + "（圖上的紫星）");
+      }
+      if (t.grid && t.grid.cells && t.grid.cells.length > 0) {
+        lines.push(n + ". 以推估點為中心、每 " + Math.round(t.grid.step_m || 100) + " 公尺往外掃，已掃 " +
+          t.grid.cells.length + " 格（圖上的灰點；上限 " + fmtMeters(t.grid.max_radius_m || 3000) + "）");
+      }
+      if (t.success) {
+        lines.push("✅ 最後成功送出：" + fmtCoord(t.success[0], t.success[1]));
+      } else if (measurements.length > 0) {
+        lines.push("⏳ 這一輪還在試（學校目前還沒接受任何座標）。");
+      }
+      show(probeHintEl, lines.join("\n"));
+      showLegend(legendMeasureEl, measurements.length > 0);
+      showLegend(legendEstimateEl, Boolean(t.estimate));
+      showLegend(legendGridEl, Boolean(t.grid && t.grid.cells && t.grid.cells.length > 0));
+    }
+
+    function renderTiles(group, origin, scale) {
+      if (!state.tiles) return 0;
+      try {
+        const latRad = origin.latitude * Math.PI / 180;
+        const cosLat = Math.cos(latRad);
+        const maxZoom = BASEMAP_MAX_ZOOM[state.basemap] || 19;
+        let zoom = basemapZoom(latRad, scale, maxZoom);
+        let plan = null;
+        for (let step = 0; step < 16; step += 1) {
+          const tilesPerAxis = Math.pow(2, zoom);
+          const mPerPx = 156543.03392 * cosLat / tilesPerAxis;
+          const k = mPerPx * scale;                              // 1 圖磚像素 = k 個 SVG 單位
+          const originPxX = (origin.longitude + 180) / 360 * BASEMAP_TILE_PX * tilesPerAxis;
+          const originPxY = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2
+            * BASEMAP_TILE_PX * tilesPerAxis;
+          const minX = Math.floor((originPxX - (MAP_W / 2) / k) / BASEMAP_TILE_PX);
+          const maxX = Math.floor((originPxX + (MAP_W / 2) / k) / BASEMAP_TILE_PX);
+          const minY = Math.floor((originPxY - (MAP_H / 2) / k) / BASEMAP_TILE_PX);
+          const maxY = Math.floor((originPxY + (MAP_H / 2) / k) / BASEMAP_TILE_PX);
+          plan = { zoom: zoom, k: k, originPxX: originPxX, originPxY: originPxY,
+            minX: minX, maxX: maxX, minY: minY, maxY: maxY };
+          const needed = (maxX - minX + 1) * (maxY - minY + 1);
+          if (needed <= MAP_MAX_TILES || zoom <= BASEMAP_MIN_ZOOM) break;
+          zoom -= 1;
+        }
+        if (!plan) return 0;
+        const maxIndex = Math.pow(2, plan.zoom) - 1;
+        const tiles = [];
+        for (let tx = plan.minX; tx <= plan.maxX; tx++) {
+          for (let ty = plan.minY; ty <= plan.maxY; ty++) {
+            if (tx < 0 || ty < 0 || tx > maxIndex || ty > maxIndex) continue;
+            tiles.push({ tx: tx, ty: ty });
+          }
+        }
+        tiles.sort((a, b) =>
+          (Math.abs(a.tx * BASEMAP_TILE_PX + 128 - plan.originPxX) + Math.abs(a.ty * BASEMAP_TILE_PX + 128 - plan.originPxY)) -
+          (Math.abs(b.tx * BASEMAP_TILE_PX + 128 - plan.originPxX) + Math.abs(b.ty * BASEMAP_TILE_PX + 128 - plan.originPxY)));
+        let renderedTiles = 0;
+        for (const tile of tiles.slice(0, MAP_MAX_TILES)) {
+          const tileUrl = basemapTileUrl(state.basemap, plan.zoom, tile.tx, tile.ty);
+          const x = MAP_W / 2 + (tile.tx * BASEMAP_TILE_PX - plan.originPxX) * plan.k;
+          const y = MAP_H / 2 + (tile.ty * BASEMAP_TILE_PX - plan.originPxY) * plan.k;
+          const image = svgEl("image", {
+            x: x, y: y, width: BASEMAP_TILE_PX * plan.k, height: BASEMAP_TILE_PX * plan.k,
+            opacity: 0.9, "pointer-events": "none",
+            href: tileUrl, "xlink:href": tileUrl,
+            preserveAspectRatio: "none"
+          });
+          /* 讀得到就重置失敗計數；連續失敗（被網路／瀏覽器擋掉、對方掛掉）就回格線圖並說明。 */
+          image.addEventListener("load", () => { state.tileFails = 0; });
+          image.addEventListener("error", noteTileFailure);
+          group.appendChild(image);
+          renderedTiles += 1;
+        }
+        return renderedTiles;
+      } catch (_) { return 0; /* 底圖失敗就維持格線圖 */ }
+    }
+    function renderMap(force) {
+      const list = marks();
+      const signature = mapSignature(list);
+      if (!force && signature === lastMapSignature) return;
+      lastMapSignature = signature;
+      mapEl.replaceChildren();
+      const origin = pickOrigin(list);
+      if (!origin) {
+        mapEl.appendChild(svgText(MAP_W / 2 - 70, MAP_H / 2, "還沒有可畫的位置", { "font-size": 14 }));
+        return;
+      }
+      let maxMeters = MAP_MIN_SPAN_METERS / 2;
+      for (const m of list) {
+        maxMeters = Math.max(maxMeters, distanceMeters(origin.latitude, origin.longitude, m.latitude, m.longitude) + (m.accuracy || 0));
+      }
+      maxMeters = Math.max(maxMeters, (origin.accuracy || 0) + MAP_MIN_SPAN_METERS / 2);
+      // RADAR_DEDUCE_TRACE_V1：量測圓／推估點／棋盤格也要在畫面裡（單項最多放大到 2 公里）。
+      maxMeters = Math.max(maxMeters, probeExtentMeters(origin));
+      const scale = Math.min(MAP_W / 2 - MAP_PAD, MAP_H / 2 - MAP_PAD) / maxMeters;
+      const cx = MAP_W / 2, cy = MAP_H / 2;
+      const toSvg = (lat, lon) => {
+        const p = toPlane(lat, lon, origin);
+        return { x: cx + p.x * scale, y: cy - p.y * scale };
+      };
+
+      mapEl.appendChild(svgEl("rect", { x: 0, y: 0, width: MAP_W, height: MAP_H, fill: "#f8fafc" }));
+      const tileGroup = svgEl("g", {});
+      mapEl.appendChild(tileGroup);
+      const tileCount = renderTiles(tileGroup, origin, scale);
+      if (state.tiles) {
+        const credit = state.basemap === BASEMAP_SATELLITE
+          ? "© Esri、Maxar、Earthstar Geographics"
+          : "© OpenStreetMap 貢獻者";
+        mapEl.appendChild(svgText(MAP_W - 10, MAP_H - 8, credit, {
+          "font-size": 10, "text-anchor": "end", fill: "#94a3b8"
+        }));
+      }
+
+      /* GRID_ONLY_WITHOUT_BASEMAP_V1：格線＋中心十字**只在地圖本身是格線圖時畫**。
+         一旦有底圖（一般地圖／衛星影像），就把畫面讓給圖磚：中心點本來就有標記與標籤，
+         不會因為少了十字而看不懂。比例尺（左下角）不管哪種模式都照畫。 */
+      const step = gridStep(scale);
+      if (!state.tiles || tileCount === 0) {
+        const grid = svgEl("g", {});
+        for (let offset = step; offset * scale <= Math.max(MAP_W, MAP_H); offset += step) {
+          const up = cy - offset * scale, down = cy + offset * scale;
+          const left = cx - offset * scale, right = cx + offset * scale;
+          if (up > 0) grid.appendChild(svgEl("line", { x1: 0, y1: up, x2: MAP_W, y2: up, stroke: "#e2e8f0", "stroke-width": 1 }));
+          if (down < MAP_H) grid.appendChild(svgEl("line", { x1: 0, y1: down, x2: MAP_W, y2: down, stroke: "#e2e8f0", "stroke-width": 1 }));
+          if (left > 0) grid.appendChild(svgEl("line", { x1: left, y1: 0, x2: left, y2: MAP_H, stroke: "#e2e8f0", "stroke-width": 1 }));
+          if (right < MAP_W) grid.appendChild(svgEl("line", { x1: right, y1: 0, x2: right, y2: MAP_H, stroke: "#e2e8f0", "stroke-width": 1 }));
+        }
+        mapEl.appendChild(grid);
+        mapEl.appendChild(svgEl("line", { x1: 0, y1: cy, x2: MAP_W, y2: cy, stroke: "#cbd5e1", "stroke-width": 1 }));
+        mapEl.appendChild(svgEl("line", { x1: cx, y1: 0, x2: cx, y2: MAP_H, stroke: "#cbd5e1", "stroke-width": 1 }));
+      }
+
+      // RADAR_DEDUCE_TRACE_V1：推估過程畫在底圖／格線之上、標記之下。
+      renderProbeLayer(toSvg, scale);
+
+      // 你 ↔ 教室的連線與距離（判斷「離教室多遠」最直接）
+      const me = list.find((m) => m.kind === "me");
+      const classroom = list.find((m) => m.kind === "classroom");
+      if (me && classroom) {
+        const a = toSvg(me.latitude, me.longitude), b = toSvg(classroom.latitude, classroom.longitude);
+        const d = distanceMeters(me.latitude, me.longitude, classroom.latitude, classroom.longitude);
+        mapEl.appendChild(svgEl("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: "#94a3b8", "stroke-width": 2, "stroke-dasharray": "6 5" }));
+        mapEl.appendChild(svgText((a.x + b.x) / 2 + 6, (a.y + b.y) / 2 - 6, "距離 " + fmtMeters(d), { fill: "#475569", "font-size": 12, "font-weight": 600 }));
+      }
+      for (const m of list) {
+        const p = toSvg(m.latitude, m.longitude);
+        const color = m.kind === "me" ? "#2563eb" : m.kind === "submitted" ? "#15803d" : "#b45309";
+        if (m.accuracy) {
+          mapEl.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: Math.max(8, m.accuracy * scale), fill: "rgba(37,99,235,.12)", stroke: "#2563eb", "stroke-width": 1.5, "stroke-dasharray": "5 4" }));
+        }
+        if (m.kind === "classroom") {
+          mapEl.appendChild(svgEl("path", { d: "M " + p.x + " " + (p.y - 9) + " l 7 12 l -14 0 z", fill: color, opacity: 0.9 }));
+          mapEl.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: 4.5, fill: "none", stroke: color, "stroke-width": 2 }));
+        } else {
+          mapEl.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: m.kind === "me" ? 7 : 6, fill: color, stroke: "#ffffff", "stroke-width": 2 }));
+        }
+        const label = m.label + " " + fmtCoord(m.latitude, m.longitude);
+        const lx = Math.min(Math.max(p.x + 11, 6), MAP_W - 220);
+        const ly = Math.min(Math.max(p.y + (m.kind === "submitted" ? 20 : -10), 14), MAP_H - 8);
+        mapEl.appendChild(svgText(lx, ly, label, { fill: color, "font-size": 12, "font-weight": 700 }));
+      }
+
+      // 北箭頭＋比例尺
+      mapEl.appendChild(svgEl("path", { d: "M " + (MAP_W - 28) + " 22 l 7 16 l -7 -5 l -7 5 z", fill: "#475569" }));
+      mapEl.appendChild(svgText(MAP_W - 34, 50, "N", { fill: "#475569", "font-size": 12, "font-weight": 700 }));
+      const barLen = step * scale;
+      mapEl.appendChild(svgEl("line", { x1: 18, y1: MAP_H - 20, x2: 18 + barLen, y2: MAP_H - 20, stroke: "#475569", "stroke-width": 3 }));
+      mapEl.appendChild(svgText(18, MAP_H - 28, fmtScale(step), { fill: "#475569", "font-size": 12, "font-weight": 700 }));
+      // 上一輪失敗的距離（學校回報「需要移動 X 公尺」）就畫在中心附近
+      if (state.lastError) {
+        const matched = String(state.lastError).match(/([0-9]+(?:\.[0-9]+)?)/);
+        if (matched) {
+          mapEl.appendChild(svgText(18, 22, "上次差 " + fmtMeters(Number(matched[1])), { fill: "#b91c1c", "font-size": 12, "font-weight": 700 }));
+        }
+      }
+    }
+    function scheduleRender() {
+      if (renderTimer != null) return;
+      renderTimer = setTimeout(() => { renderTimer = null; renderMap(); }, 300);
+    }
+    function renderProgress() {
+      const total = state.total, done = state.completed;
+      const pct = total > 0 ? Math.max(0, Math.min(100, done / total * 100)) : 0;
+      progressBarEl.style.width = pct + "%";
+      progressTextEl.textContent = "已點到 " + done + " / " + total + (state.pending > 0 ? "（等待 " + state.pending + "）" : "");
+    }
+    /* AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：班上進度（後端每 10 秒讀一次，這裡照實顯示）。
+       判斷與後端一致：completed / total **嚴格超過**門檻才算過。 */
+    function renderClassProgress() {
+      const progress = state.classProgress;
+      if (!progress || !progress.total) {
+        classBarEl.style.width = "0%";
+        renderClassCount();
+        show(classTextEl, "班上進度：暫時讀不到");
+        show(classHintEl, "讀不到班上進度不影響這一頁：按「系統演算」照樣會送出。");
+        return;
+      }
+      const pct = Math.max(0, Math.min(100, progress.completed / progress.total * 100));
+      classBarEl.style.width = pct.toFixed(1) + "%";
+      // CLASS_COUNT_HEADER_V1：上方那一欄跟著同一份資料更新。
+      renderClassCount();
+      show(classTextEl, "班上：已點到 " + progress.completed + " / " + progress.total + "（" + Math.round(pct) + "%）");
+      if (progress.completed * 100 > progress.total * state.autoPercent) {
+        show(classHintEl, "班上已超過 " + state.autoPercent + "%（" + progress.completed + " / " + progress.total + "），系統會自動送出點名——你不按也沒關係。");
+      } else {
+        const need = Math.floor(progress.total * state.autoPercent / 100) + 1 - progress.completed;
+        show(classHintEl, "再 " + Math.max(1, need) + " 個人點名成功就超過 " + state.autoPercent + "%，到時系統會自動送出。");
+      }
+    }
+
+    /* 依 /radar/status 的 completed/pending 決定 waiting → done；last_error 出現 → 顯示失敗原因。
+       雷達最常見的「失敗」是距離不足——那其實是有用的資訊，所以照樣顯示距離。 */
+    function reconcileResult() {
+      if (phase === "sending") return;
+      const done = state.completed, total = state.total, pending = state.pending;
+      const meDone = done > 0;
+      if (total > 0 && pending === 0 && done > 0) {
+        setResult("done", meDone ? "簽到成功" : "全部完成",
+          total > 1 ? ("已完成 " + done + " / " + total + " 個帳號") : "不用再做任何事，這一頁可以關掉。");
+        lockInput(true);
+        stopGeolocation();
+        if (wasDoneCount !== done) { vibrate([30, 40, 30]); wasDoneCount = done; }
+        return;
+      }
+      // 等待流程全部結束、卻沒有任何帳號回報成功：老實說出來，不要讓頁面停在「等待中」。
+      if (total > 0 && pending === 0 && done === 0) {
+        setResult("fail", "這次點名已結束，但沒有回報成功", "可能是超過學校的時間限制。詳情可看面板的「即時狀態」與歷史紀錄。");
+        lockInput(true);
+        stopGeolocation();
+        return;
+      }
+      if (state.lastError && (state.hasSubmitted || state.submitted)) {
+        const firstTime = phase !== "fail";
+        setResult(
+          "fail",
+          "還沒點到：" + state.lastError,
+          "可以按「系統演算」再送一次；按「重新定位」只會更新地圖上的位置。"
+        );
+        lockInput(false);
+        if (firstTime) { vibrate([40, 60, 40]); }
+      } else if (state.hasSubmitted || state.submitted) {
+        const elapsed = state.submittedAt ? Math.round((Date.now() - state.submittedAt) / 1000) : 0;
+        setResult("waiting", "已送出座標，等待 Tronclass 回應…",
+          total > 0 ? ("已完成 " + done + " / " + total + (elapsed > 20 ? "，若超過 30 秒仍未完成可再送一次" : "")) : "");
+        lockInput(false);
+      }
+    }
+
+    async function refreshStatus() {
+      if (!validParams()) { setStatus("連結缺少必要參數", "error"); return; }
+      try {
+        const query = new URLSearchParams({ provider, rollcall_id: String(rollcallId), account_id: accountId, token });
+        const res = await fetch("/radar/status?" + query.toString(), { cache: "no-store" });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || "狀態讀取失敗");
+        state.statusLoaded = true;
+        state.total = Number(body.total_count || 0);
+        state.completed = Number(body.completed_count || 0);
+        state.pending = Number(body.pending_count || 0);
+        state.configured = Array.isArray(body.configured_coords) ? body.configured_coords : [];
+        state.submitted = body.submitted_point || null;
+        state.lastError = body.last_error || null;
+        state.courseName = body.course_name || "";
+        state.classProgress = body.class_progress || null;
+        // RADAR_DEDUCE_TRACE_V1：後端記錄的「怎麼推估教室位置」（沒有紀錄時是 null）。
+        state.probe = body.probe || null;
+        // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下時的停手資訊（沒有被擋就是 null）。
+        state.schoolBlock = body.school_block || null;
+        state.autoPercent = Number(body.auto_submit_percent) > 0 ? Number(body.auto_submit_percent) : 15;
+        totalCountEl.textContent = String(state.total);
+        doneCountEl.textContent = String(state.completed);
+        pendingCountEl.textContent = String(state.pending);
+        renderList(doneListEl, body.completed_accounts || []);
+        renderList(pendingListEl, body.pending_accounts || []);
+        syncCountdown(body.expires_in_secs);
+        renderProgress();
+        renderClassProgress();
+        renderProbeInfo();
+        updateClassroomButton();
+        renderSchoolBlock();
+        updateIndoorAdvice();
+        renderMap();
+        show(pendingNoteEl, state.courseName ? ("這一場： " + state.courseName + "（點名 ID " + rollcallId + "）") : "", "pending-note");
+        reconcileResult();
+        if (state.lastError) {
+          lastErrorEl.style.display = "block";
+          lastErrorEl.textContent = "上次嘗試失敗：" + state.lastError;
+        } else {
+          lastErrorEl.style.display = "none";
+          lastErrorEl.textContent = "";
+        }
+      } catch (err) {
+        const msg = (err && err.message) || "狀態讀取失敗";
+        if (/expired|逾時|過期|到期|找不到等待中/i.test(msg) && cdDeadlineMs != null) { cdDeadlineMs = Date.now(); tickCountdown(); }
+        setStatus(msg, "error");
+      }
+    }
+
+    /* 預設底圖＝一般地圖（RADAR_BASEMAP_DEFAULT_STREET_V1），開頁就先同步按鈕狀態與推估說明。 */
+    syncBasemapButtons();
+    renderProbeInfo();
+
+    if (!validParams()) {
+      setStatus("連結缺少必要參數", "error");
+      setGeoState("bad", "連結不完整", "請回到點名通知重新開啟這一頁。");
+    } else {
+      startGeolocation();
+      refreshStatus();
+      setInterval(refreshStatus, 1500);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) { stopGeolocation(); }
+        else if (!state.locked && !state.cdExpired) { startGeolocation(); }
+      });
+    }
+  </script>
+</body>
+</html>

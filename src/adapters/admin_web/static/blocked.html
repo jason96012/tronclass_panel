@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>存取已受限制｜Tronclass Dashboard</title>
+  <style>
+    :root{color-scheme:light;font-family:Inter,"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 18% 8%,#dbeafe 0,transparent 38%),radial-gradient(circle at 88% 88%,#fee2e2 0,transparent 38%),#f7f9ff;color:#17233b}
+    .card{width:min(100%,650px);overflow:hidden;border:1px solid rgba(148,163,184,.25);border-radius:30px;background:rgba(255,255,255,.92);box-shadow:0 26px 75px rgba(30,64,175,.16);backdrop-filter:blur(12px)}
+    .banner{height:8px;background:linear-gradient(90deg,#dc2626,#fb7185,#f59e0b)} .content{padding:42px 42px 36px}.icon{width:68px;height:68px;display:grid;place-items:center;border-radius:22px;background:#fff1f2;color:#dc2626;font-size:35px;box-shadow:inset 0 0 0 1px #fecdd3}
+    h1{margin:23px 0 10px;font-size:clamp(27px,5vw,38px);letter-spacing:-.04em}.lead{margin:0;color:#64748b;font-size:16px;line-height:1.8}.notice{display:flex;gap:12px;margin:27px 0 20px;padding:16px 17px;border:1px solid #fecaca;border-radius:17px;background:#fff7f7;color:#991b1b;font-weight:750;line-height:1.6}.dot{width:10px;height:10px;flex:0 0 auto;margin-top:8px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 5px #fee2e2}
+    h2{margin:22px 0 12px;font-size:16px}.reasons{display:grid;gap:10px;margin:0;padding:0;list-style:none}.reasons li{position:relative;padding:13px 15px 13px 42px;border:1px solid #e2e8f0;border-radius:14px;background:#fbfdff;color:#475569;font-size:14px;line-height:1.55}.reasons li::before{content:"✓";position:absolute;left:15px;top:12px;width:19px;height:19px;display:grid;place-items:center;border-radius:50%;background:#e0e7ff;color:#4338ca;font-size:12px;font-weight:900}
+    .help{margin:24px 0 0;padding:16px 17px;border-radius:16px;background:#eff6ff;color:#1e40af;font-size:14px;line-height:1.7}.help b{color:#1d4ed8}.footer{margin-top:25px;color:#94a3b8;font-size:12px}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800;color:#64748b}@media(max-width:540px){body{padding:15px}.content{padding:30px 24px}.card{border-radius:24px}}
+  </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區；原 body padding-top 為 24px，用 calc 疊加
+     （無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:calc(24px + env(safe-area-inset-top,0px))}
+</style>
+</head>
+<body>
+  <main class="card" role="alert" aria-labelledby="title">
+    <div class="banner"></div>
+    <div class="content">
+      <div class="icon" aria-hidden="true">🛡</div>
+      <h1 id="title">此網路的存取已受限制</h1>
+      <p class="lead">Tronclass Dashboard 的安全防護已暫時拒絕這個網路位址的連線。</p>
+      <div class="notice"><span class="dot"></span><span>這是 IP 位址層級的安全限制，不代表你的 Dashboard 帳號已被刪除或停用。</span></div>
+      <h2>可能原因</h2>
+      <ul class="reasons">
+        <li>系統偵測到同一網路在短時間內多次輸入錯誤的 Dashboard 密碼。</li>
+        <li>該 IP 已被管理員手動加入，或由登入安全機制自動加入黑名單。</li>
+        <li>目前的網路可能共用相同的公開 IP，其他使用者的異常登入也可能觸發保護措施。</li>
+      </ul>
+      <div class="help"><b>需要恢復存取？</b><br>請聯絡系統管理員，請他在 Discord 的安全通知按下「移除黑名單」，或從 Dashboard 的黑名單管理頁解除封鎖。</div>
+      <div class="footer">錯誤代碼：<span class="code">ACCESS_DENIED_IP_BLACKLIST</span></div>
+    </div>
+  </main>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script></body>
+</html>

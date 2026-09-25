@@ -1,0 +1,3703 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<!-- SUBPAGE_FETCH_SHARED_V1：子頁唯一的 window.fetch 包裝（cookie 認證、剝 token、401→refresh 重試）；取代原 SUBPAGE_TOKEN_BOOT_V1 內聯區塊 -->
+<script src="/admin/static/subpage-fetch.js?v=20260909subfetch"></script>
+
+<style id="REMOVE_UGLY_LOGIN_V1">
+  html{visibility:hidden!important}
+  html.tron-auth-ok,html.dash-auth-ok,body.logged-in,body.auth-ok,body.dash-auth-ok{visibility:visible!important}
+  html.tron-auth-logged-out{visibility:visible!important}
+  #loginCard .login-grid,
+  #loginCard > div[style*="font-weight"],
+  #loginCard > .small,
+  #loginCard > .remember,
+  .login-card > .login-grid,
+  .login-card > div[style*="font-weight"]{display:none!important;visibility:hidden!important;height:0!important;overflow:hidden!important}
+  #loginCard:not(:has(.animated-login-card-inner)),
+  .login-card:not(:has(.animated-login-card-inner)){display:none!important}
+  html.tron-auth-ok #loginCard,
+  html.tron-auth-pending #loginCard,
+  html:not(.tron-auth-logged-out) #loginCard{display:none!important}
+  html.tron-auth-logged-out #loginCard:has(.animated-login-card-inner){display:block!important}
+
+  /* CSP_STYLE_ATTR_STAGED_V1：原 inline style 屬性改為 class（消除 style-src-attr 回報） */
+  .hidden-init{display:none}
+  .disk-title{font-weight:750;font-size:12px}
+  .preview-title{font-weight:760;overflow:hidden;text-overflow:ellipsis}
+  .row-gap{display:flex;gap:8px}
+  .small.subfolder-empty{padding:6px 10px;color:var(--muted)}
+  .button.secondary.btn-compact{min-height:30px;padding:0 8px}
+  .share-modal-title{font-size:16px;font-weight:600;margin-bottom:6px}
+  .share-qr-box{display:flex;justify-content:center;margin:10px 0}
+  .share-modal-hint{font-size:11px;color:#888;margin-bottom:6px}
+  .share-link-box{word-break:break-all;font-size:12px;color:#555;max-height:84px;overflow:auto;background:#f5f5f5;border-radius:8px;padding:8px;text-align:left}
+  .share-modal-actions{display:flex;gap:8px;justify-content:center;margin-top:14px}
+  .share-btn-primary{padding:8px 16px;border:none;border-radius:8px;background:#2563eb;color:#fff;font-size:13px;cursor:pointer}
+  .share-btn-ghost{padding:8px 16px;border:1px solid #ccc;border-radius:8px;background:#fff;color:#333;font-size:13px;cursor:pointer}
+</style>
+<script id="BAN_CRUDE_LOGIN_V1">
+(function(){
+  if(window.BAN_CRUDE_LOGIN_V1) return;
+  window.BAN_CRUDE_LOGIN_V1 = true;
+  function isCrude(card){
+    if(!card) return false;
+    if(card.querySelector('.animated-login-card-inner')) return false;
+    var tx=(card.textContent||'').replace(/\s+/g,'');
+    return !!(card.querySelector('.login-grid') || tx.indexOf('需要登入')>=0 || tx.indexOf('帳號 / account')>=0);
+  }
+  function kill(root){
+    var scope=root&&root.querySelectorAll?root:document;
+    var cards=[];
+    if(root&&root.id==='loginCard') cards.push(root);
+    try{ cards=cards.concat(Array.prototype.slice.call(scope.querySelectorAll('#loginCard,.login-card,#loginPanel'))); }catch(_){}
+    cards.forEach(function(card){
+      if(!isCrude(card)) return;
+      card.innerHTML='';
+      card.hidden=true;
+      card.setAttribute('aria-hidden','true');
+      card.style.display='none';
+    });
+  }
+  kill(document);
+  try{ new MutationObserver(function(ms){ ms.forEach(function(m){ Array.prototype.forEach.call(m.addedNodes||[], function(n){ if(n.nodeType===1) kill(n); }); }); }).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){}
+})();
+</script>
+
+
+<!-- HIDE_ADMIN_TOKEN_FROM_URL_V1_START -->
+<meta name="referrer" content="no-referrer">
+<script id="hideAdminTokenFromUrlEarlyV1">
+(function(){
+  'use strict';
+  if (window.HIDE_ADMIN_TOKEN_FROM_URL_EARLY_V1) return;
+  window.HIDE_ADMIN_TOKEN_FROM_URL_EARLY_V1 = true;
+  var LS_SESSION = 'tronclass_admin_session';
+  var LS_LOGOUT = 'tronclass_dashboard_manual_logout';
+  function sanitizeCurrentUrl(){
+    try {
+      var u = new URL(location.href);
+      var changed = false;
+      var token = u.searchParams.get('token') || '';
+      if (u.searchParams.get('logout') === '1') {
+        localStorage.removeItem(LS_SESSION);
+        sessionStorage.removeItem(LS_SESSION);
+        localStorage.removeItem(LS_LOGOUT); /* LOGOUT_SERVER_SIDE_V1 */
+      } else if (token) {
+        localStorage.setItem(LS_SESSION, token);
+        sessionStorage.setItem(LS_SESSION, token);
+        localStorage.removeItem(LS_LOGOUT);
+      }
+      if (u.searchParams.has('token')) { u.searchParams.delete('token'); changed = true; }
+      if (changed) history.replaceState(null, document.title, u.pathname + (u.search ? u.search : '') + u.hash);
+    } catch(_) {}
+  }
+  sanitizeCurrentUrl();
+  window.tronAdminToken = function(){
+    try {
+      var u = '';
+      if (u) return String(u).trim();
+      return (localStorage.getItem(LS_SESSION) || sessionStorage.getItem(LS_SESSION) || '').trim();
+    } catch(_) { return ''; }
+  };
+})();
+</script>
+<!-- HIDE_ADMIN_TOKEN_FROM_URL_V1_END -->
+
+<!-- CONSOLIDATED_ADMIN_AUTH_V1_HEAD_START -->
+<style id="consolidatedAdminAuthCriticalV1">
+  html.tron-auth-pending body main > :not(#loginCard):not(#authCard),
+  html.tron-auth-logged-out body main > :not(#loginCard):not(#authCard),
+  html.tron-auth-pending body .protected,
+  html.tron-auth-logged-out body .protected,
+  html.tron-auth-pending body .tabs,
+  html.tron-auth-logged-out body .tabs,
+  html.tron-auth-pending body .view,
+  html.tron-auth-logged-out body .view {
+    display:none !important;
+  }
+</style>
+<script id="consolidatedAdminAuthEarlyV1">
+(function(){
+  'use strict';
+  if (window.COOKIE_SUBPAGE_AUTH_V1) return;
+  window.COOKIE_SUBPAGE_AUTH_V1 = true;
+  var LO = 'tronclass_dashboard_manual_logout';
+  try {
+    var p = new URLSearchParams(location.search);
+    /* LOGOUT_SERVER_SIDE_V1：登出已改為伺服器端（POST /admin/logout 清 cookie）；
+       不再以 ?logout=1 / tronclass_dashboard_manual_logout 判斷，只清掉遺留旗標。 */
+    try { localStorage.removeItem(LO); } catch (_) {}
+    if (p.has('logout')) { p.delete('logout'); history.replaceState(null, '', location.pathname + (p.toString() ? '?' + p.toString() : '') + location.hash); }
+    /* LOGIN_PERF_V1：這頁是伺服器驗證過 session 才送出的（pages::inject_auth_attrs 會在 <html>
+       寫入 data-auth="ok" 與 data-account / data-admin / data-viewer）。有這個屬性就直接進入
+       已登入版面，不再多打一次 /admin/api/status 當「開機驗證」——省一趟往返，第一幀不閃。
+       沒有屬性（理論上不會發生）才退回舊的網路驗證。 */
+    var authOk = document.documentElement.getAttribute('data-auth') === 'ok';
+    if (authOk) {
+      window.__tronAuthStatus = window.__tronAuthStatus || {
+        current_account_id: document.documentElement.getAttribute('data-account') || '',
+        is_admin: document.documentElement.getAttribute('data-admin') === '1',
+        is_viewer: document.documentElement.getAttribute('data-viewer') === '1',
+        __partial: true
+      };
+      window.__tronAuthState = 'ok';
+      document.documentElement.classList.remove('tron-auth-pending','tron-auth-logged-out');
+      document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','auth-ok');
+      if (document.body) document.body.classList.add('logged-in','auth-ok','dash-auth-ok');
+      else document.addEventListener('DOMContentLoaded', function(){ document.body.classList.add('logged-in','auth-ok','dash-auth-ok'); }, { once: true });
+    } else {
+    document.documentElement.classList.add('tron-auth-pending');
+    fetch('/admin/api/status', {credentials:'same-origin', cache:'no-store'}).then(function(r){
+      if (r.ok) {
+        document.documentElement.classList.remove('tron-auth-pending','tron-auth-logged-out');
+        document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','auth-ok');
+        if (document.body) document.body.classList.add('logged-in','auth-ok','dash-auth-ok');
+        return;
+      }
+      var next = encodeURIComponent(location.pathname + location.search + location.hash);
+      location.replace('/admin?next=' + next);
+    }).catch(function(){
+      var next = encodeURIComponent(location.pathname + location.search + location.hash);
+      location.replace('/admin?next=' + next);
+    });
+    }
+  } catch(_) {
+    location.replace('/admin');
+  }
+})();
+</script>
+<!-- CONSOLIDATED_ADMIN_AUTH_V1_HEAD_END -->
+
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2563eb">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <title>教材雲端硬碟｜Tronclass</title>
+  <style>
+    :root{
+      color-scheme: light dark;
+      --bg:#f8fafc;
+      --surface:#ffffff;
+      --surface2:#f1f5f9;
+      --surface3:#e2e8f0;
+      --text:#0f172a;
+      --muted:#64748b;
+      --line:#e2e8f0;
+      --line2:#cbd5e1;
+      --primary:#2563eb;
+      --primarySoft:rgba(37,99,235,.12);
+      --primaryText:#ffffff;
+      --ok:#166534;
+      --warn:#92400e;
+      --bad:#991b1b;
+      --shadow:0 4px 24px rgba(15,23,42,.06);
+      --safe:env(safe-area-inset-bottom,0px);
+    }
+    @media(prefers-color-scheme:dark){
+      :root{
+        --bg:#090d16;
+        --surface:#131b2a;
+        --surface2:#1c2638;
+        --surface3:#24324a;
+        --text:#f1f5f9;
+        --muted:#94a3b8;
+        --line:#223046;
+        --line2:#334155;
+        --primary:#3b82f6;
+        --primarySoft:rgba(59,130,246,.16);
+        --primaryText:#ffffff;
+        --ok:#4ade80;
+        --warn:#fbbf24;
+        --bad:#f87171;
+        --shadow:0 4px 24px rgba(0,0,0,.36);
+      }
+    }
+    *{box-sizing:border-box}
+    html,body{
+      margin:0;
+      min-height:100vh;
+      background:var(--bg);
+      color:var(--text);
+      font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;
+      overflow-anchor:none;
+      -webkit-text-size-adjust:100%;
+    }
+    html.tron-auth-ok,html.dash-auth-ok,html.tron-auth-pending,body.auth-ok,body.dash-auth-ok,body.logged-in{visibility:visible!important}
+
+    /* MATERIALS_DASH_BG_V1: 複製 dashboard 的藍色光暈漸層背景到教材頁。 */
+    body{isolation:isolate}
+    body::before{
+      content:'';
+      position:fixed;
+      inset:0;
+      z-index:-1;
+      pointer-events:none;
+      background:
+        radial-gradient(circle at 18% 18%, rgba(96,165,250,.16), transparent 34%),
+        radial-gradient(circle at 78% 28%, rgba(37,99,235,.14), transparent 30%),
+        radial-gradient(circle at 50% 115%, rgba(59,130,246,.10), transparent 38%),
+        linear-gradient(135deg,#f8fafc 0%,#eef2ff 50%,#eff6ff 100%);
+    }
+    @media(prefers-color-scheme:dark){
+      body::before{
+        background:
+          radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+          radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+          radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
+          linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%);
+      }
+    }
+    html[data-theme="dark"] body::before{
+      background:
+        radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+        radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+        radial-gradient(circle at 50% 115%, rgba(59,130,246,.14), transparent 38%),
+        linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%);
+    }
+    /* MATERIALS_PARTICLES_V1: 粒子畫布在漸層之上、內容之下 */
+    #filesBgParticlesV1{
+      position:fixed;inset:0;width:100vw;height:100vh;
+      z-index:0;pointer-events:none;display:block;
+    }
+    
+    button,input,select{font:inherit}
+    button,a.button{
+      min-height:40px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      border:1px solid transparent;
+      border-radius:12px;
+      padding:0 14px;
+      font-size:14px;
+      font-weight:750;
+      text-decoration:none;
+      cursor:pointer;
+      white-space:nowrap;
+      transition:all .15s ease;
+    }
+    button.primary,a.primary{background:var(--primary);color:var(--primaryText)}
+    button.primary:hover,a.primary:hover{opacity:.92}
+    button.secondary,a.secondary{background:var(--surface);color:var(--text);border-color:var(--line2)}
+    button.secondary:hover,a.secondary:hover{background:var(--surface2)}
+    button.danger,a.danger{background:var(--surface);color:var(--bad);border-color:var(--line2)}
+    button.icon{width:36px;min-height:36px;padding:0;border-radius:999px;background:transparent;color:var(--muted);border-color:transparent}
+    button.icon:hover{background:var(--surface2);color:var(--text)}
+
+    input,select{
+      min-height:40px;
+      border:1px solid var(--line2);
+      border-radius:10px;
+      padding:0 12px;
+      background:var(--surface);
+      color:var(--text);
+      outline:none;
+      font-size:14px;
+    }
+    input:focus{border-color:var(--primary)}
+
+    .topbar{
+      position:sticky;
+      top:0;
+      z-index:30;
+      display:grid;
+      grid-template-columns:240px minmax(200px,1fr) auto;
+      gap:14px;
+      align-items:center;
+      padding:10px 18px;
+      border-bottom:1px solid var(--line);
+      background:rgba(248,250,252,.92);
+      backdrop-filter:blur(14px);
+    }
+    /* MATERIALS_DASH_BG_V1: 頂欄改玻璃半透明，讓光暈透出 */
+    @media(prefers-color-scheme:dark){.topbar{background:rgba(15,23,42,.70);border-bottom-color:rgba(148,163,184,.16)}}
+    
+    .brand-wrap{display:flex;align-items:center;gap:10px}
+    .brand-mark{
+      width:36px;
+      height:36px;
+      border-radius:10px;
+      background:linear-gradient(135deg,#3b82f6,#6366f1);
+      color:#fff;
+      display:grid;
+      place-items:center;
+      font-weight:900;
+      font-size:18px;
+      flex-shrink:0;
+    }
+    .brand-title{font-size:17px;font-weight:800;letter-spacing:-.01em}
+    .brand-sub{font-size:11px;color:var(--muted)}
+    
+    .search-wrap{position:relative;width:100%}
+    .search-wrap input{width:100%;padding-left:36px;background:var(--surface2);border-color:transparent}
+    .search-wrap input:focus{background:var(--surface);border-color:var(--primary)}
+    .search-icon{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:15px;pointer-events:none}
+    
+    .top-actions{display:flex;align-items:center;gap:8px;justify-content:flex-end}
+
+    .main{display:grid;grid-template-columns:minmax(0,1fr);min-height:calc(100vh - 61px);position:relative;z-index:1}
+    /* MATERIALS_SIDEBAR_REMOVED_V1: 移除左側欄，內容佔滿全寬 */
+    .sidebar{display:none}
+    .new-btn{width:100%;min-height:44px;border-radius:14px;background:var(--surface);color:var(--text);border:1px solid var(--line2);box-shadow:var(--shadow);font-weight:800}
+    .new-btn:hover{background:var(--surface2)}
+    .new-wrap{position:relative;margin-bottom:12px}
+    .new-menu{display:none;position:absolute;left:0;top:50px;z-index:60;width:180px;padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 12px 36px rgba(15,23,42,.14)}
+    .new-menu.open{display:block}
+    .menu-item{width:100%;justify-content:flex-start;min-height:36px;border-radius:8px;background:transparent;color:var(--text);border-color:transparent;font-size:13px}
+    .menu-item:hover{background:var(--surface2)}
+    
+    .nav{display:grid;gap:4px}
+    .nav button{width:100%;justify-content:flex-start;min-height:36px;border-radius:8px;background:transparent;color:var(--muted);border-color:transparent;font-size:13px;font-weight:700}
+    .nav button:hover{background:var(--surface2);color:var(--text)}
+    .nav button.active{background:var(--primarySoft);color:var(--primary);font-weight:800}
+
+    .storage{margin-top:18px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+    .storage-bar{height:6px;border-radius:999px;background:var(--surface3);overflow:hidden;margin:8px 0 6px}
+    .storage-bar span{display:block;height:100%;width:0;background:var(--primary);transition:width .3s ease}
+
+    .content{min-width:0;padding:16px 20px 32px;overflow:auto}
+    .content-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+    h1{margin:0;font-size:22px;font-weight:850;letter-spacing:-.02em}
+    h2{margin:0;font-size:16px;font-weight:800}
+    .small{color:var(--muted);font-size:12px;line-height:1.5}
+    
+    .breadcrumb{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;color:var(--muted);font-size:13px}
+    .breadcrumb button{min-height:28px;padding:0 8px;border-radius:6px;background:transparent;color:var(--muted);border-color:transparent;font-size:13px}
+    .breadcrumb button:hover{background:var(--surface2);color:var(--text)}
+    
+    .toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+    .toolbar-left,.toolbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+    /* UPLOAD_DESKTOP_FIX_V1（fix50）：桌機常駐顯示（原寫法要 dragenter 才 display:block，
+       等於電腦版沒有任何「看得見」的第二個上傳入口）。點它＝開選檔視窗。
+       手機（≤ 820px）仍由 mobile media query 的 .dropzone{display:none!important} 隱藏。 */
+    .dropzone{display:block;cursor:pointer;margin-bottom:14px;padding:14px 16px;border:2px dashed var(--line2);border-radius:16px;background:var(--surface);text-align:center;color:var(--muted);font-size:13px}
+    .dropzone:hover{border-color:var(--primary);color:var(--primary)}
+    .dropzone.dragover{border-color:var(--primary);background:var(--primarySoft);color:var(--primary)}
+    
+    .upload-progress{display:none;margin-bottom:14px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface)}
+    .upload-progress.visible{display:block}
+    .progress-line{height:6px;border-radius:999px;background:var(--surface3);overflow:hidden;margin-top:6px}
+    .progress-line span{display:block;height:100%;width:0;background:var(--primary);transition:width .2s ease}
+    /* UPLOAD_QUEUE_SPEED_V1（fix51）：上傳佇列（每檔一列）＋速度／預估時間 */
+    .upload-queue{margin-top:10px;display:grid;gap:6px}
+    .upload-queue .uq-row{display:grid;grid-template-columns:1fr auto;gap:4px 10px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);font-size:12px}
+    .upload-queue .uq-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:700}
+    .upload-queue .uq-meta{color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+    .upload-queue .uq-track{grid-column:1/-1;height:5px;border-radius:999px;background:var(--surface3);overflow:hidden}
+    .upload-queue .uq-fill{display:block;height:100%;width:0;background:var(--primary);transition:width .2s ease}
+    .upload-queue .uq-row.done .uq-fill{background:var(--ok)}
+    .upload-queue .uq-row.failed{border-color:var(--bad)}
+    .upload-queue .uq-row.failed .uq-fill{background:var(--bad);width:100%!important}
+    .upload-queue .uq-row.failed .uq-meta{color:var(--bad)}
+    .upload-queue .uq-actions{margin-top:2px}
+
+    .section-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:16px 0 8px}
+    
+    /* 資料夾網格 */
+    .folder-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+    .folder-card{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:12px;background:var(--surface);cursor:pointer;transition:all .15s ease}
+    .folder-card:hover{box-shadow:var(--shadow);transform:translateY(-1px);border-color:var(--line2)}
+    .folder-icon{width:32px;height:26px;border-radius:5px;background:#93c5fd;position:relative;flex-shrink:0}
+    .folder-icon::before{content:"";position:absolute;left:0;top:-4px;width:14px;height:6px;border-radius:3px 3px 0 0;background:#60a5fa}
+    .folder-name{font-weight:750;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+
+    /* 檔案網格 */
+    .file-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+    .file-card{border:1px solid var(--line);border-radius:14px;background:var(--surface);overflow:hidden;transition:all .15s ease;display:flex;flex-direction:column}
+    .file-card:hover{box-shadow:var(--shadow);transform:translateY(-1px);border-color:var(--line2)}
+    /* CARD_CLEAN_V1: 卡片頭部＝縮圖(48px)+資訊橫排，動作列整行於下，互不重疊。 */
+    .file-head{display:flex;align-items:center;gap:12px;padding:12px;flex:1;min-width:0}
+    .file-thumb{flex:0 0 48px;width:48px;height:48px;background:linear-gradient(180deg,var(--surface2),var(--surface));display:grid;place-items:center;overflow:hidden;position:relative;border-radius:12px}
+    .file-badge{padding:4px 10px;border-radius:6px;background:var(--surface3);color:var(--text);font-weight:800;font-size:12px;text-transform:uppercase}
+    /* BADGE_INLINE_V1: 左側色塊縮圖 + 檔名欄內的小副檔名標籤。 */
+    .file-thumb-ph{width:100%;height:100%;background:linear-gradient(135deg,var(--soft),var(--soft2));border-radius:12px;display:block}
+    .file-chip{display:inline-block;margin:0 0 4px;padding:2px 8px;border-radius:6px;background:var(--soft2);color:var(--muted);font-weight:800;font-size:10px;text-transform:uppercase;letter-spacing:.02em}
+    /* THUMB_IMG_V1: 圖片檔直接顯示真實縮圖（object-fit 裁切），不再只放文字徽章，
+       解決手機版圖示「跑掉」的問題。 */
+    .file-thumb-img{width:100%;height:100%;object-fit:cover;display:block}
+    /* PREVIEW_HIDE_NAV_V1: 預覽彈窗開啟時隱藏手機底部導覽列（其 z-index 高於 modal）。 */
+    body.tron-preview-open #mobilebar,
+    body.tron-preview-open .mobilebar,
+    body.tron-preview-open #filesMobileNav{display:none!important}
+    .file-info{flex:1;min-width:0;padding:0}
+    .file-name{font-weight:750;font-size:13px;line-height:1.35;min-height:36px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+    .file-meta{margin-top:4px;color:var(--muted);font-size:11px;line-height:1.4}
+    .file-actions{display:flex;align-items:center;gap:4px;padding:8px 10px;border-top:1px solid var(--line);background:var(--surface2);overflow:auto}
+    .file-actions a,.file-actions button{min-height:32px;font-size:12px;padding:0 10px}
+
+    /* 清單檢視 */
+    .list-table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:none}
+    .list-table.visible{display:table}
+    .list-table th,.list-table td{border-bottom:1px solid var(--line);padding:9px 12px;text-align:left;font-size:13px}
+    .list-table th{color:var(--muted);font-size:12px;background:var(--surface2);font-weight:750}
+
+    .empty{padding:36px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px;background:var(--surface);font-size:13px}
+    
+    .toast{position:fixed;right:18px;bottom:18px;z-index:100;width:min(400px,calc(100vw - 24px));padding:12px 16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 12px 36px rgba(15,23,42,.16);display:none;font-size:13px;font-weight:700}
+    .toast.visible{display:block}
+
+    .hidden-input{display:none}
+    .mobilebar{display:none}
+
+    /* 預覽視窗 */
+    .modal-backdrop{position:fixed;inset:0;z-index:80;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(15,23,42,.56)}
+    .modal-backdrop.visible{display:flex}
+    .modal{width:min(920px,100%);height:min(700px,88vh);display:grid;grid-template-rows:auto 1fr;border:1px solid var(--line);border-radius:16px;background:var(--surface);box-shadow:0 24px 60px rgba(0,0,0,.32);overflow:hidden}
+    .modal-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;border-bottom:1px solid var(--line)}
+    .modal-body{background:var(--surface2);display:grid;place-items:center;overflow:auto}
+    .modal-body img,.modal-body video{max-width:100%;max-height:100%;display:block}
+    .modal-body iframe,.modal-body object{width:100%;height:100%;border:0}
+    /* PDF_PREVIEW_IFRAME_V1: 讓 PDF 檢視器的 <iframe> 真正撐滿 modal（grid 置中下需自我覆蓋） */
+    .modal-body iframe[src^="/admin/api/files/preview"]{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;background:var(--surface)}
+    .modal-body pre{width:100%;height:100%;margin:0;padding:14px;overflow:auto;white-space:pre-wrap;background:var(--surface);color:var(--text);font-family:monospace;font-size:12px}
+    /* PDFJS_PREVIEW_V1: PDF.js 逐頁 canvas 容器（深灰底、白頁、置中、可捲動） */
+    .modal-body .tron-pdf{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;background:#40444a;display:flex;flex-direction:column;align-items:center;gap:10px;padding:14px;box-sizing:border-box}
+    .tron-pdf canvas{background:#fff;box-shadow:0 1px 6px rgba(0,0,0,.45);border-radius:2px;max-width:100%}
+    /* OFFICE_ONLINE_V1: Office Online 嵌入檢視器（OneDrive 同款） */
+    .modal-body .tron-online-wrap{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;display:flex;flex-direction:column;overflow:hidden}
+    .tron-online-wrap .tron-online{flex:1;width:100%;border:0;background:#fff}
+    .tron-online-note{padding:8px 12px;font-size:12px;color:var(--muted);background:var(--surface2);border-bottom:1px solid var(--line)}
+    /* OFFICE_PREVIEW_CLIENT_V1: 前端本機渲染 Word/PPT（modal-body 為 grid 置中，用自我覆蓋寬高撐滿） */
+    .modal-body .tron-docx{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:20px 24px;box-sizing:border-box;background:var(--surface);color:var(--text);line-height:1.5;font-size:14px}
+    .modal-body .tron-docx p,.modal-body .tron-docx h2,.modal-body .tron-docx h3,.modal-body .tron-docx h4,.modal-body .tron-docx h5{margin:0 0 6px 0}
+    .modal-body .tron-docx table{max-width:100%}
+    .modal-body .tron-slides{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:16px;box-sizing:border-box;background:var(--surface)}
+    .tron-slide{position:relative;width:100%;max-width:960px;margin:0 auto 16px auto;background:#fff;border:1px solid var(--line2);border-radius:4px;box-shadow:0 2px 12px rgba(0,0,0,.10);overflow:hidden}
+    .tron-slide-text{position:absolute;color:#111;box-sizing:border-box}
+    .tron-slide-img{position:absolute}
+
+    /* MATERIALS_MOBILE_V1（fix57）：手機版預覽優化。
+       背景（2026-09-16 回報截圖）：預覽彈窗用 height:min(700px,88vh) 置中，而手機的
+       100vh 包含瀏覽器工具列底下的區域 —— 彈窗等於比畫面上看得到的地方還高，
+       標題列被推到瀏覽器網址列後面、底部也被 Safari 的工具列蓋住。
+       這一段讓手機的預覽變成「整個畫面」：動態視埠高度＋系統安全區，
+       標題列（檔名／下載／關閉）永遠在看得見的地方。 */
+    @media(max-width:820px){
+      .modal-backdrop{padding:0;align-items:stretch;justify-content:stretch}
+      .modal{width:100%;height:100vh;max-height:none;border-radius:0;border:0}
+      .modal-head{
+        padding:calc(8px + env(safe-area-inset-top,0px)) 12px 8px;
+        gap:8px;background:var(--surface);
+      }
+      .preview-title{font-size:13px;min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .modal-head .button,.modal-head .icon{min-height:40px;padding:0 14px;font-size:13px}
+      .modal-body{-webkit-overflow-scrolling:touch;overscroll-behavior:contain}
+      .modal-body pre{padding:10px;font-size:11.5px;line-height:1.55}
+      /* 頁面用滿整個螢幕寬（桌機的 14px 內縮留給桌機） */
+      .modal-body .tron-pdf{padding:0;gap:8px}
+      .tron-pdf-page{scroll-margin-top:54px}   /* 翻頁時不被黏著工具列蓋住 */
+      .tron-pdf-bar{
+        display:flex;position:-webkit-sticky;position:sticky;top:0;z-index:6;
+        align-items:center;justify-content:center;gap:10px;width:100%;
+        padding:6px 10px;background:rgba(64,68,74,.96);backdrop-filter:blur(8px);
+        border-bottom:1px solid rgba(255,255,255,.12);
+      }
+      .tron-pdf-bar .tron-pdf-btn{
+        min-height:38px;min-width:88px;padding:0 12px;font-size:12.5px;font-weight:800;
+        border:1px solid rgba(255,255,255,.28);border-radius:10px;
+        background:rgba(255,255,255,.08);color:#eef2f7;font-family:inherit;cursor:pointer;
+      }
+      .tron-pdf-bar .tron-pdf-btn:active{transform:scale(.97);opacity:.9}
+      .tron-pdf-info{color:#e7ecf3;font-size:12px;font-weight:800;min-width:92px;text-align:center;white-space:nowrap}
+      /* Word／簡報／純文字：手機把留白縮小，內容才不會被擠成細細一條 */
+      .modal-body .tron-docx{padding:14px;font-size:13.5px}
+      .modal-body .tron-slides{padding:8px}
+      .tron-slide{max-width:100%}
+      .modal-body img,.modal-body video{max-height:calc(100vh - 96px)}
+      @supports(height:100dvh){
+        .modal{height:100dvh}
+        .modal-body img,.modal-body video{max-height:calc(100dvh - 96px)}
+      }
+    }
+    /* PDF 工具列只在手機尺寸出現（桌機維持原本只看頁面的樣子）。 */
+    .tron-pdf-bar{display:none}
+    .tron-pdf-info{color:var(--muted);font-size:12px;font-weight:700}
+    /* 每頁一個插槽：canvas 置中，捲動／翻頁都有可靠的定位點。 */
+    .tron-pdf-page{display:flex;justify-content:center;width:100%}
+    .tron-office-error{padding:36px 18px;text-align:center;color:var(--muted);border:1px dashed var(--line2);border-radius:14px;background:var(--surface);font-size:13px}
+    /* OFFICE_SNIFF_INFO_V1（fix47）：內容與副檔名不符時附上開頭位元組。 */
+    .tron-office-diag{margin-top:10px;padding:8px 10px;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted);background:rgba(148,163,184,.12);border-radius:8px;word-break:break-all;text-align:left}
+    /* NO_LIBREOFFICE_PREVIEW_V1: Excel / ODF / RTF 前端渲染樣式 */
+    .modal-body .tron-xlsx,.modal-body .tron-odf{width:100%!important;height:100%!important;justify-self:stretch;align-self:stretch;overflow:auto;padding:0;box-sizing:border-box;background:var(--surface);color:var(--text)}
+    .tron-odf{padding:20px 24px!important;line-height:1.5;font-size:14px}
+    .tron-odf-p{margin:0 0 6px 0}
+    .tron-odf-sheet{margin:18px 0 8px 0;font-size:13px;color:var(--muted);font-weight:700}
+    .tron-xlsx-tabs{position:sticky;top:0;z-index:2;display:flex;flex-wrap:wrap;gap:4px;padding:8px 10px;background:var(--card,var(--surface));border-bottom:1px solid var(--line2)}
+    .tron-xlsx-tab{padding:5px 12px;font-size:12px;border:1px solid var(--line2);border-radius:8px;cursor:pointer;color:var(--muted);background:transparent;user-select:none}
+    .tron-xlsx-tab:hover{color:var(--text)}
+    .tron-xlsx-tab.active{background:var(--primary,#2563EB);border-color:var(--primary,#2563EB);color:#fff;font-weight:650}
+    .tron-xlsx-sheet{padding:10px}
+    .tron-xlsx-table{border-collapse:collapse;font-size:12.5px;min-width:100%;background:var(--surface)}
+    .tron-xlsx-table th,.tron-xlsx-table td{border:1px solid var(--line2);padding:4px 8px;text-align:left;vertical-align:top;white-space:pre-wrap;word-break:break-word;max-width:340px}
+    .tron-xlsx-table thead th{position:sticky;top:0;background:var(--card,var(--surface));color:var(--muted);font-weight:650;text-align:center}
+    .tron-xlsx-rowhead{background:var(--card,var(--surface));color:var(--muted);font-weight:600;text-align:center!important;width:44px}
+    .tron-office-note{padding:10px 12px;font-size:12px;color:var(--muted);background:var(--card,var(--surface));border-top:1px solid var(--line2)}
+    .tron-rtf{width:100%!important;height:100%!important;overflow:auto;margin:0;padding:20px 24px;box-sizing:border-box;background:var(--surface);color:var(--text);white-space:pre-wrap;word-break:break-word;font:13px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace}
+    .modal-body audio{width:100%;margin:auto 0}
+    .tron-csv-table{border-collapse:collapse;font-size:12.5px;width:100%}
+    .tron-csv-table th,.tron-csv-table td{border:1px solid var(--line2);padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word}
+    .tron-csv-table thead th{background:var(--card,var(--surface));color:var(--muted)}
+
+    /* 手機版排版 (≤ 820px) */
+    @media(max-width:820px){
+      .topbar{grid-template-columns:1fr auto;gap:10px;padding:8px 12px}
+      .brand-sub{display:none}
+      .main{grid-template-columns:1fr;min-height:auto}
+      .sidebar{display:none}
+      .content{padding:12px 10px calc(120px + var(--safe))}
+      
+      .mobilebar{
+        position:fixed;left:10px;right:10px;bottom:calc(10px + var(--safe));z-index:70;
+        display:grid;grid-template-columns:repeat(4,1fr);gap:4px;padding:6px;
+        border:1px solid var(--line);border-radius:20px;
+        background:rgba(255,255,255,.94);box-shadow:0 12px 36px rgba(15,23,42,.18);backdrop-filter:blur(16px);
+      }
+      @media(prefers-color-scheme:dark){.mobilebar{background:rgba(15,23,42,.92);border-color:var(--line)}}
+      .mobilebar a,.mobilebar button{min-height:48px;border-radius:14px;padding:0 2px;border:0;background:transparent;color:var(--muted);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;font-weight:800;text-decoration:none;gap:2px}
+      .mobilebar button.primary{background:var(--primarySoft);color:var(--primary)}
+      .mobilebar svg{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+    }
+
+    /* CLOUD_DOWNLOAD_ACCEL_V1（fix111）：多連線下載的進度面板。
+       桌機 Chrome／Edge 才會有（見 JS 的 dlAccelSupported），但樣式用既有色彩變數，
+       深色模式自動跟著，手機也不會擋到東西。 */
+    .dl-accel{
+      position:fixed;right:14px;bottom:14px;z-index:90;width:min(400px,calc(100vw - 28px));
+      padding:12px 14px;border:1px solid var(--line);border-radius:14px;background:var(--surface);
+      box-shadow:0 18px 44px rgba(15,23,42,.28);font-size:12px;color:var(--text);
+    }
+    .dl-accel[hidden]{display:none}
+    .dl-accel-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+    .dl-accel-name{flex:1 1 auto;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .dl-accel-cancel{flex:0 0 auto;border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:9px;padding:4px 10px;font-size:12px;font-weight:700;cursor:pointer}
+    .dl-accel-cancel:hover{color:var(--text)}
+    /* 頁面有 button{display:…} 的作者樣式（作者樣式優先於瀏覽器預設的 [hidden]），
+       所以要自己把 hidden 講清楚，否則「完成／取消」之後取消鈕還會留在畫面上。 */
+    .dl-accel-cancel[hidden]{display:none}
+    .dl-accel-bar{height:6px;border-radius:999px;background:var(--line);overflow:hidden}
+    .dl-accel-bar span{display:block;height:100%;width:0;border-radius:999px;background:var(--primary);transition:width .2s ease}
+    .dl-accel-note{margin-top:8px;color:var(--muted);font-variant-numeric:tabular-nums}
+    /* 這一行是「下載很慢時」唯一的線索（每條連線速度／協定／寫入速度），
+       絕對不能被省略號裁掉 —— 寧可換行成兩行。 */
+    .dl-accel-diag{margin-top:4px;color:var(--muted);opacity:.9;font-size:11px;line-height:1.55;
+      font-variant-numeric:tabular-nums;word-break:break-word}
+    .dl-accel-done .dl-accel-bar span{background:#22c55e}
+    @media(max-width:820px){.dl-accel{bottom:calc(96px + var(--safe))}}
+  </style>
+
+  <script id="optimizeV47Theme">
+  (function(){
+    'use strict';
+    var mq=window.matchMedia('(prefers-color-scheme:dark)');
+  var THEME_LS='tronclass_app_settings_v1';
+  function themeChoice(){try{var s=JSON.parse(localStorage.getItem(THEME_LS)||'{}');var t=String(s.theme||'auto').toLowerCase();return(t==='light'||t==='dark')?t:'auto'}catch(_){return'auto'}}
+  function applyTheme(){var c=themeChoice();document.documentElement.setAttribute('data-theme',c==='auto'?(mq.matches?'dark':'light'):c)}
+  /* THEME_CHOICE_V1: 使用者設定（外觀設定頁）優先；auto 才跟隨系統，並同步跨分頁變更 */
+  applyTheme();
+  try{mq.addEventListener('change',applyTheme)}catch(e){mq.addListener(applyTheme)}
+  try{window.addEventListener('storage',function(ev){if(!ev||!ev.key||ev.key===THEME_LS)applyTheme()})}catch(_){}
+  window.__setTheme=function(t){document.documentElement.setAttribute('data-theme',t||'dark')};
+    document.documentElement.classList.add('tron-auth-ok','dash-auth-ok','mobile-nav-final-auth');
+    if(document.body) document.body.classList.add('auth-ok','dash-auth-ok','logged-in');
+  })();
+  </script>
+<style id="restoreMobileFilesNavStyleV1">
+  /* 手機版雲端硬碟導覽欄與底部快捷列完整恢復 */
+  @media (max-width: 820px) {
+    .topbar {
+      display: flex !important;
+      align-items: center !important;
+      justify-content: space-between !important;
+      padding: 10px 14px !important;
+      position: sticky !important;
+      top: 0 !important;
+      z-index: 50 !important;
+      background: rgba(248, 250, 252, 0.92) !important;
+      backdrop-filter: blur(16px) !important;
+      -webkit-backdrop-filter: blur(16px) !important;
+      border-bottom: 1px solid var(--line, #e2e8f0) !important;
+    }
+    @media (prefers-color-scheme: dark) {
+      .topbar {
+        background: rgba(9, 13, 22, 0.92) !important;
+        border-bottom-color: var(--line, #223046) !important;
+      }
+    }
+    .top-actions {
+      display: flex !important;
+      align-items: center !important;
+      gap: 8px !important;
+    }
+    #dashboardLink {
+      display: inline-flex !important;
+      visibility: visible !important;
+      min-height: 36px !important;
+      padding: 0 12px !important;
+      font-size: 13px !important;
+      font-weight: 800 !important;
+    }
+    .search-wrap {
+      display: none !important;
+    }
+    .content {
+      padding: 14px 12px calc(96px + var(--safe, 0px)) !important;
+    }
+    /* 手機底部導覽列 (控制台、上傳、資料夾、重新整理) */
+    .mobilebar,
+    #mobilebar,
+    #filesMobileNav {
+      display: grid !important;
+      visibility: visible !important;
+      position: fixed !important;
+      left: 12px !important;
+      right: 12px !important;
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px)) !important;
+      z-index: 90 !important;
+      grid-template-columns: repeat(4, 1fr) !important;
+      gap: 6px !important;
+      padding: 7px !important;
+      border: 1px solid var(--line, #e2e8f0) !important;
+      border-radius: 24px !important;
+      background: rgba(255, 255, 255, 0.94) !important;
+      box-shadow: 0 16px 45px rgba(15, 23, 42, 0.20) !important;
+      backdrop-filter: blur(20px) !important;
+      -webkit-backdrop-filter: blur(20px) !important;
+    }
+    @media (prefers-color-scheme: dark) {
+      .mobilebar,
+      #mobilebar,
+      #filesMobileNav {
+        background: rgba(19, 27, 42, 0.94) !important;
+        border-color: var(--line, #334155) !important;
+        box-shadow: 0 16px 45px rgba(0, 0, 0, 0.45) !important;
+      }
+    }
+    .mobilebar a,
+    .mobilebar button {
+      min-height: 50px !important;
+      border-radius: 16px !important;
+      padding: 2px !important;
+      border: 0 !important;
+      background: transparent !important;
+      color: var(--muted, #64748b) !important;
+      display: flex !important;
+      flex-direction: column !important;
+      align-items: center !important;
+      justify-content: center !important;
+      font-size: 11px !important;
+      font-weight: 850 !important;
+      text-decoration: none !important;
+      gap: 3px !important;
+      cursor: pointer !important;
+      transition: all .15s ease !important;
+    }
+    .mobilebar button.primary {
+      background: var(--primarySoft, rgba(37, 99, 235, 0.12)) !important;
+      color: var(--primary, #2563eb) !important;
+    }
+    .mobilebar svg {
+      width: 20px !important;
+      height: 20px !important;
+      stroke: currentColor !important;
+      fill: none !important;
+      stroke-width: 2.2 !important;
+      stroke-linecap: round !important;
+      stroke-linejoin: round !important;
+    }
+  }
+
+  /* 電腦版隱藏手機底部導覽 */
+  @media (min-width: 821px) {
+    .mobilebar,
+    #mobilebar,
+    #filesMobileNav {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+  }
+</style>
+<style id="mobileFilesNavUniformColorStyleV1">
+  /* 手機版雲端硬碟底部按鈕色彩完全統一 */
+  .mobilebar a,
+  .mobilebar button,
+  #mobilebar a,
+  #mobilebar button,
+  #mDashboard,
+  #mDriveHome,
+  #mUpload,
+  #mFolder,
+  #mRefresh {
+    min-height: 48px !important;
+    border-radius: 14px !important;
+    padding: 0 2px !important;
+    border: 0 !important;
+    background: transparent !important;
+    color: var(--muted, #64748b) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 11px !important;
+    font-weight: 800 !important;
+    text-decoration: none !important;
+    gap: 2px !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: all .15s ease !important;
+  }
+  @media (prefers-color-scheme: dark) {
+    .mobilebar a,
+    .mobilebar button,
+    #mobilebar a,
+    #mobilebar button,
+    #mDashboard,
+    #mDriveHome,
+    #mUpload,
+    #mFolder,
+    #mRefresh {
+      color: var(--muted, #94a3b8) !important;
+      background: transparent !important;
+    }
+  }
+  .mobilebar a:hover,
+  .mobilebar button:hover,
+  .mobilebar a:active,
+  .mobilebar button:active {
+    background: var(--surface2, #f1f5f9) !important;
+    color: var(--text, #0f172a) !important;
+  }
+  @media (prefers-color-scheme: dark) {
+    .mobilebar a:hover,
+    .mobilebar button:hover,
+    .mobilebar a:active,
+    .mobilebar button:active {
+      background: rgba(255, 255, 255, 0.08) !important;
+      color: #ffffff !important;
+    }
+  }
+  .mobilebar svg {
+    width: 20px !important;
+    height: 20px !important;
+    stroke: currentColor !important;
+    fill: none !important;
+    stroke-width: 2.2 !important;
+    stroke-linecap: round !important;
+    stroke-linejoin: round !important;
+  }
+</style>
+
+<style id="FILES_MOBILE_HEADER_BACK_CSS_V1">
+  @media (max-width:820px){
+    .top-actions > *:not(#dashboardLink),
+    #refresh, #changePasswordBtn, #passkeyRegisterBtn,
+    .top-actions button, .top-actions a:not(#dashboardLink){
+      display:none!important;
+    }
+    #dashboardLink{
+      display:inline-flex!important;
+      visibility:visible!important;
+      min-height:36px!important;
+      padding:0 14px!important;
+      font-size:13px!important;
+      font-weight:800!important;
+    }
+    #mDashboard{display:none!important}
+    .mobilebar, #mobilebar, #filesMobileNav{
+      grid-template-columns:repeat(4,1fr)!important;
+    }
+  }
+</style>
+
+<style id="FILES_TOP_BACK_CSS_V2">
+  /* 桌面已有頂欄回控制台，這顆只給手機用 */
+  #filesBackDashboardBtn{display:none!important}
+  @media (max-width:820px){
+    header.topbar, header, .topbar{
+      display:flex!important;
+      flex-direction:row!important;
+      align-items:center!important;
+      justify-content:space-between!important;
+      flex-wrap:nowrap!important;
+      gap:8px!important;
+    }
+    header.topbar .search-wrap,
+    .topbar .search-wrap,
+    .search-wrap{display:none!important}
+    header.topbar .brand-wrap,
+    .topbar .brand-wrap{
+      flex:1 1 auto!important;
+      min-width:0!important;
+      overflow:hidden!important;
+    }
+    .brand-sub{display:none!important}
+    header.topbar .top-actions,
+    .topbar .top-actions{
+      display:none!important;
+    }
+    a#filesBackDashboardBtn,
+    #filesBackDashboardBtn{
+      display:inline-flex!important;
+      visibility:visible!important;
+      opacity:1!important;
+      pointer-events:auto!important;
+      position:relative!important;
+      flex:0 0 auto!important;
+      margin-left:auto!important;
+      align-items:center!important;
+      justify-content:center!important;
+      min-height:34px!important;
+      height:34px!important;
+      padding:0 12px!important;
+      border-radius:999px!important;
+      border:0!important;
+      background:#2563eb!important;
+      color:#fff!important;
+      font-size:12px!important;
+      font-weight:800!important;
+      letter-spacing:0!important;
+      white-space:nowrap!important;
+      text-decoration:none!important;
+      box-shadow:0 6px 16px rgba(37,99,235,.28)!important;
+      z-index:80!important;
+    }
+  }
+</style>
+<style id="MOBILE_IMPORT_TOP_CSS_V1">
+  /* MOBILE_IMPORT_TOP_V1: 僅手機頂欄顯示「匯入 iClass」；桌面隱藏 */
+  #mImportTop{display:none!important}
+  @media (max-width:820px){
+    #mImportTop{
+      display:inline-flex!important;
+      visibility:visible!important;
+      opacity:1!important;
+      pointer-events:auto!important;
+      flex:0 0 auto!important;
+      margin-left:6px!important;
+      min-height:34px!important;
+      height:34px!important;
+      padding:0 12px!important;
+      border-radius:999px!important;
+      border:1px solid rgba(148,163,184,.42)!important;
+      background:rgba(255,255,255,.08)!important;
+      color:var(--text)!important;
+      font-size:12px!important;
+      font-weight:800!important;
+      white-space:nowrap!important;
+      align-items:center!important;
+      justify-content:center!important;
+    }
+    html[data-theme="dark"] #mImportTop{background:rgba(15,23,42,.6)!important;color:#e5eefb!important}
+  }
+</style>
+<style id="MOBILE_FILES_UX_V1">
+@media (max-width:820px){
+  .search-wrap{
+    display:flex!important;
+    grid-column:1/-1;
+    order:5;
+    width:100%!important;
+    margin:0!important;
+  }
+  .topbar{
+    display:grid!important;
+    grid-template-columns:1fr auto!important;
+    gap:10px!important;
+    align-items:center!important;
+  }
+  .brand-title{font-size:16px!important}
+  #filesBackDashboardBtn{display:none!important}
+  #refresh{display:none!important}
+  #dashboardLink{min-height:40px!important;padding:0 14px!important;border-radius:14px!important}
+
+  /* MOBILE_NAV_CLEAR_V1: 底部留白大於 floating 導覽列高度，最後卡片按鈕可捲到其上方。 */
+  .content{padding:12px 12px calc(150px + env(safe-area-inset-bottom,0px))!important}
+  .content-head{
+    display:grid!important;
+    gap:8px!important;
+    margin-bottom:10px!important;
+  }
+  .content-head h1{font-size:22px!important;margin:0!important;letter-spacing:-.03em}
+  .content-head .toolbar-right,
+  .dropzone,
+  .view-toggle,
+  #listTable,
+  .section-title h2{display:none!important}
+
+  .breadcrumb{font-size:14px!important;line-height:1.45;word-break:break-all}
+  .breadcrumb a,.breadcrumb button{min-height:36px;padding:4px 0}
+
+  .toolbar{display:flex!important;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+  .toolbar-left{width:100%}
+  #summary{font-size:13px!important;color:var(--muted,#64748b)}
+  #sortBy{width:100%!important;min-height:44px!important;border-radius:14px!important;font-size:15px!important}
+
+  .folder-grid{
+    display:grid!important;
+    grid-template-columns:1fr!important;
+    gap:8px!important;
+    margin:0 0 14px!important;
+  }
+  .folder-card{
+    display:grid!important;
+    grid-template-columns:44px 1fr auto!important;
+    align-items:center!important;
+    gap:10px!important;
+    min-height:58px!important;
+    padding:10px 12px!important;
+    border-radius:16px!important;
+  }
+  .folder-icon{width:40px!important;height:40px!important;margin:0!important}
+  .folder-name{font-size:16px!important;font-weight:800!important}
+  .folder-card .button{min-height:40px!important}
+
+  /* CARD_CLEAN_V2（mobile 單一區塊）：頭部橫排、動作列整行。
+     display 需 !important（theme.css 手機有 .file-grid/.folder-grid display:none!important）；
+     .file-actions 按鈕也需 !important（對抗 theme.css）。其餘不用。 */
+  .folder-grid,.file-grid{display:grid!important;grid-template-columns:1fr;gap:10px}
+  .file-card{border-radius:18px}
+  .file-head{padding:14px 14px 10px}
+  .file-thumb{border-radius:14px;margin:0}
+  .file-name{font-size:16px;font-weight:800;line-height:1.35;min-height:0}
+  .file-meta{font-size:12px;margin-top:4px;color:var(--muted)}
+  .file-actions{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(72px,1fr));
+    gap:6px;
+    padding:4px 12px 12px;
+    border-top:1px solid var(--line);
+  }
+  .file-actions a,.file-actions button{
+    min-height:44px!important;
+    font-size:13px!important;
+    font-weight:800!important;
+    border-radius:12px!important;
+    padding:0 4px!important;
+    width:100%;
+    min-width:0;
+    white-space:nowrap;
+    justify-content:center;
+  }
+  .empty{
+    padding:36px 16px!important;
+    font-size:15px!important;
+    line-height:1.5;
+    border-radius:18px!important;
+    text-align:center;
+  }
+  .modal-backdrop{padding:0!important;align-items:stretch!important}
+  .modal{
+    width:100%!important;
+    height:100%!important;
+    max-height:100%!important;
+    border-radius:0!important;
+  }
+}
+
+/* MATERIALS_UI_V1: 雲端硬碟介面優化 —— 資料夾/檔案操作改為精簡小按鈕 */
+.folder-grid .folder-card{position:relative}
+.folder-grid .folder-card .folder-del{
+  width:38px!important;min-width:38px!important;min-height:38px!important;max-height:38px!important;
+  padding:0!important;flex-shrink:0;justify-content:center!important;border-radius:10px!important;
+  background:rgba(239,68,68,.12)!important;color:var(--bad)!important;border:1px solid transparent!important;
+  font-size:15px!important;line-height:1!important;
+}
+.folder-grid .folder-card .folder-del:hover{background:rgba(239,68,68,.9)!important;color:#fff!important}
+@media(hover:hover){
+  .folder-grid .folder-card .folder-del{opacity:0;visibility:hidden;transition:opacity .15s ease}
+  .folder-grid .folder-card:hover .folder-del{opacity:1;visibility:visible}
+}
+.file-actions .download-link{background:var(--primary)!important;color:var(--primaryText)!important;border-color:transparent!important}
+.file-actions .download-link:hover{opacity:.9!important}
+.file-actions .remove-btn{
+  flex:0 0 auto;width:38px!important;min-width:38px!important;min-height:38px!important;max-height:38px!important;
+  padding:0!important;justify-content:center!important;border-radius:10px!important;
+  background:rgba(239,68,68,.12)!important;color:var(--bad)!important;border:1px solid transparent!important;
+  font-size:15px!important;line-height:1!important;
+}
+.file-actions .remove-btn:hover{background:rgba(239,68,68,.9)!important;color:#fff!important}
+</style>
+
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     用透明邊框把頂欄內容推回安全區（無劉海裝置 env()=0，外觀完全不變）。 */
+  header.topbar, .topbar{
+    border-top:env(safe-area-inset-top,0px) solid transparent;
+    border-left:env(safe-area-inset-left,0px) solid transparent;
+    border-right:env(safe-area-inset-right,0px) solid transparent;
+  }
+</style>
+</head>
+<body>
+<!-- NATIVE_MATERIALS_PAGE_ONLY_V1: the obsolete Nextcloud redirect overlay was
+     removed. /admin/files now always opens this authenticated same-origin UI. -->
+<header class="topbar">
+  <div class="brand-wrap">
+    <div class="brand-mark">D</div>
+    <div>
+      <div class="brand-title">教材雲端硬碟</div>
+      <div class="brand-sub">線上課堂講義與資源</div>
+    </div>
+  </div>
+  <div class="search-wrap">
+    <span class="search-icon">🔍</span>
+    <input id="search" type="search" placeholder="搜尋教材或資料夾名稱...">
+  </div>
+  <div class="top-actions">
+    <a id="dashboardLink" class="button primary" href="/admin">回控制台</a>
+    <button id="refresh" class="button secondary" type="button">重新整理</button>
+  </div>
+  <!-- MOBILE_IMPORT_TOP_V1: 手機版頂欄「匯入 iClass」按鈕 (僅手機顯示) -->
+  <button id="mImportTop" class="button secondary" type="button" title="從 iClass 自動下載當學期教材">
+    <svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 3v12"></path><path d="m7 10 5 5 5-5"></path><path d="M5 21h14"></path></svg>
+    匯入<span class="m-import-full"> iClass</span>
+  </button>
+  <!-- MOBILE_UP_TOP_V2: 「回上一頁」移到匯入右側 -->
+  <button id="filesBackDashboardBtn" class="button primary" type="button" title="回上一層資料夾">
+    <svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>
+    回上一頁
+  </button>
+</header>
+
+<div class="main">
+  <!-- 桌面側邊欄 -->
+  <aside class="sidebar">
+    <div class="new-wrap">
+      <button id="newBtn" class="new-btn" type="button">＋ 新增教材</button>
+      <div id="newMenu" class="new-menu">
+        <button id="newUpload" class="menu-item" type="button">上傳檔案</button>
+        <button id="newFolder" class="menu-item" type="button">建立資料夾</button>
+      </div>
+    </div>
+    <nav class="nav">
+      <button id="navAll" class="active" type="button" data-folder="">全部教材</button>
+      <div id="folderNav"></div>
+    </nav>
+    <section class="storage">
+      <div class="disk-title">硬碟儲存空間</div>
+      <div class="storage-bar"><span id="storageBar"></span></div>
+      <div id="storageText" class="small">計算中...</div>
+    </section>
+  </aside>
+
+  <!-- 主內容區 -->
+  <main class="content">
+    <div class="content-head">
+      <div>
+        <h1 id="pageTitle">我的教材</h1>
+        <div id="breadcrumb" class="breadcrumb"></div>
+      </div>
+      <div class="toolbar-right">
+        <button id="importHere" class="button secondary" type="button" title="從 iClass 自動下載當學期教材">⬇️ 匯入 iClass 教材</button>
+        <button id="uploadHere" class="button primary" type="button" title="上傳檔案（可一次選多個）">上傳檔案</button>
+        <button id="mkdirHere" class="button secondary" type="button">新增資料夾</button>
+        <button id="manageShares" class="button secondary manage-shares-btn hidden-init" type="button" title="管理所有分享連結">🔗 管理分享連結</button>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div id="summary" class="small">載入中...</div>
+      </div>
+      <div class="toolbar-right">
+        <select id="sortBy">
+          <option value="modified_desc" selected>最新修改</option>
+          <option value="name_asc">名稱 A-Z</option>
+          <option value="size_desc">檔案大小</option>
+        </select>
+        <div class="view-toggle">
+          <button id="gridView" class="button secondary active" type="button">格狀</button>
+          <button id="listView" class="button secondary" type="button">清單</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 拖曳上傳與進度列 -->
+    <!-- UPLOAD_DESKTOP_FIX_V1（fix50）：桌機常駐且可點擊（＝選檔），手機版由 CSS 隱藏。 -->
+    <div id="dropzone" class="dropzone" role="button" tabindex="0" title="點擊選擇檔案，或直接把檔案拖進來">將檔案拖曳至此處，或點此選擇檔案（不限格式、不限單檔大小）</div>
+    <div id="uploadProgress" class="upload-progress">
+      <div id="uploadProgressText" class="small">準備上傳...</div>
+      <div class="progress-line"><span id="uploadProgressBar"></span></div>
+      <!-- UPLOAD_QUEUE_SPEED_V1（fix51）：每個檔案一列（進度、速度、預估剩餘時間） -->
+      <div id="uploadQueue" class="upload-queue"></div>
+    </div>
+    <!-- UPLOAD_ANY_TYPE_V1（fix39）：不再給 accept——任何檔案都能選（含沒有副檔名者）。 -->
+    <input id="fileInput" class="hidden-input" type="file" multiple>
+
+    <!-- 資料夾區域 -->
+    <div id="folderSection" class="section-title">
+      <h2>資料夾</h2>
+    </div>
+    <div id="folderGrid" class="folder-grid"></div>
+
+    <!-- 檔案區域 -->
+    <div class="section-title">
+      <h2 id="filesHeading">檔案</h2>
+    </div>
+    <div id="fileGrid" class="file-grid"></div>
+
+    <!-- 清單表格 -->
+    <table id="listTable" class="list-table">
+      <thead>
+        <tr>
+          <th>檔案名稱</th>
+          <th>所在位置</th>
+          <th>修改時間</th>
+          <th>大小</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="listBody"></tbody>
+    </table>
+    <!-- MOBILE_NAV_SPACER_V1: 真實空白元素，高度由 JS 設為導覽列高度+餘裕，
+         保證捲到底時操作區不被 fixed 導覽列遮擋（不依賴 media query／cascade）。 -->
+    <div id="mobileBottomSpacer"></div>
+  </main>
+</div>
+
+<!-- 預覽彈出視窗 -->
+<div id="previewModal" class="modal-backdrop">
+  <div class="modal">
+    <div class="modal-head">
+      <div id="previewTitle" class="preview-title">預覽</div>
+      <div class="row-gap">
+        <a id="previewDownload" class="button primary" href="#">下載</a>
+        <button id="previewClose" class="icon" type="button">×</button>
+      </div>
+    </div>
+    <div id="previewBody" class="modal-body"></div>
+  </div>
+</div>
+
+<!-- 手機底部功能列 -->
+<nav id="mobilebar" class="mobilebar">
+  <button id="mDriveHome" type="button" aria-label="返回控制台">
+    <svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"></path><path d="M5 9.5V21h14V9.5"></path></svg>
+    <span>返回控制台</span>
+  </button>
+  <button id="mUpload" type="button">
+    <svg viewBox="0 0 24 24"><path d="M12 16V4"></path><path d="m7 9 5-5 5 5"></path><path d="M5 20h14"></path></svg>
+    <span>上傳</span>
+  </button>
+  <button id="mFolder" type="button">
+    <svg viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5z"></path></svg>
+    <span>資料夾</span>
+  </button>
+  <button id="mRefresh" type="button" aria-label="連結管理">
+    <svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+    <span>連結管理</span>
+  </button>
+</nav>
+
+<div id="toast" class="toast"></div>
+
+<!-- 完整雲端硬碟 JS 控制邏輯 -->
+<script>
+(function(){
+  'use strict';
+  const LS_SESSION = 'tronclass_admin_session';
+  let files = [], folders = [], currentFolder = '', isAdmin = false;
+  let view = localStorage.getItem('drive_view') || 'grid';
+  let sort = 'modified_desc';
+
+  const q = id => document.getElementById(id);
+  
+  function token(){
+    try {
+      const u = '';
+      if (u) return String(u).trim();
+      const keys = ['tronclass_admin_session','tronclass_admin_token','tronclass_dashboard_token','tronclass_session_token','adminToken','admin_token','token'];
+      for (let i = 0; i < keys.length; i++) {
+        const v = localStorage.getItem(keys[i]) || sessionStorage.getItem(keys[i]);
+        if (v && String(v).trim()) return String(v).trim();
+      }
+    } catch(_) {}
+    return '';
+  }
+
+  function withToken(path){
+    try {
+      const u = new URL(path, location.origin);
+      const t = token();
+      // F-03: token removed, auth via HttpOnly cookie
+      return u.pathname + u.search + u.hash;
+    } catch(_) { return path; }
+  }
+
+  function esc(v){
+    return String(v == null ? '' : v).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+
+  function norm(p){
+    return String(p || '').replace(/^\/+|\/+$/g, '').replace(/\/+/g, '/').trim();
+  }
+
+  function base(p){
+    p = norm(p);
+    return p ? p.split('/').pop() : '我的教材';
+  }
+
+  function parent(p){
+    p = norm(p);
+    if (!p || !p.includes('/')) return '';
+    const a = p.split('/');
+    a.pop();
+    return a.join('/');
+  }
+
+  function toast(t, ok=true){
+    const el = q('toast');
+    if (!el) return;
+    el.textContent = t;
+    el.className = 'toast visible ' + (ok ? 'ok' : 'bad');
+    clearTimeout(el._timer);
+    el._timer = setTimeout(() => el.classList.remove('visible'), 3200);
+  }
+
+  function sizeLabel(n){
+    n = Number(n || 0);
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+    return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  }
+
+  function ext(f){
+    return String(f.extension || (f.name || '').split('.').pop() || '').toLowerCase();
+  }
+
+  function dl(path){
+    return '/admin/api/files/download?path=' + encodeURIComponent(path);
+  }
+
+  function pv(path){
+    return '/admin/api/files/preview?path=' + encodeURIComponent(path);
+  }
+
+  // NO_LIBREOFFICE_PREVIEW_V1: 雲端硬碟可預覽的格式。
+  // ⚠️ 這幾份清單必須與後端 files.rs 的 `PREVIEWABLE_EXTS` 完全一致。
+  //    兩邊不同步時會出現「按了預覽卻收到 400」——舊版的 gif/bmp/webp 就是這樣壞的。
+  // 全部走瀏覽器原生或前端本機解析，伺服器不呼叫 LibreOffice 等任何轉檔程式。
+  const IMAGE_PREVIEW_EXTS  = ['jpg','jpeg','png','gif','bmp','webp','avif','ico','svg'];
+  const VIDEO_PREVIEW_EXTS  = ['mp4','webm','mov','m4v'];
+  const AUDIO_PREVIEW_EXTS  = ['mp3','wav','ogg','m4a','flac'];
+  // 純文字類：抓回來後一律經 esc() 跳脫再顯示，絕不當成 HTML 執行。
+  const TEXT_PREVIEW_EXTS   = ['txt','text','md','markdown','log','json','xml','yaml','yml',
+                               'ini','conf','cfg','toml','sql','sh','rs','js','ts','jsx','tsx',
+                               'css','py','java','c','h','cpp','hpp','go','php','html','htm',
+                               'srt','vtt'];
+  // 前端本機解析的 Office 格式（OOXML / ODF / RTF）
+  const OFFICE_PREVIEW_EXTS = ['docx','pptx','xlsx','odt','ods','odp','rtf'];
+  // 舊二進位：伺服器會回原始位元組，前端顯示「請下載查看」
+  const LEGACY_OFFICE_EXTS  = ['doc','ppt','xls'];
+  // OFFICE_ONLINE_V1: 這些格式可交給 Microsoft Office Online 檢視器（OneDrive 同款）。
+  // 舊版 .doc/.ppt/.xls 本機無法解析，一律走線上；新版則本機優先、可切線上。
+  const OFFICE_ONLINE_EXTS  = ['doc','ppt','xls','docx','pptx','xlsx'];
+
+  function canPreview(e){
+    return IMAGE_PREVIEW_EXTS.includes(e) || e === 'pdf' || e === 'url' ||
+           VIDEO_PREVIEW_EXTS.includes(e) || AUDIO_PREVIEW_EXTS.includes(e) ||
+           TEXT_PREVIEW_EXTS.includes(e) || e === 'csv' || e === 'tsv' ||
+           OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e);
+  }
+  // URL_SHORTCUT_V1: 解析 Internet Shortcut（.url）內容，取出目標網址。
+  // 支援 [InternetShortcut] 區的 URL= 行，或整份內容就是一個 http(s) 連結。
+  function parseShortcutUrl(txt){
+    txt = txt || '';
+    let m = /(?:^|[\r\n])\s*URL\s*=\s*([^\s\r\n]+)/i.exec(txt);
+    let u = m ? m[1].trim() : '';
+    if (!u) {
+      const t = txt.trim();
+      if (/^https?:\/\//i.test(t)) u = t.split(/\s+/)[0];
+    }
+    if (!u) return null;
+    if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+    return u;
+  }
+  // URL_SHORTCUT_V1: .url 的「預覽」＝跳轉到該網站。先同步開新分頁（about:blank）
+  // 以避免被浏览器的彈窗阻擋器擋下，fetch 完再把位址指過去；若新分頁開不成，
+  // 退為同分頁跳轉。解析失敗才退回彈窗顯示原始內容。
+  async function previewUrlFile(path, f){
+    const win = window.open('about:blank', '_blank');
+    let txt = '';
+    try {
+      const res = await fetch(pv(path), { cache: 'no-store' });
+      txt = await res.text();
+      const target = parseShortcutUrl(txt);
+      if (!target) throw new Error('找不到 URL=');
+      if (win) win.location.replace(target);
+      else window.location.href = target;
+      return;
+    } catch (err) {
+      if (win) win.close();
+      reportPreview(path, 'url', 'url', 'shortcut jump failed: ' + (err && err.message));
+      if (q('previewTitle')) q('previewTitle').textContent = f.name || path;
+      if (q('previewDownload')) q('previewDownload').href = dl(path);
+      setPreviewOpen(true);
+      q('previewBody').innerHTML = '<div class="empty">此 .url 檔沒有可跳轉的網址，原始內容如下：</div><pre>' + esc(txt) + '</pre>';
+    }
+  }
+  function isOfficePreview(e){ return OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e); }
+
+  async function api(path, opts={}, timeout=12000){
+    const t = token();
+    const c = new AbortController();
+    const timer = setTimeout(() => c.abort(), timeout);
+    opts.signal = c.signal;
+    opts.credentials = opts.credentials || 'same-origin';
+    const sep = path.includes('?') ? '&' : '?';
+    try {
+      const res = await fetch(path, opts);
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem(LS_SESSION);
+        sessionStorage.removeItem(LS_SESSION);
+        const next = encodeURIComponent(location.pathname + location.search + location.hash);
+        location.replace('/admin?next=' + next);
+        throw new Error('登入失效，跳轉至核心登入頁');
+      }
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+      return body;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // MATERIALS_IMPORT_V1 + SHARED: 從 iClass 自動匯入當學期教材(共用雲端硬碟)。
+  // 後端改為背景 job：這端立即發起，再輪詢 /import/status 顯示進度，避免 502。
+  //
+  // IMPORT_CONST_MSG_FIX_V1（fix64）：舊版在「完成訊息」用 `const msg` 卻又 `msg += …`
+  // 去附加錯誤清單——只要這次匯入有任何錯誤（例如有檔案的副檔名不被允許），
+  // 這行就丟出 TypeError: Assignment to constant variable，使用者看到的
+  // 就是「匯入失敗：Assignment to constant variable.」，摘要與清單全部不見、
+  // 也不會重新載入檔案列表。改成 let。
+  //
+  // IMPORT_ALL_TYPES_V1（fix64）：匯入時若遇到「不是許可的檔名（副檔名不在白名單）」，
+  // 以前是默默跳過；現在完成後會列出檔名並詢問使用者是否仍要匯入，確定就帶
+  // all_types=1 再跑一次（後端這次不套用白名單）。這個選擇會記在 localStorage，
+  // 之後的匯入直接沿用，不再每次問。
+  var LS_IMPORT_ALL_TYPES = 'tronclass_materials_import_all_types';
+
+  function importAllTypesRemembered(){
+    try { return localStorage.getItem(LS_IMPORT_ALL_TYPES) === '1'; } catch (_) { return false; }
+  }
+  function rememberImportAllTypes(){
+    try { localStorage.setItem(LS_IMPORT_ALL_TYPES, '1'); } catch (_) {}
+  }
+
+  // 跑一次匯入並輪詢到結束。回傳最後一次 status；逾時（仍在背景跑）回傳 null；失敗丟例外。
+  async function runImportOnce(allTypes, btn){
+    // 注意：這個端點在路由表是 GET（舊版就靠 GET 觸發），帶 method:'POST' 會 405。
+    const start = await api('/admin/api/files/import' + (allTypes ? '?all_types=1' : ''), {}, 60000);
+    if (!start.ok){ throw new Error(start.error || start.message || '匯入無法開始'); }
+    if (start.accepted === false){ throw new Error(start.error || start.message || '匯入無法開始'); }
+    // 輪詢進度(最多約 10 分鐘)。
+    const maxWait = 600000;
+    const began = Date.now();
+    let lastMsg = '';
+    while (Date.now() - began < maxWait) {
+      await new Promise(r => setTimeout(r, 2500));
+      const st = await api('/admin/api/files/import/status', {}, 60000);
+      if (st && st.message && st.message !== lastMsg) { lastMsg = st.message; if (btn) btn.textContent = st.message.slice(0, 24); }
+      if (st && st.done) return st;
+    }
+    return null;
+  }
+
+  function importSummary(st, allTypes){
+    let msg = '匯入完成' + (allTypes ? '（含所有檔案類型）' : '') + '：\n' +
+      '課程 ' + (st.courses_scanned||0) + ' 門\n' +
+      '教材 ' + (st.materials_found||0) + ' 項\n' +
+      '已儲存 ' + (st.files_saved||0) + '、已跳過 ' + (st.files_skipped||0) +
+      '、連結 ' + (st.links_created||0) + '、未開放 ' + (st.pending||0) +
+      '、失敗 ' + (st.failed||0);
+    // MATERIALS_MATERIAL_FOLDER_V1（fix101）：多檔案教材現在有自己的資料夾；舊的攤平檔案
+    // 會在重新匯入時被搬進去（不是重新下載、也不算跳過）→ 單獨回報，否則使用者不知道
+    // 「東西被搬到哪去了」。
+    if (st.files_moved){
+      msg += '\n\n已整理 ' + st.files_moved + ' 個既有檔案：移入各自的教材資料夾（不用重新下載）';
+    }
+    if (st.disallowed){
+      msg += '\n\n非允許的檔案類型（本次未匯入）：' + st.disallowed + ' 個';
+      const sample = (Array.isArray(st.disallowed_files) ? st.disallowed_files : []).slice(0, 10);
+      if (sample.length){
+        msg += '\n' + sample.join('\n') +
+          (st.disallowed > sample.length ? ('\n…以及另外 ' + (st.disallowed - sample.length) + ' 個') : '');
+      }
+    }
+    if (Array.isArray(st.errors) && st.errors.length){
+      msg += '\n\n錯誤（最多顯示 10 筆）：\n' + st.errors.slice(0,10).join('\n');
+    }
+    return msg;
+  }
+
+  // 有被白名單擋下的檔案時詢問使用者；確定 → 記住選擇並立刻再匯入一次（含全部類型）。
+  async function askImportAllTypes(st, btn){
+    const blocked = Number(st && st.disallowed || 0);
+    if (blocked <= 0) return null;
+    const sample = (Array.isArray(st.disallowed_files) ? st.disallowed_files : []).slice(0, 10);
+    const rest = blocked > sample.length ? ('\n…以及另外 ' + (blocked - sample.length) + ' 個') : '';
+    const question =
+      '有 ' + blocked + ' 個教材的檔案不在預設允許清單（PDF／Word／PowerPoint／圖片以外的類型，例如影片、音檔、壓縮檔、Excel）：\n\n' +
+      (sample.length ? sample.join('\n') + rest + '\n\n' : '') +
+      '要把它們也一起匯入嗎？\n\n' +
+      '按「確定」= 立刻再匯入一次（含這些檔案），之後的匯入也會自動包含所有類型。\n' +
+      '按「取消」= 維持現狀（只匯入 PDF／Word／PowerPoint／圖片）。\n\n' +
+      '提醒：影片等大檔會花比較久，也會佔用雲端硬碟容量。';
+    if (!confirm(question)) return null;
+    rememberImportAllTypes();
+    if (btn) btn.textContent = '匯入全部類型…';
+    return await runImportOnce(true, btn);
+  }
+
+  async function importMaterials(){
+    const btn = q('importHere');
+    const old = btn ? btn.textContent : '';
+    if (btn) { btn.disabled = true; btn.textContent = '匯入中…'; }
+    try {
+      const allTypes = importAllTypesRemembered();
+      let st = await runImportOnce(allTypes, btn);
+      if (!st){ alert('匯入仍在背景執行中，請稍後回到此頁查看「全部教材」'); return; }
+      alert(importSummary(st, allTypes));
+
+      // 只在使用者還沒選過「全部類型」時詢問一次。
+      if (!allTypes){
+        const again = await askImportAllTypes(st, btn);
+        if (again){ alert(importSummary(again, true)); }
+        else if (again === null && Number(st.disallowed || 0) > 0){ /* 使用者選擇維持現狀 */ }
+      }
+      loadFiles();
+    } catch (e) {
+      alert('匯入失敗：' + (e && e.message ? e.message : e));
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = old; }
+    }
+  }
+  function folderSet(){
+    const set = new Set();
+    folders.forEach(f => {
+      const n = norm(f);
+      if (n) set.add(n);
+    });
+    files.forEach(f => {
+      const p = norm(f.folder || parent(f.path || ''));
+      if (p) set.add(p);
+    });
+    return Array.from(set).sort((a,b) => a.localeCompare(b, 'zh-Hant'));
+  }
+
+  function childFolders(){
+    const all = folderSet();
+    const prefix = currentFolder ? currentFolder + '/' : '';
+    const out = new Set();
+    all.forEach(f => {
+      if (!currentFolder) {
+        const first = f.split('/')[0];
+        if (first) out.add(first);
+      } else if (f.startsWith(prefix)) {
+        const rest = f.slice(prefix.length);
+        const first = rest.split('/')[0];
+        if (first) out.add(prefix + first);
+      }
+    });
+    const needle = (q('search') ? q('search').value : '').trim().toLowerCase();
+    return Array.from(out).filter(f => f !== currentFolder && (!needle || f.toLowerCase().includes(needle))).sort((a,b) => base(a).localeCompare(base(b), 'zh-Hant'));
+  }
+
+  function directFiles(){
+    const needle = (q('search') ? q('search').value : '').trim().toLowerCase();
+    let list = files.filter(f => norm(f.folder || parent(f.path || '')) === currentFolder);
+    if (needle) {
+      list = files.filter(f => ((f.path||'') + ' ' + (f.name||'') + ' ' + (f.folder||'')).toLowerCase().includes(needle));
+    }
+    list.sort((a,b) => {
+      if (sort === 'name_asc') return String(a.name || a.path || '').localeCompare(String(b.name || b.path || ''), 'zh-Hant');
+      if (sort === 'size_desc') return Number(b.size || 0) - Number(a.size || 0);
+      return String(b.modified || '').localeCompare(String(a.modified || ''));
+    });
+    return list;
+  }
+
+  function renderNav(){
+    const all = folderSet();
+    if (q('navAll')) q('navAll').classList.toggle('active', currentFolder === '');
+    if (q('folderNav')) {
+      q('folderNav').innerHTML = all.slice(0, 60).map(f => 
+        '<button type="button" class="' + (f === currentFolder ? 'active' : '') + '" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button>'
+      ).join('') || '<div class="small subfolder-empty">無子資料夾</div>';
+    }
+  }
+
+  function renderBreadcrumb(){
+    const parts = currentFolder ? currentFolder.split('/') : [];
+    let acc = '', html = '<button type="button" data-folder="">我的教材</button>';
+    parts.forEach(part => {
+      acc = acc ? acc + '/' + part : part;
+      html += '<span>/</span><button type="button" data-folder="' + esc(acc) + '">' + esc(part) + '</button>';
+    });
+    if (q('breadcrumb')) q('breadcrumb').innerHTML = html;
+    if (q('pageTitle')) q('pageTitle').textContent = currentFolder ? base(currentFolder) : '我的教材';
+  }
+
+  function renderStorage(){
+    const used = files.reduce((s, f) => s + Number(f.size || 0), 0);
+    const quota = 10 * 1024 * 1024 * 1024;
+    const p = Math.min(100, Math.round(used * 100 / quota));
+    if (q('storageBar')) q('storageBar').style.width = p + '%';
+    if (q('storageText')) q('storageText').textContent = sizeLabel(used) + ' / 10 GB 已使用';
+  }
+
+  function folderCard(f){
+    return '<div class="folder-card" data-open-folder="' + esc(f) + '">' +
+      '<div class="folder-icon"></div>' +
+      '<div class="folder-name">' + esc(base(f)) + '</div>' +
+      '<button class="button danger folder-del" data-delete-folder="' + esc(f) + '" title="刪除資料夾">🗑</button>' +
+    '</div>';
+  }
+
+  function fileCard(f){
+    const e = ext(f);
+    const isImg = IMAGE_PREVIEW_EXTS.includes(e);
+    // BADGE_INLINE_V1: 非圖片檔左側只放色塊縮圖，副檔名改以小標籤放在檔名欄內，
+    // 不再用左側大格放徽章，徹底避免遮擋檔名。
+    const thumb = isImg
+      ? '<img class="file-thumb-img" src="' + pv(f.path) + '" alt="" loading="lazy" decoding="async">'
+      : '<div class="file-thumb-ph"></div>';
+    const chip = isImg ? '' : '<span class="file-chip">' + esc(e || 'FILE') + '</span>';
+    return '<div class="file-card">' +
+      '<div class="file-head">' +
+        '<div class="file-thumb">' + thumb + '</div>' +
+        '<div class="file-info">' + chip +
+          '<div class="file-name">' + esc(f.name || f.path) + '</div>' +
+          '<div class="file-meta">' + esc(f.modified || '-') + ' ｜ ' + esc(f.size_label || sizeLabel(f.size)) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="file-actions">' +
+        '<a class="button secondary download-link" href="' + dl(f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' +
+        (canPreview(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
+        '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button>' +
+        '<button class="button danger remove-btn" data-delete-file="' + esc(f.path) + '" title="刪除檔案">🗑</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderListTable(folds, fList){
+    const tbody = q('listBody');
+    if (!tbody) return;
+    tbody.innerHTML = folds.map(f => 
+      '<tr><td><button class="button secondary btn-compact" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td><td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td><td><button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button></td></tr>'
+    ).concat(fList.map(f => 
+      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' + (canPreview(ext(f)) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') + '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button><button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
+    )).join('') || '<tr><td colspan="5" class="empty">目前資料夾為空</td></tr>';
+  }
+
+  function render(){
+    renderNav();
+    renderBreadcrumb();
+    renderStorage();
+
+    const folds = childFolders();
+    const fList = directFiles();
+
+    if (q('summary')) q('summary').textContent = '資料夾 ' + folds.length + ' 個 ｜ 檔案 ' + fList.length + ' 個';
+
+    if (q('folderSection')) q('folderSection').style.display = folds.length ? 'flex' : 'none';
+    if (q('folderGrid')) q('folderGrid').innerHTML = folds.map(folderCard).join('');
+
+    if (q('fileGrid')) {
+      q('fileGrid').innerHTML = fList.length ? fList.map(fileCard).join('') : (!folds.length ? '<div class="empty">目前資料夾沒有教材檔案。請點擊「上傳檔案」或拖曳檔案至此。</div>' : '');
+    }
+
+    renderListTable(folds, fList);
+
+    const isGrid = view === 'grid';
+    if (q('fileGrid')) q('fileGrid').style.display = isGrid ? 'grid' : 'none';
+    if (q('listTable')) q('listTable').classList.toggle('visible', !isGrid);
+    if (q('gridView')) q('gridView').classList.toggle('active', isGrid);
+    if (q('listView')) q('listView').classList.toggle('active', !isGrid);
+  }
+
+  async function loadFiles(){
+    try {
+      const body = await api('/admin/api/files/list', { cache: 'no-store' });
+      // PREVIEW_FETCH_ONCE_V1（fix52）：清單重新載入＝伺服器端內容可能已變動，
+      // 前端快取的位元組不能再信任（同檔名覆蓋時會顯示舊內容）。
+      previewCacheClear();
+      isAdmin = !!body.is_admin;
+      files = (body.files || []).map(f => typeof f === 'string' ? { path: f, name: f } : f);
+      folders = body.folders || [];
+      // CLOUD_LIST_CACHE_SINGLE_SCAN_V1：超過 5000 項時後端截斷，提醒使用者列表不完整。
+      if (body.truncated) {
+        toast('教材超過 ' + (body.max_list_entries || 5000) + ' 項，僅顯示部分列表', false);
+      }
+      render();
+    } catch(e) {
+      toast(e.message || '讀取教材失敗', false);
+      if (q('fileGrid')) q('fileGrid').innerHTML = '<div class="empty">讀取教材失敗：' + esc(e.message || e) + '</div>';
+    }
+  }
+
+  function setFolder(f){
+    currentFolder = norm(f);
+    const u = new URL(location.href);
+    if (currentFolder) u.searchParams.set('folder', currentFolder);
+    else u.searchParams.delete('folder');
+    history.replaceState(null, '', u.pathname + u.search + u.hash);
+    render();
+  }
+
+  async function mkdir(){
+    const name = prompt('請輸入新資料夾名稱：');
+    if (!name) return;
+    let path = norm(name);
+    if (!path) return;
+    if (currentFolder && !path.includes('/')) path = currentFolder + '/' + path;
+    try {
+      const b = await api('/admin/api/files/mkdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      currentFolder = norm(b.path || path);
+      toast('資料夾建立成功');
+      await loadFiles();
+    } catch(e) {
+      toast(e.message || '建立資料夾失敗', false);
+    }
+  }
+
+  function showProgress(p, t){
+    if (q('uploadProgress')) q('uploadProgress').classList.add('visible');
+    if (q('uploadProgressBar')) q('uploadProgressBar').style.width = Math.max(0, Math.min(100, p || 0)) + '%';
+    if (q('uploadProgressText')) q('uploadProgressText').textContent = t || '';
+  }
+
+  function hideProgress(delay){
+    setTimeout(() => {
+      if (q('uploadProgress')) q('uploadProgress').classList.remove('visible');
+      if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
+    }, delay || 1600);
+  }
+  function progressError(t){
+    if (q('uploadProgress')) q('uploadProgress').classList.add('visible');
+    if (q('uploadProgressText')) q('uploadProgressText').style.color = 'var(--bad,#b42318)';
+    if (q('uploadProgressText')) q('uploadProgressText').textContent = t || '';
+    if (q('uploadProgressBar')) q('uploadProgressBar').style.width = '0%';
+  }
+
+  // UPLOAD_DESKTOP_FIX_V1（fix50）：電腦版「選了檔案卻完全沒動靜」強化。
+  //
+  // 症狀：/admin/files 桌面版點「上傳檔案」→ 選檔視窗有開、選完之後沒有任何反應
+  //       （進度列沒出現、console 沒有紅字），同一支手機版卻正常。
+  // 由於桌面與手機共用同一個 <input id="fileInput">、同一個 onchange，
+  // 唯一能造成「完全安靜」的位置就是「change 事件沒有回到我們的處理函式」。
+  // 因此這裡不再假設事件一定會到，改成：
+  //   1) 所有入口（工具列／側欄選單／手機底部列／拖放區點擊）統一走 pickFiles()。
+  //   2) pickFiles() 開檔前先 armUploadWatch()：開檔後 60 秒內每 700ms 檢查一次
+  //      fileInput.files；只要「有檔案但 change 沒來」，就自動接手直接上傳。
+  //   3) 以「檔名|大小|修改時間」簽章去重，change 與 watchdog 不會重複上傳同一批。
+  //   4) 選到檔案立刻顯示進度列＋toast，之後不會再出現「選完看起來像沒反應」的狀態。
+  //   5) 失敗訊息一律經過 uploadStatusMessage()，把 401/403/413/429/5xx 講成人話，
+  //      並把伺服器回的 error 原文一起顯示，方便回報。
+  let _pickWatchTimer = 0;
+  let _pickArmedAt = 0;
+  let _pickSig = '';
+  let _uploading = false;
+
+  function filesSig(fileList){
+    try {
+      return Array.prototype.map.call(fileList || [], f => [f.name, f.size, f.lastModified].join('|')).join('§');
+    } catch(_) { return ''; }
+  }
+
+  function armUploadWatch(){
+    _pickArmedAt = Date.now();
+    _pickSig = '';
+    if (_pickWatchTimer) return;
+    _pickWatchTimer = setInterval(() => {
+      if (Date.now() - _pickArmedAt > 60000) {
+        clearInterval(_pickWatchTimer);
+        _pickWatchTimer = 0;
+        return;
+      }
+      const inp = q('fileInput');
+      if (!inp || !inp.files || !inp.files.length) return;
+      const sig = filesSig(inp.files);
+      if (!sig || sig === _pickSig) return; // change 已經處理過這一批
+      _pickSig = sig;
+      console.info('[upload] change 事件未觸發，watchdog 接手：' + inp.files.length + ' 個檔案');
+      uploadFiles(inp.files);
+    }, 700);
+  }
+
+  // 唯一的上傳入口：開選檔視窗。桌面／手機／拖放區點擊都走這裡。
+  function pickFiles(){
+    const inp = q('fileInput');
+    if (!inp) {
+      progressError('找不到上傳欄位，請重新整理頁面後再試');
+      hideProgress(8000);
+      return;
+    }
+    armUploadWatch();
+    try { inp.value = ''; } catch(_) {}
+    try {
+      inp.click();
+    } catch(e) {
+      const msg = (e && e.message) ? e.message : String(e);
+      progressError('無法開啟選檔視窗：' + msg);
+      hideProgress(8000);
+      toast('無法開啟選檔視窗：' + msg, false);
+    }
+  }
+
+  // UPLOAD_STATUS_MESSAGE_V1（fix50）：把 HTTP 狀態碼翻成看得懂的說明。
+  function uploadStatusMessage(status, body){
+    const server = body && body.error ? String(body.error) : '';
+    const map = {
+      400: '伺服器不接受這次上傳（請求內容不合法）',
+      401: '登入狀態已過期，請重新整理頁面後再試',
+      403: '瀏覽器阻擋了這次上傳（來源驗證失敗），請用同一個網域重新整理後再試',
+      404: '找不到上傳端點（伺服器版本可能過舊，請重新部署）',
+      408: '伺服器等不到上傳資料（連線太慢或中途斷線）',
+      413: '超過硬碟總容量（或外層反向代理的大小上限）',
+      429: '已有其他檔案正在上傳，請稍後再試',
+      500: '伺服器內部錯誤',
+      502: '伺服器暫時無法處理（可能正在重新啟動）',
+      503: '伺服器忙碌中或儲存空間不足',
+      504: '伺服器回應逾時'
+    };
+    const friendly = map[status] || '';
+    if (server && friendly) return 'HTTP ' + status + '（' + friendly + '）：' + server;
+    if (server) return 'HTTP ' + status + '：' + server;
+    return 'HTTP ' + status + (friendly ? '（' + friendly + '）' : '');
+  }
+
+  // 回報問題時可在 console 打 __TRON_UPLOAD_DIAG() 看目前狀態。
+  window.__TRON_UPLOAD_DIAG = function(){
+    const inp = q('fileInput');
+    return {
+      build: 'UPLOAD_DESKTOP_FIX_V1',
+      endpoint: '/admin/api/files/upload',
+      hasInput: !!inp,
+      multiple: !!inp && inp.multiple === true,
+      pickedFiles: (inp && inp.files) ? inp.files.length : 0,
+      watchActive: !!_pickWatchTimer,
+      lastSig: _pickSig,
+      uploading: _uploading,
+      // UPLOAD_PARALLEL_V1（fix61）：目前一次送幾個檔案（與後端
+      // MATERIAL_UPLOAD_CONCURRENCY 對齊）；回報「上傳卡住」時先看這個數字。
+      parallel: UPLOAD_PARALLEL,
+      online: navigator.onLine !== false,
+      // UPLOAD_NO_FILE_CAP_V1（fix54）：單檔不限大小，只受硬碟總容量限制。
+      maxBytes: null,
+      maxTotalBytes: 10 * 1024 * 1024 * 1024
+    };
+  };
+
+  // UPLOAD_QUEUE_SPEED_V1（fix51）：上傳佇列、即時速度與預估剩餘時間。
+  //
+  // 這一版把「一次一個檔案、任一檔失敗就整批停住」換成真正的佇列：
+  //   1. 每個檔案一列，各自顯示進度、已傳／總量、速度（EMA 平滑）與預估剩餘時間；
+  //      最上面另有整批的百分比、總速度與總預估。
+  //   2. 429（伺服器同時只收 3 條上傳，配額以保留量守住）與 5xx、網路中斷
+  //      會自動重試（0.9s／1.8s／3.6s 退避，最多 3 次），不再立刻判死。
+  //   3. 單一檔案失敗不再中斷整批——舊版會 throw，後面還沒送的檔案就那樣消失。
+  //   4. 失敗的檔案在列表下方集中成「重試失敗的檔案」一鍵重送。
+  const UPLOAD_RETRY_LIMIT = 3;
+  const UPLOAD_RETRY_BASE_MS = 900;
+  // UPLOAD_PARALLEL_V1（fix61）：伺服器端同時可收 3 條上傳（10 GiB 配額改以「保留量」
+  // 守住，不再靠序列化），前端就用 3 個 worker 把佇列送出去——選三個大檔的總時間
+  // 從「相加」變成「取最慢的那個」。上限與後端 MATERIAL_UPLOAD_CONCURRENCY 對齊。
+  const UPLOAD_PARALLEL = 3;
+
+  let _uploadRows = [];
+  // 進度事件的節流時間戳：事件可能每秒數十次，逐次重建 DOM 會拖慢上傳本身。
+  let _uqLastPaint = 0;
+
+  function fmtEta(seconds){
+    if (!isFinite(seconds) || seconds <= 0) return '';
+    if (seconds < 60) return Math.ceil(seconds) + ' 秒';
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
+    return s ? (m + ' 分 ' + s + ' 秒') : (m + ' 分');
+  }
+
+  function renderUploadQueue(){
+    const box = q('uploadQueue');
+    if (!box) return;
+    if (!_uploadRows.length) { setHTMLSafe(box, ''); return; }
+    const rows = _uploadRows.map(r => {
+      const total = r.total || (r.file && r.file.size) || 0;
+      const sent = Math.min(r.sent || 0, total);
+      const pct = total ? Math.min(100, Math.round(sent * 100 / total)) : (r.status === 'done' ? 100 : 0);
+      let meta;
+      if (r.status === 'done') {
+        meta = sizeLabel(total) + ' · 完成 ✓';
+      } else if (r.status === 'failed') {
+        meta = '✕ ' + esc(r.error || '上傳失敗');
+      } else if (r.status === 'waiting') {
+        meta = (r.attempts > 1) ? ('等待重試（第 ' + r.attempts + ' 次）') : '等待中…';
+      } else {
+        const speed = r.speed > 0 ? ' · ' + sizeLabel(r.speed) + '/s' : '';
+        const eta = r.eta > 0 ? ' · 剩 ' + fmtEta(r.eta) : '';
+        meta = pct + '% · ' + sizeLabel(sent) + '/' + sizeLabel(total) + speed + eta;
+      }
+      const cls = r.status === 'done' ? ' done' : (r.status === 'failed' ? ' failed' : '');
+      return '<div class="uq-row' + cls + '">'
+        + '<div class="uq-name">' + esc(r.file.name) + '</div>'
+        + '<div class="uq-meta">' + meta + '</div>'
+        + '<div class="uq-track"><span class="uq-fill" style="width:' + pct + '%"></span></div>'
+        + '</div>';
+    }).join('');
+    const failed = _uploadRows.filter(r => r.status === 'failed').length;
+    const retry = (!_uploading && failed > 0)
+      ? '<div class="uq-actions"><button type="button" class="button secondary" data-uq-retry="1">重試失敗的檔案（' + failed + '）</button></div>'
+      : '';
+    setHTMLSafe(box, rows + retry);
+  }
+
+  // 整批的進度：總百分比、總速度、預估剩餘時間。
+  function uploadAggregate(){
+    const totalBytes = _uploadRows.reduce((s, r) => s + (r.total || (r.file && r.file.size) || 0), 0);
+    const sentBytes = _uploadRows.reduce((s, r) => s + Math.min(r.sent || 0, r.total || (r.file && r.file.size) || 0), 0);
+    const done = _uploadRows.filter(r => r.status === 'done').length;
+    const failed = _uploadRows.filter(r => r.status === 'failed').length;
+    const actives = _uploadRows.filter(r => r.status === 'uploading');
+    const active = actives[0];
+    const speed = _uploadRows.reduce((s, r) => s + (r.status === 'uploading' ? (r.speed || 0) : 0), 0);
+    const pct = totalBytes ? Math.min(100, Math.round(sentBytes * 100 / totalBytes)) : 0;
+    const idx = Math.min(_uploadRows.length, done + failed + actives.length);
+    let text = '上傳中 ' + idx + '/' + _uploadRows.length;
+    // UPLOAD_PARALLEL_V1（fix61）：一次可能有三個檔在同一時間跑，講「並行 N 個」比
+    // 只報第一個檔名誠實；只有一個在跑時仍然顯示檔名（原本的行為）。
+    if (actives.length > 1) text = '並行上傳 ' + actives.length + ' 個檔案（' + idx + '/' + _uploadRows.length + '）';
+    else if (active) text = '上傳 ' + active.file.name + '（' + idx + '/' + _uploadRows.length + '）';
+    if (speed > 0) {
+      text += ' · ' + sizeLabel(speed) + '/s';
+      const eta = (totalBytes - sentBytes) / speed;
+      if (eta > 0) text += ' · 預估剩 ' + fmtEta(eta);
+    }
+    if (q('uploadProgressText')) q('uploadProgressText').textContent = text;
+    if (q('uploadProgressBar')) q('uploadProgressBar').style.width = pct + '%';
+    return { pct, done, failed };
+  }
+
+  function uploadFileOnce(row, index, total){
+    return new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      uploadOne(row.file, index, total, row.file.name, (loaded, tot) => {
+        row.status = 'uploading';
+        row.sent = loaded;
+        if (tot) row.total = tot;
+        const secs = (Date.now() - startedAt) / 1000;
+        if (secs > 0.2) {
+          const instant = loaded / secs;
+          row.speed = row.speed > 0 ? (row.speed * 0.6 + instant * 0.4) : instant;
+          const left = (row.total || row.file.size) - loaded;
+          row.eta = row.speed > 0 ? Math.max(0, left / row.speed) : 0;
+        }
+        if (Date.now() - _uqLastPaint >= 120) {
+          _uqLastPaint = Date.now();
+          renderUploadQueue();
+          uploadAggregate();
+        }
+      }).then(resolve, reject);
+    });
+  }
+
+  // 一個檔案（含自動重試）。回傳 true＝成功。
+  async function uploadRowWithRetry(row, index, total){
+    for (let attempt = 1; attempt <= UPLOAD_RETRY_LIMIT; attempt++) {
+      row.attempts = attempt;
+      row.status = 'uploading';
+      row.error = '';
+      row.sent = 0;
+      row.speed = 0;
+      row.eta = 0;
+      renderUploadQueue();
+      try {
+        await uploadFileOnce(row, index, total);
+        row.status = 'done';
+        row.sent = row.total || row.file.size;
+        renderUploadQueue();
+        uploadAggregate();
+        return true;
+      } catch(e) {
+        const msg = (e && e.message) ? e.message : String(e);
+        // 429＝伺服器正在處理另一個檔案（一次只收一個，才守得住 10 GB 配額）；
+        // 5xx 與連線中斷也可能只是一時，都值得再試。
+        const retryable = /HTTP (429|5\d\d)/.test(msg) || /網路連線中斷/.test(msg);
+        if (retryable && attempt < UPLOAD_RETRY_LIMIT) {
+          row.status = 'waiting';
+          row.error = '';
+          renderUploadQueue();
+          await new Promise(r => setTimeout(r, UPLOAD_RETRY_BASE_MS * Math.pow(2, attempt - 1)));
+          continue;
+        }
+        row.status = 'failed';
+        row.error = msg;
+        renderUploadQueue();
+        uploadAggregate();
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // 送完 pending：UPLOAD_PARALLEL 條並行（伺服器端同時收 3 條，超過會回 429 並自動退避）。
+  // 每個 worker 從共用索引取下一件，所以「有人失敗」不會拖住其他還在排隊的檔案。
+  async function runUploadQueue(pending, label){
+    if (_uploading) return pending.length;
+    _uploading = true;
+    if (_pickWatchTimer) { clearInterval(_pickWatchTimer); _pickWatchTimer = 0; }
+    showProgress(0, label);
+    renderUploadQueue();
+    uploadAggregate();
+    let failedNow = 0;
+    let next = 0;
+    const worker = async () => {
+      while (true) {
+        const index = next;
+        next += 1;
+        if (index >= pending.length) return;
+        const ok = await uploadRowWithRetry(pending[index], index + 1, pending.length);
+        if (!ok) failedNow++;
+        uploadAggregate();
+      }
+    };
+    try {
+      const workers = [];
+      const slots = Math.min(UPLOAD_PARALLEL, pending.length);
+      for (let i = 0; i < slots; i++) workers.push(worker());
+      await Promise.all(workers);
+    } finally {
+      _uploading = false;
+      // UPLOAD_DESKTOP_FIX_V1（fix50）：不論成功失敗都要解鎖，否則之後選檔會被擋。
+      renderUploadQueue();
+      uploadAggregate();
+    }
+    return failedNow;
+  }
+
+  function uploadOne(file, i, total, displayName, onProgress){
+    return new Promise((resolve, reject) => {
+      const fd = new FormData();
+      fd.append('folder', currentFolder);
+      // UPLOAD_ANY_TYPE_V1（fix39）：原檔名原樣送出（後端不再判斷格式、也不改名）
+      fd.append('file', file, displayName || file.name);
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/admin/api/files/upload', true);
+      xhr.withCredentials = true;
+      xhr.upload.onprogress = ev => {
+        if (onProgress) {
+          onProgress(ev.loaded, ev.lengthComputable ? ev.total : (file.size || 0));
+          return;
+        }
+        if (ev.lengthComputable) {
+          showProgress(ev.loaded / ev.total * 100, '上傳 ' + i + '/' + total + '：' + file.name + ' (' + Math.round(ev.loaded / ev.total * 100) + '%)');
+        } else {
+          showProgress(30, '上傳 ' + i + '/' + total + '：' + file.name);
+        }
+      };
+      xhr.onerror = () => {
+        console.warn('[upload] 網路錯誤', { name: file.name, size: file.size });
+        reject(new Error('網路連線中斷（訊號不穩或連線被中斷；大檔案請確認連線穩定後再試）'));
+      };
+      xhr.onabort = () => reject(new Error('上傳已取消'));
+      xhr.onload = () => {
+        let body = {};
+        try { body = JSON.parse(xhr.responseText || '{}'); } catch(_) {}
+        if (xhr.status >= 200 && xhr.status < 300) {
+          console.info('[upload] 成功', { name: file.name, status: xhr.status });
+          resolve(body);
+          return;
+        }
+        // UPLOAD_STATUS_MESSAGE_V1（fix50）：不再只顯示「HTTP 500」這種看不懂的字。
+        const msg = uploadStatusMessage(xhr.status, body);
+        console.warn('[upload] 失敗', { name: file.name, status: xhr.status, body: String(xhr.responseText || '').slice(0, 300) });
+        reject(new Error(msg));
+      };
+      showProgress(0, '準備上傳 ' + i + '/' + total + '：' + file.name);
+      xhr.send(fd);
+    });
+  }
+
+  // UPLOAD_ROBUST_V1: 上傳流程強化（手機白畫面/沒上傳修復）
+  // 1) 立即清空 fileInput——失敗後重選同一個檔案仍會觸發 change
+  // 2) 錯誤訊息停留在進度條 8 秒並標紅，不再一閃即逝
+  //（舊版還有一條「用戶端預先檢查 50 MB 上限」與 `UPLOAD_MAX_BYTES` 常數，
+  //  UPLOAD_NO_FILE_CAP_V1（fix54）之後已移除：教材單檔不限大小，容量由伺服器
+  //  在收檔迴圈裡逐片段檢查硬碟總量。）
+  // UPLOAD_ANY_TYPE_V1（fix39）：不再有格式白名單，也不再做「無副檔名就依 MIME
+  // 補副檔名」的改名行為——送出的檔名與使用者選的完全一致。伺服器同樣不檢查
+  // 副檔名，只檢查檔名安全性（長度／路徑字元）與硬碟總容量。
+  async function uploadFiles(fileList){
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：讀不到檔案也要講話，不再安靜結束。
+    let arr = [];
+    try { arr = Array.from(fileList || []); } catch(e) {
+      progressError('無法讀取選取的檔案：' + ((e && e.message) ? e.message : e));
+      hideProgress(8000);
+      return;
+    }
+    if (!arr.length) return;
+    if (_uploading) { toast('已有檔案正在上傳，請等它跑完再選', false); return; }
+    if (q('fileInput')) q('fileInput').value = '';
+    // UPLOAD_NO_FILE_CAP_V1（fix54）：不做格式預檢，也不做大小預檢——多大的檔案都
+    // 直接送。能不能收下由伺服器依「硬碟總容量」逐片段決定（超過會回 413 並附原因）。
+    const will = arr;
+    _uploadRows = will.map(f => ({ file: f, sent: 0, total: f.size, speed: 0, eta: 0, attempts: 0, status: 'waiting', error: '' }));
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：選到檔案就立刻顯示進度列與提示——
+    // 之後不可能再出現「選完檔案卻看起來完全沒反應」的狀態。
+    if (_pickWatchTimer) { clearInterval(_pickWatchTimer); _pickWatchTimer = 0; }
+    showProgress(0, '已選擇 ' + _uploadRows.length + ' 個檔案，開始上傳…');
+    toast('開始上傳 ' + _uploadRows.length + ' 個檔案…');
+    try {
+      const failed = await runUploadQueue(_uploadRows.slice(), '已選擇 ' + _uploadRows.length + ' 個檔案，開始上傳…');
+      if (!failed) {
+        if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
+        showProgress(100, '所有檔案上傳完成！');
+        toast('教材上傳完成');
+        hideProgress();
+      } else {
+        progressError('上傳失敗 ' + failed + ' 個檔案（可點下方「重試失敗的檔案」）');
+        toast('上傳失敗：' + _uploadRows.filter(r => r.status === 'failed').map(r => r.file.name).join('、'), false);
+      }
+      await loadFiles();
+    } catch(e) {
+      progressError('上傳失敗：' + (e.message || e));
+      toast('上傳失敗：' + (e.message || e), false);
+      hideProgress(8000);
+    }
+  }
+
+  function retryFailedUploads(){
+    if (_uploading) { toast('還有檔案正在上傳，請稍等', false); return; }
+    const failed = _uploadRows.filter(r => r.status === 'failed');
+    if (!failed.length) return;
+    toast('重試 ' + failed.length + ' 個檔案…');
+    if (q('uploadProgressText')) q('uploadProgressText').style.color = '';
+    (async () => {
+      try {
+        const still = await runUploadQueue(failed, '重試 ' + failed.length + ' 個檔案…');
+        if (!still) {
+          showProgress(100, '所有檔案上傳完成！');
+          toast('教材上傳完成');
+          hideProgress();
+        } else {
+          progressError('仍有 ' + still + ' 個檔案上傳失敗');
+        }
+        await loadFiles();
+      } catch(e) {
+        progressError('重試失敗：' + (e.message || e));
+      }
+    })();
+  }
+
+  async function delFile(path){
+    if (!confirm('確定刪除檔案？\n' + path)) return;
+    try {
+      await api('/admin/api/files/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      toast('檔案已刪除');
+      await loadFiles();
+    } catch(e) {
+      toast(e.message || '刪除檔案失敗', false);
+    }
+  }
+
+  async function delFolder(path){
+    if (!confirm('確定刪除資料夾及其所有內容？\n' + path)) return;
+    try {
+      await api('/admin/api/files/rmdir', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ path })
+      });
+      if (currentFolder === path || currentFolder.startsWith(path + '/')) currentFolder = '';
+      toast('資料夾已刪除');
+      await loadFiles();
+    } catch(e) {
+      toast(e.message || '刪除資料夾失敗', false);
+    }
+  }
+
+
+  // PREVIEW_LOG_V1: 把前端預覽/解析錯誤回報到後台日誌（fire-and-forget），
+  // 讓管理者在 Pterodactyl console 看到「哪個檔、哪一步、什麼錯」。
+  function reportPreview(path, ext, stage, msg){
+    try {
+      fetch('/admin/api/files/preview-log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: path, ext: ext, stage: stage, message: String(msg || '').slice(0, 2000) }),
+        cache: 'no-store'
+      }).catch(function(){});
+    } catch(_) {}
+  }
+
+  // ===== PREVIEW_FAST_V1（fix52）：預覽載入加速 =====
+  // 目標：從點「預覽」到看到內容之間，不再做重複的事。
+  //   ① previewBytes()：同一份教材的位元組只抓一次（前端快取＋後端 ETag 304）
+  //   ② 下載時顯示百分比（有 Content-Length 時），大檔不再看起來像卡住
+  //   ③ PDF 先畫第一頁（立刻有內容），其餘頁在背景以有限並行補齊
+  //   ④ 關閉彈窗時取消未完成的渲染／下載，並釋放 PDF 文件與畫布
+  //   ⑤ 滑過「預覽」按鈕就先暖引擎、預抓位元組（真的點下去幾乎立即出現）
+  //   ⑥ 判斷「這是不是 PDF」改用 Range 抓前 8 bytes，不為了嗅探下載整檔
+  const PREVIEW_BYTES_MAX = 24 * 1024 * 1024; // 超過此大小不快取（不佔記憶體）
+  const PREVIEW_CACHE_MAX = 6;                // 最多保留 6 份位元組
+  const PDF_RENDER_CONCURRENCY = 2;           // 首頁之外的並行渲染頁數
+  // MATERIALS_MOBILE_V1（fix57）：手機版預覽（與公告附件預覽 fix56 同一套做法）。
+  //   · 手機的裝置像素比常是 3 → 一頁 A4 畫布 ~8 MB，十幾頁就讓 iOS 重新載入整頁
+  //   · 長講義先畫前幾頁就好，其餘捲到附近才畫（桌機完全不受影響）
+  const PDF_RATIO_MAX_MOBILE = 2;             // 窄螢幕畫布倍率上限
+  const PDF_EAGER_PAGES_MOBILE = 3;           // 窄螢幕先畫幾頁
+  const PDF_LAZY_MARGIN = '700px 0px';        // 捲到距頁面多近就開始畫
+  function previewNarrow(){
+    return !!(window.matchMedia && window.matchMedia('(max-width:820px)').matches);
+  }
+  const PREVIEW_PREWARM_MS = 120;             // 滑過按鈕後多久才真的暖機
+  const PREVIEW_RANGE_SNIFF_MIN = 3 * 1024 * 1024; // 大於此大小才用 Range 嗅探
+  var _previewCache = [];        // [{ path, bytes }]，最近用過的排最後
+  var _previewInflight = {};     // path -> { promise, listeners }：同檔只抓一次
+  var _previewXhrs = [];         // 進行中的位元組下載（關閉時 abort）
+  var _previewPdfTasks = [];     // 進行中的 PDF 頁面渲染（關閉時 cancel）
+  var _previewPdf = null;        // 目前開啟中的 PDF 文件（關閉時 destroy）
+  // MATERIALS_MOBILE_V1（fix57）：PDF 版面狀態（頁碼／翻頁／延遲渲染／轉向重畫）
+  var _previewPdfWrap = null;    // 目前的 .tron-pdf 容器
+  var _previewPdfSlots = [];     // 每頁一個插槽（頁碼／翻頁／延遲渲染都看這個）
+  var _previewPdfWidth = 0;      // 目前畫的目標寬度（轉向後寬度差太多就重畫）
+  var _previewPdfCur = 1;        // 目前看到第幾頁
+  var _previewPdfObserver = null;// 延遲渲染用（捲到附近才畫那一頁）
+  var _previewPdfBytes = null;   // 這一份的位元組（轉向重畫用，不重新下載）
+  var _previewPdfTick = false;   // 捲動事件節流
+  var _previewReflowTimer = null;// 轉向／改大小的去抖動
+  var _previewToken = 0;         // 換檔／關閉就 +1，舊的非同步工作看到不同值即停手
+  var _pdfWorkerReady = false;   // workerSrc 只需設定一次
+  var _previewWarmTimer = null;
+  var _previewWarmed = {};
+
+  function previewCancelled(mine){ return mine !== _previewToken; }
+
+  function previewCacheGet(path){
+    for (let i = 0; i < _previewCache.length; i++){
+      if (_previewCache[i].path === path){
+        const hit = _previewCache.splice(i, 1)[0]; // 移到最後＝最近使用
+        _previewCache.push(hit);
+        return hit.bytes;
+      }
+    }
+    return null;
+  }
+  function previewCacheDrop(path){
+    _previewCache = _previewCache.filter(x => x.path !== path);
+  }
+  function previewCachePut(path, bytes){
+    previewCacheDrop(path);
+    if (!bytes || !bytes.length || bytes.length > PREVIEW_BYTES_MAX) return;
+    _previewCache.push({ path: path, bytes: bytes });
+    while (_previewCache.length > PREVIEW_CACHE_MAX) _previewCache.shift();
+  }
+  // FILE_LIST_REFRESH 時清快取：清單重讀代表伺服器端可能已被上傳／刪除改動，
+  // 不能讓舊位元組留在前端（同檔名覆蓋就會看到舊內容）。
+  function previewCacheClear(){ _previewCache = []; }
+
+  // PREVIEW_FETCH_ONCE_V1（fix52）：取得預覽位元組的唯一入口。
+  //   - 快取命中：同步回傳，完全不碰網路（重開同一份教材幾乎立即出現）。
+  //   - 同檔同時被兩個地方要求（例如暖機＋真的點下去）：共用同一個下載。
+  //   - 用 XHR 而非 fetch，是為了在長檔下載時拿到 lengthComputable 的進度。
+  //   - 不快取超過 PREVIEW_BYTES_MAX 的檔案，避免手機記憶體被撐爆。
+  function fetchPreviewBytes(path, onProgress){
+    const cached = previewCacheGet(path);
+    if (cached){
+      if (onProgress) onProgress(cached.length, cached.length);
+      return Promise.resolve(cached);
+    }
+    const job = _previewInflight[path];
+    if (job){
+      if (onProgress) job.listeners.push(onProgress);
+      return job.promise;
+    }
+    const next = { listeners: onProgress ? [onProgress] : [], promise: null };
+    next.promise = new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      _previewXhrs.push(xhr);
+      const done = () => { _previewXhrs = _previewXhrs.filter(x => x !== xhr); };
+      xhr.open('GET', pv(path), true);
+      xhr.responseType = 'arraybuffer';
+      xhr.onprogress = ev => {
+        if (!ev || !ev.lengthComputable) return;
+        next.listeners.forEach(fn => { try { fn(ev.loaded, ev.total); } catch(_) {} });
+      };
+      xhr.onload = () => {
+        done();
+        if (xhr.status >= 200 && xhr.status < 300 && xhr.response){
+          const bytes = new Uint8Array(xhr.response);
+          previewCachePut(path, bytes);
+          resolve(bytes);
+        } else {
+          reject(new Error('http ' + xhr.status));
+        }
+      };
+      xhr.onerror = () => { done(); reject(new Error('network error')); };
+      xhr.onabort = () => { done(); reject(new Error('aborted')); };
+      xhr.send();
+    }).then(bytes => { delete _previewInflight[path]; return bytes; },
+            err => { delete _previewInflight[path]; throw err; });
+    _previewInflight[path] = next;
+    return next.promise;
+  }
+
+  // PREVIEW_CANCEL_V1（fix52）：換檔案時讓前一個還在跑的工作停手（不 abort 下載，
+  // 讓暖機／進行中的位元組繼續完成並進快取——下一個畫面多半就是它）。
+  function invalidatePreviewWork(){
+    _previewToken++;
+    _previewPdfTasks.forEach(task => { try { task.cancel(); } catch(_) {} });
+    _previewPdfTasks = [];
+    if (_previewPdf){ try { _previewPdf.destroy(); } catch(_){} _previewPdf = null; }
+    // MATERIALS_MOBILE_V1（fix57）：版面狀態一起收乾淨（延遲渲染的觀察者、捲動監聽、
+    // 轉向重畫用的位元組），否則關掉彈窗後還留著工作與記憶體。
+    if (_previewPdfObserver){ try { _previewPdfObserver.disconnect(); } catch(_) {} _previewPdfObserver = null; }
+    if (_previewPdfWrap){ try { _previewPdfWrap.removeEventListener('scroll', pdfOnScroll); } catch(_) {} }
+    _previewPdfWrap = null;
+    _previewPdfSlots = [];
+    _previewPdfWidth = 0;
+    _previewPdfCur = 1;
+    _previewPdfBytes = null;
+  }
+  // 關閉彈窗：連下載一起停，並釋放畫布（大檔的 canvas 可能佔數百 MB）。
+  function closePreviewTasks(){
+    invalidatePreviewWork();
+    _previewXhrs.forEach(xhr => { try { xhr.abort(); } catch(_) {} });
+    _previewXhrs = [];
+    _previewInflight = {};
+    const body = q('previewBody');
+    if (body) body.innerHTML = '';
+  }
+
+  function isPdfBytes(bytes){
+    return !!bytes && bytes.length > 4 &&
+      bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+  }
+
+  // PREVIEW_SNIFF_RANGE_V1（fix52）：只用 Range 抓前 8 bytes 判斷「實際內容是不是
+  // PDF」（後端支援 206／Accept-Ranges，見 fix51）。舊版 .doc/.ppt/.xls 因此不必先
+  // 下載整份才發現「其實是 PDF」或「該交給 Office Online」。
+  // 若伺服器／代理忽略 Range 而回整份，剛好可以放進快取，不算白抓。
+  async function previewLooksLikePdf(path, size, forceRange){
+    // 小檔（≤ 3 MB）且後續一定會用到整份內容時：直接抓整份並放進快取，少一次往返；
+    // 舊版 Office（forceRange）之後不會用到內容，一律只用 Range 抓前 8 bytes。
+    if (!forceRange && size && size <= PREVIEW_RANGE_SNIFF_MIN){
+      try { return isPdfBytes(await fetchPreviewBytes(path)); } catch(_) { return false; }
+    }
+    try {
+      const res = await fetch(pv(path), { headers: { 'Range': 'bytes=0-7' } });
+      if (res.ok){
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        if (res.status === 200) previewCachePut(path, bytes);
+        return isPdfBytes(bytes);
+      }
+    } catch(_) {}
+    try { return isPdfBytes(await fetchPreviewBytes(path)); } catch(_) { return false; }
+  }
+
+  // PREVIEW_WARM_LIBS_V1（fix52）：先按需載入引擎（載入失敗不影響流程，真的要用時
+  // 會再抓一次並依原邏輯顯示錯誤）。
+  function ensurePreviewLib(name){
+    try {
+      if (!window.__tronEnsureFileLib) return Promise.resolve();
+      const p = window.__tronEnsureFileLib(name);
+      return p && p.catch ? p.catch(() => {}) : Promise.resolve(p);
+    } catch(_) { return Promise.resolve(); }
+  }
+
+  // PREVIEW_PREWARM_V1（fix52）：滑鼠停在同一顆「預覽」按鈕上才暖機，避免滑過清單
+  // 就一直抓檔。PDF → 暖引擎＋預抓位元組；Office → 暖本機解析引擎。
+  function prewarmPreview(path){
+    if (!path || _previewWarmed[path]) return;
+    clearTimeout(_previewWarmTimer);
+    _previewWarmTimer = setTimeout(() => {
+      if (_previewWarmed[path]) return;
+      _previewWarmed[path] = true;
+      const f = files.find(x => x.path === path) || { path: path };
+      const e = ext(f);
+      if (e === 'pdf') { ensurePreviewLib('pdf'); fetchPreviewBytes(path).catch(() => {}); }
+      else if (OFFICE_PREVIEW_EXTS.includes(e) || LEGACY_OFFICE_EXTS.includes(e)) ensurePreviewLib('office');
+    }, PREVIEW_PREWARM_MS);
+  }
+
+  // PREVIEW_WARM_IDLE_V1（fix52）：進頁面後在閒置時把兩種引擎準備好，第一次點預覽
+  // 不必等引擎下載。省流量模式或 2G 連線時不暖機。
+  function schedulePreviewWarmup(){
+    try {
+      const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) return;
+    } catch(_) {}
+    const run = () => { ensurePreviewLib('pdf'); ensurePreviewLib('office'); };
+    setTimeout(() => {
+      if (window.requestIdleCallback) window.requestIdleCallback(run, { timeout: 3000 });
+      else run();
+    }, 1200);
+  }
+
+  // OFFICE_ONLINE_V1: OneDrive 同款。向後端索取「限時簽章公開連結」包成的
+  // Office Online 嵌入 URL，用 <iframe> 顯示。微軟伺服器會自行抓取該連結。
+  // 用於本機無法解析的舊版 .doc/.ppt/.xls。失敗時給明確訊息＋下載。
+  async function renderOfficeOnline(path, ext){
+    const body = q('previewBody');
+    body.innerHTML = '<div class="empty">正在準備線上檢視…</div>';
+    try {
+      const res = await fetch('/admin/api/files/office-embed?path=' + encodeURIComponent(path), { cache: 'no-store' });
+      if (!res.ok) throw new Error('http ' + res.status);
+      const data = await res.json();
+      if (!data.public_path) throw new Error('no public path');
+      // OFFICE_ONLINE_HOST_V1: 絕對 URL 用瀏覽器實際 origin 組（後端猜的 host
+      // 在 Pterodactyl/Tunnel 後是內部位址，微軟抓不到）。簽章不含 host，安全不變。
+      const absolute = location.origin + data.public_path;
+      const embed = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(absolute);
+      body.innerHTML =
+        '<div class="tron-online-wrap">' +
+          '<div class="tron-online-note">線上檢視由 Microsoft Office Online 提供（連結 15 分鐘內有效）。若持續空白，代表外網抓不到此連結，請改用上方「下載」。</div>' +
+          '<iframe class="tron-online" src="' + esc(embed) + '" allowfullscreen></iframe>' +
+        '</div>';
+    } catch(err) {
+      reportPreview(path, ext, 'office-online', err && err.message);
+      body.innerHTML = '<div class="empty">無法啟動線上檢視（' + esc((err && err.message) || String(err)) + '），請按上方「下載」查看。</div>';
+    }
+  }
+
+  // PDFJS_PREVIEW_V1: 用 PDF.js 把「已取得的 PDF 位元組」逐頁渲染成 canvas（fit-width 堆疊）。
+  // PDF_FIRST_PAGE_FIRST_V1（fix52）：先把第一頁畫出來（使用者立刻看到內容），其餘頁在
+  // 背景以有限並行補齊；換檔或關閉彈窗時（PREVIEW_CANCEL_V1）停止並取消渲染。
+  async function renderPdfData(data, options){
+    const opts = options || {};
+    const mine = (opts.token === undefined) ? _previewToken : opts.token;
+    const body = q('previewBody');
+    // FILES_LAZY_LIB_V1: PDF.js 改為按需載入（只在真的開 PDF 時才抓 ~320KB）。
+    if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('pdf');
+    if (previewCancelled(mine)) return;
+    if (!window.pdfjsLib) throw new Error('pdfjsLib missing');
+    // WORKER_SRC_ONCE_V1（fix52）：workerSrc 只需設定一次（每次預覽都重設等於讓
+    // PDF.js 重新比對 worker 位址）。
+    if (!_pdfWorkerReady){
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+      _pdfWorkerReady = true;
+    }
+    // DETACHED_BUFFER_GUARD_V1（fix52）：PDF.js 會把傳入的 ArrayBuffer 轉移（detach）給
+    // worker，直接傳快取裡的位元組會讓第二次預覽拿到「已失效的緩衝區」而整份壞掉。
+    // 這裡傳副本（一次 memcpy，遠比重新下載整檔便宜）。
+    const doc = await window.pdfjsLib.getDocument({ data: data.slice(), isEvalSupported: false }).promise;
+    if (previewCancelled(mine)){ try { doc.destroy(); } catch(_){} return; }
+    if (_previewPdf && _previewPdf !== doc){ try { _previewPdf.destroy(); } catch(_){} }
+    _previewPdf = doc;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'tron-pdf';
+    body.innerHTML = '';
+    body.appendChild(wrap);
+    // MATERIALS_MOBILE_V1（fix57）：留一份位元組 —— 轉向／改視窗大小時要用同一份
+    // 以新寬度重畫（不重新下載）。關閉或換檔時在 invalidatePreviewWork() 清掉。
+    _previewPdfBytes = data;
+    const narrow = previewNarrow();
+    // 手機把頁面用滿整個螢幕寬（桌機沿用原本的 28px 內縮）。
+    const targetWidth = Math.max(narrow ? 240 : 320, (body.clientWidth || 800) - (narrow ? 0 : 28));
+    let ratio = window.devicePixelRatio || 1;
+    if (narrow) ratio = Math.min(ratio, PDF_RATIO_MAX_MOBILE);
+    // 工具列（CSS 只在手機尺寸顯示）：頁碼＋上一頁／下一頁。
+    // 長講義在手機上捲到一半最需要知道「還有多長、怎麼跳」。
+    const bar = document.createElement('div');
+    bar.className = 'tron-pdf-bar';
+    const prevBtn = document.createElement('button');
+    prevBtn.type = 'button'; prevBtn.className = 'tron-pdf-btn'; prevBtn.textContent = '↑ 上一頁';
+    prevBtn.addEventListener('click', () => pdfStep(-1));
+    const info = document.createElement('span');
+    info.className = 'tron-pdf-info'; info.id = 'tronPdfPage'; info.textContent = '第 1 頁';
+    const nextBtn = document.createElement('button');
+    nextBtn.type = 'button'; nextBtn.className = 'tron-pdf-btn'; nextBtn.textContent = '↓ 下一頁';
+    nextBtn.addEventListener('click', () => pdfStep(1));
+    bar.appendChild(prevBtn); bar.appendChild(info); bar.appendChild(nextBtn);
+    wrap.appendChild(bar);
+    // 每頁一個插槽（真元素）：canvas 置中，且「捲到某一頁」有可靠的定位點——
+    // 之前的 display:contents 沒有自己的盒，翻頁與頁碼都無法定到特定頁。
+    const slots = [];
+    for (let i = 0; i < doc.numPages; i++){
+      const slot = document.createElement('div');
+      slot.className = 'tron-pdf-page';
+      wrap.appendChild(slot);
+      slots.push(slot);
+    }
+    _previewPdfWrap = wrap; _previewPdfSlots = slots; _previewPdfWidth = targetWidth;
+    const painted = [];
+    const paint = async (pageNo) => {
+      const slot = slots[pageNo - 1];
+      if (previewCancelled(mine) || painted[pageNo - 1] || !slot) return;
+      painted[pageNo - 1] = true;   // 同步先占位：同一頁不會被並行的兩路各畫一次
+      const page = await doc.getPage(pageNo);
+      if (previewCancelled(mine)) return;
+      const base = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: targetWidth / base.width });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.floor(vp.width * ratio);
+      canvas.height = Math.floor(vp.height * ratio);
+      canvas.style.width = Math.floor(vp.width) + 'px';
+      canvas.style.height = 'auto';
+      // 還沒畫的頁面先佔好高度：捲軸長度與頁碼不會在背景補頁時跳動。
+      slot.style.minHeight = Math.floor(vp.height) + 'px';
+      slot.appendChild(canvas);
+      const task = page.render({
+        canvasContext: canvas.getContext('2d'),
+        viewport: vp,
+        transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null
+      });
+      _previewPdfTasks.push(task);
+      try { await task.promise; } finally { _previewPdfTasks = _previewPdfTasks.filter(t => t !== task); }
+    };
+    // 第一頁優先：使用者視線就在最上面，先給它內容，後面的頁面慢慢補。
+    await paint(1);
+    // MATERIALS_MOBILE_V1（fix57）：**還沒畫的頁面也要佔位**。
+    // 先用第一頁量到的比例給其他插槽一個估計高度；真的畫到那一頁時會被實際值覆蓋。
+    // 少了這一步，背景補頁時整份文件的長度會一直變長 —— 捲軸位置與頁碼都會跳。
+    const estSlotHeight = parseFloat(slots[0] && slots[0].style.minHeight) || 0;
+    if (estSlotHeight > 0){
+      for (let i = 1; i < slots.length; i++){
+        if (!slots[i].style.minHeight) slots[i].style.minHeight = Math.floor(estSlotHeight) + 'px';
+      }
+    }
+    if (doc.numPages > 1 && !previewCancelled(mine)){
+      // 手機：先畫到 PDF_EAGER_PAGES_MOBILE，其餘捲到附近才畫（長講義不必一次畫完）。
+      let eagerEnd = doc.numPages;
+      if (narrow && PDF_EAGER_PAGES_MOBILE > 0) eagerEnd = Math.min(doc.numPages, PDF_EAGER_PAGES_MOBILE);
+      let cursor = 2;
+      const fill = async () => {
+        while (!previewCancelled(mine) && cursor <= eagerEnd){
+          const pageNo = cursor++;
+          try { await paint(pageNo); } catch(_) { if (previewCancelled(mine)) return; }
+        }
+      };
+      const workers = [];
+      const workerCount = Math.min(PDF_RENDER_CONCURRENCY, doc.numPages - 1);
+      const eagerWorkers = (eagerEnd < doc.numPages)
+        ? Math.min(PDF_RENDER_CONCURRENCY, Math.max(0, eagerEnd - 1))
+        : workerCount;
+      for (let i = 0; i < eagerWorkers; i++) workers.push(fill());
+      // 背景補頁不阻塞呼叫端（第一頁已經在畫面上），失敗也不影響已顯示的內容。
+      Promise.all(workers).catch(() => {});
+      if (eagerEnd < doc.numPages) paintLazyPages(mine, slots, paint, eagerEnd);
+    }
+    // 頁碼跟著捲動更新（.tron-pdf 自己就是捲動容器）。
+    _previewPdfCur = 1;
+    wrap.addEventListener('scroll', pdfOnScroll, { passive: true });
+    pdfSyncPage();
+  }
+
+  // MATERIALS_MOBILE_V1（fix57）：手機上只先畫前幾頁，剩下的捲到附近才畫。
+  // 沒有 IntersectionObserver 就照舊全部補齊（不因新功能而少畫）。
+  function paintLazyPages(mine, slots, paint, from){
+    if (previewCancelled(mine)) return;
+    if (window.IntersectionObserver){
+      if (_previewPdfObserver){ try { _previewPdfObserver.disconnect(); } catch(_) {} }
+      _previewPdfObserver = new window.IntersectionObserver((entries) => {
+        entries.forEach((en) => {
+          if (!en.isIntersecting || previewCancelled(mine)) return;
+          const idx = slots.indexOf(en.target);
+          if (idx < 0) return;
+          _previewPdfObserver.unobserve(en.target);
+          paint(idx + 1).catch(() => {});
+        });
+      }, { root: _previewPdfWrap || null, rootMargin: PDF_LAZY_MARGIN });
+      for (let i = from; i < slots.length; i++) _previewPdfObserver.observe(slots[i]);
+      return;
+    }
+    let rest = from + 1;
+    const fill = async () => {
+      while (!previewCancelled(mine) && rest <= slots.length){
+        const pageNo = rest++;
+        try { await paint(pageNo); } catch(_) { if (previewCancelled(mine)) return; }
+      }
+    };
+    const ws = [];
+    const count = Math.min(PDF_RENDER_CONCURRENCY, slots.length - from);
+    for (let i = 0; i < count; i++) ws.push(fill());
+    Promise.all(ws).catch(() => {});
+  }
+
+  // 捲動時更新「第 n / N 頁」：手機工具列顯示的就是這一行。
+  function pdfSyncPage(){
+    if (!_previewPdfSlots.length || !_previewPdfWrap) return;
+    const info = q('tronPdfPage');
+    if (!info) return;
+    // 黏著工具列會蓋住頂端約 54px，判定線往下挪才不會慢一頁。
+    const line = _previewPdfWrap.getBoundingClientRect().top + 56;
+    let cur = 1;
+    for (let i = 0; i < _previewPdfSlots.length; i++){
+      const el = _previewPdfSlots[i];
+      if (el && el.getBoundingClientRect().top <= line) cur = i + 1;
+    }
+    _previewPdfCur = cur;
+    info.textContent = '第 ' + cur + ' / ' + _previewPdfSlots.length + ' 頁';
+  }
+  function pdfOnScroll(){
+    if (_previewPdfTick) return;   // 捲動事件非常密集，一格動畫最多更新一次
+    _previewPdfTick = true;
+    const run = () => { _previewPdfTick = false; pdfSyncPage(); };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(run); else setTimeout(run, 60);
+  }
+  // 上一頁／下一頁：直接捲到目標頁開頭（首／末頁不越界、也不白捲一次）。
+  function pdfStep(delta){
+    if (!_previewPdfSlots.length) return;
+    pdfSyncPage();
+    let target = _previewPdfCur + delta;
+    if (target < 1) target = 1;
+    if (target > _previewPdfSlots.length) target = _previewPdfSlots.length;
+    if (target === _previewPdfCur) return;
+    const el = _previewPdfSlots[target - 1];
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+    _previewPdfCur = target;
+    pdfSyncPage();
+  }
+  // 轉向／改視窗大小：用同一份位元組以新寬度重畫（不重新下載）。
+  // 只有「寬度差超過 48px」才動 —— iOS 網址列伸縮造成的小幅變動不重畫。
+  function pdfReflowPreview(){
+    if (!_previewPdfBytes || !_previewPdfWrap) return;
+    if (_previewReflowTimer) clearTimeout(_previewReflowTimer);
+    _previewReflowTimer = setTimeout(() => {
+      _previewReflowTimer = null;
+      const body = q('previewBody');
+      if (!_previewPdfBytes || !_previewPdfWrap || !body) return;
+      const narrow = previewNarrow();
+      const want = Math.max(narrow ? 240 : 320, (body.clientWidth || 800) - (narrow ? 0 : 28));
+      if (Math.abs(want - _previewPdfWidth) < 48) return;
+      renderPdfData(_previewPdfBytes, { token: _previewToken }).catch(() => {});
+    }, 260);
+  }
+  window.addEventListener('resize', pdfReflowPreview);
+  window.addEventListener('orientationchange', pdfReflowPreview);
+
+  async function renderPdfPreview(url, path, ext){
+    const body = q('previewBody');
+    const mine = _previewToken;
+    const fallbackIframe = () => {
+      if (previewCancelled(mine)) return;
+      body.innerHTML = '<iframe src="' + url + '#toolbar=1" type="application/pdf"></iframe>';
+    };
+    body.innerHTML = '<div class="empty">正在載入 PDF 檢視器…</div>';
+    // FILES_LAZY_LIB_V1: 先按需載入 PDF.js，否則下方的 `!window.pdfjsLib` 會誤判為
+    // 「引擎缺失」而退回原生 iframe（首次開 PDF 就降級）。
+    // PREVIEW_PARALLEL_START_V1（fix52）：引擎與檔案位元組同時開抓，不互相等待。
+    const libPromise = (window.__tronEnsureFileLib
+      ? window.__tronEnsureFileLib('pdf')
+      : Promise.resolve()
+    ).catch(() => {}); // 引擎載入失敗不讓整段流程中斷（下方會走明確的降級訊息）
+    // PDF_DOWNLOAD_PROGRESS_V1（fix52）：邊下載邊顯示百分比（幾十 MB 的講義一眼看出
+    // 有在動，而不是空白等半天）。
+    const bytesPromise = fetchPreviewBytes(path, (loaded, total) => {
+      if (previewCancelled(mine)) return;
+      const pct = total ? Math.floor(loaded * 100 / total) : 0;
+      body.innerHTML = '<div class="empty">正在載入 PDF… ' + pct + '%（' +
+        sizeLabel(loaded) + ' / ' + sizeLabel(total) + '）</div>';
+    });
+    await libPromise;
+    if (previewCancelled(mine)){ bytesPromise.catch(() => {}); return; }
+    if (!window.pdfjsLib){
+      bytesPromise.catch(() => {});
+      reportPreview(path, ext, 'pdf-noengine', 'pdfjsLib missing');
+      fallbackIframe();
+      return;
+    }
+    try {
+      const bytes = await bytesPromise;
+      if (previewCancelled(mine)) return;
+      await renderPdfData(bytes, { token: mine });
+    } catch(err) {
+      if (previewCancelled(mine)) return;
+      reportPreview(path, ext, 'pdf', err && err.message);
+      fallbackIframe();
+    }
+  }
+
+  // SINGLE_CONTAINER_V1: Office 預覽智能分流。
+  //  回應是 PDF（未來若接轉換服務）→ PDF.js；舊版二進位→Office Online；
+  //  現代格式→office-view.js 本機解析（單一 container、無 LibreOffice 下最穩）。
+  // SINGLE_CONTAINER_V1: 本機解析（office-view.js）。單一 container、無 LibreOffice
+  // 時，現代格式（docx/pptx/xlsx/odf/rtf）唯一可靠的預覽方式。
+  async function renderOfficeLocal(buf, ext, path){
+    const body = q('previewBody');
+    const html = await window.TronOfficeView.preview(buf, ext);
+    if (!html) throw new Error('empty');
+    // 解析器回傳「錯誤卡片」時，把卡片文字＋zip 零件清單送進後台日誌，
+    // 讓後台能直接看到這個 Office 檔的內部結構，一次定位問題。
+    if (html.indexOf('tron-office-error') !== -1) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html;
+      let diag = '';
+      try {
+        const z = await JSZip.loadAsync(buf);
+        const names = Object.keys(z.files).filter(n => !z.files[n].dir);
+        diag = ' | parts(' + names.length + '): ' + names.slice(0, 15).join(', ');
+        // 深入診斷：XML 是否被 DOMParser 接受、關鍵節點是否存在。
+        const PNS = 'http://schemas.openxmlformats.org/presentationml/2006/main';
+        // XML_ENCODING_V1 驗證：直接讀 bytes，回報十六進位開頭與 NUL 數量，
+        // 確認 XML part 是否為 UTF-16（夾 0x00）導致 DOMParser "Document is empty"。
+        const hex = (u) => Array.from(u.slice(0, 16)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+        const nulCount = (u) => { let c = 0; const n = Math.min(u.length, 256); for (let i = 1; i < n; i += 2) if (u[i] === 0) c++; return c; };
+        const pbytes = z.file('ppt/presentation.xml') ? await z.file('ppt/presentation.xml').async('uint8array') : new Uint8Array(0);
+        diag += ' | presHex[' + hex(pbytes) + '] presNul:' + nulCount(pbytes) + ' len:' + pbytes.length;
+        const sfile = z.file('ppt/slides/slide1.xml');
+        if (sfile) {
+          const sbytes = await sfile.async('uint8array');
+          diag += ' | slideHex[' + hex(sbytes) + '] slideNul:' + nulCount(sbytes) + ' len:' + sbytes.length;
+        }
+      } catch(e) { diag = ' | zip reload failed: ' + (e && e.message); }
+      reportPreview(path, ext, 'office-parse', (tmp.textContent || '').trim() + diag);
+    }
+    if (window.TronOfficeView.mount) window.TronOfficeView.mount(body, html);
+    else body.innerHTML = html;
+  }
+
+  // 預覽分流：PDF→PDF.js；舊版二進位→Office Online；現代→本機解析。
+  async function renderOfficeSmart(url, path, ext, size){
+    const body = q('previewBody');
+    const mine = _previewToken;
+    body.innerHTML = '<div class="empty">正在載入…</div>';
+    const progress = (loaded, total) => {
+      if (previewCancelled(mine)) return;
+      const pct = total ? Math.floor(loaded * 100 / total) : 0;
+      body.innerHTML = '<div class="empty">正在載入檔案… ' + pct + '%（' +
+        sizeLabel(loaded) + ' / ' + sizeLabel(total) + '）</div>';
+    };
+    try {
+      // PREVIEW_SNIFF_RANGE_V1（fix52）：先確認實際內容是不是 PDF。舊版程式碼是
+      // 「先下載整份 → 再判斷」，20 MB 的 .ppt 等於白抓 20 MB；現在只抓前 8 bytes。
+      if (await previewLooksLikePdf(path, size, LEGACY_OFFICE_EXTS.includes(ext))){
+        if (previewCancelled(mine)) return;
+        await renderPdfData(await fetchPreviewBytes(path, progress), { token: mine });
+        return;
+      }
+      if (previewCancelled(mine)) return;
+      // 舊版二進位（.doc/.ppt/.xls）本機與 PDF.js 都無法解析 → 直接交給 Office
+      // Online 檢視器，瀏覽器不必先把整份檔案抓下來。
+      if (LEGACY_OFFICE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
+      const buf = await fetchPreviewBytes(path, progress);
+      if (previewCancelled(mine)) return;
+      // FILES_LAZY_LIB_V1: 現代 Office 格式才按需載入 jszip + office-view（~145KB），
+      // 其餘情況退回 Office Online，避免進頁就抓。
+      if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('office');
+      if (previewCancelled(mine)) return;
+      if (window.TronOfficeView && window.JSZip){
+        body.innerHTML = '<div class="empty">正在解析 Office 文件…</div>';
+        // 先讓瀏覽器把提示畫出來，再開始在主執行緒上解析（大檔解析會佔用幾百 ms）。
+        await new Promise(r => setTimeout(r, 0));
+        if (previewCancelled(mine)) return;
+        await renderOfficeLocal(buf, ext, path);
+        return;
+      }
+      if (OFFICE_ONLINE_EXTS.includes(ext)) { await renderOfficeOnline(path, ext); return; }
+      reportPreview(path, ext, 'unsupported', 'no engine for ext');
+      body.innerHTML = '<div class="empty">此格式（.' + esc(ext) + '）不支援線上預覽，請按上方「下載」查看。</div>';
+    } catch(err) {
+      if (previewCancelled(mine)) return;
+      reportPreview(path, ext, 'office', err && err.message);
+      body.innerHTML = '<div class="empty">無法預覽（' + esc((err && err.message) || String(err)) + '），請按上方「下載」。</div>';
+    }
+  }
+
+  // CSV/TSV 轉成表格顯示。純前端 split，所有字串都經 esc() 跳脫。
+  function csvToTable(text, sep){
+    const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+    if (lines.length && lines[lines.length - 1] === '') lines.pop();
+    if (!lines.length) return '';
+    const rows = lines.map(line => {
+      const cells = []; let cur = '', quoted = false;
+      for (let i = 0; i < line.length; i++){
+        const ch = line[i];
+        if (quoted){
+          if (ch === '"' && line[i + 1] === '"'){ cur += '"'; i++; }
+          else if (ch === '"'){ quoted = false; }
+          else cur += ch;
+        } else if (ch === '"') quoted = true;
+        else if (ch === sep) { cells.push(cur); cur = ''; }
+        else cur += ch;
+      }
+      cells.push(cur);
+      return cells;
+    });
+    const MAX = 300;
+    const head = rows[0];
+    let html = '<table class="tron-csv-table"><thead><tr>';
+    for (let c = 0; c < head.length; c++) html += '<th>' + esc(head[c]) + '</th>';
+    html += '</tr></thead><tbody>';
+    for (let r = 1; r < Math.min(rows.length, MAX); r++){
+      html += '<tr>';
+      for (let c = 0; c < head.length; c++) html += '<td>' + esc(rows[r][c] || '') + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    if (rows.length > MAX) html += '<div class="tron-office-note">檔案過大，僅顯示前 ' + MAX + ' 列。完整內容請下載。</div>';
+    return html;
+  }
+
+  // PREVIEW_HIDE_NAV_V1: 預覽彈窗開/關時同步切換 body class，隱藏手機導覽列。
+  function setPreviewOpen(open){
+    // PREVIEW_CANCEL_V1（fix52）：關閉預覽時停掉還在跑的下載／渲染並釋放畫布，
+    // 不讓關掉視窗後手機還在背景燒 CPU。
+    if (!open) closePreviewTasks();
+    if (q('previewModal')) q('previewModal').classList.toggle('visible', open);
+    document.body.classList.toggle('tron-preview-open', open);
+  }
+
+  // SHARE_V1: 分享按鈕＝向後端核發「免登入、可預覽」的公開連結（7 天時效），
+  // 優先用 Web Share API 分享該連結（手機可傳 LINE/訊息），否則複製到剪貼簿。
+  // 連結指向 /pub/share 預覽頁，不是下載頁；對方不用登入即可預覽。
+  // QR_SHARE_V1: 按「分享」→ 彈窗顯示「分享連結 + QR code」，可複製或掃描。
+  async function shareFile(path){
+    let link = null;
+    try {
+      const res = await fetch('/admin/api/files/share-link?path=' + encodeURIComponent(path), { cache: 'no-store' });
+      if (res.ok) { const j = await res.json(); if (j && j.public_path) link = location.origin + j.public_path; }
+    } catch (_) {}
+    if (!link) { toast('無法產生分享連結'); return; }
+    await openShareModal(link);
+  }
+
+  // TRUSTED_TYPES_V1: 後台 CSP require-trusted-types-for 'script'，innerHTML 需經
+  // 允許清單內的 'default' policy，否則拋錯。
+  var __TT = null;
+  try { if (window.trustedTypes) __TT = trustedTypes.createPolicy('default', { createHTML: function(s){return s;} }); } catch (e) { __TT = null; }
+  function setHTMLSafe(el, html) { if (__TT) el.innerHTML = __TT.createHTML(html); else el.innerHTML = html; }
+
+  async function openShareModal(link){
+    const old = document.getElementById('share-modal'); if (old) old.remove();
+    const ov = document.createElement('div'); ov.id = 'share-modal';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99999;padding:16px;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#fff;color:#111;border-radius:14px;max-width:420px;width:100%;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.35);text-align:center;';
+    setHTMLSafe(box,
+      '<div class="share-modal-title">分享連結</div>'
+      + '<div id="share-qr" class="share-qr-box"></div>'
+      + '<div class="share-modal-hint">免登入可預覽 · 7 天有效</div>'
+      + '<div id="share-link" class="share-link-box"></div>'
+      + '<div class="share-modal-actions">'
+      + '<button id="share-copy" type="button" class="share-btn-primary">複製連結</button>'
+      + '<button id="share-close" type="button" class="share-btn-ghost">關閉</button>'
+      + '</div>');
+    ov.appendChild(box);
+    document.body.appendChild(ov);
+    document.getElementById('share-link').textContent = link;
+    const qrBox = document.getElementById('share-qr');
+    try {
+      // FILES_LAZY_LIB_V1: QR 產生器改為按需載入（~20KB），只有按「分享」才抓。
+      if (window.__tronEnsureFileLib) await window.__tronEnsureFileLib('qrcode');
+      if (typeof qrcode === 'function') {
+        const qr = qrcode(0, 'M'); qr.addData(link); qr.make();
+        setHTMLSafe(qrBox, qr.createSvgTag({ cellSize: 5, margin: 2, scalable: true }));
+        const svg = qrBox.querySelector('svg'); if (svg) { svg.style.width = '220px'; svg.style.height = '220px'; }
+      } else { qrBox.textContent = '（QR 需 qrcode.min.js）'; }
+    } catch (_) { qrBox.textContent = 'QR 產生失敗'; }
+    document.getElementById('share-copy').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(link); toast('已複製分享連結'); }
+      catch (_) { window.prompt('複製分享連結：', link); }
+    });
+    document.getElementById('share-close').addEventListener('click', () => ov.remove());
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+  }
+
+  async function preview(path){
+    const f = files.find(x => x.path === path) || { path, name: path };
+    const e = ext(f);
+    const url = pv(path);
+    // PREVIEW_CANCEL_V1（fix52）：讓上一個還在跑的預覽工作（PDF 背景補頁、下載）停手。
+    invalidatePreviewWork();
+    // URL_SHORTCUT_V1: .url 不開彈窗，直接跳轉到檔案內的網址。
+    if (e === 'url') { await previewUrlFile(path, f); return; }
+    if (q('previewTitle')) q('previewTitle').textContent = f.name || path;
+    if (q('previewDownload')){
+      const link = q('previewDownload');
+      link.href = dl(path);
+      /* CLOUD_DOWNLOAD_ACCEL_V1：讓彈窗的「下載」也能走同一條加速路徑（size 只有清單裡有）。 */
+      link.dataset.download = path;
+      link.dataset.size = String(Number(f.size || 0));
+      link.dataset.name = f.name || path;
+    }
+    setPreviewOpen(true);
+
+    if (IMAGE_PREVIEW_EXTS.includes(e)) {
+      // SVG 只透過 <img> 載入：img 上下文不會執行 script，即使檔案內含腳本也無效。
+      q('previewBody').innerHTML = '<img src="' + url + '">';
+    } else if (e === 'pdf') {
+      // PDFJS_PREVIEW_V1: 用 PDF.js（Firefox 同款）本機渲染，canvas 逐頁畫出，
+      // 不靠瀏覽器原生 PDF 外掛 → 所有瀏覽器/手機一致，解決 iframe 空白。
+      // 若 PDF.js 未載入或解析失敗，退回原生 <iframe>。
+      await renderPdfPreview(url, path, e);
+    } else if (isOfficePreview(e)) {
+      // SINGLE_CONTAINER_V1: PDF→PDF.js；舊版→Office Online；現代→本機解析。
+      await renderOfficeSmart(url, path, e, f.size);
+    } else if (VIDEO_PREVIEW_EXTS.includes(e)) {
+      q('previewBody').innerHTML = '<video src="' + url + '" controls autoplay></video>';
+    } else if (AUDIO_PREVIEW_EXTS.includes(e)) {
+      q('previewBody').innerHTML = '<audio src="' + url + '" controls autoplay></audio>';
+    } else if (e === 'csv' || e === 'tsv') {
+      try {
+        const res = await fetch(url, { credentials: 'same-origin' });
+        const table = csvToTable(await res.text(), e === 'tsv' ? '\t' : ',');
+        q('previewBody').innerHTML = table || '<div class="empty">此檔案沒有內容</div>';
+      } catch(_) {
+        q('previewBody').innerHTML = '<div class="empty">無法預覽此檔案</div>';
+      }
+    } else if (TEXT_PREVIEW_EXTS.includes(e)) {
+      try {
+        const res = await fetch(url, { credentials: 'same-origin' });
+        // 一律以純文字顯示：html/xml 等格式也只看原始碼，不會被執行。
+        q('previewBody').innerHTML = '<pre>' + esc(await res.text()) + '</pre>';
+      } catch(_) {
+        q('previewBody').innerHTML = '<div class="empty">無法預覽此檔案</div>';
+      }
+    } else {
+      // 理論上不會走到（canPreview 已擋掉），但留個明確訊息而不是空白彈窗。
+      q('previewBody').innerHTML = '<div class="empty">此檔案格式不支援預覽，請按上方「下載」查看。</div>';
+    }
+  }
+
+  function syncLinks(){
+    if (q('dashboardLink')) q('dashboardLink').href = withToken('/admin');
+    if (q('contentHeadBackDashboard')) q('contentHeadBackDashboard').href = withToken('/admin');
+    if (q('sidebarBackDashboard')) q('sidebarBackDashboard').href = withToken('/admin');
+    if (q('mDashboard')) q('mDashboard').href = withToken('/admin');
+  }
+
+  function driveHome(){
+    // MOBILE_FILES_BACK_BUTTON_V1: 手機版改為「回上一層」資料夾(而非硬碟首頁)。
+    const parts = (currentFolder || '').split('/').filter(Boolean);
+    parts.pop();
+    setFolder(parts.join('/'));
+  }
+
+  function init(){
+    syncLinks();
+    
+    if (q('newBtn')) q('newBtn').onclick = () => q('newMenu').classList.toggle('open');
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：上傳入口一律走 pickFiles()（含 watchdog）。
+    if (q('newUpload')) q('newUpload').onclick = () => { q('newMenu').classList.remove('open'); pickFiles(); };
+    if (q('newFolder')) q('newFolder').onclick = () => { q('newMenu').classList.remove('open'); mkdir(); };
+    if (q('uploadHere')) q('uploadHere').onclick = pickFiles;
+    if (q('importHere')) q('importHere').onclick = importMaterials;
+    if (q('mImportTop')) q('mImportTop').onclick = importMaterials; // MOBILE_IMPORT_TOP_V1
+    if (q('mkdirHere')) q('mkdirHere').onclick = mkdir;
+    if (q('refresh')) q('refresh').onclick = loadFiles;
+    // SHARE_ADMIN_V1（手機）：管理員→「連結管理」跳 /admin/shares；
+    // 一般使用者→「重新整理」重載清單。
+    if (q('mRefresh')) {
+      var setRefresh = function(){
+        setHTMLSafe(q('mRefresh'), '<svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 0 1-14.6 4.6"></path><path d="M4 12A8 8 0 0 1 18.6 7.4"></path><path d="M18 3v5h-5"></path><path d="M6 21v-5h5"></path></svg><span>重新整理</span>');
+        q('mRefresh').onclick = loadFiles;
+      };
+      var setShares = function(){
+        setHTMLSafe(q('mRefresh'), '<svg viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg><span>連結管理</span>');
+        q('mRefresh').onclick = function(){ location.href = withToken('/admin/shares'); };
+      };
+      setRefresh();
+      fetch('/admin/api/shares', { credentials:'same-origin', cache:'no-store' })
+        .then(function(r){ if(r.ok){ setShares(); } })
+        .catch(function(){});
+    }
+    // MOBILE_FILES_BACK_BUTTON_V2: 頂欄「回上一頁」→ 上一層資料夾；底部「返回控制台」→ 控制台
+    if (q('filesBackDashboardBtn')) q('filesBackDashboardBtn').onclick = driveHome;
+    if (q('mDriveHome')) q('mDriveHome').onclick = () => location.href = withToken('/admin');
+    if (q('mUpload')) q('mUpload').onclick = pickFiles;
+    if (q('mFolder')) q('mFolder').onclick = mkdir;
+
+    if (q('navAll')) q('navAll').onclick = () => setFolder('');
+    if (q('gridView')) q('gridView').onclick = () => { view = 'grid'; localStorage.setItem('drive_view', view); render(); };
+    if (q('listView')) q('listView').onclick = () => { view = 'list'; localStorage.setItem('drive_view', view); render(); };
+    if (q('sortBy')) q('sortBy').onchange = e => { sort = e.target.value; render(); };
+    var _filesDebounce = null;
+    if (q('search')) q('search').oninput = () => {
+      clearTimeout(_filesDebounce);
+      _filesDebounce = setTimeout(render, 120);
+    };
+    // UPLOAD_DESKTOP_FIX_V1（fix50）：change 進來時先記下簽章（避免 watchdog 重複上傳）
+    // 並留一行 console 線索；真正的上傳流程仍由 uploadFiles() 統一處理。
+    // UPLOAD_QUEUE_SPEED_V1（fix51）：失敗清單下方的「重試失敗的檔案」。
+    if (q('uploadQueue')) q('uploadQueue').onclick = e => {
+      const btn = e.target && e.target.closest ? e.target.closest('[data-uq-retry]') : null;
+      if (btn) retryFailedUploads();
+    };
+
+    if (q('fileInput')) q('fileInput').onchange = e => {
+      const picked = e.target && e.target.files ? e.target.files : null;
+      if (picked && picked.length) {
+        _pickSig = filesSig(picked);
+        console.info('[upload] 已選擇 ' + picked.length + ' 個檔案');
+      }
+      uploadFiles(picked);
+    };
+    // UPLOAD_DESKTOP_FIX_V1（fix50）保險：若頁面上冒出第二個 file input（擴充套件、
+    // 舊快取頁面片段、未來改版）而 change 沒有走到 #fileInput，也在這裡接住並上傳。
+    document.addEventListener('change', e => {
+      const t = e.target;
+      if (!t || t === q('fileInput')) return;
+      if (!t.files || !t.files.length) return;
+      const sig = filesSig(t.files);
+      if (!sig || sig === _pickSig) return;
+      _pickSig = sig;
+      console.info('[upload] 接到其他 file input 的 change，改走本頁上傳流程');
+      uploadFiles(t.files);
+    }, true);
+
+    if (q('previewClose')) q('previewClose').onclick = () => setPreviewOpen(false);
+    if (q('previewModal')) q('previewModal').onclick = e => { if (e.target === q('previewModal')) setPreviewOpen(false); };
+
+    // PREVIEW_PREWARM_V1（fix52）：滑過／聚焦「預覽」按鈕時先暖引擎、預抓位元組，
+    // 真的點下去時幾乎立即出現內容。
+    const onPreviewHover = e => {
+      const t = e.target;
+      const btn = t && t.closest ? t.closest('[data-preview]') : null;
+      if (btn) prewarmPreview(btn.dataset.preview);
+    };
+    document.body.addEventListener('pointerover', onPreviewHover, true);
+    document.body.addEventListener('focusin', onPreviewHover, true);
+
+  /* ===== CLOUD_DOWNLOAD_ACCEL_V1（fix111）：大檔改用多條連線分段下載 =====
+     為什麼要做：面板→使用者的檔案原本是「單一 TCP 連線」的原生下載。單一連線的吞吐量受
+     頻寬延遲乘積（BDP）與路徑上的排隊／丟包限制——自己的頻寬再寬，單一大檔常常只跑到
+     其中一小部分。影音教材動輒幾百 MB，這裡的差距最有感（雲端硬碟回報的「單一大檔慢」）。
+
+     怎麼做：只在大檔（≥ DL_ACCEL_MIN_BYTES）且瀏覽器支援「串流寫檔」
+     （File System Access API：桌機 Chrome／Edge）時，把檔案切成 DL_ACCEL_STREAMS 段，
+     每段由一條連線以 DL_ACCEL_FETCH_BYTES 的 Range 請求連續抓取，邊抓邊按順序寫進
+     使用者選定的檔案。Range 由後端既有實作支援（RANGE_STREAM_V1：206 ＋ Content-Range），
+     所以伺服器端一行都不用改。
+
+     不影響既有功能的地方（這是重點）：
+       * 小檔、手機瀏覽器、Safari／Firefox、省流量模式、離線 → **完全不攔截**，
+         照舊走 <a href> 的原生下載。
+       * 使用者在儲存對話框按取消 → 什麼都不做（不會偷偷改成原生下載）。
+       * 任何一段失敗（本段重試 DL_ACCEL_RETRY 次仍失敗）、伺服器不支援分段（回 200）、
+         檔案在過程中變動（416）→ **自動退回原生下載**，使用者一定拿得到檔案。
+       * 完成後才 close()；中途失敗或取消一定 abort()，不留下半個檔案假裝成功。 */
+  const DL_ACCEL_MIN_BYTES = 32 * 1024 * 1024;      // 小於此大小不值得（原生下載本來就快）
+  const DL_ACCEL_STREAMS = 4;                      // 4 條連線（再多對通道／學校端沒幫助）
+  const DL_ACCEL_FETCH_BYTES = 8 * 1024 * 1024;    // 每條連線一次抓 8 MB，失敗只要重抓這一段
+  const DL_ACCEL_RETRY = 2;                        // 單段重試次數
+  const DL_ACCEL_QUEUE_MAX = 16 * 1024 * 1024;     // 單一 worker 先在記憶體排隊的上限（背壓）
+  /* 寫入緩衝：`FileSystemWritableFileStream.write()` 每一次呼叫都有固定成本（跨行程、可能伴隨
+     磁碟 flush），而 fetch 串流給的塊常常只有 16～64 KB。照原樣「一塊寫一次」會讓寫入端變成
+     速度天花板（實測：57.7 MB 的檔案只跑到 117 KB/s）。累積到 1 MB 再寫，把呼叫次數砍掉
+     一到兩個數量級；順序完全不變（同一個段內依序 append）。 */
+  const DL_ACCEL_WRITE_BYTES = 1024 * 1024;
+  /* DL_ACCEL_DIAG：`?dlaccel=0` 強制走原生下載（同一顆檔案做 A/B 對照）；
+     `?dlaccel=1` 連小檔也走加速（測試用）。也可以寫進 localStorage 的 tron_dl_accel。 */
+  const DL_ACCEL_PREF_KEY = 'tron_dl_accel';
+
+  function dlAccelSupported(){
+    return typeof window !== 'undefined' && typeof window.showSaveFilePicker === 'function';
+  }
+  function dlAccelOverride(){
+    try {
+      const q = new URLSearchParams(location.search).get('dlaccel');
+      if (q === '0' || q === '1') return q;
+      const stored = localStorage.getItem(DL_ACCEL_PREF_KEY);
+      if (stored === '0' || stored === '1') return stored;
+    } catch (_) {}
+    return '';
+  }
+  function dlAccelWanted(size){
+    if (!dlAccelSupported()) return false;
+    const override = dlAccelOverride();
+    if (override === '0') return false;                       // 使用者要對照原生下載
+    if (override === '1') return true;                        // 測試用：小檔也加速
+    if (!(Number(size) >= DL_ACCEL_MIN_BYTES)) return false;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
+    if (navigator.connection && navigator.connection.saveData) return false;
+    return true;
+  }
+
+  /* 進度面板：一律用 DOM API 建立（這頁的 CSP 有 require-trusted-types-for 'script'，
+     不去碰 innerHTML 最保險）。 */
+  let _dlAccelPanel = null;
+  function dlAccelPanel(){
+    if (_dlAccelPanel) return _dlAccelPanel;
+    const box = document.createElement('div');
+    box.className = 'dl-accel';
+    box.id = 'dlAccelPanel';
+    box.hidden = true;
+    const top = document.createElement('div'); top.className = 'dl-accel-top';
+    const name = document.createElement('div'); name.className = 'dl-accel-name';
+    const cancel = document.createElement('button'); cancel.type = 'button';
+    cancel.className = 'dl-accel-cancel'; cancel.textContent = '取消';
+    const bar = document.createElement('div'); bar.className = 'dl-accel-bar';
+    const fill = document.createElement('span');
+    const note = document.createElement('div'); note.className = 'dl-accel-note';
+    /* DL_ACCEL_DIAG：第二行給「診斷用」的數字（每條連線的速度、協定、寫入速度）。
+       平常使用者不必看懂，但「下載很慢」時這一行能直接指出是網路還是寫檔的問題。 */
+    const diag = document.createElement('div'); diag.className = 'dl-accel-diag';
+    bar.appendChild(fill);
+    top.appendChild(name); top.appendChild(cancel);
+    box.appendChild(top); box.appendChild(bar); box.appendChild(note); box.appendChild(diag);
+    document.body.appendChild(box);
+    _dlAccelPanel = { box, name, cancel, fill, note, diag };
+    return _dlAccelPanel;
+  }
+
+  /* 每一條連線一個佇列：worker 抓到的位元組排隊等寫入，寫入端按「段」順序消耗。
+     佇列會計數**還沒被寫入**的位元組（room()），滿了就讓 worker 暫停——記憶體不會被吃掉。
+
+     ⚠️ 這裡的位元組數只能在「真的進佇列」時累加、在「真的被取走」時扣掉。第一版寫成
+     「push 就先加、直接交給等在門口的消費者時忘了扣」→ 計數愈滾愈大 → worker 被 room()
+     永久擋住、寫入端也在等下一塊（互相等死，實測會停在寫入兩塊的地方）。
+     `checks/materials_download_check.py` 的大檔案例（比對 sha256）就是抓這個的。 */
+  function dlAccelQueue(){
+    const items = [];
+    let bytes = 0, ended = false, failure = null, waiter = null;
+    const room = [];
+    function releaseRoom(){
+      if (bytes <= DL_ACCEL_QUEUE_MAX && room.length) room.splice(0).forEach(fn => fn());
+    }
+    return {
+      push(chunk){
+        // 消費者在等 → 直接交給它（這塊沒有進佇列，不能計入未寫入的量）。
+        if (waiter){ const w = waiter; waiter = null; w(chunk); return; }
+        bytes += chunk.byteLength;
+        items.push(chunk);
+      },
+      end(){ ended = true; if (waiter){ const w = waiter; waiter = null; w(null); } },
+      fail(err){ if (!failure) failure = err; if (waiter){ const w = waiter; waiter = null; w(null); } },
+      room(){ if (bytes <= DL_ACCEL_QUEUE_MAX) return Promise.resolve(); return new Promise(r => room.push(r)); },
+      take(){
+        if (failure) return Promise.reject(failure);
+        if (items.length){ const v = items.shift(); bytes -= v.byteLength; releaseRoom(); return Promise.resolve(v); }
+        if (ended) return Promise.resolve(null);
+        return new Promise(resolve => { waiter = resolve; });
+      }
+    };
+  }
+
+  /* DL_ACCEL_NAME_V1（fix113）：存檔對話框的建議名稱**一定要帶原本的副檔名**。
+     為什麼：`.exe` 這種檔案少了 `.exe` 就不能執行（Windows 靠副檔名決定怎麼開），
+     而使用者上傳的可執行檔正是最在意「下載回來能不能用」的一類。
+     來源順序：清單給的 name → 沒有的話從路徑取檔名；兩者都沒有副檔名就補上路徑的副檔名。 */
+  function dlAccelSafeName(path, name){
+    const raw = String(name || '').trim();
+    const fromPath = String(path || '').split('/').pop() || '';
+    let out = raw || fromPath || 'download';
+    out = out.split(/[\\/]/).pop().trim();          // 不讓路徑分隔字元混進檔名
+    if (!out || out === '.' || out === '..') out = fromPath || 'download';
+    const ext = (fromPath.match(/\.[^./\\]+$/) || [''])[0];
+    if (ext && !out.toLowerCase().endsWith(ext.toLowerCase())) out += ext;
+    return out;
+  }
+
+  let _dlAccelBusy = false;
+
+  /* 退回原生下載：另建一個「沒有 data-download」的 <a> 點下去 —— 上面那支委派監聽
+     因此不會再攔一次，行為與原本的 <a href> 完全相同。 */
+  function dlAccelNativeFallback(url, reason){
+    if (reason) toast(reason, false);
+    const a = document.createElement('a');
+    a.href = url;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    try { a.click(); } finally { setTimeout(() => a.remove(), 0); }
+  }
+
+  /* 回傳 true＝已處理（成功、取消，或已自行退回原生）；false＝請呼叫端退回原生下載。 */
+  async function dlAccelStart(f, url){
+    if (_dlAccelBusy){ toast('已經有一個加速下載在進行中', false); return true; }
+    /* 儲存對話框必須在使用者手勢的當下開（await 之前不能插其他 await）。 */
+    let handle = null;
+    try {
+      handle = await window.showSaveFilePicker({
+        suggestedName: dlAccelSafeName(f.path, f.name),
+        id: 'tronMaterialsDownload'
+      });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return true;   // 使用者按取消 → 尊重他
+      return false;                                        // 其他原因（不支援／權限）→ 退回原生
+    }
+
+    const size = Number(f.size || 0);
+    const per = Math.ceil(size / DL_ACCEL_STREAMS);
+    const ranges = [];
+    for (let start = 0; start < size; start += per) {
+      ranges.push({ start: start, end: Math.min(size - 1, start + per - 1) });
+    }
+    if (!ranges.length) return false;
+
+    let writable = null;
+    try {
+      writable = await handle.createWritable();
+    } catch (err) {
+      return false;
+    }
+
+    _dlAccelBusy = true;
+    const panel = dlAccelPanel();
+    panel.box.hidden = false;
+    panel.box.classList.remove('dl-accel-done');
+    panel.name.textContent = f.name || '下載中';
+    panel.note.textContent = '準備中…';
+    if (panel.diag) panel.diag.textContent = '';
+    panel.fill.style.width = '0%';
+    panel.cancel.hidden = false;
+
+    const controller = new AbortController();
+    const queues = ranges.map(() => dlAccelQueue());
+    /* DL_ACCEL_DIAG：分開量「網路」與「寫入磁碟」兩種速度，並記每條連線各自的近況速度。
+       為什麼要這個：只看到「合計 117 KB/s」無法判斷是網路慢、還是寫檔慢——
+       四條連線都一樣慢＝路徑／伺服器端；只有寫入遠低於網路＝瀏覽器寫檔那一側。 */
+    const state = { error: null, cancelled: false, written: 0, net: 0 };
+    const conn = ranges.map(() => ({ net: 0, mark: Date.now(), markBytes: 0, speed: 0 }));
+    let proto = '';
+    const startedAt = Date.now();
+    let lastPaint = 0;
+    let winMark = startedAt, winNet = 0, winWritten = 0, netSpeed = 0, writeSpeed = 0;
+
+    function noteLine2(){
+      const parts = [];
+      if (conn.length > 1){
+        parts.push('連線 ' + conn.map(c => sizeLabel(c.speed) + '/s').join('・'));
+      }
+      if (proto) parts.push(proto === 'h2' ? 'HTTP/2' : (proto === 'http/1.1' ? 'HTTP/1.1' : proto));
+      parts.push('寫入磁碟 ' + sizeLabel(writeSpeed) + '/s');
+      return parts.join('　｜　');
+    }
+    function paint(force){
+      const now = Date.now();
+      if (!force && now - lastPaint < 200) return;
+      const dt = (now - winMark) / 1000;
+      if (dt >= 1){                       // 近況速度：每秒重算一次（不是從頭平均）
+        netSpeed = (state.net - winNet) / dt;
+        writeSpeed = (state.written - winWritten) / dt;
+        winMark = now; winNet = state.net; winWritten = state.written;
+      }
+      conn.forEach(c => {
+        const cdt = (now - c.mark) / 1000;
+        if (cdt >= 2){ c.speed = (c.net - c.markBytes) / cdt; c.mark = now; c.markBytes = c.net; }
+      });
+      lastPaint = now;
+      const pct = size > 0 ? Math.min(100, Math.round(state.written / size * 100)) : 0;
+      panel.fill.style.width = pct + '%';
+      /* 剩餘時間用「近況」估：剛開始那一瞬間資料量太少（例如只寫了 32 KB），
+         用累積平均會算出「剩約 1072 秒」這種離譜數字。累積到 1 MB 之後才顯示。 */
+      let rate = Math.max(netSpeed, writeSpeed);
+      if (!(rate > 0)) rate = state.written / Math.max(0.25, (now - startedAt) / 1000);
+      const eta = (pct < 100 && state.written >= 1024 * 1024 && rate > 0)
+        ? '　剩約 ' + Math.ceil(Math.max(0, (size - state.written) / rate)) + ' 秒' : '';
+      panel.note.textContent = pct + '%　' + sizeLabel(state.written) + '／' + sizeLabel(size)
+        + '　' + sizeLabel(rate) + '/s' + eta;
+      if (panel.diag) panel.diag.textContent = noteLine2();
+    }
+    function stop(err){
+      if (state.error || state.cancelled) return;
+      state.error = err || new Error('download stopped');
+      try { controller.abort(); } catch (_) {}
+      queues.forEach(q => q.fail(state.error));
+    }
+    panel.cancel.onclick = () => {
+      if (state.error || state.cancelled) return;
+      state.cancelled = true;
+      try { controller.abort(); } catch (_) {}
+      queues.forEach(q => q.fail(new Error('cancelled')));
+    };
+
+    async function worker(range, index){
+      const queue = queues[index];
+      try {
+        let off = range.start;
+        while (off <= range.end){
+          if (state.error || state.cancelled) return;
+          const last = Math.min(off + DL_ACCEL_FETCH_BYTES - 1, range.end);
+          let attempt = 0, advanced = false;
+          while (!advanced){
+            attempt += 1;
+            try {
+              const res = await fetch(url, {
+                headers: { 'Range': 'bytes=' + off + '-' + last },
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: controller.signal
+              });
+              /* DL_ACCEL_DIAG：記下實際走哪一種協定（HTTP/2 是**同一條連線**多工，
+                 所以「4 條連線」在 h2 下不等於 4 條獨立連線——這件事對判斷很重要）。 */
+              if (!proto){
+                try {
+                  /* performance entry 的 name 是**絕對網址**（我們傳進 fetch 的是相對路徑）。 */
+                  const abs = new URL(url, location.href).href;
+                  const entries = performance.getEntriesByName(abs);
+                  const lastEntry = entries[entries.length - 1];
+                  if (lastEntry && lastEntry.nextHopProtocol) proto = lastEntry.nextHopProtocol;
+                } catch (_) {}
+              }
+              if (res.status !== 206){
+                try { if (res.body) await res.body.cancel(); } catch (_) {}
+                throw new Error('伺服器回 HTTP ' + res.status + '（沒有分段內容）');
+              }
+              const reader = res.body.getReader();
+              let got = 0;
+              for (;;){
+                const part = await reader.read();
+                if (part.done) break;
+                if (part.value && part.value.byteLength){
+                  queue.push(part.value);
+                  got += part.value.byteLength;
+                  state.net += part.value.byteLength;
+                  conn[index].net += part.value.byteLength;
+                  await queue.room();          // 背壓：寫入端還沒追上就先停手
+                }
+              }
+              if (got !== last - off + 1) throw new Error('分段長度不符（收到 ' + got + '，預期 ' + (last - off + 1) + '）');
+              off = last + 1;
+              advanced = true;
+            } catch (err) {
+              if (state.error || state.cancelled || (err && err.name === 'AbortError')) return;
+              if (attempt > DL_ACCEL_RETRY){ stop(err); return; }
+              await new Promise(r => setTimeout(r, 400 * attempt));
+            }
+          }
+        }
+        queue.end();
+      } catch (err) {
+        stop(err);
+      }
+    }
+
+    try {
+      paint(true);
+      const workers = ranges.map((range, i) => worker(range, i));
+      for (let i = 0; i < queues.length; i++){
+        let buf = [], bufBytes = 0;
+        const flush = async () => {
+          if (!bufBytes) return;
+          let out = buf[0];
+          if (buf.length > 1){                 // 合併成一塊再寫（見 DL_ACCEL_WRITE_BYTES 的說明）
+            out = new Uint8Array(bufBytes);
+            let at = 0;
+            for (const piece of buf){ out.set(piece, at); at += piece.byteLength; }
+          }
+          buf = []; bufBytes = 0;
+          await writable.write(out);
+        };
+        for (;;){
+          const chunk = await queues[i].take();
+          if (chunk === null){ await flush(); if (state.error) throw state.error; break; }
+          if (state.cancelled) throw new Error('cancelled');
+          buf.push(chunk);
+          bufBytes += chunk.byteLength;
+          state.written += chunk.byteLength;
+          if (bufBytes >= DL_ACCEL_WRITE_BYTES) await flush();
+          paint(false);
+        }
+      }
+      await Promise.all(workers);
+      if (state.error) throw state.error;
+      if (state.cancelled) throw new Error('cancelled');
+      if (state.written !== size) throw new Error('寫入長度不符（' + state.written + '／' + size + '）');
+      await writable.close();
+      paint(true);
+      const secs = Math.max(0.25, (Date.now() - startedAt) / 1000);
+      panel.box.classList.add('dl-accel-done');
+      panel.cancel.hidden = true;
+      panel.name.textContent = '✓ 已儲存 ' + (f.name || '');
+      panel.note.textContent = sizeLabel(size) + '　平均 ' + sizeLabel(size / secs) + '/s'
+        + '（' + DL_ACCEL_STREAMS + ' 條連線' + (proto ? '・' + (proto === 'h2' ? 'HTTP/2' : proto) : '') + '）';
+      setTimeout(() => { if (!_dlAccelBusy) panel.box.hidden = true; }, 8000);
+      return true;
+    } catch (err) {
+      try { if (writable.abort) await writable.abort(); } catch (_) {}
+      if (state.cancelled){
+        panel.cancel.hidden = true;
+        panel.name.textContent = '已取消下載';
+        panel.note.textContent = '沒有儲存任何內容';
+        setTimeout(() => { panel.box.hidden = true; }, 4000);
+        return true;
+      }
+      console.warn('[materials] 加速下載失敗，改用一般下載', err);
+      panel.box.hidden = true;
+      return false;
+    } finally {
+      _dlAccelBusy = false;
+    }
+  }
+
+    document.body.addEventListener('click', e => {
+      /* CLOUD_DOWNLOAD_ACCEL_V1（fix111）：大檔＋支援串流寫檔 → 多連線分段下載；
+         其餘情況完全不攔截（照舊原生下載）。 */
+      const accelLink = e.target.closest ? e.target.closest('a[data-download]') : null;
+      if (accelLink && !e.defaultPrevented && dlAccelWanted(accelLink.dataset.size)){
+        const accelUrl = accelLink.getAttribute('href');
+        e.preventDefault();
+        dlAccelStart({
+          name: accelLink.dataset.name || accelLink.dataset.download || '下載',
+          path: accelLink.dataset.download,
+          size: Number(accelLink.dataset.size || 0)
+        }, accelUrl).then(ok => {
+          if (ok === false) dlAccelNativeFallback(accelUrl, '加速下載未完成，改用一般下載');
+        });
+        return;
+      }
+      const open = e.target.closest('[data-open-folder]');
+      if (open && !e.target.closest('button,a')) return setFolder(open.dataset.openFolder);
+      const btn = e.target.closest('[data-folder],[data-delete-file],[data-delete-folder],[data-preview],[data-share]');
+      if (!btn) return;
+      if (btn.dataset.folder !== undefined) return setFolder(btn.dataset.folder);
+      if (btn.dataset.deleteFile) return delFile(btn.dataset.deleteFile);
+      if (btn.dataset.deleteFolder) return delFolder(btn.dataset.deleteFolder);
+      if (btn.dataset.preview) return preview(btn.dataset.preview);
+      if (btn.dataset.share) return shareFile(btn.dataset.share);
+    });
+
+    const drop = q('dropzone');
+    if (drop) {
+      // UPLOAD_DESKTOP_FIX_V1（fix50）：桌機常駐的拖放區也可以直接點擊（＝選檔）。
+      drop.onclick = pickFiles;
+      drop.onkeydown = e => {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); pickFiles(); }
+      };
+      ['dragenter','dragover'].forEach(n => document.addEventListener(n, e => { e.preventDefault(); drop.classList.add('dragover'); }));
+      document.addEventListener('dragleave', e => { if (e.clientX === 0 && e.clientY === 0) drop.classList.remove('dragover'); });
+      document.addEventListener('drop', e => {
+        e.preventDefault();
+        drop.classList.remove('dragover');
+        if (e.dataTransfer && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files);
+      });
+    }
+
+    const folderParam = new URLSearchParams(location.search).get('folder');
+    if (folderParam) currentFolder = norm(folderParam);
+
+    loadFiles();
+    // PREVIEW_WARM_IDLE_V1（fix52）：閒置時先把 PDF.js／office-view 準備好。
+    schedulePreviewWarmup();
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+<script id="RETURN_DASHBOARD_HREF_V1">
+(function(){
+  function tok(){
+    return '';
+  }
+  function patch(){
+    var t=tok();
+    document.querySelectorAll('a[href="/admin"],a[href="/admin/"],a[href="/admin#overview"],a[href^="/admin?"]').forEach(function(a){
+      try{
+        var u=new URL(a.getAttribute('href'), location.origin);
+        if(!(u.pathname==='/admin'||u.pathname==='/admin/'||u.pathname==='/admin/dashboard')) return;
+        // F-03: token removed, auth via HttpOnly cookie
+        if(!u.hash) u.hash='overview';
+        a.setAttribute('href', u.pathname+u.search+u.hash);
+      }catch(_){}
+    });
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', patch);
+  else patch();
+  setTimeout(patch, 200);
+})();
+</script>
+
+<script id="FILES_MOBILE_HEADER_BACK_V1">
+(function(){
+  if(window.FILES_MOBILE_HEADER_BACK_V1) return;
+  window.FILES_MOBILE_HEADER_BACK_V1 = true;
+  function tok(){
+    return '';
+  }
+  function href(){
+    var t=tok();
+    return '/admin#overview';
+  }
+  function tidy(){
+    var top=document.querySelector('.top-actions');
+    if(top){
+      Array.prototype.slice.call(top.children).forEach(function(n){
+        if(n.id==='dashboardLink') return;
+        n.style.display='none';
+      });
+      var a=document.getElementById('dashboardLink');
+      if(!a){
+        a=document.createElement('a');
+        a.id='dashboardLink';
+        a.className='button primary';
+        top.appendChild(a);
+      }
+      a.textContent='回控制台';
+      a.href=href();
+      a.style.display='inline-flex';
+    }
+    var dash=document.getElementById('mDashboard');
+    if(dash){
+      dash.style.display='none';
+      dash.setAttribute('hidden','hidden');
+    }
+  }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', tidy);
+  else tidy();
+  setTimeout(tidy, 80);
+  setTimeout(tidy, 400);
+  try{ new MutationObserver(tidy).observe(document.documentElement,{childList:true,subtree:true}); }catch(_){}
+})();
+</script>
+
+<script id="FILES_TOP_BACK_V2">
+(function(){
+  if(window.FILES_TOP_BACK_V2) return;
+  window.FILES_TOP_BACK_V2 = true;
+  function tok(){
+    try{
+      return ''; // F-03: token removed
+    }catch(_){ return ''; }
+  }
+  function ensure(){
+    var header = document.querySelector('header.topbar, header, .topbar');
+    if(!header) return;
+    var btn = document.getElementById('filesBackDashboardBtn');
+    if(!btn){
+      btn = document.createElement('button');
+      btn.id = 'filesBackDashboardBtn';
+      btn.type = 'button';
+      header.appendChild(btn);
+    }else if(btn.parentElement !== header){
+      header.appendChild(btn);
+    }
+    // MOBILE_FILES_BACK_BUTTON_V2: 頂欄這顆改為「回上一頁」資料夾(非回控制台)。
+    btn.className = 'button primary';
+    btn.setAttribute('type','button');
+    btn.title = '回上一層資料夾';
+    btn.innerHTML = '<svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>回上一頁';
+    btn.removeAttribute('href');
+    btn.removeAttribute('hidden');
+    btn.style.display = '';
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensure);
+  else ensure();
+  setTimeout(ensure, 60);
+  setTimeout(ensure, 300);
+})();
+</script><style id="MANUAL_DARK_MIRROR_V1">
+/* DARK_MIRROR_V1: 自動鏡像 prefers-color-scheme:dark → html[data-theme="dark"]；手動深色與系統深色同調色盤 */
+html[data-theme="dark"]{--bg:#090d16 !important;--surface:#131b2a !important;--surface2:#1c2638 !important;--surface3:#24324a !important;--text:#f1f5f9 !important;--muted:#94a3b8 !important;--line:#223046 !important;--line2:#334155 !important;--primary:#3b82f6 !important;--primarySoft:rgba(59,130,246,.16) !important;--primaryText:#ffffff !important;--ok:#4ade80 !important;--warn:#fbbf24 !important;--bad:#f87171 !important;--shadow:0 4px 24px rgba(0,0,0,.36) !important;}
+html[data-theme="dark"] .topbar{background:rgba(15,23,42,.70) !important;}
+html[data-theme="dark"] .mobilebar{background:rgba(15,23,42,.92) !important;border-color:var(--line) !important;}
+html[data-theme="dark"] .topbar{background: rgba(15, 23, 42, 0.70) !important;border-bottom-color: rgba(148,163,184,.16) !important;}
+html[data-theme="dark"] .mobilebar, html[data-theme="dark"] #mobilebar, html[data-theme="dark"] #filesMobileNav{background: rgba(19, 27, 42, 0.94) !important;border-color: var(--line, #334155) !important;box-shadow: 0 16px 45px rgba(0, 0, 0, 0.45) !important;}
+html[data-theme="dark"] .mobilebar a, html[data-theme="dark"] .mobilebar button, html[data-theme="dark"] #mobilebar a, html[data-theme="dark"] #mobilebar button, html[data-theme="dark"] #mDashboard, html[data-theme="dark"] #mDriveHome, html[data-theme="dark"] #mUpload, html[data-theme="dark"] #mFolder, html[data-theme="dark"] #mRefresh{color: var(--muted, #94a3b8) !important;background: transparent !important;}
+html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar button:hover, html[data-theme="dark"] .mobilebar a:active, html[data-theme="dark"] .mobilebar button:active{background: rgba(255, 255, 255, 0.08) !important;color: #ffffff !important;}
+
+</style>
+<style id="MOBILE_TOPBAR_TALLER_V1">
+  /* 手機版把頂欄做高一點、按鈕放大，看起來不再侷促 */
+  @media (max-width:820px){
+    header.topbar, header, .topbar{
+      padding:13px 16px!important;
+      min-height:64px!important;
+      row-gap:9px!important;
+      align-items:center!important;
+    }
+    .brand-wrap{gap:13px!important}
+    .brand-mark{width:48px!important;height:48px!important;border-radius:14px!important;font-size:24px!important}
+    .brand-title{font-size:19px!important}
+    .brand-sub{font-size:12px!important}
+    #filesBackDashboardBtn,
+    a#filesBackDashboardBtn{
+      min-height:46px!important;height:46px!important;
+      padding:0 20px!important;font-size:14px!important;
+      border-radius:999px!important;
+    }
+    #mImportTop{
+      min-height:46px!important;height:46px!important;
+      padding:0 20px!important;font-size:14px!important;
+      border-radius:999px!important;
+    }
+  }
+</style>
+<style id="MATERIALS_HEADER_BLACKLIST_V1">
+  /* MOBILE_ICONS_NOT_EMOJI_V1: 按鈕內 SVG 圖示 */
+  .btn-ico{width:16px;height:16px;flex:0 0 auto;color:currentColor;fill:none;stroke:currentColor;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}
+  /* 頂欄改為「IP 黑名單管理」那種：品牌icon + 主/副標題 + 右側膠囊按鈕 */
+  header.topbar, .topbar{
+    position:sticky;top:0;z-index:40;
+    display:flex!important;align-items:center!important;justify-content:space-between!important;gap:16px!important;
+    min-height:76px!important;padding:14px 24px!important;flex-wrap:nowrap!important;
+    background:rgba(246,248,252,.94)!important;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);
+    border-bottom:1px solid var(--line2)!important;
+  }
+  @media(prefers-color-scheme:dark){header.topbar,.topbar{background:rgba(15,20,29,.94)!important}}
+  html[data-theme="dark"] header.topbar,html[data-theme="dark"] .topbar{background:rgba(15,20,29,.94)!important}
+  .brand-wrap{display:flex!important;align-items:center!important;gap:14px!important;min-width:0;flex:0 0 auto!important}
+  .brand-mark{width:42px!important;height:42px!important;flex:0 0 auto!important;border-radius:14px!important;background:linear-gradient(135deg,#3b82f6,#6366f1)!important;color:#fff!important;font-size:19px!important;font-weight:950!important;box-shadow:0 0 20px rgba(59,130,246,.25)!important;display:grid!important;place-items:center!important}
+  .brand-title{font-size:18px!important;font-weight:850!important;letter-spacing:-.025em!important;line-height:1.1!important;white-space:nowrap!important;color:var(--text)!important}
+  .brand-sub{margin-top:4px!important;color:var(--muted)!important;font-size:12px!important;line-height:1.2!important;white-space:nowrap!important;overflow:hidden;text-overflow:ellipsis}
+  .search-wrap{flex:1 1 auto!important;min-width:0!important;max-width:520px!important;margin-left:auto!important}
+  .top-actions{display:flex!important;align-items:center!important;justify-content:flex-end!important;gap:10px!important;margin-left:0!important;flex:0 0 auto!important}
+  .topbar .button,header.topbar .button,.top-actions .button,.top-actions a,.top-actions button{
+    min-height:40px!important;border-radius:999px!important;padding:0 16px!important;font-weight:750!important;white-space:nowrap!important;
+  }
+  /* 手機(≤820px)：保持品牌+標題+副標題，右側兩顆膠囊按鈕 */
+  /* 手機(≤820px)：品牌+標題+副標題可收縮，兩顆膠囊按鈕改小、不擠壓文字 */
+  @media(max-width:820px){
+    header.topbar,.topbar{min-height:86px!important;padding:16px 16px!important;gap:10px!important}
+    .brand-wrap{flex:1 1 auto!important;min-width:0!important;gap:14px!important}
+    .brand-wrap > div{min-width:0!important;overflow:hidden!important}
+    .brand-mark{width:52px!important;height:52px!important;flex:0 0 auto!important;font-size:23px!important;border-radius:16px!important}
+    .brand-title{font-size:18px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
+    .brand-sub{display:block!important;font-size:12px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
+    .search-wrap{display:none!important}
+    /* MOBILE_TOPBAR_BIGGER_V1: 手機頂欄做大 */
+    #filesBackDashboardBtn,a#filesBackDashboardBtn{
+      display:inline-flex!important;visibility:visible!important;opacity:1!important;pointer-events:auto!important;
+      min-height:46px!important;height:46px!important;padding:0 16px!important;font-size:14px!important;flex:0 0 auto!important;
+      margin-left:0!important;
+    }
+    #mImportTop{
+      min-height:46px!important;height:46px!important;padding:0 14px!important;font-size:14px!important;flex:0 0 auto!important;
+    }
+    .m-import-full{display:none!important}
+  }
+</style>
+<script id="filesParticlesScriptV1">
+/* MATERIALS_PARTICLES_V1: 複製 dashboard 的粒子光點動畫 */
+(function(){
+  'use strict';
+  if(window.FILES_PARTICLES_V1) return;
+  window.FILES_PARTICLES_V1 = true;
+  var raf = 0, particles = [];
+  function q(id){ return document.getElementById(id); }
+  function darkMode(){
+    return document.documentElement.getAttribute('data-theme')==='dark' ||
+      document.documentElement.classList.contains('dark-mode') ||
+      (window.matchMedia && matchMedia('(prefers-color-scheme:dark)').matches);
+  }
+  function resize(c){
+    var dpr = Math.min(window.devicePixelRatio||1, 2);
+    c.width = Math.floor(window.innerWidth*dpr);
+    c.height = Math.floor(window.innerHeight*dpr);
+    c.style.width = window.innerWidth+'px';
+    c.style.height = window.innerHeight+'px';
+    var ctx = c.getContext('2d'); if(ctx) ctx.setTransform(dpr,0,0,dpr,0,0);
+  }
+  function init(c){
+    particles = [];
+    var count = Math.min(90, Math.floor((window.innerWidth*window.innerHeight)/16000));
+    for(var i=0;i<count;i++){
+      particles.push({
+        x: Math.random()*window.innerWidth,
+        y: Math.random()*window.innerHeight,
+        s: Math.random()*2.2+.8,
+        vx: (Math.random()-.5)*.36,
+        vy: (Math.random()-.5)*.36,
+        a: Math.random()*.18+.05
+      });
+    }
+  }
+  function loop(){
+    var c = q('filesBgParticlesV1');
+    if(!c){ raf = 0; return; }
+    var ctx = c.getContext('2d');
+    ctx.clearRect(0,0,window.innerWidth,window.innerHeight);
+    var fill = darkMode() ? 'rgba(226,239,255,' : 'rgba(37,99,235,';
+    for(var i=0;i<particles.length;i++){
+      var p = particles[i];
+      p.x += p.vx; p.y += p.vy;
+      if(p.x<0) p.x=window.innerWidth; if(p.x>window.innerWidth) p.x=0;
+      if(p.y<0) p.y=window.innerHeight; if(p.y>window.innerHeight) p.y=0;
+      ctx.fillStyle = fill + p.a + ')';
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.s,0,Math.PI*2); ctx.fill();
+    }
+    raf = requestAnimationFrame(loop);
+  }
+  function start(){
+    if(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    var c = q('filesBgParticlesV1');
+    if(!c){
+      c = document.createElement('canvas');
+      c.id = 'filesBgParticlesV1';
+      c.setAttribute('aria-hidden','true');
+      document.body.prepend(c);
+    }
+    var ctx = c.getContext('2d'); if(!ctx || raf) return;
+    resize(c); init(c);
+    raf = requestAnimationFrame(loop);
+    window.addEventListener('resize', function(){ if(c){ resize(c); init(c); } }, {passive:true});
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+</script>
+<!-- SHARE_ADMIN_V1: 電腦版「管理分享連結」按鈕（僅管理員可見，手機隱藏） -->
+<style id="manageSharesCss">@media (max-width:768px){.manage-shares-btn{display:none!important}}</style>
+<script id="manageSharesInit">
+(function(){
+  function init(){
+    var btn = document.getElementById('manageShares'); if(!btn) return;
+    btn.addEventListener('click', function(){ location.href = '/admin/shares'; });
+    fetch('/admin/api/shares', { credentials:'same-origin', cache:'no-store' })
+      .then(function(r){ if(r.ok){ btn.classList.remove('hidden-init'); } })
+      .catch(function(){});
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+<!-- MOBILE_NAV_AUTOHIDE_V1: 往下捲自動收起底部導覽列、往上捲出現，
+     避免 floating 導覽列永遠蓋住卡片操作按鈕。 -->
+<script id="mobileNavAutoHideV1">
+(function(){
+  function setup(){
+    var bar = document.getElementById('mobilebar'); if(!bar) return;
+    bar.style.transition = 'transform .25s ease';
+    var last = 0;
+    function apply(y){
+      var down = y > last + 4;
+      var up = y < last - 4;
+      if(down && y > 80){ bar.style.transform = 'translateY(calc(100% + 24px))'; }
+      else if(up){ bar.style.transform = ''; }
+      if(down || up) last = y;
+    }
+    window.addEventListener('scroll', function(){ apply(window.scrollY || document.documentElement.scrollTop); }, {passive:true});
+    var c = document.querySelector('.content');
+    if(c) c.addEventListener('scroll', function(){ apply(c.scrollTop); }, {passive:true});
+  }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setup);
+  else setup();
+})();
+</script>
+<!-- MOBILE_NAV_SPACER_V1: 以 JS 把空白元素高度設為「導覽列高度+24」，
+     導覽列隱藏時設 0。inline style 優先，不受 cascade/media 影響。 -->
+<script id="mobileNavSpacerV1">
+(function(){
+  function size(){
+    var bar = document.getElementById('mobilebar');
+    var sp = document.getElementById('mobileBottomSpacer');
+    if(!sp) return;
+    if(!bar){ sp.style.height='0px'; return; }
+    var visible = getComputedStyle(bar).display !== 'none';
+    sp.style.height = visible ? (bar.offsetHeight + 24) + 'px' : '0px';
+  }
+  function bind(){ size(); window.addEventListener('resize', size); window.addEventListener('load', size);
+    setTimeout(size, 300); setTimeout(size, 1000); }
+  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
+  else bind();
+})();
+</script>
+<!-- MOBILE_BOTTOM_CLEAR_V2: 放在最後、最高優先，底部留白大於導覽列+操作列高度，
+     捲到底時「下載/預覽/分享/刪除」剛好落在導覽列上方、不被擋。 -->
+<style id="mobileBottomClearV2">
+@media(max-width:820px){
+  .content{padding-bottom:calc(330px + env(safe-area-inset-bottom,0px))!important}
+}
+</style>
+</body>
+</html>
+
+
+
+
+
+

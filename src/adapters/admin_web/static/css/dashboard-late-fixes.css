@@ -1,0 +1,161 @@
+/* DASHBOARD_LATE_FIXES_CSS_PHASE1_V1
+ * First low-risk CSS cleanup pass.
+ *
+ * These rules intentionally remain a final cascade layer. They were moved
+ * verbatim from late inline <style> blocks in dashboard.html so their order
+ * and specificity continue to protect the already validated iPhone fixes.
+ */
+
+/* MOBILE_FIXED_NAV_BOTTOM_CLEARANCE_V1 */
+@media(max-width:820px){
+  html.dash-auth-ok body main,
+  html.tron-auth-ok body main,
+  html.mobile-nav-final-auth body main,
+  body.dash-auth-ok main,
+  body.auth-ok main,
+  body.logged-in main{
+    padding-bottom:calc(132px + env(safe-area-inset-bottom,0px))!important;
+  }
+  body.keyboard-open main{
+    padding-bottom:calc(28px + env(safe-area-inset-bottom,0px))!important;
+  }
+}
+
+/* CLASS_REMINDER_ACCOUNT_CARD_CONTRAST_FIX_V1 */
+#classReminderPanel .class-reminder-side,
+#view-notifications .notify-side-card{
+  color:var(--text,#172033)!important;
+}
+#classReminderPanel .class-reminder-side > label,
+#view-notifications .notify-side-card > label{
+  color:var(--text,#172033)!important;
+  opacity:1!important;
+}
+@media(prefers-color-scheme:dark){
+  #classReminderPanel .class-reminder-side,
+  #view-notifications .notify-side-card{
+    background:rgba(30,41,59,.92)!important;
+    border-color:rgba(148,163,184,.24)!important;
+    color:#f1f5f9!important;
+  }
+  #classReminderPanel .class-reminder-side > label,
+  #view-notifications .notify-side-card > label{
+    color:#e2e8f0!important;
+  }
+  #classReminderPanel #classReminderInfo,
+  #view-notifications #notifyInfo{
+    color:#cbd5e1!important;
+    opacity:1!important;
+  }
+  #classReminderPanel #classReminderAccount,
+  #view-notifications #notifyAccount{
+    background:#172238!important;
+    border-color:rgba(148,163,184,.32)!important;
+    color:#f8fafc!important;
+    -webkit-text-fill-color:#f8fafc!important;
+  }
+  #view-notifications .notify-badge{
+    color:#cbd5e1!important;
+    border-color:rgba(148,163,184,.28)!important;
+  }
+}
+
+/* LOGIN_FORM_VISUAL_RECOVERY_V1 */
+html.tron-auth-logged-out body #loginCard,
+html.tron-auth-logged-out body #loginPanel,
+html.tron-auth-logged-out body .login-card,
+body.animated-login-active #loginCard,
+body.animated-login-active #loginPanel,
+body.animated-login-active .login-card{
+  opacity:1!important;
+  filter:none!important;
+  pointer-events:auto!important;
+}
+/* iOS Autofill can update values without firing input. Labels therefore stay
+   permanently above the field value and do not depend on an .active class. */
+html body #animatedLoginForm .animated-login-field > label,
+html body .animated-login-card-inner .animated-login-field > label{
+  top:6px!important;
+  left:16px!important;
+  transform:none!important;
+  font-size:11px!important;
+  line-height:13px!important;
+  font-weight:900!important;
+  color:#2563eb!important;
+  z-index:2!important;
+  pointer-events:none!important;
+}
+html body #animatedLoginForm .animated-login-field > input,
+html body .animated-login-card-inner .animated-login-field > input{
+  padding:23px 48px 7px 16px!important;
+  line-height:20px!important;
+  opacity:1!important;
+  filter:none!important;
+  pointer-events:auto!important;
+}
+@media(prefers-color-scheme:dark){
+  html.tron-auth-logged-out body #loginCard,
+  html.tron-auth-logged-out body #loginPanel,
+  html.tron-auth-logged-out body .login-card,
+  body.animated-login-active #loginCard,
+  body.animated-login-active #loginPanel,
+  body.animated-login-active .login-card{
+    background:rgba(15,23,42,.92)!important;
+    color:#e5eefb!important;
+    box-shadow:0 30px 90px rgba(0,0,0,.42)!important;
+  }
+  .animated-login-card-inner{color:#e5eefb!important}
+  .animated-login-logo{background:rgba(96,165,250,.16)!important;color:#93c5fd!important}
+  .animated-login-header p,
+  .animated-login-options label,
+  .animated-secure-note{color:#94a3b8!important}
+  html body #animatedLoginForm .animated-login-field > label,
+  html body .animated-login-card-inner .animated-login-field > label{color:#93c5fd!important}
+  html body #animatedLoginForm .animated-login-field > input,
+  html body .animated-login-card-inner .animated-login-field > input{
+    background:#172238!important;
+    border-color:rgba(148,163,184,.30)!important;
+    color:#f1f5f9!important;
+    -webkit-text-fill-color:#f1f5f9!important;
+  }
+  html body #animatedLoginForm .animated-login-field > input:-webkit-autofill,
+  html body .animated-login-card-inner .animated-login-field > input:-webkit-autofill{
+    -webkit-box-shadow:0 0 0 1000px #172238 inset!important;
+    -webkit-text-fill-color:#f1f5f9!important;
+    caret-color:#f1f5f9!important;
+  }
+  .animated-passkey-btn{
+    background:#172238!important;
+    color:#e5eefb!important;
+    border-color:rgba(148,163,184,.28)!important;
+  }
+  .animated-login-chip{
+    background:rgba(15,23,42,.64)!important;
+    border-color:rgba(148,163,184,.22)!important;
+    color:#cbd5e1!important;
+  }
+}
+
+/* ROLLCALL_HISTORY_SCROLL_V1（fix76）
+ * 點名紀錄（#rollcallHistoryList）一次只放 20 筆，而且清單自己有固定高度：
+ * 紀錄一多不會再把整頁往下無限撐長，使用者要看更多就按「顯示更多」或在清單內捲動。 */
+.list.capped{
+  max-height:min(60vh,520px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+  padding-right:6px;
+  scrollbar-gutter:stable;
+}
+.list .list-meta{
+  position:sticky;top:0;z-index:2;
+  margin:0 0 2px;padding:6px 8px;
+  border-radius:10px;
+  background:var(--soft2,var(--soft,#eef2f7));
+  color:var(--muted,#64748b);
+  font-size:12px;font-weight:800;
+}
+.list .list-more{width:100%;min-height:42px}
+@media(max-width:820px){
+  .list.capped{max-height:min(64vh,440px)}
+}

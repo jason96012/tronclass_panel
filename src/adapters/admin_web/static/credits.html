@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-Hant" class="tron-auth">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>學分狀態｜Tronclass Dashboard</title>
+<style>
+  :root{color-scheme:light dark;--bg:#f4f7fb;--card:#fff;--text:#172033;--muted:#64748b;--line:#dbe3ef;--soft:#f1f5f9;--line2:#e2e8f0;--primary:#2563eb;--bad:#b91c1c;--ok:#15803d;--warn:#b45309}
+  @media(prefers-color-scheme:dark){:root{--bg:#090d16;--card:#131b2a;--text:#f1f5f9;--muted:#94a3b8;--line:#334155;--soft:#1e293b;--line2:#273449;--primary:#3b82f6;--bad:#f87171;--ok:#4ade80;--warn:#fbbf24}}
+  *{box-sizing:border-box}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif}
+  .top{max-width:1140px;margin:0 auto;padding:22px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+  .brand{display:flex;align-items:center;gap:12px;min-width:0}
+  .brand b{color:var(--text)}
+  .brand .meta{color:var(--muted);font-size:13px;margin-top:3px;line-height:1.4}
+  .logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#38bdf8,#4f46e5);display:grid;place-items:center;color:#fff;font-weight:900;box-shadow:0 10px 26px rgba(37,99,235,.28);flex:0 0 auto}
+  .top a{display:inline-flex;align-items:center;justify-content:center;min-height:42px;color:var(--text)!important;text-decoration:none;border:1px solid var(--line)!important;background:var(--card)!important;padding:0 16px;border-radius:999px;font-weight:760;box-shadow:0 1px 2px rgba(15,23,42,.03);white-space:nowrap}
+  .top a:hover{border-color:#60a5fa!important;color:#2563eb!important}
+  main{max-width:1140px;margin:0 auto;padding:18px 16px 48px}
+  .page-head{margin:2px 2px 16px}
+  .page-head h1{margin:0 0 4px;font-size:23px}
+  .page-head p{margin:0;color:var(--muted);font-size:13px;line-height:1.55;font-weight:650}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px 18px 18px;box-shadow:0 16px 40px rgba(15,23,42,.08);margin-bottom:16px}
+  h2{margin:0;font-size:16px;font-weight:850}
+  .sec-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+  .sec-head .desc{color:var(--muted);font-size:13px;line-height:1.5;font-weight:650;margin-top:3px}
+  .small{color:var(--muted);font-size:13px;font-weight:700;line-height:1.5}
+  .hidden-init{display:none}
+  button.primary{min-height:44px;padding:0 18px;border:0;border-radius:13px;background:var(--primary);color:#fff;font:inherit;font-size:14px;font-weight:850;cursor:pointer}
+  button.sec{min-height:44px;padding:0 16px;border:1px solid var(--line);border-radius:13px;background:var(--soft);color:var(--text);font:inherit;font-size:14px;font-weight:800;cursor:pointer}
+  button:active{transform:scale(.97)}
+  button:disabled{opacity:.55;cursor:default;transform:none}
+  select{min-height:44px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);font:inherit;font-weight:700;padding:0 10px}
+  .msg{min-height:20px;font-size:13px;font-weight:800;color:var(--muted)}
+  .msg.bad{color:var(--bad)} .msg.ok{color:var(--ok)}
+  .sync-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
+  .sync-row .grow{flex:1 1 160px;min-width:0}
+  /* 總覽 */
+  .student-line{color:var(--muted);font-size:13px;font-weight:750;margin:2px 0 14px}
+  .bigbar-wrap{margin:6px 0 4px}
+  .bigbar-label{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+  .bigbar-label b{font-size:30px;font-weight:900;letter-spacing:-.5px}
+  .bigbar-label b small{font-size:15px;color:var(--muted);font-weight:800}
+  .bar{height:14px;border-radius:999px;background:var(--soft);border:1px solid var(--line);overflow:hidden}
+  .bar>i{display:block;height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#38bdf8,#4f46e5);min-width:0}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:16px}
+  .stat{padding:13px 14px;border:1px solid var(--line);border-radius:16px;background:var(--soft)}
+  .stat .k{color:var(--muted);font-size:12px;font-weight:800}
+  .stat .v{font-size:22px;font-weight:900;margin-top:3px}
+  .stat .v small{font-size:13px;color:var(--muted);font-weight:800}
+  .stat .sub{color:var(--muted);font-size:12px;font-weight:700;margin-top:3px;line-height:1.45}
+  .stat.warn .v{color:var(--warn)} .stat.ok .v{color:var(--ok)}
+  /* 通識學門 */
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 14px}
+  .chip{display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:999px;border:1px solid var(--line);background:var(--soft);font-size:13px;font-weight:800;color:var(--text)}
+  .chip .code{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:8px;background:var(--primary);color:#fff;font-size:12px;font-weight:900}
+  .chip.done{border-color:transparent;background:rgba(21,128,61,.12)} .chip.done .code{background:#15803d}
+  .chip.doing{border-color:transparent;background:rgba(37,99,235,.12)} .chip.doing .code{background:#2563eb}
+  .chip .g{color:var(--muted);font-size:12px;font-weight:750}
+  .ge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
+  .ge-item{padding:12px 13px;border:1px solid var(--line);border-radius:15px;background:var(--card)}
+  .ge-item .t{display:flex;align-items:center;gap:9px;font-weight:850;font-size:14px}
+  .ge-item .t .code{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:9px;background:var(--soft);border:1px solid var(--line);font-size:12px;font-weight:900;color:var(--muted);flex:0 0 auto}
+  .ge-item.done .t .code{background:#15803d;border-color:transparent;color:#fff}
+  .ge-item.doing .t .code{background:#2563eb;border-color:transparent;color:#fff}
+  .ge-item .d{color:var(--muted);font-size:12.5px;font-weight:700;margin-top:5px;line-height:1.5}
+  .badge{display:inline-flex;align-items:center;min-height:24px;padding:0 10px;border-radius:999px;background:var(--soft);border:1px solid var(--line);color:var(--muted);font-size:12px;font-weight:800}
+  .badge.ok{color:var(--ok);border-color:transparent;background:rgba(21,128,61,.12)}
+  .badge.warn{color:var(--bad);border-color:transparent;background:rgba(185,28,28,.12)}
+  .bad-text{color:var(--bad)}
+  .code-inline{color:var(--muted);font-size:11.5px;font-weight:700}
+  .mb6{margin-bottom:6px}
+  /* 「還缺什麼」缺口卡。 */
+  .gap-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:13px;background:var(--soft);margin-bottom:8px}
+  .gap-item.ok{opacity:.72}
+  .gap-item .g-name{flex:1;min-width:0;font-size:13.5px;font-weight:800}
+  .gap-item .g-name .small{display:block;margin-top:2px;font-weight:650}
+  .gap-item .g-need{font-size:13px;font-weight:800;color:var(--warn);white-space:nowrap}
+  .gap-item.ok .g-need{color:var(--ok)}
+  .gap-total{font-size:13.5px;font-weight:750;color:var(--muted);margin-top:6px;line-height:1.6}
+  .gap-total b{font-size:16px;color:var(--text)}
+  details.gap-more{margin:4px 0 8px}
+  details.gap-more summary{cursor:pointer;color:var(--muted);font-size:13px;font-weight:750;padding:4px 2px}
+  details.gap-more .req-row{margin-top:6px}
+  .badge.todo{color:var(--primary);border-color:transparent;background:rgba(37,99,235,.12)}
+  .badge.doing{color:var(--primary);border-color:transparent;background:rgba(37,99,235,.12)}
+  /* 學期卡 */
+  .sem-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+  .sem-card{padding:13px 14px;border:1px solid var(--line);border-radius:16px;background:var(--soft)}
+  .sem-card .t{font-weight:900;font-size:14px}
+  .sem-card .n{font-size:24px;font-weight:900;margin-top:4px}
+  .sem-card .n small{font-size:13px;font-weight:800;color:var(--muted)}
+  .sem-card .d{color:var(--muted);font-size:12px;font-weight:700;margin-top:3px;line-height:1.5}
+  /* 明細表 */
+  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table.tbl{width:100%;border-collapse:collapse;font-size:13px;min-width:640px}
+  table.tbl th,table.tbl td{padding:9px 10px;text-align:left;border-bottom:1px solid var(--line2);white-space:nowrap;vertical-align:top}
+  table.tbl th{color:var(--muted);font-size:12px;font-weight:850;position:sticky;top:0;background:var(--card)}
+  table.tbl td.wrap{white-space:normal;min-width:200px}
+  table.tbl tr.failed td{color:var(--bad)}
+  table.tbl td .pill{display:inline-flex;align-items:center;padding:1px 9px;border-radius:999px;font-size:11.5px;font-weight:800;border:1px solid var(--line);color:var(--muted);background:var(--soft)}
+  table.tbl td .pill.req{color:#7c3aed;border-color:transparent;background:rgba(124,58,237,.12)}
+  table.tbl td .pill.ge{color:#0e7490;border-color:transparent;background:rgba(14,116,144,.12)}
+  .credit-num{font-variant-numeric:tabular-nums;font-weight:850}
+  /* 必修清單 */
+  .req-group{margin-bottom:14px}
+  .req-group:last-child{margin-bottom:0}
+  .req-group h3{margin:0 0 8px;font-size:13.5px;font-weight:900;color:var(--muted)}
+  .req-group h3.area-ok{color:var(--ok)}
+  .req-rows{display:grid;gap:7px}
+  .req-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--line);border-radius:13px;background:var(--soft)}
+  .req-row .name{flex:1;min-width:0;font-size:13.5px;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .req-row .meta{color:var(--muted);font-size:12px;font-weight:750;white-space:nowrap;min-width:0}
+  .req-row.done{border-color:transparent;background:rgba(21,128,61,.10)}
+  .req-row.doing{border-color:transparent;background:rgba(37,99,235,.10)}
+  .req-row .mark{font-size:15px;flex:0 0 auto;width:24px;text-align:center}
+  /* 空狀態 */
+  .empty{display:grid;place-items:center;gap:10px;padding:44px 16px;text-align:center}
+  .empty .big{font-size:42px}
+  .empty p{margin:0;color:var(--muted);font-size:13.5px;font-weight:700;line-height:1.6;max-width:420px}
+  .trend-svg{width:100%;height:110px;display:block;margin:4px 0 14px}
+  .trend-svg text{fill:var(--muted);font-size:10px;font-weight:700}
+  .trend-svg .ln{fill:none;stroke:var(--primary);stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+  .trend-svg .pt{fill:var(--primary);stroke:var(--card);stroke-width:2}
+  .trend-svg .grid{stroke:var(--line);stroke-width:1;stroke-dasharray:3 4}
+  /* 手機 */
+  @media(max-width:760px){
+    .top{min-height:70px;padding:14px 12px 8px}.brand{gap:13px}.logo{width:48px;height:48px;font-size:20px}.brand b{display:block;font-size:19px;line-height:1.2}.brand .meta{font-size:13px}.top a{min-height:46px;padding:0 16px;font-size:14px}
+    main{padding:14px 12px 44px}
+    .page-head h1{font-size:20px}
+    .card{padding:16px 14px 16px;border-radius:18px;margin-bottom:14px}
+    .sync-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .sync-row .grow{grid-column:1/-1}
+    .sync-row button{width:100%}
+    .stats{grid-template-columns:1fr 1fr}
+    .ge-grid{grid-template-columns:1fr}
+    table.tbl{min-width:560px}
+    /* 必修進度列：窄螢幕改兩行，避免 nowrap 的學分/成績欄撐破卡片。 */
+    .req-row{flex-wrap:wrap;row-gap:3px}
+    .req-row .name{white-space:normal;overflow:visible;text-overflow:clip;flex:1 1 100%}
+    .req-row .meta{flex-basis:100%;text-align:right;white-space:normal}
+  }
+  @media(max-width:390px){.top{padding-inline:12px}.brand{gap:9px}.logo{width:44px;height:44px}.brand b{font-size:17px}.brand .meta{font-size:11px}.top a{min-height:42px;padding:0 11px;font-size:12px}.stats{grid-template-columns:1fr}}
+  body{padding-top:env(safe-area-inset-top,0px)}
+</style>
+</head>
+<body>
+<header class="top"><div class="brand"><div class="logo">D</div><div><b>Tronclass</b><div class="meta">Credits</div></div></div><a href="/admin#overview" aria-label="返回 Dashboard 總覽">返回 Dashboard</a></header>
+<main>
+  <div class="page-head">
+    <h1>學分狀態</h1>
+    <p>從淡江校務系統（emis）同步的畢業學分進度：必修／系選修／通識／自由選修、通識學門建議、學期平均與 GPA 趨勢（淡江各系所皆可使用）。資料為同步當下的快照，不會自動更新。</p>
+    <div class="sync-row">
+      <div class="grow"><select id="accountSel" aria-label="選擇帳號"></select></div>
+      <button id="syncBtn" class="primary" type="button">立即同步</button>
+      <button id="reloadBtn" class="sec" type="button" hidden>重新整理</button>
+    </div>
+    <div id="syncMsg" class="msg"></div>
+  </div>
+
+  <section class="card hidden-init" id="emptyCard">
+    <div class="empty">
+      <div class="big">🎓</div>
+      <p id="emptyText">尚未同步學分資料。按下「立即同步」會連線校務系統抓取修業狀況、必修清單與歷年成績（約需數秒～數十秒）。</p>
+    </div>
+  </section>
+
+  <div id="content" class="hidden-init">
+    <section class="card">
+      <div class="sec-head">
+        <div><h2>畢業學分總覽</h2><div class="desc" id="overviewDesc"></div></div>
+        <span class="badge" id="fetchedBadge">—</span>
+      </div>
+      <div class="student-line" id="studentLine"></div>
+      <div class="bigbar-wrap">
+        <div class="bigbar-label"><b id="earnedBig">—<small> / —</small></b><span class="small" id="earnedNote"></span></div>
+        <div class="bar"><i id="earnedBar"></i></div>
+      </div>
+      <div class="stats" id="statGrid"></div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
+        <div><h2>還缺什麼</h2><div class="desc" id="gapDesc">各項畢業缺口與達標預估。</div></div>
+      </div>
+      <div id="gapBody"></div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
+        <div><h2>通識學門</h2><div class="desc">淡江通識（114 學年度起）分「領域」與「學門」：人文（L文學經典 P歷史與文化 V哲學與宗教 M藝術欣賞）、社會（T全球視野 R未來學 W社會分析 S公民社會）、科學（O資訊教育 Z全球科技革命 U自然科學）三大領域各至少修 2 學分，每學門至多 2 科 4 學分；基本知能（Q外語、N學習與發展、K課外活動）多為固定必修或代選。全英語學士班限選「全英語授課」（◎）之通識核心科目，中文授課者不列入畢業學分；體育 4 學分與全民國防 1 學分為校定必修但不列入 128 學分門檻。學門清單來自貴系必修科目表。</div></div>
+      </div>
+      <div class="small mb6">還可以選的學門</div>
+      <div class="chips" id="geOpenChips"></div>
+      <div class="ge-grid" id="geGrid"></div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
+        <div><h2>學期成績與趨勢</h2><div class="desc">加權平均＝Σ(成績×學分)／Σ學分（僅計數字成績；「通過／不通過」課不計入）。GPA 依淡江級距換算：80~100=4、70~79=3、65~69=2、60~64=1、未滿 60=0。</div></div>
+      </div>
+      <svg class="trend-svg hidden-init" id="trendSvg" viewBox="0 0 640 110" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="sem-grid" id="semGrid"></div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
+        <div><h2>必修科目進度</h2><div class="desc" id="reqDesc">✅ 已修通過　📖 本學期修課中　⬜ 尚未修（含通識學門，請於選課時自該學門選課）。</div></div>
+      </div>
+      <div id="reqList"></div>
+    </section>
+
+    <section class="card">
+      <div class="sec-head">
+        <div><h2>歷年成績明細</h2><div class="desc" id="coursesDesc"></div></div>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl" id="courseTable">
+          <thead><tr><th>學年</th><th>學期</th><th>科目名稱</th><th>類別</th><th>學分</th><th>成績</th></tr></thead>
+          <tbody id="courseTbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+<script src="/admin/static/credits.js?v=20260913credits10"></script>
+<script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
+</body>
+</html>
