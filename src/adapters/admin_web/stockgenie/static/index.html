@@ -74,6 +74,9 @@ tr.sel td{background:#152430}
 .vcard.good{border-color:#245c40;background:linear-gradient(180deg,#10241c,#0f161e)}
 .vcard.bad{border-color:#5c2430;background:linear-gradient(180deg,#241018,#0f161e)}
 .vcard.warn{border-color:#5c4a18;background:linear-gradient(180deg,#241e10,#0f161e)}
+.vcard.hardstop{border-color:#ff5d73;border-width:2px;background:linear-gradient(180deg,#3a1018,#0f161e)}
+.vcard.hardstop .vtitle{color:#ff5d73}
+.hardstop-msg{color:#ff5d73;font-weight:800;font-size:15px;margin:8px 0 0}
 .vtitle{font-size:22px;font-weight:800;letter-spacing:.02em;margin:0 0 6px}
 .vreason{margin:0;color:var(--muted);font-size:13px}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
@@ -204,25 +207,29 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   <p>台股 = 0.45×技術 + 0.30×基本面 + 0.25×籌碼。美股 = 0.55×技術 + 0.45×基本面。<br>
   ≥55 看多（強）｜30–55 看多（溫和）｜−30–30 中性｜−55–−30 看空（溫和）｜≤−55 看空（強）。</p>
   <h3>兩條進場產品（互不否決）</h3>
-  <p><b>回檔單</b>：有品質的支撐區（品質≥40）。現價須在區內或距上緣≤1.5%，且未貼近 20 日高。確認根＝鎚頭／陽包陰／晨星，或量縮且收在上半陽線（普通陽線不算）。還要價&gt;MA20&gt;MA60、RPS≥70、RSI≤70、非出貨日。目標＝有效壓力（近壓&lt;3% 則改下一檔）。RR &lt; 1.5 放棄。<br>
+  <p><b>回檔單</b>：有品質的支撐區（品質≥40）。現價須在區內或距上緣≤1.5%，且未貼近 20 日高。確認根＝鎚頭／陽包陰／晨星／三兵（量縮小陽不算）。還要價&gt;MA20&gt;MA60、RPS≥70、RSI≤70、非出貨日。目標＝有效壓力（近壓&lt;3% 則改下一檔）。RR &lt; 1.5 放棄。進場是限價，不是收盤成交；下一盤開盤相對限價跳空≥1.5% 則訊號作廢。<br>
   <b>突破單</b>：收盤高出前 20 日高至少 0.3% 或貼 52 週高、陽線、收在振幅上半、實體≥0.25×ATR、RVOL≥1.5、RPS≥87、週線非空、綜合分看多（不含中性）→ A 級。停損＝唐奇安下軌／1.8×ATR 與進場−8% 取較緊。目標 1R/2R/3R，<b>不看最近壓力</b>。</p>
   <h3>買賣點（幾何聚合）</h3>
   <p>候選：擺動高低、MA20/60/120/200、VWAP20、唐奇安 20、週 MA20、費氏、52週高、籌碼峰／VAL／VAH／均成本。<br>
-  整檔寬度 ≤2.5% 才合併。可買／可賣用實盤價：區內用現價進、賣在壓力下緣減一跳、對齊證交所跳動；RR 扣除台股約 0.45% 稅費滑價。停損距進場至少 1×ATR／1.2%、最多 8%。走過 1R 後停損上移到 max(原停損, MA20−0.5×ATR)；突破單第一目標只移動停損，1R 後跌破 MA20 或 20 日無進展／40 日出場。</p>
+  整檔寬度 ≤2.5% 才合併。可買／可賣用現價或限價：區內用現價進、賣在壓力下緣減一跳、對齊證交所跳動。RR 扣除台股來回摩擦（稅 0.3%＋手續費＋0.25×ATR 缺口＋量縮加碼，不再用 0.45%）。停損距進場至少 1×ATR／1.2%、最多 8%。走過 1R 後停損上移到 max(原停損, MA20−0.5×ATR)；突破單第一目標只移動停損，1R 後跌破 MA20 或 20 日無進展／40 日出場。畫面價位是收盤訊號，不是已送出的委託。</p>
   <h3>閘門（別人用來決定今天準不准做的）</h3>
   <p>大盤：台股看 0050 vs MA200，美股看 S&amp;P 500 vs MA200 與 VIX。空頭禁止新多。<br>
-  週線空頭：A 級突破降為觀望。財報窗口為公布日前 15 日至後 7 日。長上影（上影≥振幅 40% 且 ≥0.4×ATR，或射擊之星）剔除當根買點，也不當確認根／A 級突破。假突破（昨收站上、今收跌回）不開新倉。除權息窗口與價格還原異常（近 5 根量平跳空、Yahoo vs 證交所收盤差≥2%）不開新倉。月營收年增 ≤−20% 當事件閘門。RPS 台股改用證交所全上市 120 日報酬百分位（不足時退回擴充池）。族群 RS、可解釋因子排序只排序、不當買點。組合層：同族群最多 2 檔可買、全市場最多 8 檔。持倉狀態機：記倉後只管理停損／1R 後跌破 MA20／20 日無進展或 40 日。</p>
+  週線空頭：A 級突破降為觀望。財報窗口為公布日前 15 日至後 7 日。長上影（上影≥振幅 40% 且 ≥0.4×ATR，或射擊之星）剔除當根買點，也不當確認根／A 級突破。假突破（昨收站上、今收跌回）不開新倉。除權息窗口與價格還原異常（近 5 根量平跳空）不開新倉。同一交易日日K收盤 vs 證交所 MI_INDEX 差 ≥0.3% 視為 DATA_MISMATCH：停止 MA／RSI／ATR／買賣區，報告最上紅字「資料源未完成除權息/減資還原，停止產出技術訊號。」官方價以證交所為準，不接第三方付費 API。月營收年增 ≤−20% 當事件閘門。核心閘門為 AND：任一 ✕ 即封鎖進場訊號，改為「條件未齊，維持觀望」，不再畫成委託票券。回檔確認根／買區品質只否決回檔單，不否決 A 級突破。RPS 台股改用證交所全上市 120 日報酬百分位（不足時退回擴充池）。族群 RS、可解釋因子排序只排序、不當買點。組合層：同族群最多 2 檔可買、全市場最多 8 檔。持倉狀態機：記倉後只管理停損／1R 後跌破 MA20／20 日無進展或 40 日。</p>
   <h3>三面向共振（高勝率條件，不是保證）</h3>
   <p>台股：技術≥30 且 基本面≥20 且 三大法人10日淨買&gt;0。<br>
   美股：技術≥30 且 基本面≥20 且 分析師共識上行空間&gt;5%。</p>
   <div class="lim">
     <b>已知限制</b><br>
-    1. 回測約五年 walk-forward，只覆蓋技術分＋長上影／價格還原／週線／大盤閘門；基本面／籌碼是當前快照，納入會前視偏差。<br>
-    2. 訊號是機率不是保證；T86 盤後延遲一日；融資融券用 MI_MARGN 當日快照；財報季更；台股盤中約延遲 20 分。<br>
-    3. 分析師目標價 12–18 個月準確率約 30%。<br>
-    4. 台股看板為每日輪換的潛力股（約 30 檔：近 20 日相對強度、量縮回檔、族群領先；同產業最多 4 檔），不是全市場下載、也不再偏當日漲幅追高。新交易日自動換一批。美股仍為精選大盤股。上方可輸入代號或名稱查任意上市股票（單檔日K，不掃全市場）。<br>
-    5. 「結構三買」是簡化規則（回測不破前段盤整上沿），不是完整纏論中樞。<br>
-    6. 因子排序不是微軟 qlib 的機器學習模型。<br>
+    1. 垃圾進垃圾出：同一日日K vs 證交所 ≥0.3%、未還原跳空、空量、非法 OHLC → 停止技術訊號。<br>
+    2. 回測會過擬合：walk-forward 命中差、樣本改用「同均線」、n&lt;20 都不當驗證。歷史勝率不是下次會贏。<br>
+    3. 樣本迷思：N&lt;50 一律無優勢；20 日歷史頻率&lt;65% 或 Wilson 下緣&lt;55% 或中位&lt;1.5×ATR → No Edge。<br>
+    4. 閘門衝突不准強行：核心閘門 AND、樣本與大盤／週線衝突、無優勢 → 觀望，畫面不長得像委託單。<br>
+    5. 摩擦不再低估：台股來回約 0.9%＋缺口／量縮，回測與訊號 RR 同一套。<br>
+    6. 波動狀態切換（近 20 日 ATR 為舊樣本 1.8× 或 0.5×）→ 舊路徑作廢。<br>
+    7. 人機信任：可買只標「訊號（非委託）」；未過關只寫觀望，不給四張大數字票券。<br>
+    8. 分析師目標價 12–18 個月準確率約 30%。<br>
+    9. 台股看板為每日輪換的潛力股（約 30 檔），不是全市場下載。可搜任意上市股票，單檔走同一套公式。<br>
+    10. 「結構三買」是簡化規則，不是完整纏論中樞。因子排序不是機器學習模型。<br>
     本系統不構成投資建議。虧損可能超過本金的風險部位請自行控制。
   </div>
 </section>
@@ -360,6 +367,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     const padL=48, padR=12, padT=12, padB=22;
     const vis = bars.slice(-100);
     const cone = (fc && fc.cone) || [];
+    const walk = (fc && fc.walk) || [];
     const extra = Math.max(0, cone.length ? cone.length-1 : 0);
     const n = vis.length + extra;
     let lo=Math.min(...vis.map(b=>b.l)), hi=Math.max(...vis.map(b=>b.h));
@@ -367,6 +375,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     if (plan.stop) lo=Math.min(lo, plan.stop);
     if (plan.live_stop) lo=Math.min(lo, plan.live_stop);
     cone.forEach(p => { lo=Math.min(lo,p.lo); hi=Math.max(hi,p.hi); });
+    walk.forEach(w => (w.cone||[]).forEach(p => { lo=Math.min(lo,p.lo); hi=Math.max(hi,p.hi); }));
     const span = hi-lo || 1; lo-=span*0.04; hi+=span*0.04;
     const X = i => padL + i*(w-padL-padR)/Math.max(n-1,1);
     const Y = p => padT + (hi-p)*(h-padT-padB)/(hi-lo);
@@ -410,28 +419,55 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       const y1 = Y(Math.max(b.o,b.c)), y2 = Y(Math.min(b.o,b.c));
       g.fillRect(x-cw/2, y1, cw, Math.max(1, y2-y1));
     });
-    if (cone.length > 1) {
-      const i0 = vis.length - 1;
-      g.beginPath();
-      cone.forEach((p,k) => {
-        const x = X(i0 + k);
-        if (k===0) g.moveTo(x, Y(p.hi));
-        else g.lineTo(x, Y(p.hi));
+    const originI = (asof) => vis.findIndex(b => b.t === asof);
+    const drawCone = (pts, i0, fill, stroke, clipVis) => {
+      if (!pts || pts.length < 2 || i0 < 0) return;
+      const ok = [];
+      pts.forEach((p,k) => {
+        const idx = i0 + k;
+        if (idx < 0) return;
+        if (clipVis && idx >= vis.length) return;
+        ok.push({k, idx, p});
       });
-      for (let k = cone.length-1; k>=0; k--) g.lineTo(X(i0+k), Y(cone[k].lo));
+      if (ok.length < 2) return;
+      g.beginPath();
+      ok.forEach((o,i) => { if (i===0) g.moveTo(X(o.idx), Y(o.p.hi)); else g.lineTo(X(o.idx), Y(o.p.hi)); });
+      for (let i = ok.length-1; i>=0; i--) g.lineTo(X(ok[i].idx), Y(ok[i].p.lo));
       g.closePath();
-      g.fillStyle = 'rgba(90,208,230,.14)';
+      g.fillStyle = fill;
       g.fill();
-      g.strokeStyle = '#5ad0e6';
+      g.strokeStyle = stroke;
       g.setLineDash([5,4]);
       g.beginPath();
-      cone.forEach((p,k) => {
-        const x = X(i0 + k);
-        if (k===0) g.moveTo(x, Y(p.med));
-        else g.lineTo(x, Y(p.med));
-      });
+      ok.forEach((o,i) => { if (i===0) g.moveTo(X(o.idx), Y(o.p.med)); else g.lineTo(X(o.idx), Y(o.p.med)); });
       g.stroke();
       g.setLineDash([]);
+    };
+    const drawActual = (actual, i0) => {
+      if (!actual || actual.length < 2 || i0 < 0) return;
+      g.strokeStyle = '#d4a84b';
+      g.lineWidth = 1.4;
+      g.setLineDash([]);
+      g.beginPath();
+      let started = false;
+      actual.forEach(p => {
+        const idx = i0 + (p.k||0);
+        if (idx < 0 || idx >= vis.length) return;
+        if (!started) { g.moveTo(X(idx), Y(p.px)); started = true; }
+        else g.lineTo(X(idx), Y(p.px));
+      });
+      if (started) g.stroke();
+      g.lineWidth = 1;
+    };
+    walk.forEach(w => {
+      const i0 = originI(w.asof);
+      if (i0 < 0) return;
+      drawCone(w.cone, i0, 'rgba(90,208,230,.07)', 'rgba(90,208,230,.45)', true);
+      drawActual(w.actual, i0);
+    });
+    if (cone.length > 1) {
+      const i0 = vis.length - 1;
+      drawCone(cone, i0, 'rgba(90,208,230,.14)', '#5ad0e6', false);
       g.fillStyle = '#5ad0e6';
       g.font = '10px ui-sans-serif';
       [5,10,20].forEach(k => {
@@ -459,21 +495,24 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     if (!f.ok) {
       return `<div class="vcard"><p class="note" style="margin:0">未來走向：${f.bias_label||'日K不足，無法估條件路徑。'}</p></div>`;
     }
-    const tone = f.bias==='bull'?'good': f.bias==='bear'?'bad':'warn';
+    const weak = !!(f.no_edge || f.small_sample);
+    const tone = weak ? 'warn' : (f.bias==='bull'?'good': f.bias==='bear'?'bad':'warn');
     const hz = (h, lab) => {
       if (!h) return `<div class="kpi"><span>${lab}</span><b>—</b></div>`;
       const up = (h.median||0) >= 0;
-      return `<div class="kpi"><span>${lab}上漲機率</span><b>${h.p_up==null?'—':h.p_up+'%'}</b><span>中位 ${up?'+':''}${h.median}% · ${h.p25}%～${h.p75}%</span></div>`;
+      return `<div class="kpi"><span>${lab}歷史頻率</span><b>${h.p_up==null?'—':h.p_up+'%'}</b><span>中位 ${up?'+':''}${h.median}% · ${h.p25}%～${h.p75}%${lab==='20 日' && f.wilson_lo!=null?' · Wilson下緣 '+f.wilson_lo+'%':''}</span></div>`;
     };
     const sc = (f.scenarios||[]).map(s => {
       const cls = s.key==='bull'?'buy': s.key==='bear'?'stop':'tgt';
       const r = s.ret==null ? '' : ((s.ret>=0?'+':'')+s.ret+'%');
       return `<div class="plan ${cls}"><h4>${s.label}</h4><div class="px">${px(s.px)}</div><div class="hint">20 日 ${r||'—'}</div></div>`;
     }).join('');
+    const edge = f.edge_note ? `<p class="hardstop-msg" style="color:var(--warn);font-size:14px">${f.edge_note}</p>` : '';
     return `<div class="vcard ${tone}">
-      <p class="note" style="margin:0 0 6px">未來走向（條件樣本，不是預言）</p>
+      <p class="note" style="margin:0 0 6px">未來走向（歷史分位，不是目標價、不是預言）</p>
       <p class="vtitle" style="font-size:18px">${f.bias_label||''}</p>
-      <p class="vreason">現況 ${f.state_label||''} · 信心 ${f.confidence||'—'} · 樣本 ${f.n} 次${f.matched==='trend'?'（同均線結構）':''}</p>
+      ${edge}
+      <p class="vreason">現況 ${f.state_label||''} · 信心 ${f.confidence||'—'} · 樣本 ${f.n} 次${f.n!=null && f.n<50?'（N&lt;50）':''}${f.matched==='trend'?'（同均線結構）':''}</p>
       <div class="kpis">
         ${hz(f.h5,'5 日')}
         ${hz(f.h10,'10 日')}
@@ -481,6 +520,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <div class="kpi"><span>下一根波動帶</span><b>${f.next_lo==null?'—':px(f.next_lo)+'～'+px(f.next_hi)}</b><span>現價 ± ATR</span></div>
       </div>
       ${sc ? `<div class="plans">${sc}</div>` : ''}
+      ${f.walk_n ? `<p class="note">往後推 ${f.walk_n} 次（每次只用當天以前的日K）${f.walk_err_med==null?'': '：20 日實際相對預測中位，誤差中位 '+f.walk_err_med+'%；落在區間內 '+f.walk_inside_pct+'%。'} 圖上淡錐＝當時預測，金線＝後來實際。</p>` : ''}
       <p class="note">${f.note||''}${f.conflict_why?' · '+f.conflict_why:''}</p>
     </div>`;
   }
@@ -494,16 +534,16 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       const up = (f.ret||0) >= 0;
       return `<div class="check ${up?'ok':'no'}"><div class="mark">${up?'✓':'✕'}</div><div><b>${f.path||''} ${up?'+':''}${fmt(f.ret,2)}%</b><div class="note" style="margin:0">${f.entry||''} → ${f.exit||''} · ${f.why||''}</div></div></div>`;
     }).join('');
-    const tone = (h.avg||0) >= 0 ? 'good' : 'bad';
+    const tone = 'warn';
     return `<div class="vcard ${tone}">
-      <p class="note" style="margin:0 0 8px">若照系統買點進、停利／停損出（歷史模擬）</p>
+      <p class="note" style="margin:0 0 8px">同一規則在這段日K的模擬（會過擬合，不是下次會贏）</p>
       <div class="kpis">
         <div class="kpi"><span>完成筆數</span><b>${h.n}</b></div>
         <div class="kpi"><span>勝率</span><b>${h.win_rate==null?'—':h.win_rate+'%'}</b></div>
         <div class="kpi"><span>平均報酬</span><b>${h.avg==null?'—':h.avg+'%'}</b></div>
         <div class="kpi"><span>盈虧比</span><b>${h.payoff==null?'—':fmt(h.payoff,2)}</b><span>均賺 ÷ 均賠</span></div>
       </div>
-      <p class="note">獲利因子 ${h.profit_factor==null?'—':fmt(h.profit_factor,2)}（毛利÷毛損）· 累計 ${h.sum_pct==null?'—':h.sum_pct+'%'} · 次日開盤進 · 雙邊成本 0.15%</p>
+      <p class="note">獲利因子 ${h.profit_factor==null?'—':fmt(h.profit_factor,2)}（毛利÷毛損）· 累計 ${h.sum_pct==null?'—':h.sum_pct+'%'} · 次日開盤進 · 成本已改與實盤同一套摩擦（不再用 0.15%）· n&lt;20 不能當驗證</p>
       ${fills ? `<div class="checks">${fills}</div>` : ''}
     </div>`;
   }
@@ -530,32 +570,29 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     d.fund = d.fund || {available:false, items:[]};
     detail = d;
     const v = d.verdict, p = d.plan, t = d.targets;
-    const ps = posSize(v.entry, v.stop);
+    const hard = d.status === 'DATA_MISMATCH' || !!(d.integrity && d.integrity.hard_stop);
+    const fc = d.forecast || {};
+    const g = d.guard || {};
+    const noEdge = !!(fc.no_edge || fc.small_sample || g.no_edge);
+    const liveOk = !hard && !!d.live_ok && !noEdge && !fc.overfit && !fc.conflict && !g.conflict && !g.regime_shift;
+    const ps = (liveOk && !noEdge) ? posSize(v.entry, v.stop) : null;
     const cyq = d.cyq;
     const maxMass = cyq ? Math.max(...cyq.hist.map(h=>h.mass), 1e-9) : 1;
-    $('detail').innerHTML = `<div class="detail">
-      <div class="vcard ${v.tone}">
-        <div class="sub">${d.symbol} · ${d.name} · ${d.sector} · 收盤 ${d.asof}</div>
-        <p class="vtitle">${v.title}</p>
-        <p class="vreason">${v.reason}</p>
-        ${v.flags && v.flags.length ? `<p class="note">旗標：${v.flags.join('、')}</p>`:''}
-        ${d.regime ? `<p class="note">${d.regime.label||''}${d.setup && d.setup.weekly ? ' · '+(d.setup.weekly.label||'') : ''}${d.beta!=null?' · β '+d.beta:''}</p>`:''}
-        ${ps ? `<p class="note">以資金 ${fmt($('capital').value,0)}、單筆風險 1% 計：約 ${ps.sh.toLocaleString()} 股、名目 ${fmt(ps.notional,0)}，每股風險 ${px(ps.per)}。</p>`:''}
-        ${v.hold ? '' : `<p class="note"><button class="chip" data-act="hold">記為持倉（之後只管理停損，不每天重貼可買）</button></p>`}
-      </div>
-      <div class="kpis">
-        <div class="kpi"><span>現價</span><b>${px(d.price)}</b></div>
-        <div class="kpi"><span>綜合分</span><b>${fmt(d.composite.score,1)}</b><span>${d.composite.bias}</span></div>
-        <div class="kpi"><span>技術／基本／籌碼</span><b>${fmt(d.tech.score,1)}<span style="font-size:12px;color:var(--muted)"> / ${d.fund.available?fmt(d.fund.score,1):'—'} / ${d.chips&&d.chips.available?fmt(d.chips.score,1):'—'}</span></b></div>
-        <div class="kpi"><span>清單／RPS／RVOL</span><b>${d.checks_ok}/${d.checks_n}</b><span>RPS ${d.rps??'—'} · RVOL ${(d.setup&&d.setup.rvol)!=null?d.setup.rvol:'—'}${d.resonance?' · 共振':''}${d.factor_rank!=null?' · 因子'+d.factor_rank:''}${d.sector_rs!=null?' · 族群'+d.sector_rs:''}</span></div>
-      </div>
-      ${forecastCard(d.forecast)}
-      ${histCard(d.hist)}
+    const integ = d.integrity || {};
+    const hardBanner = hard ? `<div class="vcard hardstop">
+        <div class="sub">${d.symbol} · ${d.name} · ${d.sector} · 收盤 ${d.asof||''}</div>
+        <p class="vtitle">ERROR · 資料源不一致</p>
+        <p class="hardstop-msg">資料源未完成除權息/減資還原，停止產出技術訊號。</p>
+        <p class="vreason">日K ${integ.yahoo_close==null?'—':px(integ.yahoo_close)}　證交所 ${integ.official_close==null?'—':px(integ.official_close)}${integ.twse_drift==null?'':'　差 '+(integ.twse_drift*100).toFixed(1)+'%'}${integ.official_asof?'　交易日 '+integ.official_asof:''}</p>
+        <p class="note">${(integ.issues||[]).join('；')||''}</p>
+      </div>` : '';
+    const planHtml = hard ? '' : (liveOk ? `
       <div class="plans">
-        <div class="plan buy"><h4>實盤進場</h4><div class="px">${px(p.fill_entry||(p.buy&&p.buy.mid))}</div><div class="hint">${p.fill_note||'區內用現價，不是買區中點'}${p.buy? ' · 區 '+px(p.buy.lo)+'–'+px(p.buy.hi)+' 品質 '+(p.buy.quality??'—') : ''}${p.buy_valid?'':'　品質未達 40'}</div></div>
+        <p class="note">下列價位是收盤幾何，不是券商委託。</p>
+        <div class="plan buy"><h4>限價（非成交）</h4><div class="px">${px(p.fill_entry||(p.buy&&p.buy.mid))}</div><div class="hint">${p.fill_note||'區內用現價，不是買區中點'}${p.buy? ' · 區 '+px(p.buy.lo)+'–'+px(p.buy.hi)+' 品質 '+(p.buy.quality??'—') : ''}${p.buy_valid?'':'　品質未達 40'}</div></div>
         <div class="plan stop"><h4>實盤停損</h4><div class="px">${px(p.live_stop||p.fill_stop||p.stop)}</div><div class="hint">${p.trail_active?'已走過 1R，停損已上移':'距進場至少 1×ATR／1.2%，最多 8%，對齊跳動'}${p.risk_pct_live!=null?' · 風險 '+fmt(p.risk_pct_live,1)+'%':''} · 最長 ${p.time_stop_days||40} 日</div></div>
-        <div class="plan tgt"><h4>實盤賣點</h4><div class="px">${px(p.fill_target||(p.target&&p.target.mid))}</div><div class="hint">${p.target_upgraded?'已改下一檔有效壓力 · ':''}賣在壓力下緣減一跳，不是中點${p.target? ' · '+(p.target.sources||[]).slice(0,3).join('、') : ''}</div></div>
-        <div class="plan"><h4>實盤 RR</h4><div class="px">${(p.rr_live==null&&p.rr_plan==null)?'—':fmt(p.rr_live!=null?p.rr_live:p.rr_plan,2)}</div><div class="hint">已扣稅費滑價（台股約 0.45%）· 門檻 1.5${p.rr_paper!=null && p.rr_live!=null && p.rr_paper!==p.rr_live ? ' · 紙上 '+fmt(p.rr_paper,2):''}</div></div>
+        <div class="plan tgt"><h4>訊號賣點（非委託）</h4><div class="px">${px(p.fill_target||(p.target&&p.target.mid))}</div><div class="hint">${p.target_upgraded?'已改下一檔有效壓力 · ':''}賣在壓力下緣減一跳，不是中點${p.target? ' · '+(p.target.sources||[]).slice(0,3).join('、') : ''}</div></div>
+        <div class="plan"><h4>訊號 RR（扣摩擦）</h4><div class="px">${(p.rr_live==null&&p.rr_plan==null)?'—':fmt(p.rr_live!=null?p.rr_live:p.rr_plan,2)}</div><div class="hint">已扣稅費＋點差＋隔夜缺口（不再用 0.45%）· 門檻 1.5${p.rr_paper!=null && p.rr_live!=null && p.rr_paper!==p.rr_live ? ' · 紙上 '+fmt(p.rr_paper,2):''}</div></div>
       </div>
       ${p.r_multiple? `<p class="note">回檔分批：1R ${px(p.r_multiple.r1)} · 2R ${px(p.r_multiple.r2)} · 3R ${px(p.r_multiple.r3)}。${p.trail_note||''}</p>`:''}
       ${p.deep? `<p class="note">深檔買區：${px(p.deep.mid)} 品質 ${p.deep.quality??'—'}</p>`:''}
@@ -566,8 +603,36 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
           <div class="plan tgt"><h4>2R 目標</h4><div class="px">${px(p.breakout_plan.t2)}</div><div class="hint">1R ${px(p.breakout_plan.t1)} · 3R ${px(p.breakout_plan.t3)}</div></div>
           <div class="plan"><h4>突破 RR</h4><div class="px">${fmt(p.breakout_plan.rr,1)}</div><div class="hint">${p.breakout_plan.note||''}</div></div>
         </div></div>`:''}
+    ` : `
+      <div class="vcard warn">
+        <p class="vtitle" style="font-size:18px">條件未齊，維持觀望 (Wait and See)</p>
+        <p class="vreason">${(d.gate_fail&&d.gate_fail.length)?'未過閘門：'+d.gate_fail.join('、')+'。':''}${(g.conflict_why||fc.conflict_why||'')} 不產出實盤進場／停損，畫面數字不是委託單。</p>
+      </div>
+      <p class="note">若條件將來齊備，參考區 ${p.buy? px(p.buy.lo)+'–'+px(p.buy.hi):'—'}。這不是下單價，也不是沙盤票券。</p>
+    `);
+    $('detail').innerHTML = `<div class="detail">
+      ${hardBanner}
+      ${hard ? '' : `<div class="vcard ${v.tone}">
+        <div class="sub">${d.symbol} · ${d.name} · ${d.sector} · 收盤 ${d.asof}</div>
+        <p class="vtitle">${v.title}</p>
+        <p class="vreason">${v.reason}</p>
+        ${v.flags && v.flags.length ? `<p class="note">旗標：${v.flags.join('、')}</p>`:''}
+        ${d.regime ? `<p class="note">${d.regime.label||''}${d.setup && d.setup.weekly ? ' · '+(d.setup.weekly.label||'') : ''}${d.beta!=null?' · β '+d.beta:''}</p>`:''}
+        ${liveOk ? `<p class="hardstop-msg" style="font-size:13px;color:var(--warn)">這是收盤後訊號，不是已送出的委託。下一盤開盤才可能成交，且會滑價。</p>`:''}
+        ${ps ? `<p class="note">以資金 ${fmt($('capital').value,0)}、單筆風險 1% 計：約 ${ps.sh.toLocaleString()} 股、名目 ${fmt(ps.notional,0)}，每股風險 ${px(ps.per)}。不是代下單。</p>`:''}
+        ${v.hold || !liveOk ? '' : `<p class="note"><button class="chip" data-act="hold">記為持倉（之後只管理停損，不每天重貼可買）</button></p>`}
+      </div>`}
+      ${hard ? '' : `<div class="kpis">
+        <div class="kpi"><span>現價</span><b>${px(d.price)}</b></div>
+        <div class="kpi"><span>綜合分</span><b>${fmt(d.composite.score,1)}</b><span>${d.composite.bias}</span></div>
+        <div class="kpi"><span>技術／基本／籌碼</span><b>${fmt(d.tech.score,1)}<span style="font-size:12px;color:var(--muted)"> / ${d.fund.available?fmt(d.fund.score,1):'—'} / ${d.chips&&d.chips.available?fmt(d.chips.score,1):'—'}</span></b></div>
+        <div class="kpi"><span>清單／RPS／RVOL</span><b>${d.checks_ok}/${d.checks_n}</b><span>RPS ${d.rps??'—'} · RVOL ${(d.setup&&d.setup.rvol)!=null?d.setup.rvol:'—'}${d.resonance?' · 共振':''}${d.factor_rank!=null?' · 因子'+d.factor_rank:''}${d.sector_rs!=null?' · 族群'+d.sector_rs:''}</span></div>
+      </div>
+      ${forecastCard(d.forecast)}
+      ${histCard(d.hist)}`}
+      ${planHtml}
       <canvas class="chart" id="kline"></canvas>
-      <p class="note">綠帶＝買區，藍帶＝目標賣區，紅虛線＝停損。均線：青 MA20、金 MA60、灰 MA120。右方青錐＝同樣狀態後 20 日的 25–75 分位路徑，虛線＝中位。</p>
+      <p class="note">綠帶＝買區，藍帶＝目標賣區，紅虛線＝停損。均線：青 MA20、金 MA60、灰 MA120。右方青錐＝歷史分位路徑，不是目標價、也不是賣點。淡錐＝當時預測，金線＝後來實際。不含未來日K。</p>
       <div class="sec"><h3>訊號</h3><div class="sigs">${(d.signals||[]).map(s=>`<span class="sig ${s.tone||''}">${s.title}</span>`).join('') || '<span class="note">近日無觸發訊號</span>'}</div></div>
       <div class="sec"><h3>檢查清單 ${d.checks_ok}/${d.checks_n}（閘門／加分／參考）</h3>
         ${['gate','bonus','info'].map(g=>{
@@ -577,7 +642,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
           return `<p class="note">${lab}</p><div class="checks">${list.map(c=>`<div class="check ${c.ok?'ok':'no'}"><div class="mark">${c.ok?'✓':'✕'}</div><div><b>${c.key}</b><div class="note" style="margin:0">${c.detail}</div></div></div>`).join('')}</div>`;
         }).join('')}
       </div>
-      <div class="sec"><h3>三種目標（情境，不是承諾）</h3>
+      ${hard ? '' : `<div class="sec"><h3>三種目標（情境，不是承諾）</h3>
         <div class="plans">
           <div class="plan"><h4>分析師共識</h4><div class="px">${px(t.analyst.mean)}</div><div class="hint">${t.analyst.count||0} 家　上行 ${t.analyst.upside_pct==null?'—':t.analyst.upside_pct+'%'}${t.analyst.already_above?'　⚠現價已超過共識':''}<br>高 ${px(t.analyst.high)} ／ 低 ${px(t.analyst.low)}</div></div>
           <div class="plan"><h4>估值參考價</h4><div class="px">${px(t.valuation)}</div><div class="hint">現價 × (靜態PE ÷ 預期PE)</div></div>
@@ -585,20 +650,20 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         </div>
         <p class="note">${t.disclaimer}</p>
       </div>
-      <div class="sec"><h3>技術面拆解 ${fmt(d.tech.score,1)}</h3><div class="items">${itemBars(d.tech.items)}</div></div>
+      <div class="sec"><h3>技術面拆解 ${fmt(d.tech.score,1)}</h3><div class="items">${itemBars(d.tech.items)}</div></div>`}
       <div class="sec"><h3>基本面拆解 ${d.fund.available?fmt(d.fund.score,1):'資料不足'}</h3><div class="items">${itemBars(d.fund.items)}</div></div>
       ${d.integrity ? `<div class="sec"><h3>價格還原 ${d.integrity.ok?'正常':'異常'}</h3><p class="note">${(d.integrity.issues||[]).join('；')||'OHLC 合法。'} 最近跳空 ${d.integrity.last_gap==null?'—':(d.integrity.last_gap*100).toFixed(1)+'%'}</p></div>`:''}
-      ${d.vp40 ? `<div class="sec"><h3>近 40 日量能（誰在守）</h3><p class="note">POC ${px(d.vp40.poc)} · VAL ${px(d.vp40.val)} · VAH ${px(d.vp40.vah)}${d.vp40.defending?' · 現價在價值區內':''}</p></div>`:''}
+      ${(!hard && d.vp40) ? `<div class="sec"><h3>近 40 日量能（誰在守）</h3><p class="note">POC ${px(d.vp40.poc)} · VAL ${px(d.vp40.val)} · VAH ${px(d.vp40.vah)}${d.vp40.defending?' · 現價在價值區內':''}</p></div>`:''}
       ${d.intraday ? `<div class="sec"><h3>60 分收盤位置</h3><p class="note">收盤在當日振幅 ${Math.round((d.intraday.close_loc||0)*100)}% · ${d.intraday.above_vwap?'站上':'跌破'} VWAP ${px(d.intraday.vwap)} · 尾盤量佔 ${Math.round((d.intraday.late_vol_share||0)*100)}%${d.intraday.weak_close?' · 收弱':''}</p></div>`:''}
       ${d.monthly && d.monthly.yoy!=null ? `<div class="sec"><h3>月營收 ${d.monthly.ym||''}</h3><p class="note">年增 ${d.monthly.yoy}% · 月增 ${d.monthly.mom??'—'}% · 累計年增 ${d.monthly.yoy_acc??'—'}%</p></div>`:''}
       ${d.chips && d.chips.available ? `<div class="sec"><h3>籌碼面拆解 ${fmt(d.chips.score,1)}</h3><p class="note">${d.chips.note||''}</p><div class="items">${itemBars(d.chips.items)}</div></div>`: (d.market==='TW'? '<p class="note">籌碼尚未取得（T86）。</p>':'')}
-      ${cyq? `<div class="sec"><h3>籌碼成本 CYQ</h3>
+      ${(!hard && cyq)? `<div class="sec"><h3>籌碼成本 CYQ</h3>
         <p class="note">獲利盤 ${cyq.profit_pct}% · 平均成本 ${px(cyq.avg_cost)} · 90%區間 ${px(cyq.range90[0])}–${px(cyq.range90[1])} · 籌碼峰 ${px(cyq.peak)}</p>
         <div class="cyq">${cyq.hist.map(h=>`<span style="height:${Math.max(4,h.mass/maxMass*100)}%;background:${h.profit?'#3ee07a':'#ff5d73'};opacity:.85"></span>`).join('')}</div>
         <p class="note">綠＝現價下方（獲利盤），紅＝套牢盤。峰已納入支撐／壓力候選。</p></div>`:''}
       <div class="lim">技術訊號是機率。台股報價延遲約 20 分、籌碼延遲一日、財報季更。不構成投資建議。</div>
     </div>`;
-    requestAnimationFrame(()=>drawChart(d.bars||[], p, d.forecast));
+    requestAnimationFrame(()=>drawChart(d.bars||[], hard?{}:p, hard?null:d.forecast));
   }
 
   async function loadScan(){

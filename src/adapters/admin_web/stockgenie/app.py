@@ -28,7 +28,10 @@ from data import (
     load_ohlcv_many,
     load_t86_history,
     load_latest_twse_closes,
+    load_latest_twse_session,
     load_symbol_ohlcv,
+    load_twse_rps,
+    load_info,
     summarize_intraday,
     t86_by_code,
 )
@@ -91,6 +94,9 @@ _backtest: dict[str, dict] = {}
 _hist: dict[str, dict] = {}
 _regime: dict[str, dict] = {}
 _scan_busy: set[str] = set()
+# STOCKGENIE_LOOKUP_FULL_V1：搜尋個股的完整詳情，不寫進每日 30 檔看板。
+_detail_memo: dict[str, dict] = {}
+_DETAIL_MEMO_MAX = 40
 
 
 def _set(**kwargs):
@@ -186,6 +192,135 @@ def _df_of(symbol: str):
         with _lock:
             _ohlcv[symbol] = df
     return df
+
+
+def _remember_detail(symbol: str, full: dict) -> None:
+    slim = {k: v for k, v in full.items() if k != "bars"}
+    with _lock:
+        _detail_memo[symbol] = slim
+        extra = len(_detail_memo) - _DETAIL_MEMO_MAX
+        if extra > 0:
+            for k in list(_detail_memo.keys())[:extra]:
+                _detail_memo.pop(k, None)
+
+
+def _offpool_context(symbol: str, market: str, df) -> dict:
+    """搜尋個股補齊與潛力股同一套輸入：基本面、T86、RPS、月營收、大盤。失敗就缺那一塊，不 502。"""
+    info: dict = {}
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            info = pool.submit(load_info, symbol).result(timeout=12) or {}
+    except Exception:
+        info = {}
+
+    t86_hist: dict = {}
+    with _lock:
+        t86_hist = dict(_t86)
+    if market == "TW" and not t86_hist:
+        try:
+            t86_hist = load_t86_history(20)
+            with _lock:
+                if t86_hist and not _t86:
+                    _t86.update(t86_hist)
+        except Exception:
+            t86_hist = {}
+    series = t86_by_code(t86_hist, _code_of(symbol)) if market == "TW" else []
+
+    margin = exdiv = monthly = official = None
+    official_asof = None
+    rps = None
+    if market == "TW":
+        code = _code_of(symbol)
+        try:
+            margin = load_margin_map().get(code)
+        except Exception:
+            pass
+        try:
+            exdiv = load_exrights_upcoming().get(code)
+        except Exception:
+            pass
+        try:
+            monthly = load_monthly_revenue().get(code)
+        except Exception:
+            pass
+        try:
+            official_asof, closes = load_latest_twse_session()
+            official = (closes or {}).get(code)
+        except Exception:
+            official = None
+            official_asof = None
+        try:
+            rps = load_twse_rps().get(code)
+        except Exception:
+            rps = None
+
+    with _lock:
+        ohlcv_all = dict(_ohlcv)
+        regime = _regime.get(market)
+    ohlcv_all[symbol] = df
+    if rps is None:
+        rets = {}
+        for s, d in ohlcv_all.items():
+            if d is None or len(d) < 21:
+                continue
+            try:
+                if len(d) > 120:
+                    rets[s] = float(d["close"].iloc[-1] / d["close"].iloc[-120] - 1)
+                else:
+                    rets[s] = float(d["close"].iloc[-1] / d["close"].iloc[0] - 1)
+            except Exception:
+                continue
+        rps = rps_ranks(rets).get(symbol)
+    sector_rs = None
+    factor_rank = None
+    try:
+        ranks = {symbol: rps} if rps is not None else {}
+        sector_rs = _sector_rs(ohlcv_all).get(symbol)
+        factor_rank = _factor_ranks({symbol: df}, ranks).get(symbol)
+    except Exception:
+        pass
+    if regime is None:
+        try:
+            if market == "TW":
+                idx_map = load_ohlcv_many(["^TWII", "0050.TW"], period="2y")
+                idx = idx_map.get("^TWII") or idx_map.get("0050.TW")
+                regime = detect_regime("TW", idx, breadth=None)
+            else:
+                idx_map = load_ohlcv_many(["^GSPC", "^VIX"], period="2y")
+                idx = idx_map.get("^GSPC")
+                regime = detect_regime("US", idx, idx_map.get("^VIX"), breadth=None)
+            with _lock:
+                _ohlcv.update(idx_map)
+                if regime:
+                    _regime[market] = regime
+        except Exception:
+            regime = None
+    beta = None
+    try:
+        idx = ohlcv_all.get("^TWII") if market == "TW" else ohlcv_all.get("^GSPC")
+        if idx is None:
+            with _lock:
+                idx = _ohlcv.get("^TWII") if market == "TW" else _ohlcv.get("^GSPC")
+        b = beta_vs(idx, df)
+        beta = None if b is None else round(float(b), 2)
+    except Exception:
+        beta = None
+    return {
+        "info": info,
+        "series": series,
+        "rps": rps,
+        "sector_rs": sector_rs,
+        "factor_rank": factor_rank,
+        "margin": margin,
+        "exdiv": exdiv,
+        "monthly": monthly,
+        "official": official,
+        "official_asof": official_asof,
+        "regime": regime,
+        "beta": beta,
+    }
 
 
 def _kick_scan(market: str, force: bool = False) -> None:
@@ -371,7 +506,12 @@ def scan_market(market: str, force: bool = False) -> None:
     sec_rs = _sector_rs(ohlcv_all)
     factors = _factor_ranks(ohlcv, ranks)
 
-    twse_closes = load_latest_twse_closes() if market == "TW" else {}
+    twse_asof, twse_closes = (None, {})
+    if market == "TW":
+        try:
+            twse_asof, twse_closes = load_latest_twse_session()
+        except Exception:
+            twse_asof, twse_closes = None, {}
     _set(phase="score", progress=55, message=f"評分與買賣點聚合（{len(ohlcv)} 檔）…")
     packed = {}
     n = max(len(ohlcv), 1)
@@ -387,6 +527,7 @@ def scan_market(market: str, force: bool = False) -> None:
                 exdiv=exrights.get(code),
                 monthly=monthly_map.get(code),
                 official_close=twse_closes.get(code),
+                official_asof=twse_asof,
             )
             packed[sym] = full
         except Exception as exc:
@@ -508,7 +649,7 @@ def api_scan(market: str = "TW"):
 
 @app.get("/api/stock/{symbol:path}")
 def api_stock(symbol: str):
-    """池內重用掃描結果；池外單檔日K。永不 502（gateway 會把 502 顯示成空白失敗）。"""
+    """池內重用掃描結果；池外（搜尋）補齊同一套基本面／籌碼／預測。永不 502。"""
     try:
         return _pack_detail(symbol)
     except HTTPException as exc:
@@ -581,7 +722,8 @@ def _attach_bars(full: dict, df) -> dict:
     try:
         from engine import add_indicators, bars_payload
 
-        full["bars"] = bars_payload(add_indicators(df), 180)
+        hard = full.get("status") == "DATA_MISMATCH" or (full.get("integrity") or {}).get("hard_stop")
+        full["bars"] = bars_payload(df if hard else add_indicators(df), 180)
     except Exception:
         full["bars"] = []
     return full
@@ -602,57 +744,90 @@ def _pack_detail(symbol: str) -> dict:
     market = meta.get("market") or ("TW" if symbol.endswith(".TW") or symbol.endswith(".TWO") else "US")
     with _lock:
         cached = (_cache.get(market) or {}).get(symbol)
-        t86 = dict(_t86)
+        memo = _detail_memo.get(symbol)
         regime = _regime.get(market)
     df = _df_of(symbol)
-    # 看板已算過：只補 K 線，避免再打 Yahoo info／60分／證交所而逾時 502
-    if cached and cached.get("verdict"):
-        full = dict(cached)
+    if df is not None and len(df) < 80:
+        try:
+            got = load_ohlcv_many([symbol], period="2y")
+            extra = got.get(symbol)
+            if extra is not None and len(extra) > len(df):
+                df = extra
+                with _lock:
+                    _ohlcv[symbol] = df
+        except Exception:
+            pass
+
+    def _finish_payload(full: dict) -> dict:
         if meta.get("name"):
             full["name"] = meta["name"]
             full["sector"] = meta.get("sector") or full.get("sector") or ""
+        hard = full.get("status") == "DATA_MISMATCH" or (full.get("integrity") or {}).get("hard_stop")
         full = _attach_bars(full, df)
+        if hard:
+            full["hist"] = {"n": 0}
+            full["forecast"] = {"ok": False, "bias_label": "資料源不一致，停止產出技術訊號"}
+            full["live_ok"] = False
+            return _clean_json(full)
         if not full.get("hist"):
             try:
                 full["hist"] = _hist_for(symbol, df, market) if df is not None else {"n": 0}
             except Exception:
                 full["hist"] = {"n": 0}
-        if not full.get("forecast"):
+        if not full.get("forecast") or not (full.get("forecast") or {}).get("ok"):
             try:
                 full["forecast"] = build_forecast(
                     df,
                     plan=full.get("plan"),
                     setup=full.get("setup"),
-                    regime=full.get("regime"),
+                    regime=full.get("regime") or regime,
                     hist=full.get("hist"),
                     tech=full.get("tech"),
                 )
             except Exception:
-                full["forecast"] = {"ok": False, "bias_label": "路徑計算失敗"}
+                if not full.get("forecast"):
+                    full["forecast"] = {"ok": False, "bias_label": "路徑計算失敗"}
+        fc = full.get("forecast") or {}
+        if full.get("live_ok") and (fc.get("overfit") or fc.get("no_edge") or fc.get("conflict") or fc.get("regime_shift")):
+            full["live_ok"] = False
+            plan = dict(full.get("plan") or {})
+            plan["live_ok"] = False
+            plan["sandbox"] = True
+            full["plan"] = plan
+            v = dict(full.get("verdict") or {})
+            if v.get("key") in ("buy", "plan", "buy_breakout"):
+                v["key"] = "wait_guard"
+                v["title"] = "觀望 · 品質否決"
+                v["tone"] = "warn"
+                v["entry"] = None
+                v["stop"] = None
+                v["target"] = None
+                v["reason"] = ((v.get("reason") or "") + " 預測／回測未通過品質閘門，不強行進場。").strip()
+                flags = list(v.get("flags") or [])
+                if "品質否決" not in flags:
+                    flags.append("品質否決")
+                v["flags"] = flags
+                full["verdict"] = v
         return _clean_json(full)
+
+    # 看板已算過：只補 K 線／預測，避免再打 Yahoo 全套而逾時 502
+    if cached and cached.get("verdict"):
+        return _finish_payload(dict(cached))
+    if memo and memo.get("verdict"):
+        return _finish_payload(dict(memo))
     if df is None:
         return _stub_detail(symbol, f"找不到 {symbol} 的日線（Yahoo／證交所皆無）")
-    info = {}
-    series = t86_by_code(t86, _code_of(symbol)) if market == "TW" else []
-    rps = None if not cached else cached.get("rps")
-    sector_rs = None if not cached else cached.get("sector_rs")
-    factor_rank = None if not cached else cached.get("factor_rank")
-    code = _code_of(symbol)
-    margin = exdiv = monthly = official = None
-    try:
-        if market == "TW":
-            margin = load_margin_map().get(code)
-            exdiv = load_exrights_upcoming().get(code)
-            monthly = load_monthly_revenue().get(code)
-            official = load_latest_twse_closes().get(code)
-    except Exception:
-        pass
+    # STOCKGENIE_LOOKUP_FULL_V1：搜尋個股走與潛力股同一套 analyze＋hist＋forecast。
+    ctx = _offpool_context(symbol, market, df)
     try:
         full = analyze(
-            symbol, df, info, series, rps, include_chart=True,
-            regime=regime, sector_rs=sector_rs, factor_rank=factor_rank,
-            margin=margin, exdiv=exdiv, monthly=monthly,
-            official_close=official,
+            symbol, df, ctx["info"], ctx["series"], ctx["rps"], include_chart=True,
+            regime=ctx["regime"] or regime,
+            sector_rs=ctx["sector_rs"], factor_rank=ctx["factor_rank"],
+            margin=ctx["margin"], exdiv=ctx["exdiv"], monthly=ctx["monthly"],
+            official_close=ctx["official"],
+            official_asof=ctx.get("official_asof"),
+            beta=ctx["beta"],
         )
     except Exception as exc:
         traceback.print_exc()
@@ -663,10 +838,16 @@ def _pack_detail(symbol: str) -> dict:
         except Exception:
             pass
         return stub
-    if meta.get("name"):
-        full["name"] = meta["name"]
-        full["sector"] = meta.get("sector") or full.get("sector") or ""
+    if ctx.get("beta") is not None and full.get("beta") is None:
+        full["beta"] = ctx["beta"]
     full["intraday"] = None
+    hard = full.get("status") == "DATA_MISMATCH" or (full.get("integrity") or {}).get("hard_stop")
+    if hard:
+        full["hist"] = {"n": 0}
+        full["forecast"] = {"ok": False, "bias_label": "資料源不一致，停止產出技術訊號"}
+        full["live_ok"] = False
+        _remember_detail(symbol, full)
+        return _finish_payload(full)
     try:
         full["hist"] = _hist_for(symbol, df, market)
     except Exception:
@@ -676,13 +857,14 @@ def _pack_detail(symbol: str) -> dict:
             df,
             plan=full.get("plan"),
             setup=full.get("setup"),
-            regime=full.get("regime"),
+            regime=full.get("regime") or ctx.get("regime") or regime,
             hist=full.get("hist"),
             tech=full.get("tech"),
         )
     except Exception:
         full["forecast"] = {"ok": False, "bias_label": "路徑計算失敗"}
-    return _clean_json(full)
+    _remember_detail(symbol, full)
+    return _finish_payload(full)
 
 
 @app.post("/api/refresh")

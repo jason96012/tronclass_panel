@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from engine import add_indicators, levels_and_plan, tech_breakdown, detect_signals
+from engine import add_indicators, levels_and_plan, tech_breakdown, detect_signals, _friction
 from integrity import check_prices
 from patterns import detect as detect_candles
 from regime import detect_regime
@@ -17,7 +17,7 @@ from universe import meta as uni_meta
 from vp import recent_profile
 
 
-COST = 0.0015
+# STOCKGENIE_FRICTION_REAL_V1：舊雙邊 0.15% 嚴重低估，改與實盤同一套摩擦。
 
 
 def summarize_trades(arr: list[float]) -> dict[str, Any]:
@@ -139,6 +139,7 @@ def run_symbol(
     sector_on_date: dict | None = None,
 ) -> dict[str, Any] | None:
     df = add_indicators(df_raw)
+    cost = _friction(market)
     n = len(df)
     start = 250 if n > 700 else 200 if n > 260 else 80
     end = n - 21
@@ -189,7 +190,7 @@ def run_symbol(
                 trail = max(stop, ma20 - 0.5 * atr)
             exit_px, why = _exit_day(nxt_low, nxt_high, nxt_close, stop, t2, hold, trail)
             if exit_px is not None:
-                ret = (exit_px / entry_px - 1) - 2 * COST
+                ret = (exit_px / entry_px - 1) - cost
                 trades.append(ret)
                 paths.append(path)
                 fills.append(
@@ -223,7 +224,7 @@ def run_symbol(
         if not sig:
             continue
         # 下一盤開盤相對訊號收盤跳空超過 2.5% 不追（實盤也追不到好價）。
-        if nxt_open > close * 1.025:
+        if nxt_open > close * 1.015:
             continue
         in_pos = True
         path = sig["path"]
@@ -358,7 +359,7 @@ def run_market(
             "與看板同一套裁決（無基本面／籌碼，避免前視）。"
             "回檔：買區品質≥40、在區內、確認根、RR≥1.5、大盤／週線允許多、族群RS≥40；"
             "突破：A 級放量陽線。次日開盤進場；走過 1R 後停損上移到 MA20−0.5×ATR；"
-            "目標 2R 或壓力帶；最長 20 日；雙邊成本 0.15%。"
+            "目標 2R 或壓力帶；最長 20 日；成本與實盤同一套摩擦（台股約 0.9%+缺口，不再用 0.15%）。"
         ),
-        "limits": "樣本約五年（不足則用已載入日線）、觀察窗重疊；不含法人與財報。長上影／價格還原／週線空頭／大盤空頭會擋單。不是實盤保證。",
+        "limits": "Walk-forward 仍會過擬合：規則是人定的、觀察窗重疊、不含法人與財報。樣本約五年。長上影／價格還原／週線空頭／大盤空頭會擋單。歷史勝率不是下次會贏的機率。",
     }

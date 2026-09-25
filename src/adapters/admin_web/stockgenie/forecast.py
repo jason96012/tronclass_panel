@@ -1,7 +1,11 @@
-"""條件路徑：用這檔過去同樣狀態之後的實際漲跌當樣本。不是預言。"""
+"""條件路徑：用這檔過去同樣狀態之後的實際漲跌當樣本。不是預言。
+
+STOCKGENIE_WALK_CONE_V1：往後推時每一天只用當天以前的日K；圖上對照後來實際收盤。
+"""
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -68,6 +72,38 @@ def state_label(state: str | None) -> str:
     return f"{_TREND.get(trend, trend)} · {_MOM.get(mom, mom)}"
 
 
+def _wilson_lower(k: float, n: int, z: float = 1.96) -> float:
+    """Wilson 95% 信賴區間下緣。點估計 54.8%、n=31 時下緣遠低於 50%。"""
+    if n <= 0:
+        return 0.0
+    p = max(0.0, min(1.0, float(k) / float(n)))
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    centre = p + z2 / (2.0 * n)
+    rad = (p * (1.0 - p) + z2 / (4.0 * n)) / n
+    adj = z * math.sqrt(max(rad, 0.0))
+    return max(0.0, (centre - adj) / denom)
+
+
+def vol_regime_shift(df: pd.DataFrame | None) -> dict[str, Any]:
+    """STOCKGENIE_REGIME_SHIFT_V1：近 20 日 ATR% 相對更早中位差 ≥1.8× 或 ≤0.5× → 舊樣本失效。"""
+    empty = {"regime_shift": False, "atr_ratio": None}
+    if df is None or "atr" not in df.columns or "close" not in df.columns or len(df) < 100:
+        return empty
+    try:
+        atr_pct = (df["atr"] / df["close"]).replace([np.inf, -np.inf], np.nan).dropna()
+        if len(atr_pct) < 80:
+            return empty
+        recent = float(atr_pct.iloc[-20:].median())
+        past = float(atr_pct.iloc[20:-20].median()) if len(atr_pct) > 60 else None
+        if not past or past <= 0 or recent != recent:
+            return empty
+        ratio = recent / past
+        return {"regime_shift": bool(ratio >= 1.8 or ratio <= 0.5), "atr_ratio": round(ratio, 2)}
+    except Exception:
+        return empty
+
+
 def _stats(arr: list[float]) -> dict[str, Any] | None:
     if not arr:
         return None
@@ -104,9 +140,17 @@ def analog_pack(df: pd.DataFrame | None, horizon: int = HORIZON) -> dict[str, An
         "atr": None,
         "next_lo": None,
         "next_hi": None,
+        "small_sample": True,
+        "no_edge": True,
+        "edge_note": "日K不足，無法評估優勢",
+        "wilson_lo": None,
+        "regime_shift": False,
+        "atr_ratio": None,
         "note": "日K太短，沒有足夠的歷史同類走勢。",
     }
-    if df is None or len(df) < MIN_BARS + horizon:
+    # STOCKGENIE_WALK_CONE_V1：只看傳入序列末端當天（含）以前的日K。
+    # 同類樣本的「後來走勢」也必須落在末端當天之前，不能偷看未來。
+    if df is None or len(df) < MIN_BARS + horizon + 1:
         return empty
     work = df if "ma20" in df.columns and "rsi" in df.columns else add_indicators(df)
     n = len(work)
@@ -118,8 +162,9 @@ def analog_pack(df: pd.DataFrame | None, horizon: int = HORIZON) -> dict[str, An
     def collect(pred) -> tuple[dict[int, list], list[list[float]]]:
         rets: dict[int, list] = {5: [], 10: [], 20: []}
         paths: list[list[float]] = []
-        last = n - horizon - 1
-        for i in range(MIN_BARS, last):
+        # i + horizon <= n-1：結局最遠只用到 as-of 當天收盤
+        end = n - horizon
+        for i in range(MIN_BARS, end):
             if not pred(i):
                 continue
             c0 = _f(work["close"].iloc[i])
@@ -184,14 +229,44 @@ def analog_pack(df: pd.DataFrame | None, horizon: int = HORIZON) -> dict[str, An
         bias, bias_label = "range", "樣本震盪／分歧（中位接近零或漲跌參半）"
 
     nn = len(paths)
-    if nn >= 40:
+    # STOCKGENIE_FORECAST_EDGE_V1：N<50 一律無優勢；頻率<65% 或 Wilson 下緣<55% 或中位 < 1.5×ATR。
+    small_sample = nn < 50
+    atr_frac = (float(atr) / last_px) if atr and last_px else None
+    med_frac = None if med20 is None else float(med20) / 100.0
+    k_up = 0.0 if p_up is None else float(p_up) / 100.0 * nn
+    wilson_lo = _wilson_lower(k_up, nn)
+    no_edge = False
+    if small_sample:
+        no_edge = True
+    if p_up is not None and p_up < 65:
+        no_edge = True
+    if wilson_lo < 0.55:
+        no_edge = True
+    if atr_frac is not None and med_frac is not None and med_frac < 1.5 * atr_frac:
+        no_edge = True
+    shift = vol_regime_shift(work)
+    if shift.get("regime_shift"):
+        no_edge = True
+    edge_bits = []
+    if small_sample:
+        edge_bits.append("小樣本，參考價值低")
+        confidence = "低"
+    elif nn >= 40:
         confidence = "中高"
     elif nn >= 20:
         confidence = "中"
-    elif nn >= 12:
-        confidence = "中低"
     else:
+        confidence = "中低"
+    if wilson_lo < 0.55:
+        edge_bits.append(f"20 日只是歷史頻率，Wilson 下緣 {wilson_lo*100:.0f}%＜55%，不是下次會漲的機率")
+    if no_edge:
+        edge_bits.append("歷史共振邊際優勢不足 (No Edge)")
+        bias_label = "歷史共振邊際優勢不足 (No Edge)"
         confidence = "低"
+    if shift.get("regime_shift"):
+        edge_bits.append(f"波動狀態已切換（近20日 ATR 為舊樣本 {shift.get('atr_ratio')} 倍），舊路徑不適用")
+        confidence = "低"
+    edge_note = "；".join(edge_bits) if edge_bits else None
 
     return {
         "ok": True,
@@ -202,6 +277,12 @@ def analog_pack(df: pd.DataFrame | None, horizon: int = HORIZON) -> dict[str, An
         "bias": bias,
         "bias_label": bias_label,
         "confidence": confidence,
+        "small_sample": small_sample,
+        "no_edge": no_edge,
+        "edge_note": edge_note,
+        "wilson_lo": round(wilson_lo * 100, 1),
+        "regime_shift": bool(shift.get("regime_shift")),
+        "atr_ratio": shift.get("atr_ratio"),
         "h5": h5,
         "h10": h10,
         "h20": h20,
@@ -210,8 +291,104 @@ def analog_pack(df: pd.DataFrame | None, horizon: int = HORIZON) -> dict[str, An
         "atr": None if atr is None else round(float(atr), 4),
         "next_lo": None if atr is None else round(last_px - float(atr), 4),
         "next_hi": None if atr is None else round(last_px + float(atr), 4),
-        "note": "用這檔過去同樣均線／RSI 狀態之後的實際收盤當樣本。條件路徑，不是預言。",
+        "note": "用這檔過去同樣均線／RSI 狀態之後的實際收盤當樣本。數字是歷史頻率，不是下次上漲的機率。樣本的後來走勢不含 as-of 之後的資料。",
     }
+
+
+def analog_guard(df, regime: dict | None = None, weekly: dict | None = None) -> dict[str, Any]:
+    """掃描也能用的輕量否決：無優勢／衝突／波動切換。不含 walk 錐。"""
+    pack = analog_pack(df)
+    regime = regime or {}
+    weekly = weekly or {}
+    conflict = False
+    why = []
+    if pack.get("bias") == "bull" and ((weekly.get("key") in ("bear", "bear_flat")) or regime.get("key") == "bear"):
+        conflict = True
+        why.append("週線或大盤偏空，與個股樣本偏多衝突")
+    if pack.get("bias") == "bear" and ((weekly.get("key") in ("bull", "bull_flat")) or regime.get("key") == "bull"):
+        conflict = True
+        why.append("週線或大盤偏多，與個股樣本偏空衝突")
+    if pack.get("regime_shift"):
+        conflict = True
+        why.append("波動狀態已切換")
+    return {
+        "n": pack.get("n") or 0,
+        "no_edge": bool(pack.get("no_edge")),
+        "small_sample": bool(pack.get("small_sample")),
+        "wilson_lo": pack.get("wilson_lo"),
+        "conflict": conflict,
+        "conflict_why": "；".join(why) if why else None,
+        "regime_shift": bool(pack.get("regime_shift")),
+        "atr_ratio": pack.get("atr_ratio"),
+        "bias": pack.get("bias"),
+    }
+
+
+def walk_forward_cones(
+    df: pd.DataFrame | None,
+    step: int = HORIZON,
+    limit: int = 4,
+    horizon: int = HORIZON,
+) -> list[dict[str, Any]]:
+    """每隔 step 根、只用當天以前的資料重算一次錐，再對照後來實際收盤。"""
+    if df is None or len(df) < MIN_BARS + horizon + step:
+        return []
+    work = df if "ma20" in df.columns and "rsi" in df.columns else add_indicators(df)
+    n = len(work)
+    origins: list[int] = []
+    t = n - 1 - step
+    while t >= MIN_BARS + horizon and len(origins) < limit:
+        origins.append(int(t))
+        t -= step
+    origins.reverse()
+    out: list[dict[str, Any]] = []
+    for origin in origins:
+        pack = analog_pack(work.iloc[: origin + 1], horizon=horizon)
+        if not pack.get("ok"):
+            continue
+        cone = pack.get("cone") or []
+        actual: list[dict[str, Any]] = []
+        for k in range(0, horizon + 1):
+            j = origin + k
+            if j >= n:
+                break
+            ck = _f(work["close"].iloc[j])
+            if ck is None or ck <= 0:
+                break
+            dt = work.index[j]
+            actual.append(
+                {
+                    "k": k,
+                    "px": round(float(ck), 4),
+                    "t": dt.strftime("%Y-%m-%d") if hasattr(dt, "strftime") else str(dt)[:10],
+                }
+            )
+        err = None
+        inside = None
+        k_end = min(len(actual), len(cone)) - 1
+        if k_end >= 1 and actual and cone:
+            a = actual[k_end]["px"]
+            m = cone[k_end]["med"]
+            lo = cone[k_end]["lo"]
+            hi = cone[k_end]["hi"]
+            c0 = actual[0]["px"]
+            if c0:
+                err = round((a - m) / c0 * 100, 2)
+            inside = bool(lo <= a <= hi)
+        asof = work.index[origin]
+        out.append(
+            {
+                "asof": asof.strftime("%Y-%m-%d") if hasattr(asof, "strftime") else str(asof)[:10],
+                "cone": cone,
+                "actual": actual,
+                "n": pack.get("n"),
+                "err_pct": err,
+                "inside": inside,
+                "horizon": k_end,
+                "state": pack.get("state_label"),
+            }
+        )
+    return out
 
 
 def build_forecast(
@@ -244,9 +421,13 @@ def build_forecast(
     if out.get("bias") == "bear" and (wkey in ("bull", "bull_flat") or rkey == "bull"):
         conflict = True
         reasons.append("週線或大盤偏多，與個股樣本偏空衝突")
+    if out.get("regime_shift"):
+        conflict = True
+        reasons.append("波動狀態已切換，舊樣本不適用")
     if conflict:
         out["confidence"] = "低"
-        out["bias_label"] = (out.get("bias_label") or "") + " · 與大盤／週線衝突"
+        out["bias_label"] = (out.get("bias_label") or "") + " · 與大盤／週線／波動衝突"
+        out["no_edge"] = True
     out["conflict"] = conflict
     out["conflict_why"] = "；".join(reasons) if reasons else None
     out["invalid_below"] = None if stop is None else round(float(stop), 4)
@@ -265,19 +446,19 @@ def build_forecast(
         scenarios = [
             {
                 "key": "bull",
-                "label": "樂觀（上四分位）",
+                "label": "歷史上四分位（不是目標價）",
                 "px": last["hi"],
                 "ret": h20.get("p75"),
             },
             {
                 "key": "base",
-                "label": "基準（中位）",
+                "label": "歷史中位（不是目標價）",
                 "px": last["med"],
                 "ret": h20.get("median"),
             },
             {
                 "key": "bear",
-                "label": "悲觀（下四分位）",
+                "label": "歷史下四分位（不是目標價）",
                 "px": last["lo"],
                 "ret": h20.get("p25"),
             },
@@ -290,7 +471,32 @@ def build_forecast(
         bits.append(f"跌破停損 {stop:.2f}，偏多路徑作廢。")
     if out.get("matched") == "trend":
         bits.append("同樣 RSI 區間樣本不足，改用同一均線結構。")
-    if (hist.get("n") or 0) >= 5 and wr is not None:
-        bits.append(f"若照系統進出，這檔歷史勝率 {wr}%。")
-    out["note"] = "".join(bits) if bits else out.get("note")
+    hn = hist.get("n") or 0
+    if hn:
+        bits.append(f"同一規則在這段日K模擬 {hn} 筆（會過擬合，不能當下次會贏的證據）。")
+    out["note"] = " ".join(b for b in bits if b)
+    try:
+        walk = walk_forward_cones(df)
+    except Exception:
+        walk = []
+    out["walk"] = walk
+    errs = [w.get("err_pct") for w in walk if w.get("err_pct") is not None]
+    insides = [w.get("inside") for w in walk if w.get("inside") is not None]
+    out["walk_n"] = len(walk)
+    out["walk_err_med"] = round(float(np.median(np.asarray(errs, dtype=float))), 2) if errs else None
+    out["walk_inside_pct"] = round(100.0 * sum(1 for x in insides if x) / len(insides), 0) if insides else None
+    overfit = False
+    if out.get("matched") == "trend":
+        overfit = True
+    if (out.get("walk_n") or 0) >= 2 and (out.get("walk_inside_pct") is not None) and out["walk_inside_pct"] < 50:
+        overfit = True
+    hn = out.get("hist_n") or 0
+    if hn and hn < 20:
+        overfit = True
+    out["overfit"] = overfit
+    if overfit:
+        out["confidence"] = "低"
+        note = out.get("note") or ""
+        if "過擬合風險" not in note:
+            out["note"] = (note + " 回測／同類路徑有過擬合風險，禁止當實盤依據。").strip()
     return out

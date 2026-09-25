@@ -17,13 +17,13 @@ def detect_regime(
     bull    : 指數收盤 > MA200
     caution : 收盤在 MA120–MA200 之間，或 VIX 高於 20 日均 ×1.1
     bear    : 收盤 < MA120，或 < MA200 且 MA200 下彎
-    unknown : 沒有指數日線時不攔截（allow_long=True）
+    unknown : 沒有指數日線時禁止新多（fail-closed，避免假訊號）
     """
     if index_df is None or len(index_df) < 80:
         return {
             "key": "unknown",
-            "allow_long": True,
-            "label": "大盤資料不足，不攔截個股",
+            "allow_long": False,
+            "label": "大盤資料不足，禁止新多",
             "index": None,
             "ma120": None,
             "ma200": None,
@@ -78,7 +78,7 @@ def detect_regime(
 
     return {
         "key": key,
-        "allow_long": key in ("bull", "unknown"),
+        "allow_long": key == "bull",
         "label": label,
         "index": round(px, 2),
         "ma120": None if ma120 is None else round(ma120, 2),

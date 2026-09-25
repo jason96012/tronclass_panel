@@ -643,23 +643,28 @@ def load_twse_rps(lookback: int = 120) -> dict[str, int]:
     return ranks
 
 
-def load_latest_twse_closes() -> dict[str, float]:
-    """最近一份有資料的 MI_INDEX 收盤（給價格還原檢查對帳）。"""
+def load_latest_twse_session() -> tuple[str | None, dict[str, float]]:
+    """最近一份有資料的 MI_INDEX：（交易日 YYYYMMDD, {code: close}）。"""
     mi_dir = CACHE / "twse_mi"
-    if not mi_dir.exists():
-        return {}
-    files = sorted(mi_dir.glob("*.json"), reverse=True)
-    for f in files[:12]:
-        cached = _read_json(f, 10 * 365 * 86400)
-        if cached:
-            return cached
+    if mi_dir.exists():
+        files = sorted(mi_dir.glob("*.json"), reverse=True)
+        for f in files[:12]:
+            cached = _read_json(f, 10 * 365 * 86400)
+            if cached:
+                return f.stem, cached
     today = datetime.now(TAIPEI).date()
     for i in range(1, 8):
         ds = (today - timedelta(days=i)).strftime("%Y%m%d")
         closes = load_twse_session_closes(ds)
         if closes:
-            return closes
-    return {}
+            return ds, closes
+    return None, {}
+
+
+def load_latest_twse_closes() -> dict[str, float]:
+    """最近一份有資料的 MI_INDEX 收盤（給價格還原檢查對帳）。"""
+    _, closes = load_latest_twse_session()
+    return closes
 
 def _is_listed_equity_code(code: str) -> bool:
     """上市普通股：四碼數字，排除 00xx ETF／指數。"""

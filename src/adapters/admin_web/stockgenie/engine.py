@@ -47,9 +47,45 @@ def round_tick(px: float | None, market: str = "TW", mode: str = "nearest") -> f
     return round(n * tick, 6)
 
 
-def _friction(market: str) -> float:
-    """來回摩擦（相對進場價）。台股：證交稅 0.3%＋手續費＋一點滑價 ≈ 0.45%；美股約 0.2%。"""
-    return 0.0045 if (market or "TW").upper() == "TW" else 0.002
+def _friction(
+    market: str,
+    price: float | None = None,
+    atr: float | None = None,
+    rvol: float | None = None,
+    turnover: float | None = None,
+    limit_day: bool = False,
+) -> float:
+    """
+    STOCKGENIE_FRICTION_REAL_V1：舊 0.45% 嚴重低估。
+    台股來回：稅 0.3%＋手續費＋0.25×ATR 缺口＋薄量衝擊＋漲跌停加碼。
+    """
+    base = 0.009 if (market or "TW").upper() == "TW" else 0.004
+    extra = 0.0
+    try:
+        if price and atr and float(price) > 0 and float(atr) > 0:
+            extra += min(0.006, 0.25 * float(atr) / float(price))
+    except Exception:
+        pass
+    try:
+        if rvol is not None and float(rvol) < 1.0:
+            rv = max(float(rvol), 0.15)
+            impact = 0.0
+            if price and atr and float(price) > 0:
+                impact = 0.35 * float(atr) / float(price) / rv
+            extra += min(0.008, max(0.003 if rv < 0.5 else 0.0, impact))
+    except Exception:
+        pass
+    try:
+        if turnover is not None:
+            if float(turnover) < 1.0e7:
+                extra += 0.008
+            elif float(turnover) < 3.0e7:
+                extra += 0.004
+    except Exception:
+        pass
+    if limit_day:
+        extra += 0.01
+    return round(base + extra, 4)
 
 
 def _rr_net(entry: float | None, tgt: float | None, stp: float | None, friction: float) -> float | None:
@@ -456,7 +492,35 @@ def levels_and_plan(
 
     # STOCKGENIE_REALISTIC_FILL_V1：紙上用區中點會高估 RR。實盤＝區內用現價、
     # 賣在壓力下緣（不是中點）、對齊跳動、扣稅費滑價；停損距現價至少 1×ATR／1.2%，最多 8%。
-    friction = _friction(market)
+    rvol = None
+    vv = None
+    try:
+        v20 = float(row["vol20"]) if pd.notna(row.get("vol20")) else None
+        vv = float(row["volume"]) if pd.notna(row.get("volume")) else None
+        if v20 and v20 > 0 and vv is not None:
+            rvol = vv / v20
+    except Exception:
+        rvol = None
+    turnover = None
+    try:
+        if vv is not None and price:
+            turnover = float(vv) * float(price)
+    except Exception:
+        turnover = None
+    prev_c = None
+    try:
+        if len(df) >= 2:
+            prev_c = float(df["close"].iloc[-2])
+    except Exception:
+        prev_c = None
+    last_ret = (price / prev_c - 1.0) if prev_c else 0.0
+    try:
+        day_rng = (float(row["high"]) - float(row["low"])) / prev_c if prev_c else 0.0
+    except Exception:
+        day_rng = 0.0
+    limit_day = bool(abs(last_ret) >= 0.095 or (abs(last_ret) >= 0.07 and day_rng <= 0.012))
+    friction = _friction(market, price, atr, rvol, turnover=turnover, limit_day=limit_day)
+    gap_abort_pct = 0.015
     stop = None
     if buy:
         floor = buy["lo"]
@@ -466,17 +530,18 @@ def levels_and_plan(
 
     fill_entry = None
     fill_note = ""
+    fill_is_limit = True
     if buy:
         lo, hi, mid = buy["lo"], buy["hi"], buy["mid"]
         if lo <= price <= hi * 1.015:
             fill_entry = price
-            fill_note = "已在買區，用現價進（收盤訊號，下一盤開盤可能滑價）"
+            fill_note = f"限價掛在收盤附近，不是成交價。下一盤開盤相對此限價跳空≥{gap_abort_pct:.1%}則訊號作廢，禁止市價追。"
         elif price > hi:
             fill_entry = hi
-            fill_note = "限價等回買區上緣，不在中點幻想成交"
+            fill_note = f"限價等回買區上緣。開盤相對限價跳空≥{gap_abort_pct:.1%}不作。"
         else:
             fill_entry = mid
-            fill_note = "價格尚在區下，等到區再填"
+            fill_note = f"價格尚在區下，限價等到區再填。開盤跳空≥{gap_abort_pct:.1%}不作。"
         fill_entry = round_tick(fill_entry, market, "up")
 
     fill_stop = stop
@@ -614,6 +679,10 @@ def levels_and_plan(
         "fill_stop": fill_stop,
         "fill_target": fill_target,
         "fill_note": fill_note,
+        "fill_is_limit": True,
+        "gap_abort_pct": gap_abort_pct,
+        "limit_day": limit_day,
+        "signal_close": round(price, 4),
         "risk_pct_live": risk_pct_live,
         "friction": friction,
         "market": market,

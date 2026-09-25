@@ -65,22 +65,24 @@ def checklist(
     def tick(key, ok, detail, group="info"):
         items.append({"key": key, "ok": bool(ok), "detail": detail, "group": group})
 
-    tick("大盤允許多", regime.get("allow_long", True), regime.get("label") or "未評估", "gate")
+    tick("大盤允許多", bool(regime.get("allow_long")), regime.get("label") or "大盤未評估，禁止新多", "gate")
     wkey = (setups.get("weekly") or {}).get("key")
-    tick("週線非空", wkey not in ("bear", "bear_flat"), (setups.get("weekly") or {}).get("label") or "未評估", "gate")
+    tick("週線非空", bool(wkey) and wkey not in ("bear", "bear_flat", "unknown"), (setups.get("weekly") or {}).get("label") or "週線不足，禁止新多", "gate")
     ed = fund.get("earnings_days")
-    tick("非財報窗口", not earnings_in_window(ed), f"距財報 {ed} 日（窗口 −{EARNINGS_AFTER}..+{EARNINGS_BEFORE}）" if ed is not None else "無財報日（不攔截）", "gate")
+    tick("非財報窗口", not earnings_in_window(ed), f"距財報 {ed} 日（窗口 −{EARNINGS_AFTER}..+{EARNINGS_BEFORE}）" if ed is not None else "無財報日（不攔截）", "info" if ed is None else "gate")
     tick("非長上影", not setups.get("long_upper"), "當根上影未超過振幅 40% 且未達 0.4×ATR（亦排除射擊之星）", "gate")
     integ = setups.get("integrity") or {}
-    tick("價格還原正常", integ.get("ok", True), "；".join(integ.get("issues") or []) or "OHLC 合法且無可疑跳空", "gate")
+    tick("價格還原正常", integ.get("ok") is True, "；".join(integ.get("issues") or []) or "OHLC 合法且無可疑跳空", "gate")
     tick("非除權息窗口", not setups.get("exdiv"), (setups.get("exdiv") or {}).get("date") or "近期無除權息", "gate")
     tick("非假突破", not setups.get("failed_breakout"), "昨收未跌回前高之下", "gate")
+    tick("非漲跌停鎖死", not setups.get("limit_lock") and not plan.get("limit_day"), "收盤不是漲跌停／鎖死價" if not (setups.get("limit_lock") or plan.get("limit_day")) else "漲跌停收盤不能當成交價", "gate")
     bq = (plan.get("buy") or {}).get("quality")
     tick("買區品質 ≥ 40", bq is not None and bq >= 40, f"品質 {bq}／家族 { (plan.get('buy') or {}).get('n_src') }" if bq is not None else "無買區", "gate")
     tick("現價在買區（≤1.5% 且非貼20日高）", bool(setups.get("near_buy")), "在區內或距上緣≤1.5%，且未貼近前高" if setups.get("near_buy") else "不在買區或已延伸到前高附近", "gate")
-    tick("回檔確認根", bool(setups.get("pullback_confirm")), "反轉K（鎚／陽包陰／晨星）或量縮收在上半陽線" if setups.get("pullback_confirm") else "未確認（普通陽線不算）", "gate")
-    tick("族群相對強度 ≥ 40", sector_rs is None or sector_rs >= 40, f"族群 RS {sector_rs}" if sector_rs is not None else "未計算", "gate")
-    tick("站上 200 日線", ma200 is not None and price >= ma200, f"MA200 {ma200:.2f}" if ma200 else "MA200 不足", "gate")
+    tick("回檔確認根", bool(setups.get("pullback_confirm")), "僅反轉K（鎚／陽包陰／晨星／三兵），量縮小陽不算" if setups.get("pullback_confirm") else "未確認（量縮小陽不算）", "gate")
+    tick("族群相對強度 ≥ 40", sector_rs is not None and sector_rs >= 40, f"族群 RS {sector_rs}" if sector_rs is not None else "未計算，不開新多", "gate")
+    tick("RPS 已評估", rps is not None, f"RPS {rps}" if rps is not None else "未計算，不開新多", "gate")
+    tick("站上 200 日線", ma200 is not None and price >= ma200, f"MA200 {ma200:.2f}" if ma200 else "MA200 不足，不開新多", "gate")
 
     tick("站上半年線 MA120", ma120 is not None and price >= ma120, f"現價 {price:.2f}／MA120 {ma120:.2f}" if ma120 else "MA120 不足", "bonus")
     tick("技術面多頭排列", ma_score >= 10, f"均線架構 {ma_score}/25", "bonus")
@@ -169,13 +171,13 @@ def verdict(
     ma_dead = any(s.get("code") == "MA_DEAD" for s in signals)
     regime_key = regime.get("key") or "unknown"
     sector_block = sector_rs is not None and sector_rs < 40
-    allow_new = bool(regime.get("allow_long", True))
+    allow_new = bool(regime.get("allow_long"))
 
     if regime_key == "bear" or not allow_new:
-        title = "觀望 · 大盤空頭" if regime_key == "bear" else "觀望 · 大盤警戒"
+        title = "觀望 · 大盤空頭" if regime_key == "bear" else "觀望 · 大盤未允許多"
         key, tone = "wait_regime", "bad" if regime_key == "bear" else "warn"
-        reason = (regime.get("label") or "大盤不允許多") + "。不開新多。"
-        flags.append("大盤空頭" if regime_key == "bear" else "大盤警戒")
+        reason = (regime.get("label") or "大盤資料不足或警戒，禁止新多") + "。不開新多。"
+        flags.append("大盤空頭" if regime_key == "bear" else "大盤未允許多")
         path = "blocked"
     elif earnings_blackout:
         key, title, tone = "wait_event", "觀望 · 財報窗口", "warn"
@@ -188,10 +190,15 @@ def verdict(
         reason = f"即將除權息（{xd.get('date')} {xd.get('kind')}）。價位幾何會錯位，不當突破／回檔。"
         flags.append("除權息")
         path = "blocked"
-    elif setups.get("integrity") and not setups["integrity"].get("ok", True):
+    elif setups.get("integrity") and setups["integrity"].get("ok") is not True:
         key, title, tone = "wait", "觀望 · 價格還原異常", "warn"
         reason = "；".join(setups["integrity"].get("issues") or ["OHLC／跳空異常"])
         flags.append("價格還原")
+        path = "blocked"
+    elif setups.get("limit_lock") or plan.get("limit_day"):
+        key, title, tone = "wait", "觀望 · 漲跌停鎖死", "warn"
+        reason = "收盤在漲跌停或振幅鎖死，畫面上的價不是可成交價。不開新倉。"
+        flags.append("漲跌停")
         path = "blocked"
     elif setups.get("long_upper"):
         key, title, tone = "wait", "觀望 · 長上影線", "warn"
@@ -276,6 +283,11 @@ def verdict(
         key, title, tone = "wait", "觀望 · 均線未多頭", "warn"
         reason = "回檔買點要求價>MA20>MA60。季線附近的弱反彈不當計劃性買點。"
         flags.append("均線未多頭")
+        path = "pullback"
+    elif near_buy and rps is None:
+        key, title, tone = "wait", "觀望 · RPS 未評估", "warn"
+        reason = "相對強度尚未算出。缺資料不當通過，不開回檔單。"
+        flags.append("RPS未評估")
         path = "pullback"
     elif near_buy and rps is not None and rps < 70:
         key, title, tone = "wait", "觀望 · 相對強度不足", "warn"
@@ -405,6 +417,78 @@ def verdict(
         "setup_kind": setups.get("kind"),
         "breakout_grade": grade,
     }
+
+
+# STOCKGENIE_GATE_VETO_V1：核心閘門 AND。回檔專用閘門不否決突破單。
+_PULLBACK_GATES = {
+    "買區品質 ≥ 40",
+    "現價在買區（≤1.5% 且非貼20日高）",
+    "回檔確認根",
+}
+_LIVE_KEYS = {"buy", "plan", "buy_breakout"}
+
+
+def failed_gates(checks: list[dict] | None, path: str | None) -> list[str]:
+    fails: list[str] = []
+    for c in checks or []:
+        if c.get("group") != "gate" or c.get("ok"):
+            continue
+        key = str(c.get("key") or "")
+        if path == "breakout" and key in _PULLBACK_GATES:
+            continue
+        if key:
+            fails.append(key)
+    return fails
+
+
+def apply_gate_veto(checks: list[dict] | None, dec: dict) -> tuple[dict, bool, list[str]]:
+    """閘門未過就不能當實盤指令。數字仍留在 plan 當沙盤推演。"""
+    path = (dec or {}).get("path")
+    fails = failed_gates(checks, path)
+    live_ok = bool((dec or {}).get("key") in _LIVE_KEYS and not fails)
+    out = dict(dec or {})
+    if fails and out.get("key") in _LIVE_KEYS:
+        out["key"] = "wait_gate"
+        out["title"] = "觀望 · 條件未齊"
+        out["tone"] = "warn"
+        out["reason"] = "閘門未過：" + "、".join(fails) + "。條件未齊，維持觀望 (Wait and See)。不產出實盤進場。"
+        flags = list(out.get("flags") or [])
+        if "閘門否決" not in flags:
+            flags.append("閘門否決")
+        out["flags"] = flags
+        out["entry"] = None
+        out["stop"] = None
+        out["target"] = None
+        out["rr"] = None
+        out["path"] = "blocked"
+        live_ok = False
+    elif not live_ok:
+        out["entry"] = None
+        out["stop"] = None
+        out["target"] = None
+    return out, live_ok, fails
+
+
+def apply_quality_veto(dec: dict, live_ok: bool, reasons: list[str] | None) -> tuple[dict, bool]:
+    """STOCKGENIE_NO_FORCE_V1：無優勢／衝突／狀態切換 → 不准強行進場。"""
+    reasons = [r for r in (reasons or []) if r]
+    if not reasons or not live_ok:
+        return dec, live_ok
+    out = dict(dec or {})
+    out["key"] = "wait_guard"
+    out["title"] = "觀望 · 品質否決"
+    out["tone"] = "warn"
+    out["reason"] = "；".join(reasons) + "。條件衝突或沒有可執行優勢，維持觀望，不強行進場。"
+    flags = list(out.get("flags") or [])
+    if "品質否決" not in flags:
+        flags.append("品質否決")
+    out["flags"] = flags
+    out["entry"] = None
+    out["stop"] = None
+    out["target"] = None
+    out["rr"] = None
+    out["path"] = "blocked"
+    return out, False
 
 
 def targets_block(price: float, fund: dict, plan: dict) -> dict[str, Any]:

@@ -225,11 +225,8 @@ def detect(df: pd.DataFrame, plan: dict, tech: dict, rps: int | None = None, pat
     close_loc = float(wick.get("close_loc") or 0.5)
     weak_close = close_loc < 0.40
     held_close = bool(close_loc >= 0.55 and yang)
-    # STOCKGENIE_EDGE_ACCURACY_V1：確認根＝反轉K，或量縮且收在上半陽線。
-    # 不再把「區內普通陽線 RVOL≥1」當確認（假突破／弱反彈太多）。
-    pullback_confirm = bool(
-        near_buy and not long_upper and (candle_ok or (vol_dry and held_close))
-    )
+    # STOCKGENIE_CONFIRM_STRICT_V1：量縮小陽太多弱反彈。確認根只認反轉K。
+    pullback_confirm = bool(near_buy and not long_upper and candle_ok)
     confirm = bool(near_buy and candle_ok and not long_upper)
     distribution = bool((not yang) and close_loc < 0.40 and rvol >= 1.3)
     last10 = df.iloc[-10:]
@@ -256,7 +253,17 @@ def detect(df: pd.DataFrame, plan: dict, tech: dict, rps: int | None = None, pat
         signals.append({"code": "RVOL", "title": f"相對量 RVOL {rvol:.2f}", "detail": "當日量 ≥1.4×20 日均量", "tone": "long"})
     elif rvol >= 1.15 and float(tech.get("ret20") or 0) < 0:
         signals.append({"code": "RVOL_DUMP", "title": "價跌量增", "detail": f"RVOL {rvol:.2f} 且 20 日報酬為負", "tone": "short"})
+    prev_c_safe = prev_c if prev_c else close
+    last_ret = (close / prev_c_safe - 1.0) if prev_c_safe else 0.0
+    day_rng = 0.0
+    try:
+        day_rng = (float(row["high"]) - float(row["low"])) / prev_c_safe if prev_c_safe else 0.0
+    except Exception:
+        day_rng = 0.0
+    limit_lock = bool(abs(last_ret) >= 0.095 or (abs(last_ret) >= 0.07 and day_rng <= 0.012))
     fail_bo = failed_breakout(df)
+    if limit_lock:
+        signals.append({"code": "LIMIT_LOCK", "title": "漲跌停／鎖死", "detail": f"當日漲跌 {last_ret:.1%}，收盤不是可成交價", "tone": "warn"})
     if fail_bo:
         signals.append({"code": "FAIL_BO", "title": "假突破", "detail": "昨收站上前高、今收跌回，結構未守住", "tone": "short"})
     if distribution:
@@ -297,6 +304,8 @@ def detect(df: pd.DataFrame, plan: dict, tech: dict, rps: int | None = None, pat
         "close_loc": round(float(close_loc), 3),
         "held_close": held_close,
         "extended": extended,
+        "limit_lock": limit_lock,
+        "last_ret": round(float(last_ret), 4),
         "distribution": distribution,
         "up_vol_share": round(float(up_share), 3),
         "failed_breakout": fail_bo,

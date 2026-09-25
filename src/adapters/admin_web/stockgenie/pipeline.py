@@ -9,14 +9,111 @@ import pandas as pd
 from chips import chip_breakdown
 from cyq import compute as cyq_compute
 from engine import add_indicators, bars_payload, detect_signals, levels_and_plan, tech_breakdown
-from integrity import check_prices
+from integrity import align_last_to_official, check_prices
 from patterns import detect as detect_candles
 from positions import mark as mark_position
 from pro import fund_breakdown
-from scorer import checklist, composite, resonance, targets_block, verdict
+from forecast import analog_guard
+from scorer import apply_gate_veto, apply_quality_veto, checklist, composite, resonance, targets_block, verdict
 from setups import detect as detect_setups
 from universe import meta as uni_meta
 from vp import recent_profile
+
+
+def _asof_of(df) -> str | None:
+    try:
+        return df.index[-1].strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _mismatch_payload(
+    symbol: str,
+    meta: dict,
+    df_raw,
+    integ: dict,
+    info: dict | None,
+    t86_series,
+    rps,
+    regime,
+    margin,
+    exdiv,
+    monthly,
+    beta,
+    include_chart: bool,
+) -> dict[str, Any]:
+    """報價硬阻斷：不產出 MA／RSI／ATR／買賣區／預測。"""
+    fund = fund_breakdown(info or {})
+    chips = None
+    market = meta.get("market") or "TW"
+    try:
+        last = float(df_raw["close"].iloc[-1])
+    except Exception:
+        last = None
+    reason = "資料源未完成除權息/減資還原，停止產出技術訊號。"
+    detail = "；".join(integ.get("issues") or []) or reason
+    payload = {
+        "status": "DATA_MISMATCH",
+        "live_ok": False,
+        "gate_fail": ["價格還原正常"],
+        "symbol": symbol,
+        "name": meta.get("name") or symbol,
+        "sector": meta.get("sector") or "",
+        "market": market,
+        "price": None if last is None else round(last, 4),
+        "asof": _asof_of(df_raw),
+        "change20": None,
+        "tech": {"score": 0, "items": [], "rsi": None, "withheld": True},
+        "fund": fund,
+        "chips": chips,
+        "composite": {"score": 0, "bias": "資料異常", "bias_key": "error"},
+        "plan": {"live_ok": False, "sandbox": False, "hard_stop": True, "buy": None, "stop": None, "target": None},
+        "setup": {"integrity": integ},
+        "regime": regime,
+        "sector_rs": None,
+        "factor_rank": None,
+        "signals": [{"code": "DATA_MISMATCH", "title": "資料源不一致", "detail": detail, "tone": "warn"}],
+        "patterns": [],
+        "cyq": None,
+        "rps": rps,
+        "checklist": [
+            {"key": "價格還原正常", "ok": False, "detail": detail, "group": "gate"},
+        ],
+        "checks_ok": 0,
+        "checks_n": 1,
+        "resonance": False,
+        "verdict": {
+            "key": "error_data",
+            "title": "ERROR · 資料源不一致",
+            "tone": "bad",
+            "reason": reason,
+            "flags": ["DATA_MISMATCH"],
+            "entry": None,
+            "stop": None,
+            "target": None,
+            "rr": None,
+            "path": "blocked",
+        },
+        "targets": {
+            "analyst": {"mean": None, "count": 0, "high": None, "low": None, "upside_pct": None},
+            "valuation": None,
+            "disclaimer": reason,
+        },
+        "integrity": integ,
+        "vp40": None,
+        "beta": None if beta is None else round(float(beta), 2),
+        "exdiv": exdiv,
+        "margin": margin,
+        "monthly": monthly,
+        "forecast": {"ok": False, "bias_label": "資料源不一致，停止產出技術訊號"},
+        "hist": {"n": 0},
+    }
+    if include_chart:
+        try:
+            payload["bars"] = bars_payload(df_raw, 180)
+        except Exception:
+            payload["bars"] = []
+    return payload
 
 
 def analyze(
@@ -34,11 +131,20 @@ def analyze(
     monthly: dict | None = None,
     beta: float | None = None,
     official_close: float | None = None,
+    official_asof: str | None = None,
     apply_holding: bool = True,
 ) -> dict[str, Any]:
     meta = uni_meta(symbol)
     market = meta["market"]
-    df = add_indicators(df_raw)
+    integ = check_prices(df_raw, exdiv=exdiv, official_close=official_close, official_asof=official_asof)
+    # STOCKGENIE_QUOTE_HARDSTOP_V1：報價對不上證交所 → 不跑 MA／RSI／ATR／買賣區。
+    if integ.get("hard_stop"):
+        return _mismatch_payload(
+            symbol, meta, df_raw, integ, info, t86_series, rps, regime,
+            margin, exdiv, monthly, beta, include_chart,
+        )
+    work = align_last_to_official(df_raw, official_close, official_asof)
+    df = add_indicators(work)
     tech = tech_breakdown(df)
     fund = fund_breakdown(info or {})
     vol20 = float(df["vol20"].iloc[-1]) if pd.notna(df["vol20"].iloc[-1]) else None
@@ -47,7 +153,6 @@ def analyze(
         chips = chip_breakdown(t86_series or [], vol20, margin=margin, ret20=tech.get("ret20"))
 
     extra = []
-    integ = check_prices(df, exdiv=exdiv, official_close=official_close)
     vp40 = recent_profile(df, 40)
     if vp40:
         extra.append((vp40["poc"], "近40日POC"))
@@ -105,10 +210,29 @@ def analyze(
         market, comp, tech, fund, chips, plan, reso, signals,
         setups=setup, regime=regime, sector_rs=sector_rs, rps=rps,
     )
+    # STOCKGENIE_GATE_VETO_V1：任一核心閘門 ✕ → 否決實盤進場，改觀望。
+    dec, live_ok, gate_fail = apply_gate_veto(checks, dec)
+    guard = {}
+    try:
+        guard = analog_guard(df, regime=regime, weekly=(setup or {}).get("weekly"))
+    except Exception:
+        guard = {}
+    q_reasons = []
+    if guard.get("no_edge") or guard.get("small_sample"):
+        q_reasons.append("歷史路徑無邊際優勢（N<50／頻率／Wilson／中位報酬）")
+    if guard.get("conflict"):
+        q_reasons.append(guard.get("conflict_why") or "樣本與大盤／週線衝突")
+    if guard.get("regime_shift"):
+        q_reasons.append("波動狀態已切換，舊樣本不適用")
+    dec, live_ok = apply_quality_veto(dec, live_ok, q_reasons)
+    plan = dict(plan or {})
+    plan["live_ok"] = live_ok
+    plan["sandbox"] = not live_ok
+    plan["friction_note"] = "來回摩擦已含稅費、點差與隔夜缺口，不再用 0.45% 低估"
     targets = targets_block(last["close"], fund, plan)
 
     last_dt = df.index[-1].strftime("%Y-%m-%d")
-    if apply_holding:
+    if apply_holding and live_ok:
         overlay = mark_position({
             "symbol": symbol,
             "price": last["close"],
@@ -120,6 +244,10 @@ def analyze(
         if overlay:
             dec = overlay
     payload = {
+        "status": "OK",
+        "live_ok": live_ok,
+        "gate_fail": gate_fail,
+        "guard": guard,
         "symbol": symbol,
         "name": meta["name"],
         "sector": meta["sector"],
@@ -179,10 +307,10 @@ def summary_row(full: dict) -> dict:
         "verdict_key": v["key"],
         "verdict": v["title"],
         "tone": v["tone"],
-        "rr": v["rr"],
-        "buy_mid": v.get("entry") or plan.get("fill_entry") or (None if not plan.get("buy") else plan["buy"]["mid"]),
-        "stop": v.get("stop") or plan.get("fill_stop") or plan.get("stop"),
-        "target_mid": v.get("target") if v.get("path") == "breakout" else (plan.get("fill_target") or (None if not plan.get("target") else plan["target"]["mid"])),
+        "rr": None if not full.get("live_ok") else v.get("rr"),
+        "buy_mid": None if not full.get("live_ok") else (v.get("entry") or plan.get("fill_entry") or (None if not plan.get("buy") else plan["buy"]["mid"])),
+        "stop": None if not full.get("live_ok") else (v.get("stop") or plan.get("fill_stop") or plan.get("stop")),
+        "target_mid": None if not full.get("live_ok") else (v.get("target") if v.get("path") == "breakout" else (plan.get("fill_target") or (None if not plan.get("target") else plan["target"]["mid"]))),
         "resonance": full["resonance"],
         "rps": full.get("rps"),
         "rvol": setup.get("rvol"),
