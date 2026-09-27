@@ -218,6 +218,15 @@ const SECURE_REFRESH_COOKIE: &str = "__Host-tronclass_admin_refresh";
 const LOCAL_REFRESH_COOKIE: &str = "tronclass_admin_refresh";
 const REFRESH_COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
 
+/// HSTS_PRELOAD_ALIGN_V1：HSTS 只在這一處定義，面板／智選／掃碼頁共用。
+///
+/// 線上 Cloudflare 曾蓋成 `max-age=15552000; includeSubDomains; preload`
+///（180 天），源站原本是一年且無 preload，瀏覽器看到的與程式不一致。
+/// 正式政策改為一年 + `includeSubDomains` + `preload`：preload 在 CF 已經開啟，
+/// max-age 拉回 31536000。部署後仍要在 CF「SSL/TLS → Edge Certificates → HSTS」
+/// 設成同一組（或關閉 CF HSTS 讓源站標頭出去），否則邊緣會繼續蓋掉。
+pub(crate) const HSTS_HEADER_VALUE: &str = "max-age=31536000; includeSubDomains; preload";
+
 /// REFRESH_ROTATE_GRACE_V1（fix38）：refresh 輪換的寬限視窗（秒）。
 ///
 /// 舊制度是「一次性」輪換：舊 refresh 立刻刪除、舊 access 立刻撤銷。於是
@@ -4076,6 +4085,26 @@ fn is_stock_embed_path(path: &str) -> bool {
         || path.starts_with("/admin/stock-api/")
 }
 
+/// PERMISSIONS_POLICY_PATH_V1：強大瀏覽器 API 預設關閉。
+///
+/// 舊值 `camera=(self), geolocation=()` 有兩頭不對：
+/// - `camera=(self)` 掛在整份面板上（含 dashboard），但相機只給公開 `/scanner`
+///   （那條路由不走這個 middleware）。
+/// - `geolocation=()` 連同源都禁，管理員雷達頁（`/admin/radar`、`/admin/radar/input`）
+///   的 `navigator.geolocation.getCurrentPosition` 會被瀏覽器直接拒絕。
+///
+/// 公開掃碼／雷達頁由 `scanner::tool_security_headers_middleware` 另外套。
+/// 不關 `publickey-credentials-get`／clipboard，passkey 與複製按鈕才不會壞。
+fn permissions_policy_for_path(path: &str) -> &'static str {
+    const DENY: &str = "camera=(), geolocation=(), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
+    const RADAR: &str = "camera=(), geolocation=(self), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
+    if path == "/admin/radar" || path.starts_with("/admin/radar/") {
+        RADAR
+    } else {
+        DENY
+    }
+}
+
 async fn admin_security_headers_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -4119,6 +4148,8 @@ async fn admin_security_headers_middleware(
     // iClass 拿簽章 URL、再從 MinIO 串流，重看同一份附件原本等於整條路重跑。
     let keeps_own_cache =
         is_framable_preview || path == "/admin/api/bulletins/attachment";
+    // PERMISSIONS_POLICY_PATH_V1：先取出 'static 政策字串，再 move request。
+    let permissions_policy = permissions_policy_for_path(path);
     let mut response = next.run(request).await;
 
     // This middleware covers the whole Admin Web router, including `/` and
@@ -4154,7 +4185,7 @@ async fn admin_security_headers_middleware(
     );
     headers.insert(
         HeaderName::from_static("permissions-policy"),
-        HeaderValue::from_static("camera=(self), geolocation=(), microphone=()"),
+        HeaderValue::from_static(permissions_policy),
     );
     if !is_pub {
         headers.insert(
@@ -4168,7 +4199,7 @@ async fn admin_security_headers_middleware(
     );
     headers.insert(
         HeaderName::from_static("strict-transport-security"),
-        HeaderValue::from_static("max-age=31536000; includeSubDomains"),
+        HeaderValue::from_static(HSTS_HEADER_VALUE),
     );
     // Page handlers install a hash-bearing CSP. Use the strict no-inline
     // fallback only for JSON/static responses that do not contain inline code.
@@ -4751,6 +4782,32 @@ mod tests {
     }
 
     #[test]
+    fn permissions_policy_allows_geolocation_only_on_admin_radar_pages() {
+        let deny = permissions_policy_for_path("/admin");
+        assert!(deny.contains("camera=()"));
+        assert!(deny.contains("geolocation=()"));
+        assert!(!deny.contains("camera=(self)"));
+        assert!(!deny.contains("geolocation=(self)"));
+        assert_eq!(
+            permissions_policy_for_path("/admin/radar"),
+            permissions_policy_for_path("/admin/radar/input")
+        );
+        let radar = permissions_policy_for_path("/admin/radar");
+        assert!(radar.contains("geolocation=(self)"));
+        assert!(radar.contains("camera=()"));
+        // JSON API 不需要定位；字首也不是 `/admin/radar`。
+        let api = permissions_policy_for_path("/admin/api/radar");
+        assert!(!api.contains("geolocation=(self)"));
+    }
+
+    #[test]
+    fn hsts_header_is_one_year_with_preload() {
+        assert_eq!(
+            HSTS_HEADER_VALUE,
+            "max-age=31536000; includeSubDomains; preload"
+        );
+    }
+
     use axum::{body::Body, http::Request};
     use tempfile::NamedTempFile;
     use tower::ServiceExt;

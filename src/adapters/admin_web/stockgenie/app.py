@@ -1,4 +1,4 @@
-"""StockGenie 智慧選股 API。0.0.0.0 供預覽。"""
+"""StockGenie 智慧選股 API。只聽 127.0.0.1（由面板 /admin/stock-api 反代）。"""
 
 from __future__ import annotations
 
@@ -35,6 +35,7 @@ from data import (
     summarize_intraday,
     t86_by_code,
 )
+from news import load_news
 from pipeline import analyze, summary_row
 from portfolio import apply as apply_portfolio, beta_vs
 from positions import close_position, list_open, open_position
@@ -67,17 +68,24 @@ class SafeJSON(JSONResponse):
         return text.encode("utf-8")
 
 
-app = FastAPI(title="StockGenie", version="2.0", default_response_class=SafeJSON)
+app = FastAPI(
+    title="StockGenie",
+    version="2.0",
+    default_response_class=SafeJSON,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
 
 
 @app.exception_handler(Exception)
 def _unhandled(_, exc):
     if isinstance(exc, HTTPException):
-        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        detail = exc.detail if isinstance(exc.detail, str) else "request error"
         return SafeJSON({"error": detail}, status_code=exc.status_code)
     traceback.print_exc()
-    return SafeJSON({"error": str(exc) or exc.__class__.__name__}, status_code=500)
+    return SafeJSON({"error": "內部錯誤"}, status_code=500)
 
 _lock = threading.Lock()
 _state = {
@@ -176,7 +184,12 @@ def _norm_symbol(symbol: str) -> str:
     from data import guess_yahoo_symbol
 
     s = (symbol or "").strip().upper().replace("．", ".")
-    return guess_yahoo_symbol(s) or s
+    got = guess_yahoo_symbol(s)
+    if got:
+        return got
+    if 1 <= len(s) <= 16 and all(c.isascii() and (c.isalnum() or c in ".-") for c in s):
+        return s
+    return ""
 
 
 def _df_of(symbol: str):
@@ -591,7 +604,7 @@ def health():
 @app.get("/api/lookup")
 def api_lookup(q: str = "", market: str = "TW"):
     """STOCKGENIE_LOOKUP_V1：代號／名稱建議。名單沒有就上網。永不 500。"""
-    q = (q or "").strip()
+    q = (q or "").strip()[:40]
     hits = []
     try:
         hits = search_symbols(q)
@@ -650,14 +663,17 @@ def api_scan(market: str = "TW"):
 @app.get("/api/stock/{symbol:path}")
 def api_stock(symbol: str):
     """池內重用掃描結果；池外（搜尋）補齊同一套基本面／籌碼／預測。永不 502。"""
+    symbol = _norm_symbol(symbol)
+    if not symbol:
+        return _stub_detail("INVALID", "代號不合法")
     try:
         return _pack_detail(symbol)
     except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-        return _stub_detail(_norm_symbol(symbol), str(detail))
-    except Exception as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "request error"
+        return _stub_detail(symbol, str(detail)[:200])
+    except Exception:
         traceback.print_exc()
-        return _stub_detail(_norm_symbol(symbol), f"計算失敗：{exc}")
+        return _stub_detail(symbol, "計算失敗")
 
 
 def _stub_detail(symbol: str, reason: str) -> dict:
@@ -674,6 +690,28 @@ def _stub_detail(symbol: str, reason: str) -> dict:
             "market": meta.get("market") or ("TW" if str(symbol).endswith(".TW") else "US"),
             "price": None,
             "asof": None,
+            "live_ok": False,
+            "timing": {
+                "buy": {
+                    "do": False,
+                    "state": "blocked",
+                    "title": "現在不要買",
+                    "when": "無法計算買賣點，空手。",
+                    "price": None,
+                    "zone": None,
+                    "abort": "",
+                    "why": reason,
+                },
+                "sell": {
+                    "do": False,
+                    "state": "none",
+                    "title": "未持有，不用賣",
+                    "when": "沒有部位就沒有賣出動作。",
+                    "stop": None,
+                    "target": None,
+                    "why": reason,
+                },
+            },
             "tech": {"score": 0, "items": [], "rsi": None},
             "fund": {"score": 0, "available": False, "items": []},
             "chips": None,
@@ -709,6 +747,13 @@ def _stub_detail(symbol: str, reason: str) -> dict:
             "beta": None,
             "hist": {"n": 0},
             "forecast": {"ok": False, "bias_label": reason},
+            "news": {
+                "ok": False,
+                "items": [],
+                "gate": False,
+                "label": "沒有可用新聞",
+                "note": reason,
+            },
             "bars": [],
             "error": reason,
         }
@@ -734,6 +779,8 @@ def _pack_detail(symbol: str) -> dict:
     from engine import add_indicators, bars_payload
 
     symbol = _norm_symbol(symbol)
+    if not symbol:
+        return _stub_detail("INVALID", "代號不合法")
     meta = uni_meta(symbol)
     try:
         live = cached_quote_meta(symbol)
@@ -768,6 +815,16 @@ def _pack_detail(symbol: str) -> dict:
             full["hist"] = {"n": 0}
             full["forecast"] = {"ok": False, "bias_label": "資料源不一致，停止產出技術訊號"}
             full["live_ok"] = False
+        if not full.get("news"):
+            try:
+                full["news"] = load_news(symbol, full.get("name"))
+            except Exception:
+                full["news"] = {
+                    "ok": False, "items": [], "gate": False,
+                    "note": "新聞抓取失敗，不影響買賣點。",
+                    "label": "沒有可用新聞",
+                }
+        if hard:
             return _clean_json(full)
         if not full.get("hist"):
             try:
@@ -925,12 +982,20 @@ def api_positions():
 
 @app.post("/api/positions")
 def api_pos_open(symbol: str, entry: float, stop: float, target: float | None = None, qty: float = 0, path: str = "pullback"):
+    symbol = _norm_symbol(symbol)
+    if not symbol:
+        raise HTTPException(400, "invalid symbol")
+    if path not in ("pullback", "breakout"):
+        path = "pullback"
     return open_position(symbol, {"entry": entry, "stop": stop, "target": target, "qty": qty, "path": path})
 
 
 @app.post("/api/positions/close")
 def api_pos_close(symbol: str, reason: str = "manual"):
-    return {"ok": True, "pos": close_position(symbol, reason)}
+    symbol = _norm_symbol(symbol)
+    if not symbol:
+        raise HTTPException(400, "invalid symbol")
+    return {"ok": True, "pos": close_position(symbol, reason[:40])}
 
 
 @app.get("/api/backtest")

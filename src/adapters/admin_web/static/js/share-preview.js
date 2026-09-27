@@ -3,8 +3,13 @@
 (function () {
   var extMeta = document.getElementById('share-ext');
   var rawMeta = document.getElementById('share-raw');
-  var EXT = (extMeta && extMeta.content) || '';
+  var EXT = String((extMeta && extMeta.content) || '').toLowerCase().replace(/[^a-z0-9]/g,'');
   var RAW = (rawMeta && rawMeta.content) || '';
+  try {
+    var ru = new URL(RAW, location.origin);
+    if (ru.origin !== location.origin || ru.pathname.indexOf('/pub/') !== 0) RAW = '';
+    else RAW = ru.pathname + ru.search;
+  } catch (_) { RAW = ''; }
   var stage = document.getElementById('stage');
   if (!stage) return;
   var IMAGE = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'avif', 'ico', 'svg'];
@@ -13,7 +18,8 @@
   var OFFICE = ['docx', 'pptx', 'xlsx', 'odt', 'ods', 'odp', 'rtf'];
   var TEXT = ['txt', 'text', 'md', 'markdown', 'log', 'json', 'xml', 'yaml', 'yml',
     'ini', 'conf', 'cfg', 'toml', 'sql', 'csv', 'tsv', 'srt', 'vtt'];
-  function fail(m) { report('fail', m); stage.innerHTML = '<div class="msg">' + (m || '此格式無法線上預覽') + '</div>'; }
+  function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+  function fail(m) { report('fail', m); stage.innerHTML = '<div class="msg">' + esc(m || '此格式無法線上預覽') + '</div>'; }
   // SHARE_V1d: 把魔數/分支/錯誤回報後台（/pub/preview-log），一次性定位問題。
   function report(stg, msg) {
     try {
@@ -45,6 +51,7 @@
       go(1);
     }).catch(function (e) { fail('PDF 解析失敗：' + ((e && e.message) || e)); });
   }
+  if (!RAW) { fail('預覽位址不合法'); return; }
   report('load', 'ext=' + EXT);
   if (IMAGE.indexOf(EXT) >= 0) stage.innerHTML = '<img src="' + RAW + '" alt="">';
   else if (VIDEO.indexOf(EXT) >= 0) stage.innerHTML = '<video src="' + RAW + '" controls autoplay playsinline></video>';

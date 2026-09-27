@@ -21,16 +21,25 @@ from vp import recent_profile
 
 
 def summarize_trades(arr: list[float]) -> dict[str, Any]:
-    """勝率／平均報酬／獲利因子／盈虧比（均賺÷均賠）。"""
+    """STOCKGENIE_BT_STATS_V1：勝率／平均／PF／盈虧比／最大回撤／連勝連虧。"""
+    empty = {
+        "n": 0,
+        "win_rate": None,
+        "avg": None,
+        "profit_factor": None,
+        "payoff": None,
+        "sum_pct": None,
+        "max_dd": None,
+        "max_win_streak": 0,
+        "max_loss_streak": 0,
+        "expectancy": None,
+        "avg_win": None,
+        "avg_loss": None,
+        "n_win": 0,
+        "n_loss": 0,
+    }
     if not arr:
-        return {
-            "n": 0,
-            "win_rate": None,
-            "avg": None,
-            "profit_factor": None,
-            "payoff": None,
-            "sum_pct": None,
-        }
+        return empty
     w = [t for t in arr if t > 0]
     l = [t for t in arr if t <= 0]
     pf = round(sum(w) / abs(sum(l)), 2) if l and sum(l) != 0 else None
@@ -39,13 +48,41 @@ def summarize_trades(arr: list[float]) -> dict[str, Any]:
         avg_l = abs(float(np.mean(l)))
         if avg_l > 0:
             payoff = round(float(np.mean(w)) / avg_l, 2)
+    eq = 1.0
+    peak = 1.0
+    max_dd = 0.0
+    for t in arr:
+        eq *= 1.0 + float(t)
+        peak = max(peak, eq)
+        if peak > 0:
+            max_dd = max(max_dd, (peak - eq) / peak)
+    win_s = loss_s = 0
+    max_w = max_l = 0
+    for t in arr:
+        if t > 0:
+            win_s += 1
+            loss_s = 0
+        else:
+            loss_s += 1
+            win_s = 0
+        max_w = max(max_w, win_s)
+        max_l = max(max_l, loss_s)
+    avg = float(np.mean(arr))
     return {
         "n": len(arr),
         "win_rate": round(len(w) / len(arr) * 100, 1),
-        "avg": round(float(np.mean(arr)) * 100, 2),
+        "avg": round(avg * 100, 2),
         "profit_factor": pf,
         "payoff": payoff,
         "sum_pct": round(float(np.sum(arr)) * 100, 2),
+        "max_dd": round(max_dd * 100, 2),
+        "max_win_streak": max_w,
+        "max_loss_streak": max_l,
+        "expectancy": round(avg * 100, 2),
+        "avg_win": None if not w else round(float(np.mean(w)) * 100, 2),
+        "avg_loss": None if not l else round(float(np.mean(l)) * 100, 2),
+        "n_win": len(w),
+        "n_loss": len(l),
     }
 
 
@@ -115,7 +152,10 @@ def _hist_signal(df: pd.DataFrame, i: int, market: str, rps: int | None, sector_
     }
 
 
-def _exit_day(nxt_low, nxt_high, nxt_close, stop, tgt, hold, trail_stop) -> tuple[float | None, str | None]:
+def _exit_day(
+    nxt_low, nxt_high, nxt_close, stop, tgt, hold, trail_stop, entry_px=None,
+) -> tuple[float | None, str | None]:
+    """與實盤持倉同一套：停損／停利優先；20 日無進展；滿 40 日。"""
     use_stop = trail_stop if trail_stop is not None else stop
     hit_stop = nxt_low <= use_stop
     hit_tgt = tgt is not None and nxt_high >= tgt
@@ -125,8 +165,10 @@ def _exit_day(nxt_low, nxt_high, nxt_close, stop, tgt, hold, trail_stop) -> tupl
         return use_stop, "停損"
     if hit_tgt:
         return tgt, "停利"
-    if hold >= 20:
+    if hold >= 40:
         return nxt_close, "到期"
+    if hold >= 20 and (entry_px is None or nxt_close < float(entry_px) * 1.02):
+        return nxt_close, "到期無進展"
     return None, None
 
 
@@ -188,7 +230,7 @@ def run_symbol(
             hold += 1
             if t1 and nxt_high >= t1:
                 trail = max(stop, ma20 - 0.5 * atr)
-            exit_px, why = _exit_day(nxt_low, nxt_high, nxt_close, stop, t2, hold, trail)
+            exit_px, why = _exit_day(nxt_low, nxt_high, nxt_close, stop, t2, hold, trail, entry_px)
             if exit_px is not None:
                 ret = (exit_px / entry_px - 1) - cost
                 trades.append(ret)
@@ -200,6 +242,7 @@ def run_symbol(
                         "path": "突破" if path == "breakout" else "回檔",
                         "ret": round(ret * 100, 2),
                         "why": why or "",
+                        "hold": hold,
                     }
                 )
                 in_pos = False
@@ -244,11 +287,25 @@ def run_symbol(
         a = np.array(arr)
         return {"n": int(len(a)), "avg": round(float(a.mean()) * 100, 2)}
 
+    bh = None
+    start_d = end_d = None
+    try:
+        c0 = float(df["close"].iloc[start])
+        c1 = float(df["close"].iloc[-1])
+        start_d = str(df.index[start])[:10]
+        end_d = str(df.index[-1])[:10]
+        if c0 > 0:
+            bh = round((c1 / c0 - 1) * 100, 2)
+    except Exception:
+        bh = None
     return {
         "buckets": {k: stats(v) for k, v in buckets.items()},
         "trades": trades,
         "paths": paths,
         "fills": fills,
+        "buy_hold": bh,
+        "start": start_d,
+        "end": end_d,
     }
 
 
@@ -258,6 +315,13 @@ def pack_symbol_hist(raw: dict[str, Any] | None) -> dict[str, Any]:
     empty["fills"] = []
     empty["pullback"] = summarize_trades([])
     empty["breakout"] = summarize_trades([])
+    empty["buy_hold"] = None
+    empty["vs_bh"] = None
+    empty["avg_hold"] = None
+    empty["why"] = {}
+    empty["weak"] = True
+    empty["start"] = None
+    empty["end"] = None
     if not raw:
         return empty
     trades = raw.get("trades") or []
@@ -267,7 +331,24 @@ def pack_symbol_hist(raw: dict[str, Any] | None) -> dict[str, Any]:
     bo = [t for t, p in zip(trades, paths) if p == "breakout"]
     out["pullback"] = summarize_trades(pb)
     out["breakout"] = summarize_trades(bo)
-    out["fills"] = list(raw.get("fills") or [])[-8:]
+    fills = list(raw.get("fills") or [])
+    out["fills"] = fills[-10:]
+    out["buy_hold"] = raw.get("buy_hold")
+    out["start"] = raw.get("start")
+    out["end"] = raw.get("end")
+    if out.get("sum_pct") is not None and out.get("buy_hold") is not None:
+        out["vs_bh"] = round(float(out["sum_pct"]) - float(out["buy_hold"]), 2)
+    else:
+        out["vs_bh"] = None
+    holds = [f.get("hold") for f in fills if f.get("hold") is not None]
+    out["avg_hold"] = None if not holds else round(float(np.mean(holds)), 1)
+    why: dict[str, int] = {}
+    for f in fills:
+        k = str(f.get("why") or "")
+        if k:
+            why[k] = why.get(k, 0) + 1
+    out["why"] = why
+    out["weak"] = out["n"] < 20
     return out
 
 
@@ -333,33 +414,21 @@ def run_market(
         for ret, p in zip(r["trades"], r["paths"]):
             (bo if p == "breakout" else pb).append(ret)
 
-    def summarize(arr):
-        if not arr:
-            return {"n": 0, "win_rate": None, "avg": None, "profit_factor": None}
-        w = [t for t in arr if t > 0]
-        l = [t for t in arr if t <= 0]
-        pf = round(sum(w) / abs(sum(l)), 2) if l and sum(l) != 0 else None
-        return {
-            "n": len(arr),
-            "win_rate": round(len(w) / len(arr) * 100, 1),
-            "avg": round(float(np.mean(arr)) * 100, 2),
-            "profit_factor": pf,
-        }
-
     out_b = {}
     for k, v in buckets.items():
         out_b[k] = {"n": v["n"], "avg": None if v["n"] == 0 else round(v["sum"] / v["n"] * 100, 2)}
     return {
         "symbols": used,
         "buckets": out_b,
-        "strategy": summarize(all_trades),
-        "pullback": summarize(pb),
-        "breakout": summarize(bo),
+        "strategy": summarize_trades(all_trades),
+        "pullback": summarize_trades(pb),
+        "breakout": summarize_trades(bo),
         "rules": (
             "與看板同一套裁決（無基本面／籌碼，避免前視）。"
             "回檔：買區品質≥40、在區內、確認根、RR≥1.5、大盤／週線允許多、族群RS≥40；"
             "突破：A 級放量陽線。次日開盤進場；走過 1R 後停損上移到 MA20−0.5×ATR；"
-            "目標 2R 或壓力帶；最長 20 日；成本與實盤同一套摩擦（台股約 0.9%+缺口，不再用 0.15%）。"
+            "目標 2R 或壓力帶；20 日無進展或滿 40 日出場；"
+            "成本與實盤同一套摩擦（台股約 0.9%+缺口，不再用 0.15%）。"
         ),
-        "limits": "Walk-forward 仍會過擬合：規則是人定的、觀察窗重疊、不含法人與財報。樣本約五年。長上影／價格還原／週線空頭／大盤空頭會擋單。歷史勝率不是下次會贏的機率。",
+        "limits": "Walk-forward 仍會過擬合：規則是人定的、觀察窗重疊、不含法人與財報。樣本約五年。長上影／價格還原／週線空頭／大盤空頭會擋單。歷史勝率不是下次會贏的機率。沒有裝 Backtrader／Qlib。",
     }

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::http::{header, HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
@@ -24,7 +24,7 @@ use tokio::sync::Mutex;
 
 use super::{
     admin_login_redirect, must_change_password_redirect, same_origin_request, unauthorized_response,
-    AdminQuery, AdminWebState,
+    AdminQuery, AdminWebState, HSTS_HEADER_VALUE,
 };
 
 const STOCK_SIDECAR_HOST: &str = "127.0.0.1";
@@ -194,9 +194,34 @@ fn stock_html_response(html: String) -> Response {
         HeaderValue::from_static("nosniff"),
     );
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("SAMEORIGIN"));
+    // STOCK_SECURITY_HEADERS_V1：這條路徑跳過 admin_security_headers_middleware
+    //（避免 Trusted Types），但仍要有 HSTS／Referrer／Permissions-Policy／COOP／CORP。
+    // 智選不需相機或定位；camera=() 與面板預設對齊。
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static(
+            "camera=(), geolocation=(), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()",
+        ),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("strict-transport-security"),
+        HeaderValue::from_static(HSTS_HEADER_VALUE),
+    );
     // 智選前端用 innerHTML 畫表；不能套面板的 require-trusted-types-for。
     if let Ok(value) = HeaderValue::from_str(
-        "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'",
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'; upgrade-insecure-requests",
     ) {
         headers.insert(header::CONTENT_SECURITY_POLICY, value);
     }

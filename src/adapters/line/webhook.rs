@@ -18,8 +18,8 @@ use tracing::{debug, error, info, warn};
 use crate::adapters::admin_web::{self, AdminWebState};
 use crate::adapters::requests::{self, AdapterRequest, RequestContent, RequestState};
 use crate::adapters::scanner::{
-    NumberCodeSubmission, QrScannerRegistry, RadarPointSubmission, ScannerStatusQuery,
-    ScannerSubmission,
+    tool_security_headers_middleware, NumberCodeSubmission, QrScannerRegistry,
+    RadarPointSubmission, ScannerStatusQuery, ScannerSubmission,
 };
 
 use super::client::LineBotClient;
@@ -82,6 +82,7 @@ pub fn build_router(state: LineWebhookState, webhook_path: &str) -> Router {
         .route("/radar/status", get(radar_status_handler))
         .route("/radar/submit", post(radar_submit_handler))
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(tool_security_headers_middleware))
         .with_state(state);
 
     if let Some(admin_web) = admin_web {

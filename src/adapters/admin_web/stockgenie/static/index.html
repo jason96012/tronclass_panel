@@ -79,6 +79,15 @@ tr.sel td{background:#152430}
 .hardstop-msg{color:#ff5d73;font-weight:800;font-size:15px;margin:8px 0 0}
 .vtitle{font-size:22px;font-weight:800;letter-spacing:.02em;margin:0 0 6px}
 .vreason{margin:0;color:var(--muted);font-size:13px}
+.timing{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0 4px}
+.tcard{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--panel2)}
+.tcard.now{border-color:#3a5a28;background:linear-gradient(180deg,#10241c,#141d28)}
+.tcard.stop{border-color:#5a2834;background:linear-gradient(180deg,#241018,#141d28)}
+.tcard.wait{border-color:#5c4a18}
+.tcard .tl{font-size:11px;color:var(--muted);letter-spacing:.08em;font-weight:750;margin:0 0 4px}
+.tcard .tt{font-size:16px;font-weight:800;margin:0 0 6px}
+.tcard .td{margin:0;font-size:12px;color:var(--muted)}
+.tcard .px{font-size:18px;font-weight:800;font-variant-numeric:tabular-nums;margin:6px 0 2px}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}
 .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px}
 .kpi span{display:block;font-size:11px;color:var(--muted)}
@@ -125,7 +134,8 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
 .cap input{width:88px;background:#0a1016;border:1px solid var(--line);border-radius:8px;padding:4px 8px}
 @media(max-width:980px){
   .wrap{grid-template-columns:1fr}
-  .kpis,.plans{grid-template-columns:repeat(2,1fr)}
+  .kpis,.plans,.timing{grid-template-columns:repeat(2,1fr)}
+  .timing{grid-template-columns:1fr}
   .checks{grid-template-columns:1fr}
   .top{flex-wrap:wrap}
 }
@@ -180,8 +190,8 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <table>
           <thead>
             <tr>
-              <th>代號</th><th>裁決</th><th>型態</th><th>綜合</th><th>技術</th><th>基本</th><th>籌碼</th>
-              <th>RPS</th><th>RVOL</th><th>買點</th><th>停損</th><th>目標</th><th>RR</th>
+              <th>代號</th><th>裁決</th><th>何時買</th><th>何時賣</th><th>型態</th><th>綜合</th><th>技術</th><th>基本</th><th>籌碼</th>
+              <th>RPS</th><th>RVOL</th><th>限價</th><th>停損</th><th>目標</th><th>RR</th>
             </tr>
           </thead>
           <tbody id="tb"></tbody>
@@ -221,12 +231,12 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   <div class="lim">
     <b>已知限制</b><br>
     1. 垃圾進垃圾出：同一日日K vs 證交所 ≥0.3%、未還原跳空、空量、非法 OHLC → 停止技術訊號。<br>
-    2. 回測會過擬合：walk-forward 命中差、樣本改用「同均線」、n&lt;20 都不當驗證。歷史勝率不是下次會贏。<br>
+    2. 回測會過擬合：walk-forward 命中差、樣本改用「同均線」、n&lt;20 都不當驗證。歷史勝率不是下次會贏。出場對齊實盤（20 日無進展／40 日），並給最大回撤、連虧、同期買進持有對照。沒有嵌 Backtrader／Qlib。<br>
     3. 樣本迷思：N&lt;50 一律無優勢；20 日歷史頻率&lt;65% 或 Wilson 下緣&lt;55% 或中位&lt;1.5×ATR → No Edge。<br>
     4. 閘門衝突不准強行：核心閘門 AND、樣本與大盤／週線衝突、無優勢 → 觀望，畫面不長得像委託單。<br>
     5. 摩擦不再低估：台股來回約 0.9%＋缺口／量縮，回測與訊號 RR 同一套。<br>
     6. 波動狀態切換（近 20 日 ATR 為舊樣本 1.8× 或 0.5×）→ 舊路徑作廢。<br>
-    7. 人機信任：可買只標「訊號（非委託）」；未過關只寫觀望，不給四張大數字票券。<br>
+    7. 人機信任：可買只標「訊號（非委託）」；未過關只寫觀望，不給四張大數字票券。詳情與看板的「何時買／何時賣」是人話時點（限價／等確認／觀望／停損／減碼／持有管理），不是券商委託。新聞／情緒是標題關鍵詞計分，只當參考，不進閘門、不改買賣點。<br>
     8. 分析師目標價 12–18 個月準確率約 30%。<br>
     9. 台股看板為每日輪換的潛力股（約 30 檔），不是全市場下載。可搜任意上市股票，單檔走同一套公式。<br>
     10. 「結構三買」是簡化規則，不是完整纏論中樞。因子排序不是機器學習模型。<br>
@@ -240,8 +250,11 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   let openFail = {};
 
   const toneClass = (t) => t==='good'?'good':t==='bad'?'bad':t==='warn'?'warn':'neutral';
+  const sigTone = (t) => t==='long'||t==='short'||t==='warn'?t:'';
   const fmt = (n, d=2) => n==null || n!==n ? '—' : Number(n).toLocaleString('zh-Hant', {maximumFractionDigits:d, minimumFractionDigits:0});
   const px = (n) => n==null ? '—' : Number(n).toFixed(2);
+  const esc = (s) => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const safeSym = (s) => { const t = String(s==null?'':s).trim(); return /^[A-Za-z0-9.^_-]{1,24}$/.test(t) ? t : ''; };
 
   async function j(url){
     const r = await fetch(url, {cache:'no-store', credentials:'same-origin'});
@@ -275,11 +288,15 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     $('tb').innerHTML = list.map(r => {
       const on = sel===r.symbol ? 'sel' : '';
       const ch = r.change20;
-      return `<tr class="${on}" data-s="${r.symbol}">
-        <td><span class="sym">${r.symbol.replace('.TW','')}</span><span class="sub">${r.name} · ${r.sector||''}</span></td>
-        <td><span class="tag ${toneClass(r.tone)}">${r.verdict}</span>${r.resonance?' <span class="tag good">共振</span>':''}</td>
-        <td><span class="sub">${r.setup_kind||r.bias||''}</span></td>
-        <td><b>${fmt(r.composite,1)}</b><span class="sub">${r.bias}</span></td>
+      const sym = safeSym(r.symbol);
+      if (!sym) return '';
+      return `<tr class="${on}" data-s="${esc(sym)}">
+        <td><span class="sym">${esc(sym.replace('.TW',''))}</span><span class="sub">${esc(r.name)} · ${esc(r.sector||'')}</span></td>
+        <td><span class="tag ${toneClass(r.tone)}">${esc(r.verdict)}</span>${r.resonance?' <span class="tag good">共振</span>':''}</td>
+        <td><span class="sub">${esc(r.buy_when||'現在不要買')}</span></td>
+        <td><span class="sub">${esc(r.sell_when||'未持有，不用賣')}</span></td>
+        <td><span class="sub">${esc(r.setup_kind||r.bias||'')}</span></td>
+        <td><b>${fmt(r.composite,1)}</b><span class="sub">${esc(r.bias)}</span></td>
         <td>${fmt(r.tech,1)}</td>
         <td>${r.fund==null?'—':fmt(r.fund,1)}</td>
         <td>${r.chips==null?'—':fmt(r.chips,1)}</td>
@@ -290,7 +307,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <td class="num up">${px(r.target_mid)}</td>
         <td>${r.rr==null?'—':fmt(r.rr,2)}</td>
       </tr>`;
-    }).join('') || `<tr><td colspan="13" class="empty">沒有符合條件的股票。可在上方輸入代號或名稱查詢任意上市股票。</td></tr>`;
+    }).join('') || `<tr><td colspan="15" class="empty">沒有符合條件的股票。可在上方輸入代號或名稱查詢任意上市股票。</td></tr>`;
   }
 
   function hideSuggest(){
@@ -325,10 +342,12 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     if (!box) return;
     if (!hits || !hits.length){ hideSuggest(); return; }
     box.innerHTML = hits.map(h => {
-      const code = String(h.symbol||'').replace('.TW','');
-      const name = h.name || '';
-      const mkt = h.market || '';
-      return `<button type="button" data-s="${String(h.symbol||'').replace(/"/g,'')}"><b>${code}</b><span class="sub">${name} · ${mkt}</span></button>`;
+      const sym = safeSym(h.symbol);
+      if (!sym) return '';
+      const code = esc(sym.replace('.TW',''));
+      const name = esc(h.name || '');
+      const mkt = esc(h.market || '');
+      return `<button type="button" data-s="${esc(sym)}"><b>${code}</b><span class="sub">${name} · ${mkt}</span></button>`;
     }).join('');
     box.classList.add('on');
   }
@@ -490,10 +509,25 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     return {sh, notional: sh*entry, risk, per};
   }
 
+  function timingCard(d){
+    const t = d.timing || {};
+    const b = t.buy || {title:'現在不要買', when:'條件未齊，空手。', do:false, state:'blocked'};
+    const s = t.sell || {title:'未持有，不用賣', when:'沒有部位就沒有賣出動作。', do:false, state:'none'};
+    const bcls = b.do ? 'now' : (b.state==='wait_confirm'||b.state==='wait_zone' ? 'wait' : '');
+    const scls = (s.state==='stop_now'||s.state==='exit_now') ? 'stop' : (s.do ? 'now' : (s.state==='hold_manage'?'wait':''));
+    const bpx = b.price!=null ? `<div class="px">${px(b.price)}</div>` : '';
+    const spx = (s.stop!=null || s.target!=null)
+      ? `<p class="note" style="margin:4px 0 0">停損 ${s.stop==null?'—':px(s.stop)}　賣點 ${s.target==null?'—':px(s.target)}</p>` : '';
+    return `<div class="timing">
+      <div class="tcard ${bcls}"><p class="tl">何時買</p><p class="tt">${esc(b.title)}</p>${bpx}<p class="td">${esc(b.when||'')}</p>${b.why?`<p class="note">${esc(b.why)}</p>`:''}</div>
+      <div class="tcard ${scls}"><p class="tl">何時賣</p><p class="tt">${esc(s.title)}</p>${spx}<p class="td">${esc(s.when||'')}</p>${s.why?`<p class="note">${esc(s.why)}</p>`:''}</div>
+    </div>`;
+  }
+
   function forecastCard(f){
     if (!f) return '';
     if (!f.ok) {
-      return `<div class="vcard"><p class="note" style="margin:0">未來走向：${f.bias_label||'日K不足，無法估條件路徑。'}</p></div>`;
+      return `<div class="vcard"><p class="note" style="margin:0">未來走向：${esc(f.bias_label||'日K不足，無法估條件路徑。')}</p></div>`;
     }
     const weak = !!(f.no_edge || f.small_sample);
     const tone = weak ? 'warn' : (f.bias==='bull'?'good': f.bias==='bear'?'bad':'warn');
@@ -505,14 +539,14 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     const sc = (f.scenarios||[]).map(s => {
       const cls = s.key==='bull'?'buy': s.key==='bear'?'stop':'tgt';
       const r = s.ret==null ? '' : ((s.ret>=0?'+':'')+s.ret+'%');
-      return `<div class="plan ${cls}"><h4>${s.label}</h4><div class="px">${px(s.px)}</div><div class="hint">20 日 ${r||'—'}</div></div>`;
+      return `<div class="plan ${cls}"><h4>${esc(s.label)}</h4><div class="px">${px(s.px)}</div><div class="hint">20 日 ${r||'—'}</div></div>`;
     }).join('');
-    const edge = f.edge_note ? `<p class="hardstop-msg" style="color:var(--warn);font-size:14px">${f.edge_note}</p>` : '';
+    const edge = f.edge_note ? `<p class="hardstop-msg" style="color:var(--warn);font-size:14px">${esc(f.edge_note)}</p>` : '';
     return `<div class="vcard ${tone}">
       <p class="note" style="margin:0 0 6px">未來走向（歷史分位，不是目標價、不是預言）</p>
-      <p class="vtitle" style="font-size:18px">${f.bias_label||''}</p>
+      <p class="vtitle" style="font-size:18px">${esc(f.bias_label||'')}</p>
       ${edge}
-      <p class="vreason">現況 ${f.state_label||''} · 信心 ${f.confidence||'—'} · 樣本 ${f.n} 次${f.n!=null && f.n<50?'（N&lt;50）':''}${f.matched==='trend'?'（同均線結構）':''}</p>
+      <p class="vreason">現況 ${esc(f.state_label||'')} · 信心 ${esc(f.confidence||'—')} · 樣本 ${f.n} 次${f.n!=null && f.n<50?'（N&lt;50）':''}${f.matched==='trend'?'（同均線結構）':''}</p>
       <div class="kpis">
         ${hz(f.h5,'5 日')}
         ${hz(f.h10,'10 日')}
@@ -521,7 +555,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       </div>
       ${sc ? `<div class="plans">${sc}</div>` : ''}
       ${f.walk_n ? `<p class="note">往後推 ${f.walk_n} 次（每次只用當天以前的日K）${f.walk_err_med==null?'': '：20 日實際相對預測中位，誤差中位 '+f.walk_err_med+'%；落在區間內 '+f.walk_inside_pct+'%。'} 圖上淡錐＝當時預測，金線＝後來實際。</p>` : ''}
-      <p class="note">${f.note||''}${f.conflict_why?' · '+f.conflict_why:''}</p>
+      <p class="note">${esc(f.note||'')}${f.conflict_why?' · '+esc(f.conflict_why):''}</p>
     </div>`;
   }
 
@@ -532,9 +566,10 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     }
     const fills = (h.fills||[]).slice().reverse().map(f => {
       const up = (f.ret||0) >= 0;
-      return `<div class="check ${up?'ok':'no'}"><div class="mark">${up?'✓':'✕'}</div><div><b>${f.path||''} ${up?'+':''}${fmt(f.ret,2)}%</b><div class="note" style="margin:0">${f.entry||''} → ${f.exit||''} · ${f.why||''}</div></div></div>`;
+      return `<div class="check ${up?'ok':'no'}"><div class="mark">${up?'✓':'✕'}</div><div><b>${esc(f.path||'')} ${up?'+':''}${fmt(f.ret,2)}%</b><div class="note" style="margin:0">${esc(f.entry||'')} → ${esc(f.exit||'')} · ${esc(f.why||'')}${f.hold!=null?' · '+f.hold+' 日':''}</div></div></div>`;
     }).join('');
     const tone = 'warn';
+    const why = Object.entries(h.why||{}).map(([k,v])=>k+' '+v).join('、');
     return `<div class="vcard ${tone}">
       <p class="note" style="margin:0 0 8px">同一規則在這段日K的模擬（會過擬合，不是下次會贏）</p>
       <div class="kpis">
@@ -543,8 +578,26 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         <div class="kpi"><span>平均報酬</span><b>${h.avg==null?'—':h.avg+'%'}</b></div>
         <div class="kpi"><span>盈虧比</span><b>${h.payoff==null?'—':fmt(h.payoff,2)}</b><span>均賺 ÷ 均賠</span></div>
       </div>
-      <p class="note">獲利因子 ${h.profit_factor==null?'—':fmt(h.profit_factor,2)}（毛利÷毛損）· 累計 ${h.sum_pct==null?'—':h.sum_pct+'%'} · 次日開盤進 · 成本已改與實盤同一套摩擦（不再用 0.15%）· n&lt;20 不能當驗證</p>
+      <p class="note">獲利因子 ${h.profit_factor==null?'—':fmt(h.profit_factor,2)}（毛利÷毛損）· 累計 ${h.sum_pct==null?'—':h.sum_pct+'%'} · 最大回撤 ${h.max_dd==null?'—':h.max_dd+'%'} · 最長連虧 ${h.max_loss_streak??'—'} · 均持有 ${h.avg_hold??'—'} 日</p>
+      <p class="note">同期買進持有 ${h.buy_hold==null?'—':h.buy_hold+'%'}${h.vs_bh==null?'':' · 策略相對 '+((h.vs_bh>=0)?'+':'')+h.vs_bh+'%'}${h.start? ' · '+h.start+'～'+(h.end||''):''} · 次日開盤進 · 摩擦與實盤同一套 · ${h.weak?'n&lt;20 不能當驗證':'n≥20 仍會過擬合'}</p>
+      ${why? `<p class="note">出場：${esc(why)}</p>`:''}
       ${fills ? `<div class="checks">${fills}</div>` : ''}
+    </div>`;
+  }
+
+  function newsCard(n){
+    if (!n) return '';
+    const items = (n.items||[]).slice(0,8).map(it => {
+      const mark = it.tone==='long'?'＋': it.tone==='short'?'－':'·';
+      const cls = it.tone==='long'?'ok': it.tone==='short'?'no':'';
+      return `<div class="check ${cls}"><div class="mark">${mark}</div><div><b>${esc(it.title)}</b><div class="note" style="margin:0">${esc(it.when||'')}${it.source? ' · '+esc(it.source):''}</div></div></div>`;
+    }).join('');
+    const tone = n.ok ? (n.tone==='bull'?'good': n.tone==='bear'?'bad':'warn') : '';
+    return `<div class="vcard ${tone}">
+      <p class="note" style="margin:0 0 6px">新聞／情緒（參考，不改可買／可賣／停損）</p>
+      <p class="vtitle" style="font-size:16px">${esc(n.label|| (n.ok?'情緒中性':'沒有可用新聞'))}</p>
+      <p class="vreason">${esc(n.note||'')}</p>
+      ${items? `<div class="checks" style="margin-top:8px">${items}</div>`:''}
     </div>`;
   }
 
@@ -553,13 +606,13 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       const max = it.max||25;
       const pct = Math.max(-100, Math.min(100, (it.score/max)*50 + 50));
       const col = it.score>=0 ? '#3ee07a' : '#ff5d73';
-      return `<div class="item"><div>${it.key}</div><div class="bar"><i style="left:${it.score>=0?50:pct}%;width:${Math.abs(it.score)/max*50}%;background:${col}"></i></div><div class="sc">${it.score>0?'+':''}${it.score}</div></div><div class="note" style="margin:0 0 6px 92px">${it.note||''}</div>`;
+      return `<div class="item"><div>${esc(it.key)}</div><div class="bar"><i style="left:${it.score>=0?50:pct}%;width:${Math.abs(it.score)/max*50}%;background:${col}"></i></div><div class="sc">${it.score>0?'+':''}${it.score}</div></div><div class="note" style="margin:0 0 6px 92px">${esc(it.note||'')}</div>`;
     }).join('');
   }
 
   function renderDetail(d){
     if (!d || !d.verdict) {
-      $('detail').innerHTML = '<div class="empty">讀取失敗：'+(d && (d.error||d.detail) || '沒有詳情')+'</div>';
+      $('detail').innerHTML = '<div class="empty">讀取失敗：'+esc(d && (d.error||d.detail) || '沒有詳情')+'</div>';
       return;
     }
     d.plan = d.plan || {};
@@ -580,66 +633,68 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     const maxMass = cyq ? Math.max(...cyq.hist.map(h=>h.mass), 1e-9) : 1;
     const integ = d.integrity || {};
     const hardBanner = hard ? `<div class="vcard hardstop">
-        <div class="sub">${d.symbol} · ${d.name} · ${d.sector} · 收盤 ${d.asof||''}</div>
+        <div class="sub">${esc(d.symbol)} · ${esc(d.name)} · ${esc(d.sector)} · 收盤 ${esc(d.asof||'')}</div>
         <p class="vtitle">ERROR · 資料源不一致</p>
         <p class="hardstop-msg">資料源未完成除權息/減資還原，停止產出技術訊號。</p>
-        <p class="vreason">日K ${integ.yahoo_close==null?'—':px(integ.yahoo_close)}　證交所 ${integ.official_close==null?'—':px(integ.official_close)}${integ.twse_drift==null?'':'　差 '+(integ.twse_drift*100).toFixed(1)+'%'}${integ.official_asof?'　交易日 '+integ.official_asof:''}</p>
-        <p class="note">${(integ.issues||[]).join('；')||''}</p>
+        <p class="vreason">日K ${integ.yahoo_close==null?'—':px(integ.yahoo_close)}　證交所 ${integ.official_close==null?'—':px(integ.official_close)}${integ.twse_drift==null?'':'　差 '+(integ.twse_drift*100).toFixed(1)+'%'}${integ.official_asof?'　交易日 '+esc(integ.official_asof):''}</p>
+        <p class="note">${esc((integ.issues||[]).join('；')||'')}</p>
       </div>` : '';
     const planHtml = hard ? '' : (liveOk ? `
       <div class="plans">
         <p class="note">下列價位是收盤幾何，不是券商委託。</p>
-        <div class="plan buy"><h4>限價（非成交）</h4><div class="px">${px(p.fill_entry||(p.buy&&p.buy.mid))}</div><div class="hint">${p.fill_note||'區內用現價，不是買區中點'}${p.buy? ' · 區 '+px(p.buy.lo)+'–'+px(p.buy.hi)+' 品質 '+(p.buy.quality??'—') : ''}${p.buy_valid?'':'　品質未達 40'}</div></div>
+        <div class="plan buy"><h4>限價（非成交）</h4><div class="px">${px(p.fill_entry||(p.buy&&p.buy.mid))}</div><div class="hint">${esc(p.fill_note||'區內用現價，不是買區中點')}${p.buy? ' · 區 '+px(p.buy.lo)+'–'+px(p.buy.hi)+' 品質 '+(p.buy.quality??'—') : ''}${p.buy_valid?'':'　品質未達 40'}</div></div>
         <div class="plan stop"><h4>實盤停損</h4><div class="px">${px(p.live_stop||p.fill_stop||p.stop)}</div><div class="hint">${p.trail_active?'已走過 1R，停損已上移':'距進場至少 1×ATR／1.2%，最多 8%，對齊跳動'}${p.risk_pct_live!=null?' · 風險 '+fmt(p.risk_pct_live,1)+'%':''} · 最長 ${p.time_stop_days||40} 日</div></div>
-        <div class="plan tgt"><h4>訊號賣點（非委託）</h4><div class="px">${px(p.fill_target||(p.target&&p.target.mid))}</div><div class="hint">${p.target_upgraded?'已改下一檔有效壓力 · ':''}賣在壓力下緣減一跳，不是中點${p.target? ' · '+(p.target.sources||[]).slice(0,3).join('、') : ''}</div></div>
+        <div class="plan tgt"><h4>訊號賣點（非委託）</h4><div class="px">${px(p.fill_target||(p.target&&p.target.mid))}</div><div class="hint">${p.target_upgraded?'已改下一檔有效壓力 · ':''}賣在壓力下緣減一跳，不是中點${p.target? ' · '+esc((p.target.sources||[]).slice(0,3).join('、')) : ''}</div></div>
         <div class="plan"><h4>訊號 RR（扣摩擦）</h4><div class="px">${(p.rr_live==null&&p.rr_plan==null)?'—':fmt(p.rr_live!=null?p.rr_live:p.rr_plan,2)}</div><div class="hint">已扣稅費＋點差＋隔夜缺口（不再用 0.45%）· 門檻 1.5${p.rr_paper!=null && p.rr_live!=null && p.rr_paper!==p.rr_live ? ' · 紙上 '+fmt(p.rr_paper,2):''}</div></div>
       </div>
-      ${p.r_multiple? `<p class="note">回檔分批：1R ${px(p.r_multiple.r1)} · 2R ${px(p.r_multiple.r2)} · 3R ${px(p.r_multiple.r3)}。${p.trail_note||''}</p>`:''}
+      ${p.r_multiple? `<p class="note">回檔分批：1R ${px(p.r_multiple.r1)} · 2R ${px(p.r_multiple.r2)} · 3R ${px(p.r_multiple.r3)}。${esc(p.trail_note||'')}</p>`:''}
       ${p.deep? `<p class="note">深檔買區：${px(p.deep.mid)} 品質 ${p.deep.quality??'—'}</p>`:''}
       ${p.breakout_plan? `<div class="sec"><h3>突破單（不受最近壓力 RR 否決）</h3>
         <div class="plans">
           <div class="plan buy"><h4>突破進場</h4><div class="px">${px(p.breakout_plan.entry)}</div><div class="hint">收盤站上才買，跌回不追</div></div>
           <div class="plan stop"><h4>突破停損</h4><div class="px">${px(p.breakout_plan.live_stop||p.breakout_plan.stop)}</div><div class="hint">${p.breakout_plan.trail_active?'已走過 1R，停損已上移':'結構與 −8% 取較緊'} · ${p.breakout_plan.risk_pct}%</div></div>
           <div class="plan tgt"><h4>2R 目標</h4><div class="px">${px(p.breakout_plan.t2)}</div><div class="hint">1R ${px(p.breakout_plan.t1)} · 3R ${px(p.breakout_plan.t3)}</div></div>
-          <div class="plan"><h4>突破 RR</h4><div class="px">${fmt(p.breakout_plan.rr,1)}</div><div class="hint">${p.breakout_plan.note||''}</div></div>
+          <div class="plan"><h4>突破 RR</h4><div class="px">${fmt(p.breakout_plan.rr,1)}</div><div class="hint">${esc(p.breakout_plan.note||'')}</div></div>
         </div></div>`:''}
     ` : `
       <div class="vcard warn">
         <p class="vtitle" style="font-size:18px">條件未齊，維持觀望 (Wait and See)</p>
-        <p class="vreason">${(d.gate_fail&&d.gate_fail.length)?'未過閘門：'+d.gate_fail.join('、')+'。':''}${(g.conflict_why||fc.conflict_why||'')} 不產出實盤進場／停損，畫面數字不是委託單。</p>
+        <p class="vreason">${(d.gate_fail&&d.gate_fail.length)?'未過閘門：'+esc(d.gate_fail.join('、'))+'。':''}${esc(g.conflict_why||fc.conflict_why||'')} 不產出實盤進場／停損，畫面數字不是委託單。</p>
       </div>
       <p class="note">若條件將來齊備，參考區 ${p.buy? px(p.buy.lo)+'–'+px(p.buy.hi):'—'}。這不是下單價，也不是沙盤票券。</p>
     `);
     $('detail').innerHTML = `<div class="detail">
       ${hardBanner}
-      ${hard ? '' : `<div class="vcard ${v.tone}">
-        <div class="sub">${d.symbol} · ${d.name} · ${d.sector} · 收盤 ${d.asof}</div>
-        <p class="vtitle">${v.title}</p>
-        <p class="vreason">${v.reason}</p>
-        ${v.flags && v.flags.length ? `<p class="note">旗標：${v.flags.join('、')}</p>`:''}
-        ${d.regime ? `<p class="note">${d.regime.label||''}${d.setup && d.setup.weekly ? ' · '+(d.setup.weekly.label||'') : ''}${d.beta!=null?' · β '+d.beta:''}</p>`:''}
+      ${hard ? '' : `<div class="vcard ${toneClass(v.tone)}">
+        <div class="sub">${esc(d.symbol)} · ${esc(d.name)} · ${esc(d.sector)} · 收盤 ${esc(d.asof)}</div>
+        <p class="vtitle">${esc(v.title)}</p>
+        <p class="vreason">${esc(v.reason)}</p>
+        ${v.flags && v.flags.length ? `<p class="note">旗標：${esc(v.flags.join('、'))}</p>`:''}
+        ${d.regime ? `<p class="note">${esc(d.regime.label||'')}${d.setup && d.setup.weekly ? ' · '+esc(d.setup.weekly.label||'') : ''}${d.beta!=null?' · β '+d.beta:''}</p>`:''}
         ${liveOk ? `<p class="hardstop-msg" style="font-size:13px;color:var(--warn)">這是收盤後訊號，不是已送出的委託。下一盤開盤才可能成交，且會滑價。</p>`:''}
         ${ps ? `<p class="note">以資金 ${fmt($('capital').value,0)}、單筆風險 1% 計：約 ${ps.sh.toLocaleString()} 股、名目 ${fmt(ps.notional,0)}，每股風險 ${px(ps.per)}。不是代下單。</p>`:''}
         ${v.hold || !liveOk ? '' : `<p class="note"><button class="chip" data-act="hold">記為持倉（之後只管理停損，不每天重貼可買）</button></p>`}
       </div>`}
+      ${timingCard(d)}
       ${hard ? '' : `<div class="kpis">
         <div class="kpi"><span>現價</span><b>${px(d.price)}</b></div>
-        <div class="kpi"><span>綜合分</span><b>${fmt(d.composite.score,1)}</b><span>${d.composite.bias}</span></div>
+        <div class="kpi"><span>綜合分</span><b>${fmt(d.composite.score,1)}</b><span>${esc(d.composite.bias)}</span></div>
         <div class="kpi"><span>技術／基本／籌碼</span><b>${fmt(d.tech.score,1)}<span style="font-size:12px;color:var(--muted)"> / ${d.fund.available?fmt(d.fund.score,1):'—'} / ${d.chips&&d.chips.available?fmt(d.chips.score,1):'—'}</span></b></div>
         <div class="kpi"><span>清單／RPS／RVOL</span><b>${d.checks_ok}/${d.checks_n}</b><span>RPS ${d.rps??'—'} · RVOL ${(d.setup&&d.setup.rvol)!=null?d.setup.rvol:'—'}${d.resonance?' · 共振':''}${d.factor_rank!=null?' · 因子'+d.factor_rank:''}${d.sector_rs!=null?' · 族群'+d.sector_rs:''}</span></div>
       </div>
       ${forecastCard(d.forecast)}
       ${histCard(d.hist)}`}
+      ${newsCard(d.news)}
       ${planHtml}
       <canvas class="chart" id="kline"></canvas>
       <p class="note">綠帶＝買區，藍帶＝目標賣區，紅虛線＝停損。均線：青 MA20、金 MA60、灰 MA120。右方青錐＝歷史分位路徑，不是目標價、也不是賣點。淡錐＝當時預測，金線＝後來實際。不含未來日K。</p>
-      <div class="sec"><h3>訊號</h3><div class="sigs">${(d.signals||[]).map(s=>`<span class="sig ${s.tone||''}">${s.title}</span>`).join('') || '<span class="note">近日無觸發訊號</span>'}</div></div>
+      <div class="sec"><h3>訊號</h3><div class="sigs">${(d.signals||[]).map(s=>`<span class="sig ${sigTone(s.tone)}">${esc(s.title)}</span>`).join('') || '<span class="note">近日無觸發訊號</span>'}</div></div>
       <div class="sec"><h3>檢查清單 ${d.checks_ok}/${d.checks_n}（閘門／加分／參考）</h3>
         ${['gate','bonus','info'].map(g=>{
           const lab = g==='gate'?'閘門（不過不能可買）': g==='bonus'?'加分': '參考';
           const list = (d.checklist||[]).filter(c=>(c.group||'info')===g);
           if (!list.length) return '';
-          return `<p class="note">${lab}</p><div class="checks">${list.map(c=>`<div class="check ${c.ok?'ok':'no'}"><div class="mark">${c.ok?'✓':'✕'}</div><div><b>${c.key}</b><div class="note" style="margin:0">${c.detail}</div></div></div>`).join('')}</div>`;
+          return `<p class="note">${lab}</p><div class="checks">${list.map(c=>`<div class="check ${c.ok?'ok':'no'}"><div class="mark">${c.ok?'✓':'✕'}</div><div><b>${esc(c.key)}</b><div class="note" style="margin:0">${esc(c.detail)}</div></div></div>`).join('')}</div>`;
         }).join('')}
       </div>
       ${hard ? '' : `<div class="sec"><h3>三種目標（情境，不是承諾）</h3>
@@ -648,15 +703,15 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
           <div class="plan"><h4>估值參考價</h4><div class="px">${px(t.valuation)}</div><div class="hint">現價 × (靜態PE ÷ 預期PE)</div></div>
           <div class="plan"><h4>技術壓力帶</h4><div class="px">${p.target?px(p.target.mid):'—'}</div><div class="hint">短線落袋依據</div></div>
         </div>
-        <p class="note">${t.disclaimer}</p>
+        <p class="note">${esc(t.disclaimer||'')}</p>
       </div>
       <div class="sec"><h3>技術面拆解 ${fmt(d.tech.score,1)}</h3><div class="items">${itemBars(d.tech.items)}</div></div>`}
       <div class="sec"><h3>基本面拆解 ${d.fund.available?fmt(d.fund.score,1):'資料不足'}</h3><div class="items">${itemBars(d.fund.items)}</div></div>
-      ${d.integrity ? `<div class="sec"><h3>價格還原 ${d.integrity.ok?'正常':'異常'}</h3><p class="note">${(d.integrity.issues||[]).join('；')||'OHLC 合法。'} 最近跳空 ${d.integrity.last_gap==null?'—':(d.integrity.last_gap*100).toFixed(1)+'%'}</p></div>`:''}
+      ${d.integrity ? `<div class="sec"><h3>價格還原 ${d.integrity.ok?'正常':'異常'}</h3><p class="note">${esc((d.integrity.issues||[]).join('；')||'OHLC 合法。')} 最近跳空 ${d.integrity.last_gap==null?'—':(d.integrity.last_gap*100).toFixed(1)+'%'}</p></div>`:''}
       ${(!hard && d.vp40) ? `<div class="sec"><h3>近 40 日量能（誰在守）</h3><p class="note">POC ${px(d.vp40.poc)} · VAL ${px(d.vp40.val)} · VAH ${px(d.vp40.vah)}${d.vp40.defending?' · 現價在價值區內':''}</p></div>`:''}
       ${d.intraday ? `<div class="sec"><h3>60 分收盤位置</h3><p class="note">收盤在當日振幅 ${Math.round((d.intraday.close_loc||0)*100)}% · ${d.intraday.above_vwap?'站上':'跌破'} VWAP ${px(d.intraday.vwap)} · 尾盤量佔 ${Math.round((d.intraday.late_vol_share||0)*100)}%${d.intraday.weak_close?' · 收弱':''}</p></div>`:''}
-      ${d.monthly && d.monthly.yoy!=null ? `<div class="sec"><h3>月營收 ${d.monthly.ym||''}</h3><p class="note">年增 ${d.monthly.yoy}% · 月增 ${d.monthly.mom??'—'}% · 累計年增 ${d.monthly.yoy_acc??'—'}%</p></div>`:''}
-      ${d.chips && d.chips.available ? `<div class="sec"><h3>籌碼面拆解 ${fmt(d.chips.score,1)}</h3><p class="note">${d.chips.note||''}</p><div class="items">${itemBars(d.chips.items)}</div></div>`: (d.market==='TW'? '<p class="note">籌碼尚未取得（T86）。</p>':'')}
+      ${d.monthly && d.monthly.yoy!=null ? `<div class="sec"><h3>月營收 ${esc(d.monthly.ym||'')}</h3><p class="note">年增 ${d.monthly.yoy}% · 月增 ${d.monthly.mom??'—'}% · 累計年增 ${d.monthly.yoy_acc??'—'}%</p></div>`:''}
+      ${d.chips && d.chips.available ? `<div class="sec"><h3>籌碼面拆解 ${fmt(d.chips.score,1)}</h3><p class="note">${esc(d.chips.note||'')}</p><div class="items">${itemBars(d.chips.items)}</div></div>`: (d.market==='TW'? '<p class="note">籌碼尚未取得（T86）。</p>':'')}
       ${(!hard && cyq)? `<div class="sec"><h3>籌碼成本 CYQ</h3>
         <p class="note">獲利盤 ${cyq.profit_pct}% · 平均成本 ${px(cyq.avg_cost)} · 90%區間 ${px(cyq.range90[0])}–${px(cyq.range90[1])} · 籌碼峰 ${px(cyq.peak)}</p>
         <div class="cyq">${cyq.hist.map(h=>`<span style="height:${Math.max(4,h.mass/maxMass*100)}%;background:${h.profit?'#3ee07a':'#ff5d73'};opacity:.85"></span>`).join('')}</div>
@@ -670,7 +725,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     try{
       const st = await j('/admin/stock-api/health');
       $('pg').style.width = (st.progress||0)+'%';
-      $('meta').innerHTML = `<b>${st.message||''}</b><br>${st.updated||''}　台 ${st.tw||0}／美 ${st.us||0}`;
+      $('meta').innerHTML = `<b>${esc(st.message||'')}</b><br>${esc(st.updated||'')}　台 ${st.tw||0}／美 ${st.us||0}`;
       const data = await j('/admin/stock-api/scan?market='+market);
       const rg = data.regime || (st.regime||{})[market];
       const bar = $('regimeBar');
@@ -678,7 +733,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         if (!rg) bar.textContent = '大盤狀態計算中…';
         else {
           const col = rg.key==='bear'?'var(--short)': rg.key==='bull'?'var(--long)':'var(--warn)';
-          bar.innerHTML = `<b style="color:${col}">${rg.label||''}</b>${rg.vix!=null?'　VIX '+rg.vix:''}${rg.allow_long?'　允許多':'　禁止新多'}`;
+          bar.innerHTML = `<b style="color:${col}">${esc(rg.label||'')}</b>${rg.vix!=null?'　VIX '+rg.vix:''}${rg.allow_long?'　允許多':'　禁止新多'}`;
         }
       }
       rows = data.rows||[];
@@ -690,6 +745,7 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
   }
 
   async function open(symbol){
+    symbol = safeSym(symbol);
     if (!symbol) return;
     sel = symbol;
     renderTable();
@@ -703,16 +759,16 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
     }catch(e){
       if (sel !== token) return;
       openFail[symbol] = e.message;
-      $('detail').innerHTML = '<div class="empty">讀取失敗：'+e.message+'</div>';
+      $('detail').innerHTML = '<div class="empty">讀取失敗：'+esc(e.message)+'</div>';
     }
   }
 
   async function loadReport(){
     const d = await j('/admin/stock-api/report?market='+market);
-    const list = (arr, extra='') => (arr||[]).slice(0,8).map(r=>`<div class="check ok"><div><b>${r.symbol.replace('.TW','')} ${r.name}</b><div class="note" style="margin:0">${r.verdict} · 綜合 ${fmt(r.composite,1)} · RR ${r.rr??'—'} ${extra}</div></div></div>`).join('') || '<p class="note">無</p>';
+    const list = (arr, extra='') => (arr||[]).slice(0,8).map(r=>`<div class="check ok"><div><b>${esc((r.symbol||'').replace('.TW',''))} ${esc(r.name)}</b><div class="note" style="margin:0">${esc(r.verdict)} · 綜合 ${fmt(r.composite,1)} · RR ${r.rr??'—'} ${esc(extra)}</div></div></div>`).join('') || '<p class="note">無</p>';
     $('report').innerHTML = `<h2>${market==='TW'?'台股':'美股'}每日報告</h2>
-      <p class="note">${d.generated||''} · ${d.n} 檔 · ${(d.regime&&d.regime.label)||''}</p>
-      <div class="cards">${Object.entries(d.bias||{}).map(([k,v])=>`<div class="stat"><span>${k}</span><b>${v}</b></div>`).join('')}</div>
+      <p class="note">${esc(d.generated||'')} · ${d.n} 檔 · ${esc((d.regime&&d.regime.label)||'')}</p>
+      <div class="cards">${Object.entries(d.bias||{}).map(([k,v])=>`<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`).join('')}</div>
       <h3>三面向共振</h3>${list(d.resonance)}
       <h3>突破確認</h3>${list(d.breakouts)}
       <h3>可執行（共振／計劃性回檔／突破）</h3>${list(d.actionable)}
@@ -729,11 +785,12 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       if (d.ready===false){ $('bt').innerHTML='<h2>回測</h2><p class="note">日線尚未就緒，稍後再試。</p>'; return; }
       const b = d.buckets||{};
       $('bt').innerHTML = `<h2>${market==='TW'?'台股':'美股'} 回測</h2>
-        <p class="note">${d.rules}</p>
+        <p class="note">${esc(d.rules)}</p>
         <div class="cards">
           <div class="stat"><span>策略筆數</span><b>${d.strategy.n}</b></div>
           <div class="stat"><span>勝率</span><b>${d.strategy.win_rate??'—'}%</b></div>
           <div class="stat"><span>平均報酬／PF</span><b>${d.strategy.avg??'—'}%　${d.strategy.profit_factor??'—'}</b></div>
+          <div class="stat"><span>最大回撤／連虧</span><b>${d.strategy.max_dd??'—'}%　${d.strategy.max_loss_streak??'—'}</b></div>
         </div>
         <h3>分產品</h3>
         <div class="cards">
@@ -742,9 +799,9 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
         </div>
         <h3>分數段 → 未來 20 日平均報酬</h3>
         <div class="cards">${Object.entries(b).map(([k,v])=>`<div class="stat"><span>${k}（n=${v.n}）</span><b>${v.avg==null?'—':v.avg+'%'}</b></div>`).join('')}</div>
-        <div class="lim">${d.limits}</div>`;
+        <div class="lim">${esc(d.limits)}</div>`;
     }catch(e){
-      $('bt').innerHTML = '<h2>回測</h2><p class="note">失敗：'+e.message+'</p>';
+      $('bt').innerHTML = '<h2>回測</h2><p class="note">失敗：'+esc(e.message)+'</p>';
     }
   }
 
@@ -755,11 +812,15 @@ canvas.chart{width:100%;height:280px;background:#0a1016;border:1px solid var(--l
       $('pos').innerHTML = `<h2>持倉狀態機</h2>
         <p class="note">進場後只管理停損／1R 上移／目標／20 日，不每天重貼可買。從詳情頁按「記為持倉」。</p>
         ${rows.length? `<table><thead><tr><th>代號</th><th>進場</th><th>停損</th><th>目標</th><th>路徑</th><th>持有日</th><th></th></tr></thead><tbody>
-        ${rows.map(p=>`<tr><td class="sym">${p.symbol}</td><td>${px(p.entry)}</td><td>${px(p.stop)}</td><td>${px(p.target)}</td><td>${p.path||''}</td><td>${p.hold_days||0}</td>
-        <td><button class="chip" data-close="${p.symbol}">平倉</button></td></tr>`).join('')}</tbody></table>` : '<p class="note">目前沒有持倉。</p>'}
+        ${rows.map(p=>{
+          const sym = safeSym(p.symbol);
+          if (!sym) return '';
+          return `<tr><td class="sym">${esc(sym)}</td><td>${px(p.entry)}</td><td>${px(p.stop)}</td><td>${px(p.target)}</td><td>${esc(p.path||'')}</td><td>${p.hold_days||0}</td>
+        <td><button class="chip" data-close="${esc(sym)}">平倉</button></td></tr>`;
+        }).join('')}</tbody></table>` : '<p class="note">目前沒有持倉。</p>'}
         <div class="lim">平倉只改本機 cache/positions.json，不是券商下單。</div>`;
     }catch(e){
-      $('pos').innerHTML = '<h2>持倉</h2><p class="note">失敗：'+e.message+'</p>';
+      $('pos').innerHTML = '<h2>持倉</h2><p class="note">失敗：'+esc(e.message)+'</p>';
     }
   }
 

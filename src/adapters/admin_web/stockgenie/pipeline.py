@@ -27,6 +27,188 @@ def _asof_of(df) -> str | None:
         return None
 
 
+def _px(v) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    if x != x:
+        return None
+    return round(x, 4)
+
+
+def _as_dict(v) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def _mid(v) -> float | None:
+    if isinstance(v, dict):
+        return _px(v.get("mid"))
+    return _px(v)
+
+
+def build_timing(
+    *,
+    live_ok: bool,
+    hard: bool,
+    dec: dict | None,
+    plan: dict | None,
+    setup: dict | None,
+    gate_fail: list | None,
+    guard: dict | None,
+    price: float | None,
+) -> dict[str, Any]:
+    """STOCKGENIE_TIMING_V1：用人話講何時買、何時賣。不是委託單。"""
+    dec = dec or {}
+    plan = plan or {}
+    setup = setup or {}
+    guard = guard or {}
+    fails = [x for x in (gate_fail or []) if x]
+    key = dec.get("key") or ""
+    path = dec.get("path") or setup.get("kind") or "none"
+    gap = plan.get("gap_abort_pct") if plan.get("gap_abort_pct") is not None else 0.015
+    limit = _px(plan.get("fill_entry")) or _mid(plan.get("buy")) or _px(dec.get("entry"))
+    zone = _as_dict(plan.get("buy"))
+    zlo, zhi = _px(zone.get("lo")), _px(zone.get("hi"))
+    stop = (
+        _px(plan.get("live_stop"))
+        or _px(plan.get("fill_stop"))
+        or _px(plan.get("stop"))
+        or _px(dec.get("stop"))
+    )
+    tgt = _px(plan.get("fill_target")) or _mid(plan.get("target")) or _px(dec.get("target"))
+    abort = f"下一盤開盤相對限價跳空≥{gap:.1%}則取消，禁止市價追。"
+    holding = bool(dec.get("hold"))
+
+    buy = {
+        "do": False,
+        "state": "blocked",
+        "title": "現在不要買",
+        "when": "條件未齊，空手。",
+        "price": None,
+        "zone": None if zlo is None else f"{zlo}–{zhi}",
+        "abort": abort,
+        "why": dec.get("reason") or "",
+    }
+    if hard or key == "error_data":
+        buy["when"] = "資料異常，任何價都不買。"
+        buy["why"] = "日K與證交所對不上或未還原，買賣點不可用。"
+    elif holding:
+        buy["state"] = "held"
+        buy["title"] = "已持有，不再加買"
+        buy["when"] = "持倉只管理停損與賣點，不每天重貼可買。"
+        buy["why"] = dec.get("reason") or buy["when"]
+    elif live_ok and key in ("buy", "plan"):
+        buy.update({
+            "do": True,
+            "state": "now_limit",
+            "title": "可以掛限價買（不是市價）",
+            "when": f"下一交易日開盤集合或盤中，限價 {limit if limit is not None else '買區上緣'}。"
+            + (f" 買區 {zlo}–{zhi}。" if zlo is not None else "")
+            + abort,
+            "price": limit,
+            "why": dec.get("reason") or "回檔確認根與閘門已過。",
+        })
+    elif live_ok and key == "buy_breakout":
+        bo = _as_dict(plan.get("breakout_plan")).get("entry")
+        buy.update({
+            "do": True,
+            "state": "now_breakout",
+            "title": "突破已確認，可以掛限價（收盤站上才算）",
+            "when": f"下一交易日限價 { _px(bo) or limit }。跌回不追。" + abort,
+            "price": _px(bo) or limit,
+            "why": dec.get("reason") or "A 級突破。",
+        })
+    elif setup.get("near_buy") and not setup.get("pullback_confirm"):
+        buy.update({
+            "state": "wait_confirm",
+            "title": "現在不要買 · 等確認根",
+            "when": "價格已靠近買區，等鎚頭／陽包陰／晨星那一根收盤之後再看。普通陽線、量縮小陽都不算。",
+            "price": None,
+            "why": "缺確認根。",
+        })
+    elif key in ("wait_pullback",) or (not live_ok and zlo is not None and path in ("pullback", "watch", "none")):
+        buy.update({
+            "state": "wait_zone",
+            "title": "現在不要買 · 等回檔",
+            "when": (
+                f"等收盤回到買區 {zlo}–{zhi}，且出現反轉K，且閘門全過。"
+                if zlo is not None else "等回檔到有品質的買區並出現確認根。"
+            ),
+            "price": None,
+            "why": "；".join(fails) if fails else (dec.get("reason") or "現價不在買區或閘門未過。"),
+        })
+    else:
+        why_bits = fails or ([guard.get("conflict_why")] if guard.get("conflict_why") else [])
+        if guard.get("no_edge") or guard.get("small_sample"):
+            why_bits.append("歷史路徑無優勢")
+        buy["when"] = "現在不要買。"
+        buy["why"] = "；".join([str(x) for x in why_bits if x]) or (dec.get("reason") or "訊號未對齊。")
+
+    sell = {
+        "do": False,
+        "state": "none",
+        "title": "未持有，不用賣",
+        "when": "沒有部位就沒有賣出動作。",
+        "stop": stop,
+        "target": tgt,
+        "why": "",
+    }
+    if hard or key == "error_data":
+        sell["when"] = "資料異常，不給賣點。"
+        sell["stop"] = None
+        sell["target"] = None
+    elif holding:
+        if key in ("exit_stop",):
+            sell.update({
+                "do": True,
+                "state": "stop_now",
+                "title": "現在賣 · 停損",
+                "when": f"現價已到停損 {stop}。以能成交的價出場，不要等反彈。",
+                "why": dec.get("reason") or "停損",
+            })
+        elif key in ("exit_tgt", "exit_trail", "exit_time"):
+            sell.update({
+                "do": True,
+                "state": "exit_now",
+                "title": dec.get("title") or "現在賣 · 出場",
+                "when": dec.get("reason") or f"觸及賣點或時間停損。目標 {tgt}／停損 {stop}。",
+                "why": dec.get("reason") or "",
+            })
+        elif key == "trim":
+            sell.update({
+                "do": True,
+                "state": "trim",
+                "title": "若持有：減碼",
+                "when": f"現價靠近壓力。賣在 {tgt} 附近（壓力下緣減一跳），不是全部一筆出完。停損仍是 {stop}。",
+                "why": dec.get("reason") or "逼近壓力",
+            })
+        else:
+            sell.update({
+                "state": "hold_manage",
+                "title": "持有中 · 還沒到賣點",
+                "when": (
+                    f"跌到停損 {stop} 就賣。"
+                    + (f" 漲到 {tgt} 減碼／停利。" if tgt else "")
+                    + " 走過 1R 後停損上移；20 日無進展或滿 40 日出場。"
+                ),
+                "why": "持倉只管理停損，不每天重判可買。",
+            })
+    else:
+        sell["when"] = (
+            "未持有，不用賣。"
+            + (f" 若之後買進：跌到 {stop} 停損賣。" if stop else "")
+            + (f" 漲到 {tgt} 減碼／停利。" if tgt else "")
+            + " 不要把預測錐中位當賣點。"
+        )
+        sell["why"] = "賣點只對持倉有意義。"
+        if key == "trim":
+            sell["title"] = "未持有；若已有部位則減碼"
+            sell["when"] = f"未持有就空手。若你已經有這檔：現價靠近壓力，賣在 {tgt}，停損 {stop}。"
+
+    return {"buy": buy, "sell": sell}
+
+
 def _mismatch_payload(
     symbol: str,
     meta: dict,
@@ -108,6 +290,10 @@ def _mismatch_payload(
         "forecast": {"ok": False, "bias_label": "資料源不一致，停止產出技術訊號"},
         "hist": {"n": 0},
     }
+    payload["timing"] = build_timing(
+        live_ok=False, hard=True, dec=payload["verdict"], plan=payload["plan"],
+        setup={}, gate_fail=["價格還原正常"], guard={}, price=last,
+    )
     if include_chart:
         try:
             payload["bars"] = bars_payload(df_raw, 180)
@@ -232,7 +418,7 @@ def analyze(
     targets = targets_block(last["close"], fund, plan)
 
     last_dt = df.index[-1].strftime("%Y-%m-%d")
-    if apply_holding and live_ok:
+    if apply_holding:
         overlay = mark_position({
             "symbol": symbol,
             "price": last["close"],
@@ -243,9 +429,14 @@ def analyze(
         })
         if overlay:
             dec = overlay
+    timing = build_timing(
+        live_ok=live_ok, hard=False, dec=dec, plan=plan, setup=setup,
+        gate_fail=gate_fail, guard=guard, price=last["close"],
+    )
     payload = {
         "status": "OK",
         "live_ok": live_ok,
+        "timing": timing,
         "gate_fail": gate_fail,
         "guard": guard,
         "symbol": symbol,
@@ -324,4 +515,7 @@ def summary_row(full: dict) -> dict:
         "checks_ok": full["checks_ok"],
         "checks_n": full["checks_n"],
         "rsi": full["tech"]["rsi"],
+        "live_ok": bool(full.get("live_ok")),
+        "buy_when": ((full.get("timing") or {}).get("buy") or {}).get("title"),
+        "sell_when": ((full.get("timing") or {}).get("sell") or {}).get("title"),
     }

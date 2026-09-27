@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use axum::{
     extract::{Query, State},
-    http::{header, StatusCode},
+    http::{header, HeaderName, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -24,7 +24,7 @@ use tracing::{debug, info, warn};
 use url::Url;
 use uuid::Uuid;
 
-use crate::adapters::admin_web::{self, AdminWebState};
+use crate::adapters::admin_web::{self, AdminWebState, HSTS_HEADER_VALUE};
 use crate::adapters::requests::{
     NumberCodeInput, NumberCodeSender, QrCodeSender, RadarPointInput, RadarPointSender,
 };
@@ -1158,12 +1158,14 @@ impl QrScannerRegistry {
         let mut base =
             Url::parse(&self.public_base_url).map_err(|_| ScannerError::InvalidPublicBaseUrl)?;
         base.set_path(path.trim_start_matches('/'));
+        // SCANNER_TOKEN_FRAGMENT_V1：token 放 fragment。瀏覽器不會把 `#` 後面
+        // 送到伺服器，access log／Referer 都看不到；舊連結 `?token=` 前端仍接受。
         base.query_pairs_mut()
             .clear()
             .append_pair("provider", provider)
             .append_pair("rollcall_id", &rollcall_id.to_string())
-            .append_pair("account_id", account_id)
-            .append_pair("token", token);
+            .append_pair("account_id", account_id);
+        base.set_fragment(Some(&format!("token={token}")));
         Ok(base.to_string())
     }
 
@@ -1182,6 +1184,65 @@ impl QrScannerRegistry {
 /// helper for compatibility and receive no alternate route.
 pub fn alternate_public_url(_url: &str) -> Option<String> {
     None
+}
+
+/// TOOL_PAGE_SECURITY_HEADERS_V1：公開 `/scanner`／`/number`／`/radar` 不走
+/// `admin_security_headers_middleware`（兩份路由各自 merge 面板）。原本 HTML
+/// 只送 `Cache-Control: no-store`，沒有 nosniff／XFO／HSTS／Permissions-Policy。
+///
+/// **不加 CSP**：`scanner.html` 有大段 inline script、zxing／wechat／ONNX WASM、
+/// `new Worker(..., {type:"module"})`。面板那套 `require-trusted-types-for`
+/// 會讓相機頁白屏。相機只在 `/scanner` 開、定位只在 `/radar` 開。
+pub(crate) fn tool_permissions_policy_for_path(path: &str) -> &'static str {
+    const SCANNER: &str = "camera=(self), geolocation=(), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
+    const RADAR: &str = "camera=(), geolocation=(self), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
+    const DENY: &str = "camera=(), geolocation=(), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
+    if path == "/scanner" || path.starts_with("/scanner/") {
+        SCANNER
+    } else if path == "/radar" || path.starts_with("/radar/") {
+        RADAR
+    } else {
+        DENY
+    }
+}
+
+pub(crate) async fn tool_security_headers_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let permissions_policy = tool_permissions_policy_for_path(&path);
+    let mut response = next.run(request).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    headers.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static(permissions_policy),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("strict-transport-security"),
+        HeaderValue::from_static(HSTS_HEADER_VALUE),
+    );
+    response
 }
 
 pub fn build_scanner_router(scanner: Arc<QrScannerRegistry>) -> Router {
@@ -1215,6 +1276,7 @@ pub fn build_scanner_router_with_admin(
         .route("/radar/status", get(radar_status_handler))
         .route("/radar/submit", post(radar_submit_handler))
         .layer(TraceLayer::new_for_http())
+        .layer(axum::middleware::from_fn(tool_security_headers_middleware))
         .with_state(ScannerHttpState::new(scanner));
 
     if let Some(admin_web) = admin_web {
@@ -1813,6 +1875,23 @@ mod tests {
         QrScannerRegistry::new("https://scanner.example.test/base")
     }
 
+    #[test]
+    fn tool_permissions_policy_is_path_specific() {
+        let scanner = tool_permissions_policy_for_path("/scanner");
+        assert!(scanner.contains("camera=(self)"));
+        assert!(!scanner.contains("geolocation=(self)"));
+        assert_eq!(
+            tool_permissions_policy_for_path("/scanner/jsqr.js"),
+            scanner
+        );
+        let radar = tool_permissions_policy_for_path("/radar");
+        assert!(radar.contains("geolocation=(self)"));
+        assert!(!radar.contains("camera=(self)"));
+        let number = tool_permissions_policy_for_path("/number");
+        assert!(!number.contains("camera=(self)"));
+        assert!(!number.contains("geolocation=(self)"));
+    }
+
     #[tokio::test]
     async fn register_pending_builds_scanner_url() {
         let registry = registry();
@@ -1829,7 +1908,9 @@ mod tests {
         assert!(link.scan_url.contains("provider=fju"));
         assert!(link.scan_url.contains("rollcall_id=42"));
         assert!(link.scan_url.contains("account_id=acc1"));
-        assert!(link.scan_url.contains("token="));
+        assert!(link.scan_url.contains("#token="));
+        assert!(!link.scan_url.contains("?token="));
+        assert!(!link.scan_url.contains("&token="));
         assert_eq!(link.token.len(), 32);
     }
 

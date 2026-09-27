@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
   <title>Tronclass Number Rollcall</title>
   <style>
     :root { color-scheme: light dark; --bg:#f7f8fb; --text:#172033; --muted:#667085; --panel:#fff; --border:#d7dce5; --accent:#2563eb; --ok:#15803d; --error:#b91c1c; }
@@ -140,10 +141,17 @@
 
   <script>
     const params = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(String(window.location.hash || "").replace(/^#/, ""));
     const provider = params.get("provider") || "";
     const rollcallId = Number(params.get("rollcall_id") || "0");
-    const token = params.get("token") || "";
     const accountId = params.get("account_id") || "";
+    const token = params.get("token") || hashParams.get("token") || "";
+    /* SCANNER_TOKEN_FRAGMENT_V1：舊 ?token= 仍可開；讀完從 query 拿掉改放 hash。 */
+    if (params.has("token")) {
+      params.delete("token");
+      const qs = params.toString();
+      history.replaceState(null, "", window.location.pathname + (qs ? "?" + qs : "") + (token ? "#token=" + encodeURIComponent(token) : ""));
+    }
     const statusEl = document.getElementById("status");
     const codeInput = document.getElementById("code");
     const totalCountEl = document.getElementById("totalCount");

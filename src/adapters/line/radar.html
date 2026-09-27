@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="referrer" content="no-referrer">
   <title>Tronclass Radar Rollcall</title>
   <style>
     /* 這一頁與數字點名輸入頁（number.html）同一套外觀：倒數列 → 取位置卡 → 地圖卡 → 狀態卡。
@@ -241,10 +242,17 @@
 
   <script>
     const params = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(String(window.location.hash || "").replace(/^#/, ""));
     const provider = params.get("provider") || "";
     const rollcallId = Number(params.get("rollcall_id") || "0");
-    const token = params.get("token") || "";
     const accountId = params.get("account_id") || "";
+    const token = params.get("token") || hashParams.get("token") || "";
+    /* SCANNER_TOKEN_FRAGMENT_V1：舊 ?token= 仍可開；讀完從 query 拿掉改放 hash。 */
+    if (params.has("token")) {
+      params.delete("token");
+      const qs = params.toString();
+      history.replaceState(null, "", window.location.pathname + (qs ? "?" + qs : "") + (token ? "#token=" + encodeURIComponent(token) : ""));
+    }
 
     const statusEl = document.getElementById("status");
     const resultEl = document.getElementById("result");
