@@ -109,8 +109,8 @@ pub use materials::{MaterialEventInput, MaterialEventRow};
 // 保留 `crate::db::…` 這條取用路徑，同時不留編譯警告。
 #[allow(unused_imports)]
 pub use rollcalls::{
-    aggregate_courses, aggregate_senders, rollcall_success_rate, RollcallCourseStat,
-    RollcallEventInput, RollcallEventRow, RollcallSenderStat,
+    aggregate_courses, aggregate_senders, rollcall_success_rate, select_display_session_rows,
+    RollcallCourseStat, RollcallEventInput, RollcallEventRow, RollcallSenderStat,
 };
 #[allow(unused_imports)]
 pub use preferences::{

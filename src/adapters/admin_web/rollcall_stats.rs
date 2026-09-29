@@ -15,7 +15,9 @@
 use super::*;
 use serde::Deserialize;
 
-use crate::db::{aggregate_courses, aggregate_senders, rollcall_success_rate};
+use crate::db::{
+    aggregate_courses, aggregate_senders, rollcall_success_rate, select_display_session_rows,
+};
 
 /// 查詢範圍上限（天）。3650 天＝實務上的「全部」，但不會產生無上限的 SQL。
 const ROLLCALL_STATS_MAX_DAYS: i64 = 3650;
@@ -82,6 +84,16 @@ fn mask_other_accounts(rows: &mut [crate::db::RollcallEventRow], session: &Admin
     }
 }
 
+/// 當地今天 00:00 的 unix 秒。台灣無 DST；缺時退回「現在往回對齊整點」。
+fn local_today_start() -> i64 {
+    use chrono::Timelike;
+    let now = chrono::Local::now();
+    now.timestamp()
+        - i64::from(now.hour()) * 3600
+        - i64::from(now.minute()) * 60
+        - i64::from(now.second())
+}
+
 fn database_error(message: &str) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -123,6 +135,10 @@ pub(super) async fn admin_rollcall_stats_handler(
         }
     };
     mask_other_accounts(&mut rows, &session);
+
+    // ATT_STATS_ONE_SESSION_V1：每門課只顯示一場；今天已有新場且有上一場時不把今天算進去。
+    let today_start = local_today_start();
+    let rows = select_display_session_rows(&rows, today_start);
 
     let total = rows.len() as i64;
     let success = rows.iter().filter(|row| row.is_success()).count() as i64;

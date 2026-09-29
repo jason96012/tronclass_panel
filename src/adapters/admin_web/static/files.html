@@ -1065,6 +1065,8 @@
 <div class="main">
   <!-- 桌面側邊欄 -->
   <aside class="sidebar">
+    <!-- FILES_DESKTOP_DASH_BTN_V1：電腦版側欄回控制台（手機側欄本來隱藏，底部已有返回） -->
+    <a id="sidebarDashboardLink" class="button primary sidebar-dash" href="/admin#overview">返回控制台</a>
     <div class="new-wrap">
       <button id="newBtn" class="new-btn" type="button">＋ 新增教材</button>
       <div id="newMenu" class="new-menu">
@@ -3421,6 +3423,8 @@
     return '/admin#overview';
   }
   function tidy(){
+    // FILES_DESKTOP_DASH_BTN_V1：這段只整理手機頂欄，不要把電腦版「重新整理」藏掉。
+    if(window.matchMedia && !window.matchMedia('(max-width:820px)').matches) return;
     var top=document.querySelector('.top-actions');
     if(top){
       Array.prototype.slice.call(top.children).forEach(function(n){
@@ -3699,6 +3703,31 @@ html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar b
 @media(max-width:820px){
   .content{padding-bottom:calc(330px + env(safe-area-inset-bottom,0px))!important}
 }
+</style>
+<style id="FILES_DESKTOP_DASH_BTN_V1">
+  /* 電腦版：頂欄「回控制台」強制可見，側欄再放一顆比較好按。手機維持底部「返回控制台」。 */
+  @media (min-width:821px){
+    #dashboardLink{
+      display:inline-flex!important;
+      visibility:visible!important;
+      opacity:1!important;
+    }
+    .sidebar-dash{
+      display:flex!important;
+      align-items:center;
+      justify-content:center;
+      width:100%;
+      min-height:44px;
+      margin:0 0 14px;
+      border-radius:14px;
+      font-weight:800;
+      text-decoration:none;
+      box-sizing:border-box;
+    }
+  }
+  @media (max-width:820px){
+    .sidebar-dash{display:none!important}
+  }
 </style>
 </body>
 </html>

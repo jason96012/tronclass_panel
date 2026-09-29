@@ -191,6 +191,75 @@ impl AccountsDb {
     }
 }
 
+/// ATT_STATS_ONE_SESSION_V1：出席統計每門課只顯示一場點名。
+///
+/// 先依 `rollcall_id` 分場（沒有 id 則依當地日），每門課取最新一場；
+/// 若最新一場落在「今天」而且還有更早的場次，改取上一場。
+/// 進行中的今天點名不會把上週已完成的成功率蓋掉。
+pub fn select_display_session_rows(
+    rows: &[RollcallEventRow],
+    today_start: i64,
+) -> Vec<RollcallEventRow> {
+    use std::collections::HashMap;
+
+    fn day_start(ts: i64, today_start: i64) -> i64 {
+        if ts >= today_start {
+            today_start
+        } else {
+            let days_ago = (today_start.saturating_sub(ts).saturating_sub(1)) / 86_400 + 1;
+            today_start - days_ago * 86_400
+        }
+    }
+
+    #[derive(Clone)]
+    struct Session {
+        max_ts: i64,
+        rows: Vec<RollcallEventRow>,
+    }
+
+    let mut sessions: HashMap<(String, i64), Session> = HashMap::new();
+    for row in rows {
+        let key = if row.rollcall_id != 0 {
+            (row.course_name.clone(), row.rollcall_id)
+        } else {
+            (row.course_name.clone(), day_start(row.timestamp, today_start))
+        };
+        let entry = sessions.entry(key).or_insert_with(|| Session {
+            max_ts: row.timestamp,
+            rows: Vec::new(),
+        });
+        entry.max_ts = entry.max_ts.max(row.timestamp);
+        entry.rows.push(row.clone());
+    }
+
+    let mut by_course: HashMap<String, Vec<(i64, (String, i64))>> = HashMap::new();
+    for (key, sess) in &sessions {
+        by_course
+            .entry(key.0.clone())
+            .or_default()
+            .push((sess.max_ts, key.clone()));
+    }
+
+    let mut out = Vec::new();
+    for list in by_course.values_mut() {
+        list.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.1.cmp(&a.1.1)));
+        // 有「今天以前」的場次就用最近的那一場；否則才顯示今天。
+        let pick = list
+            .iter()
+            .find(|item| item.0 < today_start)
+            .unwrap_or(&list[0]);
+        if let Some(sess) = sessions.get(&pick.1) {
+            out.extend(sess.rows.iter().cloned());
+        }
+    }
+    out.sort_by(|a, b| {
+        b.timestamp
+            .cmp(&a.timestamp)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    out
+}
+
 /// 依課程聚合（純函式，不碰資料庫，方便測試）。
 ///
 /// 回傳順序＝最近有點名的課在前面；同一門課內附上各送出者統計。
@@ -332,6 +401,60 @@ mod tests {
         assert_eq!(senders[0].label, "王小明");
         assert_eq!(senders[0].total, 3);
         assert_eq!(senders[0].success, 3);
+    }
+
+    fn row_id(course: &str, success: bool, timestamp: i64, account: &str, name: &str, rid: i64) -> RollcallEventRow {
+        let mut r = row(course, success, timestamp, account, name);
+        r.rollcall_id = rid;
+        r
+    }
+
+    #[test]
+    fn select_skips_today_when_previous_exists() {
+        let today = 1_700_000_000;
+        let rows = vec![
+            row_id("文學名篇", true, today + 100, "a", "甲", 20),
+            row_id("文學名篇", false, today + 90, "b", "乙", 20),
+            row_id("文學名篇", true, today - 86_400, "a", "甲", 10),
+            row_id("文學名篇", true, today - 86_400 + 5, "c", "丙", 10),
+        ];
+        let out = select_display_session_rows(&rows, today);
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r.rollcall_id == 10));
+    }
+
+    #[test]
+    fn select_skips_all_today_sessions() {
+        let today = 1_700_000_000;
+        let rows = vec![
+            row_id("文學名篇", true, today + 200, "a", "甲", 21),
+            row_id("文學名篇", true, today + 50, "a", "甲", 20),
+            row_id("文學名篇", true, today - 86_400, "a", "甲", 10),
+        ];
+        let out = select_display_session_rows(&rows, today);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rollcall_id, 10);
+    }
+
+    #[test]
+    fn select_keeps_today_if_only_session() {
+        let today = 1_700_000_000;
+        let rows = vec![row_id("生活與律", true, today + 10, "a", "甲", 5)];
+        let out = select_display_session_rows(&rows, today);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rollcall_id, 5);
+    }
+
+    #[test]
+    fn select_keeps_latest_not_today() {
+        let today = 1_700_000_000;
+        let rows = vec![
+            row_id("資料結構", true, today - 86_400 * 10, "a", "甲", 1),
+            row_id("資料結構", true, today - 86_400 * 5, "a", "甲", 2),
+        ];
+        let out = select_display_session_rows(&rows, today);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rollcall_id, 2);
     }
 
     #[test]
