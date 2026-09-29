@@ -3934,11 +3934,14 @@ fn csp_header_value(nonce: Option<&str>) -> String {
 /// CSP_STYLE_ATTR_STAGED_V1：Report-Only 版本（style-src-attr 'none'），只在 `report` 模式
 /// 對 HTML 頁面加送。違規由瀏覽器觸發 `securitypolicyviolation`（disposition=report），
 /// client-log.js 會把它回報到 /admin/api/client-log。
-fn csp_report_only_header_value(script_extra: &str, style_extra: &str) -> Option<String> {
+fn csp_report_only_header_value(_script_extra: &str, style_extra: &str) -> Option<String> {
     if csp_style_attr_mode() != CspStyleAttrMode::Report {
         return None;
     }
-    Some(format_csp(script_extra, style_extra, "'none'"))
+    // CSP_RO_SCRIPT_NO_DUP_V1：正式 CSP 已用 hash 擋未知 inline script。
+    // Report-Only 若複製同一組 script-src，Cloudflare 注入的 inline 會被瀏覽器
+    // 報兩次（csp_violation + csp_report_only）。RO 只觀察 style-src-attr。
+    Some(format_csp(" 'unsafe-inline'", style_extra, "'none'"))
 }
 
 /// CSP_STYLE_ATTR_STAGED_V1：把 Report-Only 標頭掛到 HTML 回應（有才掛）。

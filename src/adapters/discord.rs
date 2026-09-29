@@ -212,8 +212,11 @@ impl AdapterMessenger for DiscordBotClient {
         if let Some((id, token)) = parse_interaction_reply(reply_token) {
             // DISCORD_NOTIFY_UNIFY_V1：所有出口統一走 render_discord_payload。
             let payload = render_discord_payload(message);
+            // DISCORD_INTERACTION_EPHEMERAL_V1：slash／按鈕回覆只給操作者看，
+            // 避免群組頻道洩漏監控狀態或刷版。主動推播仍走 DM／管理頻道。
             let mut builder = CreateInteractionResponseMessage::new()
                 .content(payload.content)
+                .ephemeral(true)
                 .components(action_rows_for_message(message));
             if let Some(embed) = payload.embed {
                 builder = builder.embed(embed);
@@ -1347,66 +1350,100 @@ async fn register_commands(ctx: &Context, guild_ids: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// DISCORD_COMMAND_UX_V1：學校選項。不鎖死 choices，以免 config 自訂 provider 名稱選不到。
+fn discord_provider_option(required: bool) -> CreateCommandOption {
+    let opt = CreateCommandOption::new(
+        CommandOptionType::String,
+        "provider",
+        "學校代碼：tku＝淡江 iClass，fju＝輔仁，或 config 裡的名稱",
+    )
+    .min_length(1)
+    .max_length(64);
+    if required {
+        opt.required(true)
+    } else {
+        opt.required(false)
+    }
+}
+
 fn discord_commands() -> Vec<CreateCommand> {
     vec![
-        CreateCommand::new("status").description("查看目前監控狀態"),
-        CreateCommand::new("start").description("啟動簽到監控"),
-        CreateCommand::new("stop").description("暫停簽到監控"),
-        CreateCommand::new("force").description("立即觸發一次簽到檢查"),
-        CreateCommand::new("reauth").description("重新登入"),
-        CreateCommand::new("admin").description("取得 Web 管理頁連結"),
-        CreateCommand::new("help").description("顯示說明"),
+        CreateCommand::new("status").description("查看監控狀態（僅自己看得到）"),
+        CreateCommand::new("start").description("管理員：啟動全部帳號的簽到監控"),
+        CreateCommand::new("stop").description("管理員：暫停全部帳號的簽到監控"),
+        CreateCommand::new("force").description("立刻檢查點名（已綁定使用者會喚醒全部帳號）"),
+        CreateCommand::new("reauth").description("重新登入學校（一般使用者只重登自己的帳號）"),
+        CreateCommand::new("admin").description("取得 Web 管理頁連結（僅自己看得到）"),
+        CreateCommand::new("help").description("顯示可用指令"),
         CreateCommand::new("qr")
-            .description("回傳 QR Code 掃描資料")
+            .description("送出課堂 QR 網址或內容")
             .add_option(
-                CreateCommandOption::new(CommandOptionType::String, "data", "QR Code URL 或資料")
-                    .required(true),
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "data",
+                    "QR 網址或掃描內容",
+                )
+                .required(true)
+                .min_length(1)
+                .max_length(4000),
             ),
         CreateCommand::new("num")
-            .description("回傳數字點名 4 位數代碼")
+            .description("送出數字點名 4 位數（手動送出，不受自動讀碼 15%）")
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "code",
-                    "4 位數字點名碼，例如 1234",
+                    "剛好 4 位數字，例如 1234",
                 )
-                .required(true),
+                .required(true)
+                .min_length(4)
+                .max_length(4),
             ),
         CreateCommand::new("request-account")
-            .description("使用者：申請新增 Tronclass 帳號，需管理員核准")
-            .add_option(
-                CreateCommandOption::new(CommandOptionType::String, "provider", "Provider 名稱")
-                    .required(true),
-            )
+            .description("申請新增帳號（請在 bot 私訊使用，需管理員核准）")
+            .add_option(discord_provider_option(true))
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "username",
-                    "Tronclass username",
+                    "學校登入帳號",
                 )
-                .required(true),
+                .required(true)
+                .min_length(1)
+                .max_length(MAX_DISCORD_USERNAME_BYTES as u16),
             )
             .add_option(
-                CreateCommandOption::new(CommandOptionType::String, "password", "Tronclass 密碼")
-                    .required(true),
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "password",
+                    "學校密碼（回覆僅自己看得到；請在私訊輸入）",
+                )
+                .required(true)
+                .min_length(1)
+                .max_length(MAX_DISCORD_PASSWORD_BYTES as u16),
             ),
         CreateCommand::new("add-account")
-            .description("管理員：新增 Tronclass 帳號並可立即綁定 Discord 使用者")
-            .add_option(
-                CreateCommandOption::new(CommandOptionType::String, "provider", "Provider 名稱")
-                    .required(true),
-            )
+            .description("管理員：新增帳號，可順便綁定 Discord 使用者")
+            .add_option(discord_provider_option(true))
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "username",
-                    "Tronclass username",
+                    "學校登入帳號",
                 )
-                .required(true),
+                .required(true)
+                .min_length(1)
+                .max_length(MAX_DISCORD_USERNAME_BYTES as u16),
             )
             .add_option(
-                CreateCommandOption::new(CommandOptionType::String, "password", "Tronclass 密碼")
-                    .required(true),
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "password",
+                    "學校密碼（回覆僅自己看得到）",
+                )
+                .required(true)
+                .min_length(1)
+                .max_length(MAX_DISCORD_PASSWORD_BYTES as u16),
             )
             .add_option(
                 CreateCommandOption::new(
@@ -1420,50 +1457,41 @@ fn discord_commands() -> Vec<CreateCommand> {
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "id",
-                    "DB account id；留空時使用 Tronclass username",
+                    "資料庫帳號 id；留空則用學校帳號",
                 )
-                .required(false),
+                .required(false)
+                .max_length(MAX_DISCORD_IDENTIFIER_BYTES as u16),
             ),
         CreateCommand::new("bind-account")
-            .description("管理員：用 Tronclass username 綁定 Discord 使用者")
+            .description("管理員：把學校帳號綁到 Discord 使用者")
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "username",
-                    "Tronclass username",
+                    "學校登入帳號",
                 )
-                .required(true),
+                .required(true)
+                .min_length(1)
+                .max_length(MAX_DISCORD_USERNAME_BYTES as u16),
             )
             .add_option(
                 CreateCommandOption::new(CommandOptionType::User, "user", "Discord 使用者")
                     .required(true),
             )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "provider",
-                    "Provider 名稱；同 username 多帳號時用來消除歧義",
-                )
-                .required(false),
-            ),
+            .add_option(discord_provider_option(false)),
         CreateCommand::new("unbind-account")
-            .description("管理員：用 Tronclass username 解除 Discord 綁定")
+            .description("管理員：解除學校帳號的 Discord 綁定")
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "username",
-                    "Tronclass username",
+                    "學校登入帳號",
                 )
-                .required(true),
+                .required(true)
+                .min_length(1)
+                .max_length(MAX_DISCORD_USERNAME_BYTES as u16),
             )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "provider",
-                    "Provider 名稱；同 username 多帳號時用來消除歧義",
-                )
-                .required(false),
-            ),
+            .add_option(discord_provider_option(false)),
         CreateCommand::new("bindings").description("管理員：列出 Discord 綁定"),
     ]
 }
@@ -1643,16 +1671,16 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
         | OutboundMessage::Help
         | OutboundMessage::Welcome => vec![CreateActionRow::Buttons(vec![
             CreateButton::new(COMPONENT_STATUS)
-                .label("Status")
+                .label("狀態")
                 .style(ButtonStyle::Primary),
             CreateButton::new(COMPONENT_FORCE)
-                .label("Force")
+                .label("立即檢查")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(COMPONENT_REAUTH)
-                .label("Reauth")
+                .label("重新登入")
                 .style(ButtonStyle::Secondary),
             CreateButton::new(COMPONENT_HELP)
-                .label("Help")
+                .label("說明")
                 .style(ButtonStyle::Secondary),
         ])],
         OutboundMessage::NumberCodeRequested(request) => {
@@ -1661,7 +1689,7 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                     .label("自動讀取代碼")
                     .style(ButtonStyle::Primary),
                 CreateButton::new(COMPONENT_STATUS)
-                    .label("Status")
+                    .label("狀態")
                     .style(ButtonStyle::Secondary),
             ];
             if !request.input_url.trim().is_empty() {
@@ -1680,7 +1708,7 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                     CreateButton::new_link(event.input_url.trim()).label(if event.is_number() {
                         "開啟數字點名頁"
                     } else {
-                        "Open scanner"
+                        "開啟掃碼頁"
                     }),
                 );
             }
@@ -1693,17 +1721,17 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
             }
             buttons.push(
                 CreateButton::new(COMPONENT_STATUS)
-                    .label("Status")
+                    .label("狀態")
                     .style(ButtonStyle::Secondary),
             );
             vec![CreateActionRow::Buttons(buttons)]
         }
         OutboundMessage::QrCodeRequested(request) => vec![
             CreateActionRow::Buttons(vec![
-                CreateButton::new_link(&request.scan_url).label("Open scanner")
+                CreateButton::new_link(&request.scan_url).label("開啟掃碼頁")
             ]),
             CreateActionRow::Buttons(vec![CreateButton::new(COMPONENT_STATUS)
-                .label("Status")
+                .label("狀態")
                 .style(ButtonStyle::Primary)]),
         ],
         OutboundMessage::SecurityAlert(event) => {
@@ -2548,7 +2576,17 @@ fn render_failure_hint(status: &MonitorStatus) -> String {
 }
 
 fn help_text() -> &'static str {
-    "可用指令：\n/status - 查看狀態\n/admin - 取得 Web 管理頁連結\n/force - 立即觸發簽到檢查（已綁定使用者會觸發全部帳號一起檢查）\n/reauth - 重新認證（一般使用者只重登自己的綁定帳號；管理員重登全部）\n/help - 顯示說明\n/qr data:<資料> - 回傳 QR Code\n/num code:<4位數> - 回傳數字點名碼\n/request-account provider:<name> username:<Tronclass username> password:<password> - 在 DM 申請新增帳號\n\n管理員可在控制台使用 /start、/stop、/add-account、/bind-account、/unbind-account、/bindings。"
+    "可用指令（斜線回覆只給你自己看）：\n\
+/status　查看監控狀態\n\
+/force　立刻檢查點名（已綁定會喚醒全部帳號）\n\
+/reauth　重新登入學校（一般使用者只重登自己的帳號）\n\
+/num　送出 4 位數字碼（手動送出，不受自動讀碼 15%）\n\
+/qr　送出課堂 QR 網址或掃描內容\n\
+/admin　管理頁連結\n\
+/help　顯示這段說明\n\
+申請帳號請在「與 bot 的私訊」用 /request-account（群組會拒收，請勿在公開頻道打密碼）。\n\
+\n\
+管理員另有 /start、/stop、/add-account、/bind-account、/unbind-account、/bindings。"
 }
 
 fn string_option(command: &CommandInteraction, name: &str) -> Option<String> {
@@ -2823,6 +2861,27 @@ mod tests {
         assert!(names.contains(&"bindings"));
         assert!(names.contains(&"status"));
         assert_eq!(discord_commands().len(), names.len());
+    }
+
+    #[test]
+    fn help_text_covers_main_commands_and_dm_warning() {
+        let text = help_text();
+        for needle in [
+            "/status",
+            "/force",
+            "/reauth",
+            "/num",
+            "/qr",
+            "/request-account",
+            "私訊",
+            "15%",
+        ] {
+            assert!(text.contains(needle), "help_text 缺少 {needle}");
+        }
+        assert!(
+            !text.contains("password:<"),
+            "說明不要再示範 password:<password>"
+        );
     }
 
     #[test]

@@ -1328,8 +1328,11 @@
       txt = await res.text();
       const target = parseShortcutUrl(txt);
       if (!target) throw new Error('找不到 URL=');
-      if (win) win.location.replace(target);
-      else window.location.href = target;
+      // URL_SHORTCUT_OPENER_NULL_V1：跳到外部站前切斷 opener，避免 tabnabbing。
+      if (win) {
+        try { win.opener = null; } catch (_) {}
+        win.location.replace(target);
+      } else window.location.href = target;
       return;
     } catch (err) {
       if (win) win.close();
@@ -2333,10 +2336,14 @@
 
   // PREVIEW_WARM_IDLE_V1（fix52）：進頁面後在閒置時把兩種引擎準備好，第一次點預覽
   // 不必等引擎下載。省流量模式或 2G 連線時不暖機。
+  // PREVIEW_WARM_SKIP_MOBILE_V1：手機／減少動態效果也不預載 ~1MB PDF.js。
   function schedulePreviewWarmup(){
     try {
       const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
       if (conn && (conn.saveData || /(^|-)2g$/.test(conn.effectiveType || ''))) return;
+      if (document.documentElement.getAttribute('data-motion') === 'reduced') return;
+      if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+      if (window.matchMedia && (matchMedia('(max-width: 700px)').matches || matchMedia('(hover: none) and (pointer: coarse)').matches)) return;
     } catch(_) {}
     const run = () => { ensurePreviewLib('pdf'); ensurePreviewLib('office'); };
     setTimeout(() => {

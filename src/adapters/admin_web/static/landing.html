@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#1d4ed8">
-<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="referrer" content="no-referrer">
 __VERIFICATION_META__
 <title>jasonserver｜Tronclass 作業提醒與課程自動化面板</title>
 <meta name="description" content="jasonserver 是一套自架的 Tronclass（淡江 iClass）課程自動化面板：作業與測驗截止提醒、教材自動匯入雲端硬碟與線上預覽、公告 AI 摘要與翻譯、課表與學分統計，並可透過 LINE、Discord 或瀏覽器推播即時通知。使用自己的 iClass 帳號登入即可。">
@@ -119,8 +119,10 @@ __VERIFICATION_META__
   --ok:#34d399; --radius:16px;
 }
 *{box-sizing:border-box}
-html,body{margin:0;padding:0}
+html,body{margin:0}
 body{
+  /* LANDING_SAFE_AREA_V1：viewport-fit=cover 時把內容推回劉海／Home 指示條內。 */
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
   background:
     radial-gradient(1100px 600px at 12% -8%, rgba(79,140,255,.22), transparent 60%),
     radial-gradient(900px 520px at 88% 0%, rgba(124,92,255,.18), transparent 55%),

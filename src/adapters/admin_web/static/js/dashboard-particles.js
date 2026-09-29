@@ -29,8 +29,19 @@
       document.body.classList.contains('dash-auth-ok') ||
       visible(document.querySelector('.protected')) && !loginVisible();
   }
+  // DASHBOARD_LITE_MOTION_V1：減少動態效果／省流量時不跑 canvas。
+  // DASHBOARD_MOBILE_PARTICLES_V1：手機寬度仍要粒子（不要用 max-width 關掉）。
+  function preferLiteVisuals(){
+    try {
+      if (document.documentElement.getAttribute('data-motion') === 'reduced') return true;
+      if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return true;
+      var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (conn && (conn.saveData || /(^|-)2g$/.test(String(conn.effectiveType || '')))) return true;
+    } catch (_) {}
+    return false;
+  }
   function shouldEnable(){
-    return isDashboardPath() && loggedIn() && !loginVisible();
+    return isDashboardPath() && loggedIn() && !loginVisible() && !preferLiteVisuals();
   }
   function ensureCanvas(){
     var c = q('dashboardLoginBgParticlesV1');

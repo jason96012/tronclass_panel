@@ -882,6 +882,25 @@ fn is_external_trusted_types_noise(message: &str) -> bool {
         || message.contains("requires 'trusted")
 }
 
+/// CSP_CF_INLINE_NOISE_V1：Cloudflare 注入的 inline 被 hash CSP 擋住是預期行為；
+/// Report-Only 再報一次 script-src 則是重複。都不當故障。
+fn is_csp_cf_inline_noise(kind: &str, message: &str, source: &str, stack: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    let blob = format!("{source}\n{stack}").to_ascii_lowercase();
+    if kind == "csp_report_only" && msg.contains("script-src") {
+        return true;
+    }
+    if kind != "csp_violation" || !msg.contains("script-src") {
+        return false;
+    }
+    blob.contains("cdn-cgi")
+        || blob.contains("__cf$cv$params")
+        || blob.contains("email-decode")
+        || blob.contains("rocket-loader")
+        || blob.contains("challenge-platform")
+        || blob.contains("cf-beacon")
+}
+
 /// CLIENT_ERROR_REPORT_V1：前端錯誤／看門狗事件回報。
 ///
 /// - 需登入（access cookie；sendBeacon 會帶同源 cookie）。未登入回 401 但不寫任何東西。
@@ -937,8 +956,10 @@ pub(super) async fn client_log_handler(
     // WebKit 兩種形式，並保留 client-log.js 附帶的 [tt=missing] 作為真故障告警）。
     // 降為 INFO＋註記，不洗 console。
     // 治本＝CF 儀表板（Security → Bots）關閉 JavaScript Detections。
-    let is_cf_injected_tt_noise = is_external_trusted_types_noise(&message);
-    let level = if is_cf_injected_tt_noise {
+    let is_tt_noise = is_external_trusted_types_noise(&message);
+    let is_csp_noise = is_csp_cf_inline_noise(&kind, &message, &source, &stack);
+    let is_known_client_noise = is_tt_noise || is_csp_noise;
+    let level = if is_known_client_noise {
         "INFO"
     } else {
         match kind.as_str() {
@@ -957,9 +978,9 @@ pub(super) async fn client_log_handler(
         details.push_str("\nstack=");
         details.push_str(&stack);
     }
-    if is_cf_injected_tt_noise {
+    if is_known_client_noise {
         tracing::debug!(kind = %kind, account = %session.account_id, page = %page,
-            "client-side error report（第三方注入碼與 Trusted Types CSP 的已知衝突，無害）");
+            "client-side error report（第三方注入碼與 CSP／Trusted Types 的已知衝突，無害）");
         crate::logs::record_system(
             "INFO",
             &format!("client:{kind}"),
@@ -988,7 +1009,37 @@ pub(super) async fn client_log_handler(
 
 #[cfg(test)]
 mod tt_noise_tests {
-    use super::is_external_trusted_types_noise;
+    use super::{is_csp_cf_inline_noise, is_external_trusted_types_noise};
+
+    #[test]
+    fn csp_report_only_script_src_is_noise() {
+        assert!(is_csp_cf_inline_noise(
+            "csp_report_only",
+            "script-src-elem 回報（未阻擋）inline",
+            "",
+            ""
+        ));
+    }
+
+    #[test]
+    fn csp_violation_inline_without_cf_stays_alert() {
+        assert!(!is_csp_cf_inline_noise(
+            "csp_violation",
+            "script-src-elem 阻擋 inline",
+            "https://dashboard.example/admin",
+            "(function(){"
+        ));
+    }
+
+    #[test]
+    fn csp_violation_with_cf_fingerprint_is_noise() {
+        assert!(is_csp_cf_inline_noise(
+            "csp_violation",
+            "script-src-elem 阻擋 inline",
+            "https://dashboard.example/cdn-cgi/challenge-platform/x",
+            ""
+        ));
+    }
 
     /// TT_ASSIGNMENT_NOISE_V1（fix37）：兩個引擎的字串都要被判成已知噪音。
     #[test]

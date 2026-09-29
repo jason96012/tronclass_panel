@@ -160,7 +160,7 @@ impl ForceCascade {
             provider = %provider,
             rollcall_ids = ?rollcall_ids,
             notified = notified,
-            "使用者 force 偵測到點名，已觸發其他帳號一起 force 偵測"
+            "偵測到點名，已喚醒其他帳號立刻檢查（同場 pending／班上人數不必等各自 interval）"
         );
     }
 }
@@ -1132,20 +1132,25 @@ async fn do_poll_and_attend(
         status.last_detected_url = None;
     }
 
-    if trigger == MonitorTrigger::ForcePoll {
-        if let Some(force_cascade) = ctx.force_cascade.as_ref() {
-            force_cascade
-                .notify_peers_once(
-                    &ctx.account.id,
-                    &ctx.account.provider,
-                    &pending_rollcall_ids,
-                )
-                .await;
-        }
+    // DETECT_CASCADE_V1：任一帳號（定時輪詢或手動 /force）只要看到待簽到，
+    // 立刻喚醒其他帳號做一次檢查。舊行為只在 ForcePoll 才 cascade，同課程其他人
+    // 還在睡，掃碼／數字頁的班上人數要等各自 poll interval 才慢慢出現。
+    // 120 秒內同一 provider+rollcall 只廣播一次（FORCE_CASCADE_DEDUPE_TTL）。
+    // 沒修課的帳號被喚醒後 get_rollcalls 為空，不會再 cascade。
+    // 不改變 15% 自動送門檻、group_submit 錯開、3 秒 QR 冷卻。
+    if let Some(force_cascade) = ctx.force_cascade.as_ref() {
+        force_cascade
+            .notify_peers_once(
+                &ctx.account.id,
+                &ctx.account.provider,
+                &pending_rollcall_ids,
+            )
+            .await;
     }
 
     info!(
         pending = pending_count,
+        ?trigger,
         "偵測到 {} 個待簽到項目，開始自動簽到...", pending_count
     );
 

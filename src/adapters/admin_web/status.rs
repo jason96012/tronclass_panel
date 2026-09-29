@@ -212,6 +212,8 @@ pub(super) fn with_admin_status_timing(
 /// The stream reads only the accounts visible to this session. It emits a
 /// rollcall event as soon as the monitor exposes a direct input URL, avoiding
 /// the dashboard's normal refresh interval for time-sensitive attendance.
+/// ADMIN_ROLLCALL_ALERT_DEDUP_V1：管理員同一 `rollcall_id` 只推一次（cascade 後
+/// 每個帳號都會寫 last_detected_*，舊 key 含 account 會連跳 overlay）。
 pub(super) async fn admin_rollcall_events_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminQuery>,
@@ -247,13 +249,23 @@ pub(super) async fn admin_rollcall_events_handler(
                 drop(status);
                 let Some(timestamp) = timestamp else { continue };
                 let Some(url) = url.filter(|value| !value.trim().is_empty()) else { continue };
-                let event_key = format!("{}:{}:{}", account.account_id, rollcall_id.unwrap_or(0), timestamp);
-                if last_seen.get(&account.account_id) == Some(&event_key) {
+                let rc_id = rollcall_id.unwrap_or(0);
+                // ADMIN_ROLLCALL_ALERT_DEDUP_V1：管理員同一場點名只推一次
+                // （cascade 後每個帳號都會寫 last_detected_*，舊 key 含 account 會連跳）。
+                // 一般使用者仍以自己的帳號+點名去重。沒有 rollcall_id 時退回帳號+時間。
+                let dedupe_key = if rc_id == 0 {
+                    format!("acc:{}:ts:{}", account.account_id, timestamp)
+                } else if is_admin {
+                    format!("rc:{rc_id}")
+                } else {
+                    format!("acc:{}:rc:{rc_id}", account.account_id)
+                };
+                if last_seen.contains_key(&dedupe_key) {
                     continue;
                 }
-                last_seen.insert(account.account_id.clone(), event_key.clone());
+                last_seen.insert(dedupe_key.clone(), String::new());
                 detected.push(json!({
-                    "key": event_key,
+                    "key": dedupe_key,
                     "account": account.account_id,
                     "course": course.unwrap_or_else(|| "新點名".to_string()),
                     "rollcall_id": rollcall_id,

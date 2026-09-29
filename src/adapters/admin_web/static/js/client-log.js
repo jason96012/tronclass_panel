@@ -111,10 +111,19 @@
     });
     document.addEventListener('securitypolicyviolation', function (event) {
       if (!event) return;
+      var dir = String(event.violatedDirective || event.effectiveDirective || '').toLowerCase();
+      var blocked = String(event.blockedURI || 'inline');
+      var sample = String(event.sample || '');
+      var src = String(event.sourceFile || '');
       var enforced = event.disposition !== 'report';
-      post(enforced ? 'csp_violation' : 'csp_report_only', (event.violatedDirective || event.effectiveDirective || 'csp') + (enforced ? ' 阻擋 ' : ' 回報（未阻擋）') + (event.blockedURI || 'inline'), {
+      // CSP_RO_SCRIPT_NO_DUP_V1：Report-Only 與正式 CSP 對 script 會重複報。
+      if (!enforced && dir.indexOf('script-src') === 0) return;
+      // CSP_CF_INLINE_NOISE_V1：Cloudflare 注入的 inline／challenge 被 hash CSP 擋是預期行為。
+      var blob = sample + ' ' + src + ' ' + blocked;
+      if (/cdn-cgi|__CF\$cv\$params|email-decode|rocket-loader|challenge-platform|cf-beacon/i.test(blob)) return;
+      post(enforced ? 'csp_violation' : 'csp_report_only', dir + (enforced ? ' 阻擋 ' : ' 回報（未阻擋）') + blocked, {
         source: event.sourceFile, line: event.lineNumber, col: event.columnNumber,
-        stack: clip(event.sample || '', 200)
+        stack: clip(sample, 200)
       });
     });
     // PAGE_BOOT_WATCHDOG_V1 的自動重載事件：上一輪載入卡在 <head> 超過 20 秒後 reload。

@@ -13,6 +13,11 @@
   var notifyStatus = null;
   var mockQrTimer = null;
 
+  // MOCK_ADMIN_ONLY_UI_V1：模擬點名 API 已限管理員；一般使用者不要畫測試面板
+  // （仍保留「點名排程」入口，那不是 mock）。
+  function isDashboardAdmin(){
+    return document.documentElement.getAttribute('data-admin') === '1';
+  }
   function q(id){ return document.getElementById(id); }
   function esc(v){ return String(v == null ? '' : v).replace(/[&<>"']/g, function(ch){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]; }); }
   function toast(text, ok){ var el=q('toast'); if(el){el.textContent=text;el.className='toast visible '+(ok===false?'bad':'ok');clearTimeout(el._timer);el._timer=setTimeout(function(){el.classList.remove('visible');},3200)} else alert(text); }
@@ -52,6 +57,7 @@
   async function loadStatusOnce(){ notifyStatus=await (window.TronclassRuntime&&window.TronclassRuntime.statusSummary?window.TronclassRuntime.statusSummary(false):api('/admin/api/status?include_history=false&history_limit=0',{cache:'no-store'})); return notifyStatus; }
 
   function ensureMockPanel(){
+    if(!isDashboardAdmin()) return;
     var view=q('view-rollcall'); if(!view)return;
     if(q('mockRollcallPanel'))return;
     var panel=document.createElement('section'); panel.id='mockRollcallPanel'; panel.className='panel mock-panel';
@@ -74,7 +80,7 @@
     var code=q('mockCode'); if(code)code.classList.toggle('hidden-init',kind!=='number');
     var interval=q('mockInterval'); if(interval)interval.classList.toggle('hidden-init',kind!=='qr');
   }
-  async function loadMockAccounts(){ ensureMockPanel(); try{ var st=notifyStatus||await loadStatusOnce(); var isAdmin=!!st.is_admin; var own=String(st.current_account_id||''); var accounts=isAdmin?(st.accounts||[]):(st.accounts||[]).filter(function(a){return String(a.account_id||'')===own;}); var html=accounts.map(function(a){var locked=!isAdmin?' checked disabled':'';return '<label class="mock-account"><input type="checkbox" value="'+esc(a.account_id)+'"'+locked+'><span>'+esc(a.account_id)+' <span class="small">'+esc(a.user_name||a.username||'')+'</span></span></label>';}).join(''); q('mockAccounts').innerHTML=html||'<div class="small">沒有可操作的帳號。</div>'; q('mockSelectAll').style.display=isAdmin?'':'none'; q('mockClearAll').style.display=isAdmin?'':'none'; }catch(e){ q('mockAccounts').innerHTML='<div class="bad">帳號讀取失敗：'+esc(e.message||e)+'</div>'; } }
+  async function loadMockAccounts(){ if(!isDashboardAdmin()) return; ensureMockPanel(); try{ var st=notifyStatus||await loadStatusOnce(); var isAdmin=!!st.is_admin; var own=String(st.current_account_id||''); var accounts=isAdmin?(st.accounts||[]):(st.accounts||[]).filter(function(a){return String(a.account_id||'')===own;}); var html=accounts.map(function(a){var locked=!isAdmin?' checked disabled':'';return '<label class="mock-account"><input type="checkbox" value="'+esc(a.account_id)+'"'+locked+'><span>'+esc(a.account_id)+' <span class="small">'+esc(a.user_name||a.username||'')+'</span></span></label>';}).join(''); q('mockAccounts').innerHTML=html||'<div class="small">沒有可操作的帳號。</div>'; q('mockSelectAll').style.display=isAdmin?'':'none'; q('mockClearAll').style.display=isAdmin?'':'none'; }catch(e){ q('mockAccounts').innerHTML='<div class="bad">帳號讀取失敗：'+esc(e.message||e)+'</div>'; } }
   function stopMockQr(){ if(mockQrTimer)clearInterval(mockQrTimer); mockQrTimer=null; q('mockQrImg').style.display='none'; q('stopMockQr').style.display='none'; }
   function startMockQrPreview(body){ stopMockQr(); if(!body.qr_base||!body.rollcall_id)return; var interval=Math.max(1,Number(body.interval_secs||15)); function render(){ var slot=Math.floor(Date.now()/1000/interval); var payload='0~100!3~'+body.qr_base+'_'+slot+'!4~'+body.rollcall_id; q('mockQrPayload').textContent=payload; q('mockQrImg').src='/admin/api/mock/qr.svg?data='+encodeURIComponent(payload)+'&t='+Date.now(); q('mockQrImg').style.display='block'; } render(); mockQrTimer=setInterval(render,1000); q('stopMockQr').style.display='inline-flex'; }
   async function triggerMockRollcall(){ var selected=Array.prototype.slice.call(document.querySelectorAll('#mockAccounts input:checked')).map(function(i){return i.value;}); if(!selected.length)return toast('請至少選一個帳號',false); var kind=String(q('mockKind').value||'number'); try{
