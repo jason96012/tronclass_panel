@@ -130,6 +130,32 @@ impl Rollcall {
             self.rollcall_id, self.course_title, self.created_by_name
         )
     }
+
+    /// 取得具備區分度的課程名稱（若有授課教師或系所名稱，一併附加以明確區分同名但不同開課之課程）。
+    pub fn course_display_name(&self) -> String {
+        let title = self.course_title.trim();
+        let teacher = self.created_by_name.trim();
+        let dept = self.department_name.trim();
+
+        if title.is_empty() {
+            if !teacher.is_empty() {
+                return format!("未命名課程 ({teacher})");
+            }
+            return "未命名課程".to_string();
+        }
+
+        if !teacher.is_empty() && !title.contains(teacher) {
+            if !dept.is_empty() && !title.contains(dept) {
+                format!("{title} ({teacher}・{dept})")
+            } else {
+                format!("{title} ({teacher})")
+            }
+        } else if !dept.is_empty() && !title.contains(dept) {
+            format!("{title} ({dept})")
+        } else {
+            title.to_string()
+        }
+    }
 }
 
 /// 簽到類型枚舉

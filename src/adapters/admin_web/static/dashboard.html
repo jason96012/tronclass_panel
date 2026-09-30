@@ -176,6 +176,12 @@
 </script>
 <!-- DASHBOARD_PERFORMANCE_GUARD_V2_END -->
 <style id="DESKTOP_SIZE_ALWAYS_V1">
+  #unattendedModal{position:fixed!important;inset:0!important;z-index:2147483646!important;display:none;align-items:center!important;justify-content:center!important;padding:16px!important;background:rgba(15,23,42,0.65)!important;backdrop-filter:blur(8px)!important;-webkit-backdrop-filter:blur(8px)!important}
+  #unattendedModal.visible{display:flex!important;visibility:visible!important;pointer-events:auto!important}
+  #unattendedModal.visible *{visibility:visible!important;pointer-events:auto!important}
+  #unattendedModal .modal{width:min(560px,100%)!important;max-height:85vh!important;background:var(--card,#fff)!important;border-radius:18px!important;box-shadow:0 25px 60px rgba(0,0,0,0.4)!important;display:flex!important;flex-direction:column!important;overflow:hidden!important;pointer-events:auto!important}
+  .un-btn{cursor:pointer!important;touch-action:manipulation!important;user-select:none!important;-webkit-user-select:none!important;border:1px solid var(--line2,#cbd5e1)!important;background:var(--surface2,#f1f5f9)!important;color:var(--text,#0f172a)!important;font-weight:750!important}
+  .un-btn:active{transform:scale(0.96)!important;opacity:0.85!important}
   /* 已登入 / 確認中：main 絕不能用登入卡置中（那會變成手機寬） */
   html.tron-auth-ok body main,
   html.dash-auth-ok body main,
@@ -1746,7 +1752,7 @@
 <body class="logged-in auth-ok dash-auth-ok">
 
 <header class="topbar"><div class="brand"><div class="mark">D</div><div><div class="title">Tronclass Dashboard</div><div id="brandSub" class="sub">請先登入</div></div></div><div class="top-actions"><!-- TOPBAR_LOGOUT_ONLY_V1: 頂欄僅保留登出（meLink 原已被 CSS 隱藏） --><a id="meLink" class="button secondary" href="/admin/me">我的頁面</a><button id="logoutBtn" class="secondary" type="button">登出</button><button id="refreshAll" class="icon" type="button">↻</button></div></header>
-<main><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel mb14"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="creditsQuickLink" class="button secondary" href="/admin/credits">學分狀態</a><a id="stockQuickLink" class="button secondary" href="/admin/stock">智選股</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div><!-- ACCOUNT_HOT_ADD_FEEDBACK_V1：在資料庫但沒在監控的帳號（管理員） --><div id="inactiveAccountsBox" class="inactive-box hidden-init"><div class="inactive-title">未在監控的帳號</div><div class="small mb8">這些帳號已存在資料庫，但目前沒有監控循環在跑（新增時登入失敗、或以 CLI 離線新增）。修正後按「啟動監控」重試，不必重啟服務。</div><div id="inactiveAccountsList" class="list"></div></div></div></section><section id="view-rollcall" class="view"><div class="panel mb14"><div class="toolbar"><div><h2>出席統計</h2><div class="small" id="attHint">每門課只顯示一場點名；今天還有進行中的場次時改顯示上一場（重啟不會消失）。</div></div><div class="toolbar-right"><select id="attRange" aria-label="統計範圍"><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="90" selected>近 90 天</option><option value="0">全部</option></select><button id="attReload" class="secondary" type="button">重新整理</button></div></div><div id="attSummary" class="grid cards"></div><div id="attBody"></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary hidden-init">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" class="health-pre">尚未讀取</pre><div class="quick mt12"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mStock" class="button secondary" href="/admin/stock">智選股</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" class="w760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
+<main><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel mb14"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="creditsQuickLink" class="button secondary" href="/admin/credits">學分狀態</a><a id="stockQuickLink" class="button secondary" href="/admin/stock">智選股</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div><!-- ACCOUNT_HOT_ADD_FEEDBACK_V1：在資料庫但沒在監控的帳號（管理員） --><div id="inactiveAccountsBox" class="inactive-box hidden-init"><div class="inactive-title">未在監控的帳號</div><div class="small mb8">這些帳號已存在資料庫，但目前沒有監控循環在跑（新增時登入失敗、或以 CLI 離線新增）。修正後按「啟動監控」重試，不必重啟服務。</div><div id="inactiveAccountsList" class="list"></div></div></div></section><section id="view-rollcall" class="view"><div class="panel mb14"><div class="toolbar"><div><h2>出席統計</h2><div class="small" id="attHint">統計所選期間內各課程點名累積成功率，並清楚標示最新一次點名狀態（重啟不會消失）。</div></div><div class="toolbar-right"><select id="attRange" aria-label="統計範圍"><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="90" selected>近 90 天</option><option value="0">全部</option></select><button id="attReload" class="secondary" type="button">重新整理</button></div></div><div id="attSummary" class="grid cards"></div><div id="attBody"></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary hidden-init">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" class="health-pre">尚未讀取</pre><div class="quick mt12"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mStock" class="button secondary" href="/admin/stock">智選股</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" class="w760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="unattendedModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="unattendedTitle" class="w760">未點到名冊</div><button id="closeUnattended" class="icon" type="button">×</button></div><div id="unattendedBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
 <div id="addAccountModal" class="modal-backdrop">
   <div class="modal modal-520">
     <div class="modal-head"><div class="w760">新增帳號</div><button id="closeAddAccount" class="icon" type="button">×</button></div>
@@ -1804,38 +1810,219 @@ function fillAccountFilter(){
 function renderAttendance(){
   var box=q('attBody');if(!box)return;
   if(!attStats){box.innerHTML='<div class="empty">'+esc(attError||'出席統計載入中…')+'</div>';return}
-  var s=attStats.summary||{},courses=attStats.courses||[],senders=attStats.senders||[];
-  var hint=(q('attHint')?q('attHint').textContent:'');
+  var s=attStats.summary||{},courses=attStats.courses||[];
   var summary=q('attSummary');
   if(summary){
     summary.innerHTML=
       attCard('點名次數',attNumber(s.total),attRangeText(attNumber(attStats.days)))+
       attCard('成功送出',attNumber(s.success),'失敗 '+attNumber(s.failed)+' 次')+
-      attCard('送出成功率',attNumber(s.success_rate).toFixed(1)+'%','成功 ÷ 總次數')+
-      attCard('送出者',senders.length,senders.length?senders.map(function(x){return x.label}).slice(0,2).join('、')+(senders.length>2?' 等 '+senders.length+' 人':''):'尚無紀錄');
+      attCard('累積成功率',attNumber(s.success_rate).toFixed(1)+'%','成功 ÷ 總次數')+
+      attCard('未點到名',attNumber(s.failed)===0?'0 人':(attNumber(s.failed)+' 次'),attNumber(s.failed)===0?'全員到齊 (無缺席)':'點擊下方可查看名單');
   }
   if(!courses.length){
     box.innerHTML='<div class="empty">這段期間還沒有點名紀錄。統計會在每次送出後自動累積（含成功與未成功）。</div>';
     return;
   }
   var rows=courses.map(function(c){
-    var who=(c.senders||[]).map(function(x){return esc(x.label)+' ×'+attNumber(x.total)});
-    var whoText=who.length?who.slice(0,2).join('、')+(who.length>2?' 等 '+who.length+' 人':''):'-';
+    var unUsers=c.unattended_users||[];
+    var lsUn=(c.latest_session&&c.latest_session.unattended_users)||[];
+    var targetList=lsUn.length?lsUn:unUsers;
+    var unHtml='';
+
+    // 依姓名去重統計
+    var nameCounts={};
+    targetList.forEach(function(u){
+      var n=(u.label||u.user_name||u.account_id||'').trim();
+      if(n){ nameCounts[n]=(nameCounts[n]||0)+1; }
+    });
+    var uniqueNames=Object.keys(nameCounts);
+
+    var cNameEsc=esc(c.course_name);
+    var cNameArg=esc(encodeURIComponent(c.course_name||''));
+
+    if(targetList.length===0&&attNumber(c.failed)===0){
+      unHtml='<span class="pill good">全數點到</span>';
+    }else if(targetList.length===0){
+      unHtml='<span class="pill good">本次全到</span>'+
+        (unUsers.length?(' <button type="button" class="button secondary btn-compact un-btn" style="min-height:28px;padding:0 10px;font-size:12px;margin-left:4px;cursor:pointer;border-radius:999px;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">歷史未到('+unUsers.length+')</button>'):'');
+    }else if(uniqueNames.length<=2&&targetList.length<=2){
+      var badges=targetList.map(function(u){
+        var n=(u.label||u.user_name||u.account_id||'');
+        return '<span class="pill bad" style="margin-right:4px;cursor:pointer;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">'+esc(n)+'</span>';
+      }).join('');
+      unHtml=badges+(unUsers.length>targetList.length?(' <button type="button" class="button secondary btn-compact un-btn" style="min-height:28px;padding:0 10px;font-size:12px;cursor:pointer;border-radius:999px;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">名冊</button>'):'');
+    }else{
+      var summaryText='';
+      if(uniqueNames.length===1){
+        summaryText=esc(uniqueNames[0])+' (共 '+targetList.length+' 筆)';
+      }else if(uniqueNames.length===2){
+        summaryText=esc(uniqueNames[0])+'、'+esc(uniqueNames[1])+(targetList.length>2?(' 等 '+targetList.length+' 筆'):'');
+      }else{
+        summaryText=esc(uniqueNames[0])+'、'+esc(uniqueNames[1])+' 等 '+targetList.length+' 人';
+      }
+      unHtml='<span class="pill bad" style="margin-right:6px;cursor:pointer;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">'+summaryText+'</span>'+
+        '<button type="button" class="button secondary btn-compact un-btn" style="min-height:30px;padding:0 12px;font-size:12px;cursor:pointer;border-radius:999px;margin-top:4px;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">查看名單</button>';
+    }
+
+    var ls=c.latest_session;
+    var latestHtml='';
+    if(ls&&ls.timestamp){
+      var lsType=ls.attendance_type?('<span class="small" style="color:var(--muted,#94a3b8)">'+esc(ls.attendance_type)+'</span>'):'';
+      var lsBadge='';
+      if(ls.total>1){
+        var badgeClass=ls.is_all_success?'good':(ls.success>0?'warn':'bad');
+        lsBadge='<span class="pill '+badgeClass+'">本次 '+ls.success+'/'+ls.total+' ('+ls.success_rate.toFixed(1)+'%)</span>';
+      }else{
+        var isOk=ls.success>0;
+        lsBadge='<span class="pill '+(isOk?'good':'bad')+'">'+(isOk?'本次成功':'本次未成功')+'</span>';
+      }
+      latestHtml='<div style="display:flex;flex-direction:column;gap:3px;">'+
+        '<div><b>'+esc(fmt(ls.timestamp))+'</b></div>'+
+        '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'+lsBadge+lsType+'</div>'+
+        '</div>';
+    }else{
+      latestHtml=esc(fmt(c.last_at));
+    }
+
     /* ATT_STATS_MOBILE_CARDS_V1（fix76）：每格都帶 data-label，手機版摺成卡片時才看得到欄位名。 */
     return '<tr><td data-label="課程"><b>'+esc(c.course_name||'-')+'</b></td>'+
-      '<td data-label="點名次數">'+attNumber(c.total)+'</td>'+
+      '<td data-label="累積點名">'+attNumber(c.total)+'</td>'+
       '<td data-label="成功">'+attNumber(c.success)+'</td>'+
       '<td data-label="未成功">'+attNumber(c.failed)+'</td>'+
-      '<td data-label="成功率"><span class="pill '+attRateClass(attNumber(c.success_rate))+'">'+attNumber(c.success_rate).toFixed(1)+'%</span></td>'+
-      '<td data-label="送出者">'+whoText+'</td>'+
-      '<td data-label="最近一次">'+esc(fmt(c.last_at))+'</td></tr>';
+      '<td data-label="累積成功率"><span class="pill '+attRateClass(attNumber(c.success_rate))+'">'+attNumber(c.success_rate).toFixed(1)+'%</span></td>'+
+      '<td data-label="最新一次點名">'+latestHtml+'</td>'+
+      '<td data-label="誰沒有點到名">'+unHtml+'</td></tr>';
   }).join('');
   box.innerHTML='<div class="table-wrap"><table class="att-table"><thead><tr>'+
-    '<th>課程</th><th>點名次數</th><th>成功</th><th>未成功</th><th>成功率</th><th>送出者</th><th>最近一次</th>'+
+    '<th>課程</th><th>累積點名</th><th>成功</th><th>未成功</th><th>累積成功率</th><th>最新一次點名（本次狀態）</th><th>誰沒有點到名</th>'+
     '</tr></thead><tbody>'+rows+'</tbody></table></div>'+
     '<div class="small mt12">統計範圍：'+esc(attRangeText(attNumber(attStats.days)))+
-    '。每門課只計一場；今天有新場且有上一場時不把今天算進去。出席與否仍以學校系統為準。</div>';
+    '。已清楚區分期間累積成功率、最新點名狀態與未點到名冊，出席與否仍以學校系統為準。</div>';
 }
+function openUnattendedModal(courseName){
+  try{
+    if(typeof courseName==='string'&&courseName.indexOf('%')>=0){
+      try{courseName=decodeURIComponent(courseName);}catch(_){}
+    }
+    var modal=document.getElementById('unattendedModal')||(typeof q==='function'?q('unattendedModal'):null);
+    var title=document.getElementById('unattendedTitle')||(typeof q==='function'?q('unattendedTitle'):null);
+    var body=document.getElementById('unattendedBody')||(typeof q==='function'?q('unattendedBody'):null);
+    if(!modal)return;
+
+    var courseNameStr=String(courseName||'').trim();
+    var courses=(attStats&&attStats.courses)||[];
+    var course=courses.find(function(x){
+      var cn=String(x.course_name||'').trim();
+      return cn===courseNameStr||cn.replace(/\s+/g,'')===courseNameStr.replace(/\s+/g,'');
+    });
+
+    if(!course&&courses.length>0){
+      course=courses.find(function(x){
+        var cn=String(x.course_name||'').trim();
+        return (cn&&courseNameStr&&(cn.indexOf(courseNameStr)>=0||courseNameStr.indexOf(cn)>=0));
+      });
+    }
+
+    if(!course){
+      if(body)body.innerHTML='<div class="empty" style="padding:20px;text-align:center;">找不到「'+esc(courseNameStr||'該課程')+'」的點名資料。</div>';
+      modal.classList.add('visible');
+      modal.style.display='flex';
+      return;
+    }
+
+    if(title)title.textContent='「'+(course.course_name||'課程')+'」誰沒有點到名';
+    var ls=course.latest_session;
+    var latestUn=(ls&&ls.unattended_users)||[];
+    var allUn=course.unattended_users||[];
+    var html='';
+
+    if(ls&&ls.timestamp){
+      html+='<div style="margin-bottom:16px;">'+
+        '<div style="font-weight:750;font-size:14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">'+
+          '<span>最新一次點名 ('+esc(fmt(ls.timestamp))+')</span>'+
+          '<span class="pill '+(ls.is_all_success?'good':'bad')+'">'+(ls.is_all_success?'全數點到':('本次未點到 '+(latestUn.length||ls.failed)+' 人'))+'</span>'+
+        '</div>';
+      if(latestUn.length===0){
+        html+='<div class="small" style="color:var(--ok,#16a34a);padding:6px 0;font-weight:650;">🎉 本次點名全員皆成功簽到！</div>';
+      }else{
+        html+='<div class="list" style="display:flex;flex-direction:column;gap:8px;">'+
+          latestUn.map(function(u){
+            return '<div class="item" style="padding:10px 12px;background:var(--soft,rgba(0,0,0,.04));border-radius:12px;display:flex;align-items:center;justify-content:space-between;border:1px solid var(--line2,#e2e8f0);">'+
+              '<div><b>'+esc(u.label||u.user_name||u.account_id)+'</b> <span class="small" style="color:var(--muted,#64748b);">('+esc(u.username||u.account_id)+')</span></div>'+
+              (u.last_result?'<span class="pill bad" style="font-size:11px;">'+esc(u.last_result)+'</span>':'<span class="pill bad">未成功</span>')+
+            '</div>';
+          }).join('')+
+        '</div>';
+      }
+      html+='</div>';
+    }
+
+    if(allUn.length>0){
+      html+='<div>'+
+        '<div style="font-weight:750;font-size:14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">'+
+          '<span>期間累積未點到名單 (共 '+allUn.length+' 人)</span>'+
+          '<span class="small" style="color:var(--muted,#64748b);">依失敗次數排序</span>'+
+        '</div>'+
+        '<div class="list" style="display:flex;flex-direction:column;gap:8px;max-height:280px;overflow-y:auto;-webkit-overflow-scrolling:touch;">'+
+          allUn.map(function(u){
+            return '<div class="item" style="padding:10px 12px;background:var(--soft,rgba(0,0,0,.04));border-radius:12px;display:flex;align-items:center;justify-content:space-between;border:1px solid var(--line2,#e2e8f0);">'+
+              '<div><b>'+esc(u.label||u.user_name||u.account_id)+'</b> <span class="small" style="color:var(--muted,#64748b);">('+esc(u.username||u.account_id)+')</span></div>'+
+              '<div style="text-align:right;"><span class="pill warn">累計失敗 '+attNumber(u.failed_count)+' 次</span>'+
+              (u.last_result?'<div class="small" style="color:var(--muted,#94a3b8);font-size:11px;margin-top:2px;">'+esc(u.last_result)+'</div>':'')+
+              '</div></div>';
+          }).join('')+
+        '</div>'+
+      '</div>';
+    }else if(!ls||latestUn.length===0){
+      html+='<div class="empty" style="padding:20px;text-align:center;">此課程在該期間內沒有任何未點到紀錄。</div>';
+    }
+
+    if(body)body.innerHTML=html;
+    modal.classList.add('visible');
+    modal.style.display='flex';
+  }catch(err){
+    console.error('openUnattendedModal error:',err);
+  }
+}
+function closeUnattendedModal(){
+  var modal=document.getElementById('unattendedModal')||(typeof q==='function'?q('unattendedModal'):null);
+  if(modal){
+    modal.classList.remove('visible');
+    modal.style.display='none';
+  }
+}
+window.openUnattendedModal=openUnattendedModal;
+window.closeUnattendedModal=closeUnattendedModal;
+
+(function(){
+  function bindUnattendedEvents(){
+    var m=document.getElementById('unattendedModal');
+    var c=document.getElementById('closeUnattended');
+    if(c)c.onclick=closeUnattendedModal;
+    if(m){
+      m.onclick=function(e){if(e.target===m)closeUnattendedModal();};
+      m.addEventListener('touchstart',function(e){if(e.target===m)closeUnattendedModal();},{passive:true});
+    }
+  }
+  if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',bindUnattendedEvents);
+  else bindUnattendedEvents();
+  setTimeout(bindUnattendedEvents,100);
+  setTimeout(bindUnattendedEvents,500);
+
+  ['click','touchend'].forEach(function(evtName){
+    document.addEventListener(evtName,function(ev){
+      var t=ev.target;
+      if(t&&t.nodeType===3)t=t.parentElement;
+      var el=t&&t.closest&&t.closest('[data-view-unattended]');
+      if(!el)return;
+      var course=el.getAttribute('data-view-unattended');
+      if(course&&typeof window.openUnattendedModal==='function'){
+        ev.preventDefault();
+        window.openUnattendedModal(course);
+      }
+    },true);
+  });
+})();
 /* 一次抓「統計 ＋ 逐筆送出紀錄」。
    force=true 用於按鈕／剛送完點名；否則 15 秒內不重複打（狀態輪詢會跟著呼叫）。 */
 async function refreshAttendance(force){
@@ -1973,7 +2160,7 @@ if(q('quickPromoteAdminBtn')){
       } catch(e){ msg.style.color = 'var(--bad,#f87171)'; msg.textContent = (e && e.message) || '新增失敗'; toast((e && e.message) || '新增失敗', false); }
       finally { q('addAccountSubmit').disabled = false; }
     };
-  }qb('refreshHealth').onclick=loadHealth;qb('closeHistory').onclick=()=>q('historyModal').classList.remove('visible');document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));document.body.addEventListener('click',e=>{const sw=e.target.closest('[data-switch]');if(sw)return switchView(sw.dataset.switch);const a=e.target.closest('[data-action]');if(a)return doAction(a.dataset.action,a.dataset.account)});document.querySelectorAll('.mobile-nav button[data-view]').forEach(b=>b.onclick=()=>switchView(b.dataset.view));qb('mobileMore').onclick=()=>q('mobileSheet').classList.add('visible');qb('mobileSheet').onclick=e=>{if(e.target===q('mobileSheet'))q('mobileSheet').classList.remove('visible')};qb('mRefresh').onclick=()=>location.reload();qb('mLogout').onclick=function(){if(window.tronAuth&&window.tronAuth.logout)window.tronAuth.logout()};syncLinks();switchView((location.hash||'#overview').slice(1));
+  }qb('refreshHealth').onclick=loadHealth;qb('closeHistory').onclick=()=>q('historyModal').classList.remove('visible');if(q('closeUnattended'))q('closeUnattended').onclick=closeUnattendedModal;if(q('unattendedModal'))q('unattendedModal').onclick=(e)=>{if(e.target===q('unattendedModal'))closeUnattendedModal();};document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>switchView(b.dataset.view));document.body.addEventListener('click',e=>{const un=e.target.closest('[data-view-unattended]');if(un){e.preventDefault();const c=un.getAttribute('data-view-unattended');if(c)openUnattendedModal(c);return;}const sw=e.target.closest('[data-switch]');if(sw)return switchView(sw.dataset.switch);const a=e.target.closest('[data-action]');if(a)return doAction(a.dataset.action,a.dataset.account)});document.querySelectorAll('.mobile-nav button[data-view]').forEach(b=>b.onclick=()=>switchView(b.dataset.view));qb('mobileMore').onclick=()=>q('mobileSheet').classList.add('visible');qb('mobileSheet').onclick=e=>{if(e.target===q('mobileSheet'))q('mobileSheet').classList.remove('visible')};qb('mRefresh').onclick=()=>location.reload();qb('mLogout').onclick=function(){if(window.tronAuth&&window.tronAuth.logout)window.tronAuth.logout()};syncLinks();switchView((location.hash||'#overview').slice(1));
 // TRONCLASS_DASHBOARD_RUNTIME_API_V1: external modules use only this stable surface.
 window.TronclassDashboard={q:q,token:token,withToken:withToken,api:api,parseResponse:parseResponse,toast:toast,loadStatus:loadStatus,switchView:switchView,getStatus:function(){return status},refresh:function(){return loadStatus()}};
 // TRONCLASS_ACCOUNTS_API_V1: bridge used by the later accounts.js module.

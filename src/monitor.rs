@@ -1127,7 +1127,7 @@ async fn do_poll_and_attend(
     if let Some(first_pending) = pending_rollcalls.first() {
         let mut status = ctx.status.lock().await;
         status.last_detected_timestamp = Some(current_unix_secs());
-        status.last_detected_course = Some(first_pending.course_title.clone());
+        status.last_detected_course = Some(first_pending.course_display_name());
         status.last_detected_rollcall_id = Some(first_pending.rollcall_id);
         status.last_detected_url = None;
     }
@@ -1217,7 +1217,7 @@ async fn do_poll_and_attend(
             // 更新最後成功課程，並清除管理頁上的「偵測到點名」提醒。
             {
                 let mut s = ctx.status.lock().await;
-                s.last_success_course = Some(outcome.rollcall.course_title.clone());
+                s.last_success_course = Some(outcome.rollcall.course_display_name());
                 s.last_success_rollcall_id = Some(outcome.rollcall.rollcall_id);
                 if s.last_detected_rollcall_id == Some(outcome.rollcall.rollcall_id) {
                     s.last_detected_timestamp = None;
@@ -1771,7 +1771,7 @@ async fn push_rollcall_history(
         RollcallHistoryEntry {
             timestamp: current_unix_secs(),
             rollcall_id: outcome.rollcall.rollcall_id,
-            course_name: outcome.rollcall.course_title.clone(),
+            course_name: outcome.rollcall.course_display_name(),
             attendance_type: outcome.attendance_type.to_string(),
             success: outcome.is_success(),
             result: outcome.result.to_string(),
@@ -1795,7 +1795,7 @@ async fn record_rollcall_event(ctx: &MonitorContext, outcome: &crate::rollcalls:
         username: ctx.account.username.clone(),
         user_name,
         rollcall_id: outcome.rollcall.rollcall_id,
-        course_name: outcome.rollcall.course_title.clone(),
+        course_name: outcome.rollcall.course_display_name(),
         attendance_type: outcome.attendance_type.to_string(),
         success: outcome.is_success(),
         result: outcome.result.to_string(),

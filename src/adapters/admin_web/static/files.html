@@ -626,18 +626,10 @@
         border-bottom-color: var(--line, #223046) !important;
       }
     }
-    .top-actions {
-      display: flex !important;
-      align-items: center !important;
-      gap: 8px !important;
-    }
-    #dashboardLink {
-      display: inline-flex !important;
-      visibility: visible !important;
-      min-height: 36px !important;
-      padding: 0 12px !important;
-      font-size: 13px !important;
-      font-weight: 800 !important;
+    .top-actions, #dashboardLink {
+      display: none !important;
+      visibility: hidden !important;
+      pointer-events: none !important;
     }
     .search-wrap {
       display: none !important;
@@ -792,29 +784,17 @@
 
 <style id="FILES_MOBILE_HEADER_BACK_CSS_V1">
   @media (max-width:820px){
-    .top-actions > *:not(#dashboardLink),
-    #refresh, #changePasswordBtn, #passkeyRegisterBtn,
-    .top-actions button, .top-actions a:not(#dashboardLink){
+    .top-actions, #dashboardLink, #mBackDashboardBtn, #refresh, #changePasswordBtn, #passkeyRegisterBtn{
       display:none!important;
-    }
-    #dashboardLink{
-      display:inline-flex!important;
-      visibility:visible!important;
-      min-height:36px!important;
-      padding:0 14px!important;
-      font-size:13px!important;
-      font-weight:800!important;
-    }
-    #mDashboard{display:none!important}
-    .mobilebar, #mobilebar, #filesMobileNav{
-      grid-template-columns:repeat(4,1fr)!important;
+      visibility:hidden!important;
+      pointer-events:none!important;
     }
   }
 </style>
 
 <style id="FILES_TOP_BACK_CSS_V2">
-  /* 桌面已有頂欄回控制台，這顆只給手機用 */
-  #filesBackDashboardBtn{display:none!important}
+  /* 電腦版右上角保留「返回控制台」，手機版頂欄不需要返回按鈕（由底部導覽列提供） */
+  #filesBackDashboardBtn, #mBackDashboardBtn{display:none!important}
   @media (max-width:820px){
     header.topbar, header, .topbar{
       display:flex!important;
@@ -838,6 +818,13 @@
     .topbar .top-actions{
       display:none!important;
     }
+    a#mBackDashboardBtn,
+    #mBackDashboardBtn,
+    #dashboardLink{
+      display:none!important;
+      visibility:hidden!important;
+      pointer-events:none!important;
+    }
     a#filesBackDashboardBtn,
     #filesBackDashboardBtn{
       display:inline-flex!important;
@@ -854,15 +841,15 @@
       padding:0 12px!important;
       border-radius:999px!important;
       border:0!important;
-      background:#2563eb!important;
-      color:#fff!important;
+      background:var(--surface2, #f1f5f9)!important;
+      color:var(--text, #0f172a)!important;
       font-size:12px!important;
       font-weight:800!important;
       letter-spacing:0!important;
       white-space:nowrap!important;
       text-decoration:none!important;
-      box-shadow:0 6px 16px rgba(37,99,235,.28)!important;
       z-index:80!important;
+      gap:4px!important;
     }
   }
 </style>
@@ -1047,7 +1034,7 @@
     <input id="search" type="search" placeholder="搜尋教材或資料夾名稱...">
   </div>
   <div class="top-actions">
-    <a id="dashboardLink" class="button primary" href="/admin">回控制台</a>
+    <a id="dashboardLink" class="button primary" href="/admin" title="返回 Dashboard 控制台">返回控制台</a>
     <button id="refresh" class="button secondary" type="button">重新整理</button>
   </div>
   <!-- MOBILE_IMPORT_TOP_V1: 手機版頂欄「匯入 iClass」按鈕 (僅手機顯示) -->
@@ -1056,9 +1043,9 @@
     匯入<span class="m-import-full"> iClass</span>
   </button>
   <!-- MOBILE_UP_TOP_V2: 「回上一頁」移到匯入右側 -->
-  <button id="filesBackDashboardBtn" class="button primary" type="button" title="回上一層資料夾">
+  <button id="filesBackDashboardBtn" class="button secondary" type="button" title="回上一層資料夾">
     <svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>
-    回上一頁
+    上一層
   </button>
 </header>
 
@@ -1093,6 +1080,7 @@
         <div id="breadcrumb" class="breadcrumb"></div>
       </div>
       <div class="toolbar-right">
+        <a id="contentHeadBackDashboard" class="button secondary" href="/admin" title="返回 Dashboard 控制台">返回控制台</a>
         <button id="importHere" class="button secondary" type="button" title="從 iClass 自動下載當學期教材">⬇️ 匯入 iClass 教材</button>
         <button id="uploadHere" class="button primary" type="button" title="上傳檔案（可一次選多個）">上傳檔案</button>
         <button id="mkdirHere" class="button secondary" type="button">新增資料夾</button>
@@ -2875,6 +2863,8 @@
     if (q('dashboardLink')) q('dashboardLink').href = withToken('/admin');
     if (q('contentHeadBackDashboard')) q('contentHeadBackDashboard').href = withToken('/admin');
     if (q('sidebarBackDashboard')) q('sidebarBackDashboard').href = withToken('/admin');
+    if (q('sidebarDashboardLink')) q('sidebarDashboardLink').href = withToken('/admin#overview');
+    if (q('mBackDashboardBtn')) q('mBackDashboardBtn').href = withToken('/admin');
     if (q('mDashboard')) q('mDashboard').href = withToken('/admin');
   }
 
@@ -3438,7 +3428,7 @@
         a.className='button primary';
         top.appendChild(a);
       }
-      a.textContent='回控制台';
+      a.textContent='返回控制台';
       a.href=href();
       a.style.display='inline-flex';
     }
@@ -3477,14 +3467,18 @@
     }else if(btn.parentElement !== header){
       header.appendChild(btn);
     }
-    // MOBILE_FILES_BACK_BUTTON_V2: 頂欄這顆改為「回上一頁」資料夾(非回控制台)。
-    btn.className = 'button primary';
+    // MOBILE_FILES_BACK_BUTTON_V2: 頂欄這顆為「回上一層」資料夾(非回控制台)。
+    btn.className = 'button secondary';
     btn.setAttribute('type','button');
     btn.title = '回上一層資料夾';
-    btn.innerHTML = '<svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>回上一頁';
+    btn.innerHTML = '<svg class="btn-ico" viewBox="0 0 24 24"><path d="M12 19V5"></path><path d="m5 12 7-7 7 7"></path></svg>上一層';
     btn.removeAttribute('href');
     btn.removeAttribute('hidden');
     btn.style.display = '';
+
+    // 手機版頂欄不需要右上角返回控制台按鈕（底部導覽列已有返回控制台）
+    var dashBtn = document.getElementById('mBackDashboardBtn');
+    if(dashBtn) dashBtn.remove();
   }
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', ensure);
   else ensure();
@@ -3550,7 +3544,7 @@ html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar b
   .topbar .button,header.topbar .button,.top-actions .button,.top-actions a,.top-actions button{
     min-height:40px!important;border-radius:999px!important;padding:0 16px!important;font-weight:750!important;white-space:nowrap!important;
   }
-  /* 手機(≤820px)：保持品牌+標題+副標題，右側兩顆膠囊按鈕 */
+  /* 手機(≤820px)：保持品牌+標題+副標題，右側膠囊按鈕 */
   /* 手機(≤820px)：品牌+標題+副標題可收縮，兩顆膠囊按鈕改小、不擠壓文字 */
   @media(max-width:820px){
     header.topbar,.topbar{min-height:86px!important;padding:16px 16px!important;gap:10px!important}
@@ -3560,11 +3554,15 @@ html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar b
     .brand-title{font-size:18px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}
     .brand-sub{display:block!important;font-size:12px!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;max-width:100%!important}
     .search-wrap{display:none!important}
-    /* MOBILE_TOPBAR_BIGGER_V1: 手機頂欄做大 */
+    /* MOBILE_TOPBAR_BIGGER_V1: 手機頂欄優化（右上角不顯示返回按鈕，底部已有返回控制台） */
+    #mBackDashboardBtn,a#mBackDashboardBtn{
+      display:none!important;visibility:hidden!important;pointer-events:none!important;
+    }
     #filesBackDashboardBtn,a#filesBackDashboardBtn{
       display:inline-flex!important;visibility:visible!important;opacity:1!important;pointer-events:auto!important;
-      min-height:46px!important;height:46px!important;padding:0 16px!important;font-size:14px!important;flex:0 0 auto!important;
-      margin-left:0!important;
+      min-height:46px!important;height:46px!important;padding:0 14px!important;font-size:14px!important;flex:0 0 auto!important;
+      margin-left:auto!important;background:var(--surface2, #f1f5f9)!important;color:var(--text, #0f172a)!important;
+      border-radius:999px!important;font-weight:800!important;text-decoration:none!important;gap:4px!important;align-items:center!important;
     }
     #mImportTop{
       min-height:46px!important;height:46px!important;padding:0 14px!important;font-size:14px!important;flex:0 0 auto!important;
@@ -3727,6 +3725,12 @@ html[data-theme="dark"] .mobilebar a:hover, html[data-theme="dark"] .mobilebar b
   }
   @media (max-width:820px){
     .sidebar-dash{display:none!important}
+    #dashboardLink, #mBackDashboardBtn, a#mBackDashboardBtn{
+      display:none!important;
+      visibility:hidden!important;
+      opacity:0!important;
+      pointer-events:none!important;
+    }
   }
 </style>
 </body>

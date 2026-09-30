@@ -110,7 +110,8 @@ pub use materials::{MaterialEventInput, MaterialEventRow};
 #[allow(unused_imports)]
 pub use rollcalls::{
     aggregate_courses, aggregate_senders, rollcall_success_rate, select_display_session_rows,
-    RollcallCourseStat, RollcallEventInput, RollcallEventRow, RollcallSenderStat,
+    RollcallCourseStat, RollcallEventInput, RollcallEventRow, RollcallLatestSession,
+    RollcallSenderStat, RollcallUnattendedUser,
 };
 #[allow(unused_imports)]
 pub use preferences::{

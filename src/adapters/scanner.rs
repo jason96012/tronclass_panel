@@ -428,6 +428,28 @@ impl QrScannerRegistry {
         }
     }
 
+    /// 檢查 QR 點名等待群組中所有註冊帳號是否均已完成簽到。
+    pub async fn is_qr_group_completed(&self, provider: &str, rollcall_id: u64) -> bool {
+        let key = PendingQrKey::new(provider, rollcall_id);
+        let inner = self.inner.lock().await;
+        if let Some(entry) = inner.get(&key) {
+            !entry.all_accounts.is_empty() && entry.accounts.is_empty()
+        } else {
+            false
+        }
+    }
+
+    /// 檢查數字點名等待群組中所有註冊帳號是否均已完成簽到。
+    pub async fn is_number_group_completed(&self, provider: &str, rollcall_id: u64) -> bool {
+        let key = PendingNumberKey::new(provider, rollcall_id);
+        let inner = self.number_inner.lock().await;
+        if let Some(entry) = inner.get(&key) {
+            !entry.all_accounts.is_empty() && entry.accounts.is_empty()
+        } else {
+            false
+        }
+    }
+
     pub async fn mark_number_failed(
         &self,
         provider: &str,

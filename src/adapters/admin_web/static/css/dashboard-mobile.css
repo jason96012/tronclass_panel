@@ -175,3 +175,38 @@ html body #mobileMoreFinalV2.visible,
     touch-action:pan-x pan-y;
   }
 }
+
+/* 誰沒有點到名 Modal 手機版滿版對齊與高層級支援 */
+#unattendedModal{
+  position:fixed!important;
+  inset:0!important;
+  z-index:2147483646!important;
+  display:none;
+  align-items:center!important;
+  justify-content:center!important;
+  padding:14px!important;
+  background:rgba(15,23,42,0.68)!important;
+  backdrop-filter:blur(10px)!important;
+  -webkit-backdrop-filter:blur(10px)!important;
+}
+#unattendedModal.visible{
+  display:flex!important;
+  visibility:visible!important;
+  pointer-events:auto!important;
+}
+#unattendedModal.visible *{
+  visibility:visible!important;
+  pointer-events:auto!important;
+}
+#unattendedModal .modal{
+  width:min(520px,100%)!important;
+  max-height:82vh!important;
+  background:var(--card,#fff)!important;
+  border-radius:18px!important;
+  box-shadow:0 25px 60px rgba(0,0,0,0.45)!important;
+  display:flex!important;
+  flex-direction:column!important;
+  overflow:hidden!important;
+  pointer-events:auto!important;
+}
+

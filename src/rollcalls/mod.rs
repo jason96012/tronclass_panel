@@ -462,6 +462,43 @@ async fn reverify_rollcall(
 // ─── 各類型處理函式 ───────────────────────────────────────────────────────────
 
 /// 處理數字簽到（爆破已關閉，等待 adapter 手動輸入 4 位數字）
+/// TronClass 伺服器上的點名即時狀態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServerRollcallStatus {
+    /// 點名仍在進行中，且本人尚未簽到（需繼續等待）
+    ActivePending,
+    /// 伺服器確認本人已經簽到成功（on_call_fine）
+    AlreadyAttended,
+    /// 點名已由老師關閉、已過期、或已不在伺服器清單中
+    ClosedOrExpired,
+    /// 暫時性網路錯誤（無法連線）
+    UnknownError,
+}
+
+/// 檢查點名在 TronClass 伺服器上的即時狀態。
+async fn check_server_rollcall_status(api: &ApiClient, rollcall_id: u64) -> ServerRollcallStatus {
+    match api.get_rollcalls().await {
+        Ok(list) => {
+            if let Some(rc) = list.iter().find(|r| r.rollcall_id == rollcall_id) {
+                if rc.is_attended() || rc.status == "on_call_fine" {
+                    ServerRollcallStatus::AlreadyAttended
+                } else if rc.is_expired || rc.status != "absent" {
+                    ServerRollcallStatus::ClosedOrExpired
+                } else {
+                    ServerRollcallStatus::ActivePending
+                }
+            } else {
+                ServerRollcallStatus::ClosedOrExpired
+            }
+        }
+        Err(e) => {
+            warn!(rollcall_id = rollcall_id, error = %e, "查詢伺服器點名狀態失敗，暫時維持等待");
+            ServerRollcallStatus::UnknownError
+        }
+    }
+}
+
+/// 處理數字簽到（跟隨老師點名時長，老師開多久就等多久；全員點到則立刻停止請求）
 async fn handle_number_rollcall(
     api: Arc<ApiClient>,
     rollcall: &Rollcall,
@@ -474,13 +511,11 @@ async fn handle_number_rollcall(
     number_tx: Option<NumberCodeSender>,
     scanner_registry: Option<Arc<QrScannerRegistry>>,
 ) -> RollcallResult {
-    let timeout_secs = config.provider_config.qrcode.scan_timeout_secs;
-    let timeout = Duration::from_secs(timeout_secs);
+    let max_wait_duration = Duration::from_secs(10800); // 3 小時安全硬上限，老師開多久等多久
 
     info!(
         rollcall_id = rollcall.rollcall_id,
-        timeout_secs = timeout_secs,
-        "數字爆破已關閉；預設等待手動輸入，使用者可在介面選擇自動讀取"
+        "數字簽到流程啟動：持續等待至老師關閉點名為止，預設等待手動輸入或自動讀取"
     );
 
     let Some(rx) = number_rx else {
@@ -500,7 +535,7 @@ async fn handle_number_rollcall(
                         rollcall.rollcall_id,
                         &config.id,
                         tx,
-                        timeout,
+                        max_wait_duration,
                     )
                     .await
                 {
@@ -538,7 +573,7 @@ async fn handle_number_rollcall(
             input_url: input_url.clone(),
             alt_input_url: crate::adapters::scanner::alternate_public_url(&input_url)
                 .unwrap_or_default(),
-            timeout_secs,
+            timeout_secs: 2700,
         });
         if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
             warn!(error = %e, "發送數字點名碼請求通知失敗");
@@ -546,15 +581,11 @@ async fn handle_number_rollcall(
     }
 
     let started_waiting = tokio::time::Instant::now();
-    let deadline = started_waiting + timeout;
-    // ROLLCALL_INPUT_REMINDER_V1：20 秒後若仍無任何輸入就催一次；逾時本身不到 20 秒則不催。
+    let max_deadline = started_waiting + max_wait_duration;
     let reminder_at = started_waiting + Duration::from_secs(INPUT_REMINDER_SECS);
-    let mut reminder_sent = reminder_at >= deadline;
+    let mut reminder_sent = false;
     let mut last_error: Option<String> = None;
-    // NUMBER_USER_SUBMIT_NOW_V1：手動 4 碼／頁面「自動讀取」立刻送，不受 15% 限制。
-    // NUMBER_AUTO_DETECT_ONCE_V1：只有後台「班上超過 15% 才自動讀碼」這條受門檻；失敗通知一次、不再重試。
     let mut auto_detect_tried = false;
-    // CLASS_COUNT_HEADER_V1：一進場就讀班上進度（寫進共用快取），上方人數條才不會卡在「讀取中」。
     let _ = class_progress_snapshot(
         &api,
         scanner_registry.as_ref(),
@@ -563,9 +594,10 @@ async fn handle_number_rollcall(
     )
     .await;
     let mut next_progress_check = started_waiting + Duration::from_secs(AUTO_SUBMIT_POLL_SECS);
+    let mut next_server_active_check = started_waiting + Duration::from_secs(15);
     loop {
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= max_deadline {
             if let Some((registry, _)) = number_registered.as_ref() {
                 registry
                     .unregister_number_pending(&config.provider, rollcall.rollcall_id, &config.id)
@@ -573,18 +605,60 @@ async fn handle_number_rollcall(
             }
             return RollcallResult::Failed {
                 reason: last_error
-                    .unwrap_or_else(|| format!("數字點名碼輸入逾時（{}秒）", timeout.as_secs())),
+                    .unwrap_or_else(|| "數字點名等待逾時（已達安全上限 3 小時）".to_string()),
             };
         }
 
-        // ROLLCALL_INPUT_REMINDER_V1：第一段只等到催促時間點，醒來後判斷是否要催。
+        // 節流與提早結束：若該課程的所有帳號均已完成簽到，不再發送任何伺服器確認請求
+        if let Some((registry, _)) = number_registered.as_ref() {
+            if registry.is_number_group_completed(&config.provider, rollcall.rollcall_id).await {
+                info!(
+                    rollcall_id = rollcall.rollcall_id,
+                    "該課程所有帳號均已完成數字簽到，停止向學校發送請求並結束等待"
+                );
+                return RollcallResult::Success {
+                    detail: "該課程所有帳號均已完成簽到".to_string(),
+                };
+            }
+        }
+
+        // 定期向 TronClass 伺服器同步點名活躍狀態
+        if now >= next_server_active_check {
+            next_server_active_check = now + Duration::from_secs(15);
+            match check_server_rollcall_status(&api, rollcall.rollcall_id).await {
+                ServerRollcallStatus::AlreadyAttended => {
+                    info!(rollcall_id = rollcall.rollcall_id, "學校伺服器確認已完成簽到，停止請求並結束等待");
+                    if let Some((registry, _)) = number_registered.as_ref() {
+                        registry
+                            .mark_number_completed(&config.provider, rollcall.rollcall_id, &config.id)
+                            .await;
+                    }
+                    return RollcallResult::Success {
+                        detail: "學校伺服器確認已完成簽到（on_call_fine）".to_string(),
+                    };
+                }
+                ServerRollcallStatus::ClosedOrExpired => {
+                    info!(rollcall_id = rollcall.rollcall_id, "學校伺服器顯示數字點名已結束或已過期，停止請求並結束等待");
+                    if let Some((registry, _)) = number_registered.as_ref() {
+                        registry
+                            .unregister_number_pending(&config.provider, rollcall.rollcall_id, &config.id)
+                            .await;
+                    }
+                    return RollcallResult::Failed {
+                        reason: last_error.unwrap_or_else(|| "點名已結束（老師已關閉或過期）".to_string()),
+                    };
+                }
+                ServerRollcallStatus::ActivePending | ServerRollcallStatus::UnknownError => {
+                    // 點名仍在進行中且尚未簽到，繼續等待
+                }
+            }
+        }
+
         let wait_until = if !reminder_sent && last_error.is_none() {
             reminder_at.max(now)
         } else {
-            deadline
+            next_server_active_check.min(max_deadline)
         };
-        // AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：等待期間也要定期看班上進度，
-        // 所以這一段最多只等到「下一次檢查時間」（不是 deadline）。
         let progress_at = (next_progress_check < wait_until).then_some(next_progress_check);
         let segment_end = progress_at.unwrap_or(wait_until);
         let input = match wait_for_number_input(rx.clone(), segment_end.saturating_duration_since(now))
@@ -603,7 +677,6 @@ async fn handle_number_rollcall(
                 )
                 .await
                 {
-                    // NUMBER_USER_SUBMIT_NOW_V1：15% 只管後台自動讀碼；使用者已手動送／已按自動讀取則這裡不再插手。
                     if auto_detect_tried {
                         debug!("後台自動讀碼已試過，繼續等手動輸入");
                     } else {
@@ -662,10 +735,10 @@ async fn handle_number_rollcall(
                 }
                 continue;
             }
-            Err(_) if wait_until < deadline && tokio::time::Instant::now() >= reminder_at => {
+            Err(_) if wait_until <= reminder_at && tokio::time::Instant::now() >= reminder_at => {
                 reminder_sent = true;
                 if last_error.is_none() {
-                    let remaining = deadline
+                    let remaining = max_deadline
                         .saturating_duration_since(tokio::time::Instant::now())
                         .as_secs();
                     send_input_reminder(
@@ -682,25 +755,13 @@ async fn handle_number_rollcall(
                 }
                 continue;
             }
-            Err(reason) => {
-                if let Some((registry, _)) = number_registered.as_ref() {
-                    registry
-                        .unregister_number_pending(
-                            &config.provider,
-                            rollcall.rollcall_id,
-                            &config.id,
-                        )
-                        .await;
-                }
-                return RollcallResult::Failed {
-                    reason: last_error.unwrap_or(reason),
-                };
+            Err(_) => {
+                continue;
             }
         };
 
         match input {
             NumberCodeInput::Code(code) => {
-                // NUMBER_USER_SUBMIT_NOW_V1：人打的 4 碼立刻送，不等 15%。
                 let result = submit_number_code(
                     Arc::clone(&api),
                     rollcall.rollcall_id,
@@ -724,7 +785,6 @@ async fn handle_number_rollcall(
                 }
             }
             NumberCodeInput::AutoLookup => {
-                // NUMBER_USER_SUBMIT_NOW_V1：頁面／Discord「自動讀取」立刻查碼，不等 15%。
                 if auto_detect_tried {
                     info!("自動讀碼已試過，忽略再次自動讀取");
                     continue;
@@ -1469,14 +1529,15 @@ async fn handle_qrcode_rollcall(
     qr_tx: Option<QrCodeSender>,
     scanner_registry: Option<Arc<QrScannerRegistry>>,
 ) -> RollcallResult {
-    info!(rollcall_id = rollcall.rollcall_id, "開始 QR Code 簽到流程");
+    let max_wait_duration = Duration::from_secs(10800); // 3 小時安全硬上限，老師開多久等多久
+
+    info!(rollcall_id = rollcall.rollcall_id, "開始 QR Code 簽到流程（持續至老師關閉點名為止）");
 
     // 構建掃碼頁面 URL（讓使用者點擊）
     let legacy_scan_url = format!(
         "{}?rollcall_id={}",
         config.provider_config.qrcode.scanner_base_url, rollcall.rollcall_id
     );
-    let timeout = Duration::from_secs(config.provider_config.qrcode.scan_timeout_secs);
     let scanner_registered = if let (Some(registry), Some(tx)) = (scanner_registry.as_ref(), qr_tx)
     {
         if registry.public_base_url().trim().is_empty() {
@@ -1488,7 +1549,7 @@ async fn handle_qrcode_rollcall(
                     rollcall.rollcall_id,
                     &config.id,
                     tx,
-                    timeout,
+                    max_wait_duration,
                 )
                 .await
             {
@@ -1531,10 +1592,9 @@ async fn handle_qrcode_rollcall(
             account: account_label.to_string(),
             course_name: rollcall.course_title.clone(),
             teacher_name: rollcall.created_by_name.clone(),
-            // ROLLCALL_INPUT_REMINDER_V1：後面催促還要用，這裡改 clone。
             scan_url: scan_url.clone(),
             alt_scan_url,
-            timeout_secs: config.provider_config.qrcode.scan_timeout_secs,
+            timeout_secs: 2700,
         });
 
         if !scanner_already_submitted {
@@ -1575,28 +1635,25 @@ async fn handle_qrcode_rollcall(
 
     info!(
         rollcall_id = rollcall.rollcall_id,
-        timeout_secs = config.provider_config.qrcode.scan_timeout_secs,
-        "等待 QR code 輸入..."
+        "等待 QR code 輸入（將持續等待至老師關閉點名為止）..."
     );
 
     let started_waiting = tokio::time::Instant::now();
-    let deadline = started_waiting + timeout;
-    // ROLLCALL_INPUT_REMINDER_V1：20 秒後若仍沒有任何 QR 輸入就催一次。
+    let max_deadline = started_waiting + max_wait_duration;
     let reminder_at = started_waiting + Duration::from_secs(INPUT_REMINDER_SECS);
-    let mut reminder_sent = reminder_at >= deadline || scanner_already_submitted;
+    let mut reminder_sent = reminder_at >= max_deadline || scanner_already_submitted;
     let mut last_error: Option<String> = None;
-    // QR_FRESH_PAYLOAD_V1（fix68）：上一次實際送出的 payload 與時間（避免短時間重複送同一個碼）。
     let mut last_qr_attempt: Option<(String, tokio::time::Instant)> = None;
-    // CLASS_COUNT_HEADER_V1：一進場就讀班上進度，掃碼頁人數條才會動。
     let mut next_progress_check = started_waiting;
+    let mut next_server_active_check = started_waiting + Duration::from_secs(15);
     let mut progress_nudged = false;
 
     loop {
         let now = tokio::time::Instant::now();
-        if now >= deadline {
+        if now >= max_deadline {
             warn!(
                 rollcall_id = rollcall.rollcall_id,
-                "QR code 等待逾時（{}秒）", config.provider_config.qrcode.scan_timeout_secs
+                "QR code 等待達到安全上限（3小時）"
             );
             if let Some((registry, _, _)) = scanner_registered.as_ref() {
                 registry
@@ -1604,23 +1661,62 @@ async fn handle_qrcode_rollcall(
                     .await;
             }
             return RollcallResult::Failed {
-                reason: last_error.unwrap_or_else(|| {
-                    format!(
-                        "QR code 輸入逾時（{}秒）",
-                        config.provider_config.qrcode.scan_timeout_secs
-                    )
-                }),
+                reason: last_error.unwrap_or_else(|| "QR code 輸入逾時（已達安全上限 3 小時）".to_string()),
             };
+        }
+
+        // 節流與提早結束：若該課程的所有帳號均已完成簽到，不再發送任何伺服器確認請求
+        if let Some((registry, _, _)) = scanner_registered.as_ref() {
+            if registry.is_qr_group_completed(&config.provider, rollcall.rollcall_id).await {
+                info!(
+                    rollcall_id = rollcall.rollcall_id,
+                    "該課程所有帳號均已完成 QR 簽到，停止向學校發送請求並結束等待"
+                );
+                return RollcallResult::Success {
+                    detail: "該課程所有帳號均已完成簽到".to_string(),
+                };
+            }
+        }
+
+        // 定期向 TronClass 伺服器同步點名活躍狀態：若老師已在伺服器上關閉點名或本人已簽到，立即停止請求
+        if now >= next_server_active_check {
+            next_server_active_check = now + Duration::from_secs(15);
+            match check_server_rollcall_status(&api, rollcall.rollcall_id).await {
+                ServerRollcallStatus::AlreadyAttended => {
+                    info!(rollcall_id = rollcall.rollcall_id, "學校伺服器確認已完成簽到，停止請求並結束等待");
+                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                        registry
+                            .mark_completed(&config.provider, rollcall.rollcall_id, &config.id)
+                            .await;
+                    }
+                    return RollcallResult::Success {
+                        detail: "學校伺服器確認已完成簽到（on_call_fine）".to_string(),
+                    };
+                }
+                ServerRollcallStatus::ClosedOrExpired => {
+                    info!(rollcall_id = rollcall.rollcall_id, "學校伺服器顯示 QR 點名已結束或已過期，停止請求並結束等待");
+                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                        registry
+                            .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
+                            .await;
+                    }
+                    return RollcallResult::Failed {
+                        reason: last_error.unwrap_or_else(|| "點名已結束（老師已關閉或過期）".to_string()),
+                    };
+                }
+                ServerRollcallStatus::ActivePending | ServerRollcallStatus::UnknownError => {
+                    // 點名仍在進行中且尚未簽到，繼續等待
+                }
+            }
         }
 
         // ROLLCALL_INPUT_REMINDER_V1：第一段只等到催促時間點。
         let wait_until = if !reminder_sent && last_error.is_none() {
             reminder_at.max(now)
         } else {
-            deadline
+            next_server_active_check.min(max_deadline)
         };
         // AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：這一段最多只等到「下一次班上進度檢查時間」。
-        // QR 的 payload 只能靠掃碼取得（學校 API 沒有），所以過門檻時只催人、不假造。
         let progress_at = (next_progress_check < wait_until).then_some(next_progress_check);
         let segment_end = progress_at.unwrap_or(wait_until);
         let remaining = segment_end.saturating_duration_since(now);
@@ -1635,8 +1731,6 @@ async fn handle_qrcode_rollcall(
                 Err(_) if progress_at.is_some() => {
                     next_progress_check =
                         tokio::time::Instant::now() + Duration::from_secs(AUTO_SUBMIT_POLL_SECS);
-                    // CLASS_COUNT_ON_PAGES_V1：先讀一次班上進度（共用快取，10 秒內不重複讀），
-                    // 讀到的數字會被點名頁拿去顯示「目前班上已點人數」。
                     let progress = class_progress_over_threshold(
                         &api,
                         scanner_registry.as_ref(),
@@ -1645,7 +1739,6 @@ async fn handle_qrcode_rollcall(
                         account_label,
                     )
                     .await;
-                    // 催人只催一次；但上面的讀取每一輪都做，畫面才會跟著更新。
                     if !progress_nudged {
                         if let Some(progress) = progress {
                             progress_nudged = true;
@@ -1673,7 +1766,7 @@ async fn handle_qrcode_rollcall(
                     }
                     continue;
                 }
-                Err(_) if wait_until < deadline => None,
+                Err(_) if wait_until <= reminder_at && tokio::time::Instant::now() >= reminder_at => None,
                 Ok(None) => {
                     if let Some((registry, _, _)) = scanner_registered.as_ref() {
                         registry
@@ -1690,7 +1783,7 @@ async fn handle_qrcode_rollcall(
         let Some(qr_input) = qr_input else {
             reminder_sent = true;
             if last_error.is_none() {
-                let remaining_secs = deadline
+                let remaining_secs = max_deadline
                     .saturating_duration_since(tokio::time::Instant::now())
                     .as_secs();
                 send_input_reminder(
@@ -1709,15 +1802,12 @@ async fn handle_qrcode_rollcall(
         };
 
         // 執行 QR Code 簽到。scanner 會持續掃描並送出更新後的 QR payload；失敗時繼續等下一筆。
-        // RELAY_DEADLINE_BUDGET_V1（fix69）：等待最多只用到「等待窗結束前幾秒」，
-        // 避免等太久才送出、結果學校的點名視窗已經關了。數字點名不需要這個上限
-        // （fix69'：數字碼整場不變，等久一點沒有壞處），所以只有 QR 帶預算。
         let _ = wait_group_submit_turn(
             &config.provider,
             rollcall.rollcall_id,
             GroupSubmitKind::QrCode,
             &config.id,
-            relay_budget(deadline),
+            relay_budget(max_deadline),
         )
         .await;
 

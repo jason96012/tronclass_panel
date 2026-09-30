@@ -60,7 +60,6 @@
     video, canvas {
       display: block;
       width: 100%;
-      max-height: 62vh;
       border-radius: 8px;
     }
     /* 以前的寫法把 `background:#000` 掛在 video 與 canvas 共用的規則上 ——
@@ -68,7 +67,13 @@
        所以畫布一律透明；要黑底的地方自己寫（目前只有影片與 .gl-preview 銳化層）。
        歷史：綠框層（fix92 打開 display 時漏了覆蓋背景）與顯示層畫布（fix95）都因此整個蓋掉
        預覽，真機症狀＝「預覽全黑、看不到準心框，但掃描完全正常」。 */
-    #preview { background: #000; }   /* 影片＝底片：等比縮放留黑邊要靠它 */
+    #preview {
+      background: #000;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      transform-origin: center center;
+    }   /* 影片＝底片：等比縮放留黑邊要靠它 */
     canvas { display: none; }
     .actions {
       display: flex;
@@ -110,6 +115,14 @@
       overflow: hidden;
       border-radius: 8px;
       background: #000;
+      width: 100%;
+      min-height: 280px;
+      aspect-ratio: 4 / 3;
+      max-height: 62vh;
+      touch-action: pan-y;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
     /* PREVIEW_GL_SAFE_V1：預覽放大的責任分工 —— 「誰負責放大」由顯示方式決定（PREVIEW_SURFACE_V1），
        <video> 一律不做 CSS 縮放、也不加濾鏡：
@@ -120,7 +133,6 @@
        放大的工作交給畫布（2D 或 WebGL），影片只當「素材來源」。 */
     #preview {
       transform-origin: center center;
-      transition: transform .12s ease-out;
       /* PREVIEW_SURFACE_V1：明確用 contain（等比縮放、必要時留黑邊）。
          object-fit 的預設是 fill → 影片會被拉扁，跟畫布層（等比）看到的比例不一樣；
          三種顯示方式（原生／畫布／清晰）用同一套幾何，切換時畫面才不會跳。 */
@@ -206,7 +218,6 @@
       pointer-events: none;
       z-index: 2;
       transform-origin: center center;
-      transition: transform .12s ease-out;
       /* 這一層是「透鏡」不是「底片」：它只負責畫 QR 的外框線，中間必須是透明的。
          以前這裡有一條全域規則，會把每一張 canvas 都塗成不透明黑 ——
          fix92 把這層打開（display:block）時漏了覆蓋背景，於是它變成一張**蓋住整個預覽的黑紙**：
@@ -701,7 +712,7 @@
     const ZOOM_BTN_RATIO = 1.2;
     const ZOOM_SLIDER_MIN = 0;
     const ZOOM_SLIDER_MAX = 1000;
-    const ZOOM_DEFAULT = 2;
+    const ZOOM_DEFAULT = 1.0;
     const ZOOM_KEY = "tronclassScannerZoom";
     /* ═══ LENS_ZOOM_V1（fix99）：硬體變焦（相機自己的 zoom 能力）══════════════════
        使用者的要求：「啟用鏡頭硬體變焦」＋「遠方布幕上的小 QR 也要掃得到」。
@@ -848,11 +859,6 @@
       return Date.now();
     }
     function readStoredZoom() {
-      try {
-        const v = window.localStorage && window.localStorage.getItem(ZOOM_KEY);
-        const n = Number(v);
-        if (isFinite(n) && n > 0) return n;
-      } catch (err) { /* 無 localStorage（無痕模式等）就用預設值 */ }
       return ZOOM_DEFAULT;
     }
     function storeZoom(value) {
@@ -1279,8 +1285,8 @@
       const dpr = (typeof window !== "undefined" && window.devicePixelRatio) ? window.devicePixelRatio : 1;
       const w = Math.max(1, Math.round(cssW * dpr));
       const h = Math.max(1, Math.round(cssH * dpr));
-      if (hitBoxEl.width !== w) hitBoxEl.width = w;
-      if (hitBoxEl.height !== h) hitBoxEl.height = h;
+      if (Math.abs(hitBoxEl.width - w) >= 2) hitBoxEl.width = w;
+      if (Math.abs(hitBoxEl.height - h) >= 2) hitBoxEl.height = h;
       const vw = video.videoWidth || cssW;
       const vh = video.videoHeight || cssH;
       /* 顯示層在放大時，使用者看到的是「中央 1/倍率」那一塊；原生模式看到的是整張畫面。
@@ -1774,8 +1780,8 @@ void main() {
         w = Math.max(1, Math.round(w * k));
         h = Math.max(1, Math.round(h * k));
       }
-      if (surfaceCanvasEl.width !== w) surfaceCanvasEl.width = w;
-      if (surfaceCanvasEl.height !== h) surfaceCanvasEl.height = h;
+      if (Math.abs(surfaceCanvasEl.width - w) >= 2) surfaceCanvasEl.width = w;
+      if (Math.abs(surfaceCanvasEl.height - h) >= 2) surfaceCanvasEl.height = h;
       const vw = video.videoWidth;
       const vh = video.videoHeight;
       const rect = visibleRect(vw, vh);
@@ -2101,8 +2107,8 @@ void main() {
       const dpr = (typeof window !== "undefined" && window.devicePixelRatio) ? window.devicePixelRatio : 1;
       const w = Math.max(1, Math.round(cssW * dpr));
       const h = Math.max(1, Math.round(cssH * dpr));
-      if (glPreviewEl.width !== w) glPreviewEl.width = w;
-      if (glPreviewEl.height !== h) glPreviewEl.height = h;
+      if (Math.abs(glPreviewEl.width - w) >= 2) glPreviewEl.width = w;
+      if (Math.abs(glPreviewEl.height - h) >= 2) glPreviewEl.height = h;
       const vw = video.videoWidth;
       const vh = video.videoHeight;
       const map = previewSharpenMap(w, h, vw, vh, digitalZoom());
@@ -4404,14 +4410,13 @@ void main() {
                  所以限制「QR 含邊距」必須留在裁切範圍內
        QR 太靠邊（怎麼調都會出框）→ 只提示、不動倍率。 */
     const AUTO_AIM_MARGIN = 1.6;
-    /* QR_SIZE_AUTO_V1：把「自動對準」從一顆按鈕變成持續的自動調整 ——
-       只要還看得到 QR，就每 1.5 秒檢查一次「現在的倍率 vs 剛好的倍率」，
-       一次最多移動 14%（平滑、不會突然跳），差距小於 0.15 就不動（避免抖動）。
-       使用者手動調過（拉桿／＋−／快捷／雙指）→ 暫停 20 秒，不跟人搶控制權。 */
+    /* QR_SIZE_AUTO_V1：自動調整大小 —— 每次開鏡頭以 1.0x 廣角開始，偵測到 QR 後自動平滑放大至最佳大小。
+       只要看到 QR，每 500ms 檢查一次目標倍率，平滑步進放大，到位後鎖定（差距小於 0.25 不動）。
+       使用者手動調過（拉桿／＋−／快捷／雙指）→ 暫停 20 秒，尊重手動操作。 */
     const AUTO_FRAME_KEY = "tronclassScannerAutoFrame";
-    const AUTO_FRAME_TICK_MS = 1500;
-    const AUTO_FRAME_STEP_RATIO = 0.14;
-    const AUTO_FRAME_HYST = 0.15;
+    const AUTO_FRAME_TICK_MS = 500;
+    const AUTO_FRAME_STEP_RATIO = 0.20;
+    const AUTO_FRAME_HYST = 0.25;
     const AUTO_FRAME_FRESH_MS = 4000;      /* QR 位置要夠新才拿來當依據 */
     const AUTO_FRAME_HOLD_MS = 20000;      /* 使用者手動調過 → 暫停 20 秒 */
     let autoFrameOn = true;
@@ -4673,8 +4678,11 @@ void main() {
         await applyFocusHint();
         const applied = (videoTrack && videoTrack.getSettings) ? videoTrack.getSettings() : {};
         activeCamId = applied.deviceId || wantId || "";
-        targetZoom = clampZoom(readStoredZoom());
-        applyZoom();
+        targetZoom = ZOOM_DEFAULT;       /* 每次開鏡頭一律以 1.0x（一倍）為原始數值，後續再自動放大 */
+        autoFrameHoldUntil = 0;
+        autoFrameAt = 0;
+        autoFrameMoveNote = "";
+        applyZoom(false);
         /* PREVIEW_SURFACE_V1：只有「清晰」模式才需要 WebGL；畫布／原生模式不必建立 WebGL context
            （省記憶體，也避開 WebGL 合成層本來就有的風險）。 */
         if (surfaceEffective() === "gl") startPreviewSharpen();
@@ -4806,7 +4814,7 @@ void main() {
        顯示層的初始化放在檔尾（stageEl／camInfoEl 等 const 都宣告完之後），避免 TDZ。 */
     const surfaceBtnEl = document.getElementById("surfaceBtn");
     if (surfaceBtnEl) surfaceBtnEl.addEventListener("click", () => cyclePreviewSurface());
-    targetZoom = clampZoom(readStoredZoom());
+    targetZoom = ZOOM_DEFAULT;
     autoFrameOn = readAutoFrame();
     applyAutoFrameUi();
     /* LENS_ZOOM_V1：鏡頭（硬體）變焦開關（預設「自動」＝偵測到 QR 才用）。 */

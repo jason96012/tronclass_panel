@@ -16,7 +16,7 @@ use super::*;
 use serde::Deserialize;
 
 use crate::db::{
-    aggregate_courses, aggregate_senders, rollcall_success_rate, select_display_session_rows,
+    aggregate_courses, aggregate_senders, rollcall_success_rate,
 };
 
 /// 查詢範圍上限（天）。3650 天＝實務上的「全部」，但不會產生無上限的 SQL。
@@ -136,15 +136,12 @@ pub(super) async fn admin_rollcall_stats_handler(
     };
     mask_other_accounts(&mut rows, &session);
 
-    // ATT_STATS_ONE_SESSION_V1：每門課只顯示一場；今天已有新場且有上一場時不把今天算進去。
-    let today_start = local_today_start();
-    let rows = select_display_session_rows(&rows, today_start);
-
-    let total = rows.len() as i64;
-    let success = rows.iter().filter(|row| row.is_success()).count() as i64;
-    let failed = total - success;
+    // 依場次去重聚合所選期間內的點名紀錄（同一場點名逾時不重複算多筆，各課程物件附帶 latest_session 本次狀態）
     let courses = aggregate_courses(&rows);
     let senders = aggregate_senders(&rows);
+    let total: i64 = courses.iter().map(|c| c.total).sum();
+    let success: i64 = courses.iter().map(|c| c.success).sum();
+    let failed = total - success;
     let last_at = rows.iter().map(|row| row.timestamp).max().unwrap_or(0);
 
     Json(json!({
