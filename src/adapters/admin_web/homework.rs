@@ -1071,10 +1071,7 @@ pub(super) async fn stream_iclass_upload(
             .header(axum::http::header::CONTENT_TYPE, content_type)
             .header(
                 axum::http::header::CONTENT_DISPOSITION,
-                format!(
-                    "{disposition}; filename*=UTF-8''{}",
-                    percent_encode_filename(file_name)
-                ),
+                format_content_disposition(disposition, file_name),
             )
             // 沒有這個標頭時，影音播放器不會嘗試分段抓取。
             .header(axum::http::header::ACCEPT_RANGES, "bytes")

@@ -1790,6 +1790,15 @@ async fn record_rollcall_event(ctx: &MonitorContext, outcome: &crate::rollcalls:
         let status = ctx.status.lock().await;
         status.user_name.clone()
     };
+    let (class_total, class_signed) = if let Some(registry) = ctx.scanner_registry.as_ref() {
+        if let Some(progress) = registry.cached_class_progress(&ctx.account.provider, outcome.rollcall.rollcall_id).await {
+            (progress.total as i64, progress.completed as i64)
+        } else {
+            (0i64, 0i64)
+        }
+    } else {
+        (0i64, 0i64)
+    };
     let input = crate::db::RollcallEventInput {
         account_id: ctx.account.id.clone(),
         username: ctx.account.username.clone(),
@@ -1799,6 +1808,8 @@ async fn record_rollcall_event(ctx: &MonitorContext, outcome: &crate::rollcalls:
         attendance_type: outcome.attendance_type.to_string(),
         success: outcome.is_success(),
         result: outcome.result.to_string(),
+        class_total,
+        class_signed,
     };
     if let Err(error) = ctx.accounts_db.record_rollcall_event(input).await {
         warn!(

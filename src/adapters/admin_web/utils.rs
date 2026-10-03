@@ -611,6 +611,25 @@ pub(super) fn sanitize_header_filename(value: &str) -> String {
         .collect()
 }
 
+pub(super) fn percent_encode_filename(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for byte in name.as_bytes() {
+        let c = *byte as char;
+        if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+            out.push(c);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+pub(super) fn format_content_disposition(disposition_prefix: &str, file_name: &str) -> String {
+    let clean_ascii = sanitize_header_filename(file_name);
+    let rfc5987 = percent_encode_filename(file_name);
+    format!("{disposition_prefix}; filename=\"{clean_ascii}\"; filename*=UTF-8''{rfc5987}")
+}
+
 pub(super) async fn run_health_command(program: &str, args: &[&str]) -> String {
     match tokio::time::timeout(
         Duration::from_secs(3),

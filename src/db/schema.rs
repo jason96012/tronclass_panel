@@ -717,13 +717,18 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
             course_name     TEXT NOT NULL DEFAULT '',
             attendance_type TEXT NOT NULL DEFAULT '',
             success         INTEGER NOT NULL DEFAULT 0,
-            result          TEXT NOT NULL DEFAULT ''
+            result          TEXT NOT NULL DEFAULT '',
+            class_total     INTEGER NOT NULL DEFAULT 0,
+            class_signed    INTEGER NOT NULL DEFAULT 0
         )",
     )
     .execute(pool)
     .await
     .into_diagnostic()
     .wrap_err("初始化 rollcall_events 資料表失敗")?;
+
+    ensure_table_column(pool, "rollcall_events", "class_total", "INTEGER NOT NULL DEFAULT 0").await?;
+    ensure_table_column(pool, "rollcall_events", "class_signed", "INTEGER NOT NULL DEFAULT 0").await?;
 
     // 查詢一律「時間範圍 ＋（可選）帳號」，這兩個索引剛好對上。
     sqlx::query(

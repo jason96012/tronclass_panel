@@ -144,6 +144,31 @@ pub(super) async fn admin_rollcall_stats_handler(
     let failed = total - success;
     let last_at = rows.iter().map(|row| row.timestamp).max().unwrap_or(0);
 
+    // CLASS_ATTENDANCE_PROGRESS_V1：彙整各課最新一次點名之班上總點名人數（實到／預計）
+    let latest_class_signed: i64 = courses
+        .iter()
+        .filter_map(|c| c.latest_session.as_ref())
+        .map(|ls| {
+            if ls.class_total > 0 {
+                ls.class_signed
+            } else {
+                ls.success
+            }
+        })
+        .sum();
+    let latest_class_total: i64 = courses
+        .iter()
+        .filter_map(|c| c.latest_session.as_ref())
+        .map(|ls| {
+            if ls.class_total > 0 {
+                ls.class_total
+            } else {
+                ls.total
+            }
+        })
+        .sum();
+    let latest_class_rate = rollcall_success_rate(latest_class_signed, latest_class_total);
+
     Json(json!({
         "ok": true,
         "days": days,
@@ -156,6 +181,9 @@ pub(super) async fn admin_rollcall_stats_handler(
             "success_rate": rollcall_success_rate(success, total),
             "courses": courses.len(),
             "last_at": last_at,
+            "latest_class_total": latest_class_total,
+            "latest_class_signed": latest_class_signed,
+            "latest_class_rate": latest_class_rate,
         },
         "courses": courses,
         "senders": senders,
@@ -216,6 +244,8 @@ pub(super) async fn admin_rollcall_records_handler(
                 "attendance_type": row.attendance_type,
                 "success": row.is_success(),
                 "result": row.result,
+                "class_total": row.class_total,
+                "class_signed": row.class_signed,
             })
         })
         .collect();

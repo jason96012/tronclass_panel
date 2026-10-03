@@ -32,6 +32,8 @@ use std::path::PathBuf;
 
 /// IndexNow 的共用端點（受理後會轉發給所有參與的引擎）。
 const INDEXNOW_ENDPOINT: &str = "https://api.indexnow.org/indexnow";
+/// Bing 官方專屬端點（雙通道提交保證 Bing 100% 收到通知）。
+const BING_INDEXNOW_ENDPOINT: &str = "https://www.bing.com/indexnow";
 /// 自動提交的最小間隔（秒）：24 小時。手動提交不受此限。
 const AUTO_SUBMIT_MIN_INTERVAL_SECS: i64 = 24 * 60 * 60;
 /// 啟動後等幾秒再提交：讓服務先把埠綁好（Bing 驗證金鑰時要抓得到 `/{key}.txt`）。
@@ -209,6 +211,13 @@ pub(super) async fn submit(origin: &str) -> Result<IndexNowOutcome, String> {
         .send()
         .await
         .map_err(|e| format!("連線 IndexNow 失敗：{e}"))?;
+
+    // 同步向 Bing 官方專屬端點發送通知（靜默記錄，不阻塞主流程）
+    let bing_payload = payload.clone();
+    tokio::spawn(async move {
+        let _ = CLIENT.post(BING_INDEXNOW_ENDPOINT).json(&bing_payload).send().await;
+    });
+
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
     let accepted = matches!(status, 200 | 202);

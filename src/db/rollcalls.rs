@@ -38,6 +38,8 @@ pub struct RollcallEventInput {
     pub attendance_type: String,
     pub success: bool,
     pub result: String,
+    pub class_total: i64,
+    pub class_signed: i64,
 }
 
 /// 從資料庫讀出的一筆點名送出紀錄。
@@ -54,6 +56,10 @@ pub struct RollcallEventRow {
     /// SQLite 沒有 bool：0／1。
     pub success: i64,
     pub result: String,
+    #[sqlx(default)]
+    pub class_total: i64,
+    #[sqlx(default)]
+    pub class_signed: i64,
 }
 
 impl RollcallEventRow {
@@ -87,6 +93,12 @@ pub struct RollcallCourseStat {
     pub last_at: i64,
     /// 最近一次「成功送出」的時間（0＝這門課沒有成功紀錄）。
     pub last_success_at: i64,
+    /// 最新一次班級預計點名總人數
+    pub latest_class_total: i64,
+    /// 最新一次班級實際點到名人數
+    pub latest_class_signed: i64,
+    /// 最新一次班級全班簽到率
+    pub latest_class_rate: f64,
     /// 最新一次點名場次的詳細狀態（避免將歷史成功率誤認成本次）。
     pub latest_session: Option<RollcallLatestSession>,
     /// 這門課未點到名（失敗）的使用者名單。
@@ -105,6 +117,12 @@ pub struct RollcallLatestSession {
     pub failed: i64,
     pub success_rate: f64,
     pub is_all_success: bool,
+    /// 班級預計總點名人數（全班學生數）
+    pub class_total: i64,
+    /// 班級實際點到名人數（全班已簽到數）
+    pub class_signed: i64,
+    /// 班級全班簽到率（0.0 ~ 100.0%）
+    pub class_rate: f64,
     /// 最新這一次未點到名（失敗）的使用者名單。
     pub unattended_users: Vec<RollcallUnattendedUser>,
 }
@@ -161,8 +179,8 @@ impl AccountsDb {
 
         let inserted = sqlx::query(
             "INSERT INTO rollcall_events
-                (timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(timestamp)
         .bind(&account_id)
@@ -173,6 +191,8 @@ impl AccountsDb {
         .bind(&attendance_type)
         .bind(if input.success { 1i64 } else { 0i64 })
         .bind(&result)
+        .bind(input.class_total)
+        .bind(input.class_signed)
         .execute(&self.pool)
         .await
         .into_diagnostic()
@@ -199,7 +219,7 @@ impl AccountsDb {
         let limit = limit.clamp(1, 5000);
         let rows = if let Some(account_id) = account_id.map(str::trim).filter(|v| !v.is_empty()) {
             sqlx::query_as::<_, RollcallEventRow>(
-                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result
+                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed
                  FROM rollcall_events WHERE account_id = ? AND timestamp >= ?
                  ORDER BY timestamp DESC, id DESC LIMIT ?",
             )
@@ -210,7 +230,7 @@ impl AccountsDb {
             .await
         } else {
             sqlx::query_as::<_, RollcallEventRow>(
-                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result
+                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed
                  FROM rollcall_events WHERE timestamp >= ?
                  ORDER BY timestamp DESC, id DESC LIMIT ?",
             )
@@ -293,6 +313,8 @@ pub struct ConsolidatedSessionOutcome {
     pub last_success_at: i64,
     pub last_failed_at: i64,
     pub last_failed_result: String,
+    pub class_total: i64,
+    pub class_signed: i64,
 }
 
 impl ConsolidatedSessionOutcome {
@@ -343,6 +365,8 @@ pub fn consolidate_sessions(rows: &[RollcallEventRow]) -> Vec<ConsolidatedSessio
         let last_failed = evs.iter().filter(|r| !r.is_success()).last();
         let last_failed_at = last_failed.map(|r| r.timestamp).unwrap_or(0);
         let last_failed_result = last_failed.map(|r| r.result.clone()).unwrap_or_default();
+        let class_total = evs.iter().map(|r| r.class_total).max().unwrap_or(0);
+        let class_signed = evs.iter().map(|r| r.class_signed).max().unwrap_or(0);
 
         outcomes.push(ConsolidatedSessionOutcome {
             course_name,
@@ -356,6 +380,8 @@ pub fn consolidate_sessions(rows: &[RollcallEventRow]) -> Vec<ConsolidatedSessio
             last_success_at,
             last_failed_at,
             last_failed_result,
+            class_total,
+            class_signed,
         });
     }
 
@@ -404,6 +430,9 @@ pub fn aggregate_courses(rows: &[RollcallEventRow]) -> Vec<RollcallCourseStat> {
         course.senders = senders_for_course_consolidated(&outcomes, &course.course_name);
         course.unattended_users = unattended_for_course_consolidated(&outcomes, &course.course_name);
         course.latest_session = extract_latest_session_consolidated(&outcomes, &course.course_name);
+        course.latest_class_total = course.latest_session.as_ref().map(|ls| ls.class_total).unwrap_or(0);
+        course.latest_class_signed = course.latest_session.as_ref().map(|ls| ls.class_signed).unwrap_or(0);
+        course.latest_class_rate = course.latest_session.as_ref().map(|ls| ls.class_rate).unwrap_or(0.0);
     }
     courses.sort_by(|a, b| {
         b.last_at
@@ -456,6 +485,22 @@ fn extract_latest_session_consolidated(
     let failed = total - success;
     let rate = rollcall_success_rate(success, total);
 
+    let class_total = outcomes
+        .iter()
+        .filter(|o| o.course_name == course_name && o.session_id == latest_session_id)
+        .map(|o| o.class_total)
+        .max()
+        .unwrap_or(0);
+
+    let class_signed = outcomes
+        .iter()
+        .filter(|o| o.course_name == course_name && o.session_id == latest_session_id)
+        .map(|o| o.class_signed)
+        .max()
+        .unwrap_or(0);
+
+    let class_rate = rollcall_success_rate(class_signed, class_total);
+
     Some(RollcallLatestSession {
         timestamp: latest_ts,
         attendance_type: att_type,
@@ -464,6 +509,9 @@ fn extract_latest_session_consolidated(
         failed,
         success_rate: rate,
         is_all_success: total > 0 && failed == 0,
+        class_total,
+        class_signed,
+        class_rate,
         unattended_users,
     })
 }
@@ -570,6 +618,8 @@ mod tests {
             attendance_type: "QR Code 簽到".to_string(),
             success: if success { 1 } else { 0 },
             result: String::new(),
+            class_total: 0,
+            class_signed: 0,
         }
     }
 

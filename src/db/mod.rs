@@ -268,6 +268,16 @@ async fn apply_sqlite_runtime_pragmas(pool: &SqlitePool) -> Result<()> {
         .into_diagnostic()
         .wrap_err("設定 SQLite foreign_keys=ON 失敗")?;
 
+    // MAXIMUM_SECURITY_PRAGMAS_V1:
+    // 關閉危險的虛擬表與外部延伸提權風險 (trusted_schema = OFF)
+    // 開啟儲存格邊界檢查 (cell_size_check = ON)，防範損毀/惡意 SQLite 檔案溢位
+    // 關閉遞迴觸發器 (recursive_triggers = OFF)
+    // 開啟安全物理覆寫刪除 (secure_delete = ON)，確保刪除資料以 0 實體覆蓋防範磁區復原
+    let _ = sqlx::query("PRAGMA trusted_schema = OFF").execute(pool).await;
+    let _ = sqlx::query("PRAGMA cell_size_check = ON").execute(pool).await;
+    let _ = sqlx::query("PRAGMA recursive_triggers = OFF").execute(pool).await;
+    let _ = sqlx::query("PRAGMA secure_delete = ON").execute(pool).await;
+
     // Keep it lightweight; do not VACUUM at startup.
     let _ = sqlx::query("PRAGMA optimize").execute(pool).await;
     let _ = sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")

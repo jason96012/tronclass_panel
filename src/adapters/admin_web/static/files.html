@@ -1569,7 +1569,7 @@
         '</div>' +
       '</div>' +
       '<div class="file-actions">' +
-        '<a class="button secondary download-link" href="' + dl(f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' +
+        '<a class="button secondary download-link" href="' + dl(f.path) + '" download="' + esc(f.name || f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' +
         (canPreview(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
         '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button>' +
         '<button class="button danger remove-btn" data-delete-file="' + esc(f.path) + '" title="刪除檔案">🗑</button>' +
@@ -1583,7 +1583,7 @@
     tbody.innerHTML = folds.map(f => 
       '<tr><td><button class="button secondary btn-compact" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td><td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td><td><button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button></td></tr>'
     ).concat(fList.map(f => 
-      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' + (canPreview(ext(f)) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') + '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button><button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
+      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '" download="' + esc(f.name || f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' + (canPreview(ext(f)) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') + '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button><button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
     )).join('') || '<tr><td colspan="5" class="empty">目前資料夾為空</td></tr>';
   }
 
@@ -2815,6 +2815,7 @@
     if (q('previewDownload')){
       const link = q('previewDownload');
       link.href = dl(path);
+      link.setAttribute('download', f.name || path);
       /* CLOUD_DOWNLOAD_ACCEL_V1：讓彈窗的「下載」也能走同一條加速路徑（size 只有清單裡有）。 */
       link.dataset.download = path;
       link.dataset.size = String(Number(f.size || 0));

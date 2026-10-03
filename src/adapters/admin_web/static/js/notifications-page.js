@@ -437,7 +437,11 @@
       fillAccountSelect(q('bindingAccount'), loadBinding);
       q('bindingAccount').addEventListener('change', loadBinding);
       q('bindingSave').addEventListener('click', saveBinding);
-      q('bindingReload').addEventListener('click', function () { lastStatus = null; forceStatusRefresh = true; fillAccountSelect(q('bindingAccount'), loadBinding); });
+      q('bindingReload').addEventListener('click', function () {
+        lastStatus = null;
+        forceStatusRefresh = true;
+        fillAccountSelect(q('bindingAccount'), loadBinding);
+      });
       /* 從新手導覽的「去綁定」按鈕帶 #binding 進來時，捲到綁定區並聚焦輸入框 */
       if (location.hash === '#binding') {
         setTimeout(function () {

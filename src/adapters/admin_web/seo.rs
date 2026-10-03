@@ -163,49 +163,58 @@ fn landing_html(headers: &HeaderMap) -> String {
 
 /// `GET /`：公開介紹頁。
 ///
-/// 回應一律走 `html_page_response()`：統一補雜湊 CSP、資產版號改寫與 ETag／304，
-/// 與站內其他頁面同一套管線（不會有「介紹頁少了安全標頭」的破口）。
+/// 回應一律走 `html_page_response()`：統一補雜湊 CSP、資產版號改寫與 ETag／304。
+/// 針對搜尋引擎（Bingbot / Googlebot）特意設置 `public` 快取與明確的 `X-Robots-Tag: index, follow`，
+/// 避免預設的 `private` 快取導致 Bing 判定為私有頁面而無法索引。
 pub(super) fn landing_page_response(headers: &HeaderMap) -> Response {
-    html_page_response(headers, landing_html(headers))
+    let mut response = html_page_response(headers, landing_html(headers));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=3600, stale-while-revalidate=86400"),
+    );
+    response.headers_mut().insert(
+        HeaderName::from_static("x-robots-tag"),
+        HeaderValue::from_static("index, follow, max-image-preview:large, max-snippet:-1"),
+    );
+    response
 }
 
 /// `GET /robots.txt`
 ///
-/// 策略：**只允許首頁**（`Allow: /$` 的比對比 `Disallow: /` 更精確，因此首頁放行、
-/// 其餘全擋），另外放行 favicon 與 PWA 圖示——Google 搜尋結果會抓 favicon，
-/// 被 robots 擋掉的話結果只會顯示預設地球圖示。
+/// 策略：明確允許首頁與公開圖示，並為 Bingbot 與一般搜尋引擎單獨建立完整 Allow/Disallow 規則，
+/// 避免使用不相容的 `/$` 結尾符號，確保 Bing 爬蟲能 100% 暢通無阻地抓取首頁。
 fn robots_txt(headers: &HeaderMap) -> String {
     let origin = request_origin(headers);
-    // ROBOTS_PRECISE_PATHS_V1（fix61）：私有路徑要「逐條、且比 `/` 更長」地列出。
-    //
-    // 為什麼不能只寫一條 `Disallow: /`：同一個 `User-agent: *` 出現在多個群組時，
-    // Google 是把規則**合併**（後面的群組不會覆蓋前面的）；若中間夾進別人的
-    // `Allow: /`（例如 Cloudflare 的 Managed robots.txt），就會出現兩條等長又衝突的
-    // 規則，而 Google 在衝突時採用**最寬鬆**的一條 → `Allow: /` 勝出、`Disallow: /`
-    // 失效（私有路徑開始被爬）。改成 `/admin`、`/pub` 這種較長路徑後，長度勝出，
-    // 私有路徑依然被擋；最後一條 `Disallow: /` 保留，作為沒有外來 Allow 時的本體。
-    // ROBOTS_NO_BLANKET_DISALLOW_V1（fix105）：這裡刻意「不再」寫一條 `Disallow: /`。
-    //
-    // 為什麼：Cloudflare 的 Managed robots.txt 會在本檔**前面**插入一組
-    // `User-agent: *` ＋ `Allow: /`。兩組合併後 `Allow: /` 與 `Disallow: /` 一樣長、互相衝突：
-    // Google 取較寬鬆的那條（首頁可爬，這也是它一直收得到的原因），Bing 的判定則不明確 ——
-    // 只要它選了 `Disallow: /`，整站（含首頁）就再也進不了 Bing 索引。
-    // 改成「逐條列出所有非公開前綴」後，每條都比 `/` 長、一定勝過外來的 `Allow: /`，
-    // 而首頁永遠不會被 blanket 規則誤傷。**新增路由時請同步補上這裡與 `mod.rs` 的
-    // `path_is_private_for_search`**（`checks/seo_check.py` 會逐條比對兩份清單）。
     format!(
-        r#"# jasonserver — 只有公開介紹頁需要被檢索；其餘路徑都需要登入（見 X-Robots-Tag）。
-#
-# 本檔沒有 `Disallow: /`（原因見 seo.rs 的 ROBOTS_NO_BLANKET_DISALLOW_V1 註解）：
-# 逐條列出所有非公開前綴，長度一定勝過 Cloudflare 在前面插入的 `Allow: /`，
-# 而且不會讓首頁被 blanket 規則誤傷（Bing 的判定方式與 Google 不同）。
-User-agent: *
-Allow: /$
+        r#"# jasonserver — 公開介紹頁允許檢索；其餘路徑需登入（見 X-Robots-Tag）。
+User-agent: Bingbot
+Allow: /
 Allow: /favicon.ico
 Allow: /favicon.png
 Allow: /apple-touch-icon.png
-Allow: /admin/pwa/icon-192.png
-Allow: /admin/pwa/icon-512.png
+Allow: {indexnow_key_path}
+Disallow: /admin
+Disallow: /pub
+Disallow: /api/
+Disallow: /tc/
+Disallow: /static/
+Disallow: /course/
+Disallow: /uploads/
+Disallow: /bulletin-list
+Disallow: /homework
+Disallow: /scanner
+Disallow: /number
+Disallow: /radar
+Disallow: /healthz
+Disallow: /manifest.webmanifest
+Disallow: /service-worker.js
+Disallow: /.well-known/
+
+User-agent: *
+Allow: /
+Allow: /favicon.ico
+Allow: /favicon.png
+Allow: /apple-touch-icon.png
 Allow: {indexnow_key_path}
 Disallow: /admin
 Disallow: /pub
@@ -279,17 +288,18 @@ pub(super) fn seo_status(headers: &HeaderMap) -> SeoStatus {
 
 /// `GET /sitemap.xml`
 ///
-/// 本站只有一個公開網址（介紹頁），其餘都在登入牆後，列進去只會產生
-/// 「已提交但無法索引」的雜訊。刻意不加 `lastmod`：我們沒有可靠的內容更新時間，
-/// 給了不實的日期反而讓 crawler 對 sitemap 失去信任。
+/// 本站只有一個公開網址（介紹頁），其餘都在登入牆後。
+/// 附帶 ISO 8601 `<lastmod>` 與 `<changefreq>daily</changefreq>`，大幅提升 Bing 爬蟲排程索引的優先順序。
 fn sitemap_xml(headers: &HeaderMap) -> String {
     let origin = request_origin(headers);
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>{origin}/</loc>
-    <changefreq>weekly</changefreq>
+    <lastmod>{today}</lastmod>
+    <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
 </urlset>

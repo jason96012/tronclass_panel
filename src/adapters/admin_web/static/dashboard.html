@@ -1752,7 +1752,7 @@
 <body class="logged-in auth-ok dash-auth-ok">
 
 <header class="topbar"><div class="brand"><div class="mark">D</div><div><div class="title">Tronclass Dashboard</div><div id="brandSub" class="sub">請先登入</div></div></div><div class="top-actions"><!-- TOPBAR_LOGOUT_ONLY_V1: 頂欄僅保留登出（meLink 原已被 CSS 隱藏） --><a id="meLink" class="button secondary" href="/admin/me">我的頁面</a><button id="logoutBtn" class="secondary" type="button">登出</button><button id="refreshAll" class="icon" type="button">↻</button></div></header>
-<main><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel mb14"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="creditsQuickLink" class="button secondary" href="/admin/credits">學分狀態</a><a id="stockQuickLink" class="button secondary" href="/admin/stock">智選股</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div><!-- ACCOUNT_HOT_ADD_FEEDBACK_V1：在資料庫但沒在監控的帳號（管理員） --><div id="inactiveAccountsBox" class="inactive-box hidden-init"><div class="inactive-title">未在監控的帳號</div><div class="small mb8">這些帳號已存在資料庫，但目前沒有監控循環在跑（新增時登入失敗、或以 CLI 離線新增）。修正後按「啟動監控」重試，不必重啟服務。</div><div id="inactiveAccountsList" class="list"></div></div></div></section><section id="view-rollcall" class="view"><div class="panel mb14"><div class="toolbar"><div><h2>出席統計</h2><div class="small" id="attHint">統計所選期間內各課程點名累積成功率，並清楚標示最新一次點名狀態（重啟不會消失）。</div></div><div class="toolbar-right"><select id="attRange" aria-label="統計範圍"><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="90" selected>近 90 天</option><option value="0">全部</option></select><button id="attReload" class="secondary" type="button">重新整理</button></div></div><div id="attSummary" class="grid cards"></div><div id="attBody"></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary hidden-init">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" class="health-pre">尚未讀取</pre><div class="quick mt12"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mStock" class="button secondary" href="/admin/stock">智選股</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" class="w760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="unattendedModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="unattendedTitle" class="w760">未點到名冊</div><button id="closeUnattended" class="icon" type="button">×</button></div><div id="unattendedBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
+<main><div class="protected"><section class="hero"><div class="hero-copy"><div class="hero-top"><span class="hero-kicker">管理</span><span id="lastUpdated" class="pill">尚未更新</span></div><h1>Dashboard</h1><div id="overviewHint" class="small">總覽、帳號、點名、課表、教材與維護。</div></div></section><nav class="tabs"><button class="tab active" data-view="overview">總覽</button><button class="tab" data-view="accounts">帳號</button><button class="tab" data-view="rollcall">點名</button><button class="tab" data-view="timetable">課表</button><button class="tab" data-view="materials">教材</button><button class="tab" data-view="maintenance" data-admin-only="1">維護</button></nav><section id="view-overview" class="view active"><div class="grid cards"><div class="stat"><div class="stat-label">總帳號</div><div id="statTotal" class="stat-value">-</div><div class="stat-hint">目前載入</div></div><div class="stat"><div class="stat-label">運行中</div><div id="statRunning" class="stat-value">-</div><div id="statPaused" class="stat-hint">暫停 -</div></div><div class="stat"><div class="stat-label">偵測中</div><div id="statDetected" class="stat-value">-</div><div class="stat-hint">30 分鐘內</div></div><div class="stat"><div class="stat-label">累計失敗</div><div id="statFailures" class="stat-value">-</div><div class="stat-hint">連續失敗加總</div></div></div><section id="nextClassCard"></section><div class="panel mb14"><div class="toolbar"><div><h2>常用操作</h2><div class="small">核心操作。</div></div><div id="actionMsg" class="small"></div></div><div class="quick"><button id="forceAll">立即檢查全部</button><button id="reauthAll" class="secondary">全部重新登入</button><a id="homeworkQuickLink" class="button secondary" href="/admin/homework">作業截止倒數</a><a id="creditsQuickLink" class="button secondary" href="/admin/credits">學分狀態</a><a id="stockQuickLink" class="button secondary" href="/admin/stock">智選股</a><a id="activityLink" class="button secondary" data-admin-only="1" href="/admin/activity">登入與檔案紀錄</a><button id="startAll" class="secondary">全部開始監控</button></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>最近偵測到點名</h2><button class="secondary" data-switch="rollcall">打開點名</button></div><div id="detectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>最近點名結果</h2><button class="secondary" data-switch="rollcall">查看全部</button></div><div id="recentResults" class="list"></div></section></div></section><section id="view-accounts" class="view"><div class="panel"><div class="toolbar"><div><h2>帳號管理</h2><div id="accountsSummary" class="small">載入中...</div></div><div class="toolbar-right"><button id="quickPromoteAdminBtn" class="button secondary" type="button" data-admin-only="1">設為管理員</button><button id="quickAddAccountBtn" class="button secondary" type="button" title="新增帳號" data-admin-only="1">＋ 新增帳號</button><input id="accountSearch" type="search" placeholder="搜尋帳號 / 姓名..."></div></div><div class="table-wrap"><table><thead><tr><th>狀態</th><th>帳號</th><th>權限</th><th>最後檢查</th><th>最後成功</th><th>近期點名</th><th>失敗</th><th>操作</th></tr></thead><tbody id="accountsBody"><tr><td colspan="7">載入中...</td></tr></tbody></table></div><!-- ACCOUNT_HOT_ADD_FEEDBACK_V1：在資料庫但沒在監控的帳號（管理員） --><div id="inactiveAccountsBox" class="inactive-box hidden-init"><div class="inactive-title">未在監控的帳號</div><div class="small mb8">這些帳號已存在資料庫，但目前沒有監控循環在跑（新增時登入失敗、或以 CLI 離線新增）。修正後按「啟動監控」重試，不必重啟服務。</div><div id="inactiveAccountsList" class="list"></div></div></div></section><section id="view-rollcall" class="view"><div class="panel mb14"><div class="toolbar"><div><h2>出席統計</h2><div class="small" id="attHint">統計所選期間內各課程點名累積成功率，並清楚標示最新一次點名狀態（重啟不會消失）。</div></div><div class="toolbar-right"><select id="attRange" aria-label="統計範圍"><option value="7">近 7 天</option><option value="30">近 30 天</option><option value="90" selected>近 90 天</option><option value="0">全部</option></select><button id="attReload" class="secondary" type="button">重新整理</button></div></div><div id="attSummary" class="grid cards" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:14px;"></div><div id="attBody"></div></div><div class="grid two"><section class="panel"><div class="toolbar"><h2>目前偵測到點名</h2><button id="forceAllRollcall">立即檢查全部</button></div><div id="rollcallDetectedList" class="list"></div></section><section class="panel"><div class="toolbar"><h2>點名結果</h2><select id="historyAccountFilter"><option value="">全部帳號</option></select></div><div id="rollcallHistoryList" class="list"></div></section></div></section><section id="view-timetable" class="view"><div class="panel"><div class="toolbar"><div><h2>課表</h2><div class="small">查看課表，按「編輯課表」後可手動輸入。</div></div><div class="toolbar-right"><select id="timetableAccount"></select><button id="ttReload" class="secondary">重新整理</button><button id="ttEdit">編輯課表</button><button id="ttBack" class="secondary hidden-init">返回查看</button></div></div><div id="ttMain"></div></div></section><section id="view-materials" class="view"><div class="panel"><div class="toolbar"><div><h2>教材</h2><div id="filesSummary" class="small">開啟教材雲端硬碟。</div></div><a id="filesLink" class="button" href="/admin/files">打開雲端硬碟</a></div></div></section><section id="view-maintenance" class="view" data-admin-only="1"><div class="panel"><div class="toolbar"><h2>維護</h2><button id="refreshHealth" class="secondary">健康資訊</button></div><pre id="healthBox" class="health-pre">尚未讀取</pre><div class="quick mt12"><a id="logsLink" class="button secondary" href="/admin/activity">登入與檔案紀錄</a><button id="stopAll" class="danger">全部暫停</button></div></div></section></div></main><nav class="mobile-nav protected" id="mobileNav"><button data-view="overview">總覽</button><button data-view="accounts">帳號</button><button data-view="rollcall">點名</button><button data-view="timetable">課表</button><button id="mobileMore">更多</button></nav><div id="mobileSheet" class="mobile-sheet"><div class="sheet"><h3>更多功能</h3><div class="sheet-grid"><a id="mHomework" class="button secondary" href="/admin/homework">作業截止時間</a><a id="mStock" class="button secondary" href="/admin/stock">智選股</a><a id="mFiles" class="button secondary" href="/admin/files">雲端硬碟</a><a class="button secondary" href="/admin/detection-schedule">點名排程</a><a id="mActivity" class="button secondary" data-admin-only="1" href="/admin/activity">登入/檔案紀錄</a><button id="mRefresh" class="secondary" type="button">重新整理</button><button id="mLogout" class="danger" type="button">登出</button></div></div></div><div id="historyModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="historyTitle" class="w760">點名紀錄</div><button id="closeHistory" class="icon">×</button></div><div id="historyBody" class="modal-body"></div></div></div><div id="unattendedModal" class="modal-backdrop"><div class="modal"><div class="modal-head"><div id="unattendedTitle" class="w760">未點到名冊</div><button id="closeUnattended" class="icon" type="button">×</button></div><div id="unattendedBody" class="modal-body"></div></div></div><div id="toast" class="toast"></div>
 <div id="addAccountModal" class="modal-backdrop">
   <div class="modal modal-520">
     <div class="modal-head"><div class="w760">新增帳號</div><button id="closeAddAccount" class="icon" type="button">×</button></div>
@@ -1812,18 +1812,56 @@ function renderAttendance(){
   if(!attStats){box.innerHTML='<div class="empty">'+esc(attError||'出席統計載入中…')+'</div>';return}
   var s=attStats.summary||{},courses=attStats.courses||[];
   var summary=q('attSummary');
+
+  // 計算最後班上總點名人數統計（頂部卡片與底部彙總）
+  var classSigned=attNumber(s.latest_class_signed);
+  var classTotal=attNumber(s.latest_class_total);
+  var classRate=Number(s.latest_class_rate||0);
+
+  if(classTotal<=0){
+    var tempSigned=0,tempTotal=0;
+    courses.forEach(function(c){
+      var ls=c.latest_session;
+      if(ls){
+        if(ls.class_total>0){
+          tempSigned+=attNumber(ls.class_signed);
+          tempTotal+=attNumber(ls.class_total);
+        }else if(ls.total>0){
+          tempSigned+=attNumber(ls.success);
+          tempTotal+=attNumber(ls.total);
+        }
+      }
+    });
+    if(tempTotal>0){
+      classSigned=tempSigned;
+      classTotal=tempTotal;
+      classRate=(tempSigned/tempTotal*100);
+    }
+  }
+
+  var classCardVal=classTotal>0?(classSigned+' / '+classTotal+' 人'):'-';
+  var classCardHint=classTotal>0?('全班出席率 '+classRate.toFixed(1)+'%'):'最新一場班級人數';
+
   if(summary){
     summary.innerHTML=
       attCard('點名次數',attNumber(s.total),attRangeText(attNumber(attStats.days)))+
       attCard('成功送出',attNumber(s.success),'失敗 '+attNumber(s.failed)+' 次')+
       attCard('累積成功率',attNumber(s.success_rate).toFixed(1)+'%','成功 ÷ 總次數')+
+      attCard('最後班上總人數',classCardVal,classCardHint)+
       attCard('未點到名',attNumber(s.failed)===0?'0 人':(attNumber(s.failed)+' 次'),attNumber(s.failed)===0?'全員到齊 (無缺席)':'點擊下方可查看名單');
   }
   if(!courses.length){
     box.innerHTML='<div class="empty">這段期間還沒有點名紀錄。統計會在每次送出後自動累積（含成功與未成功）。</div>';
     return;
   }
+
+  var sumTotal=0,sumSuccess=0,sumFailed=0,sumClassSigned=0,sumClassTotal=0;
+
   var rows=courses.map(function(c){
+    sumTotal+=attNumber(c.total);
+    sumSuccess+=attNumber(c.success);
+    sumFailed+=attNumber(c.failed);
+
     var unUsers=c.unattended_users||[];
     var lsUn=(c.latest_session&&c.latest_session.unattended_users)||[];
     var targetList=lsUn.length?lsUn:unUsers;
@@ -1866,6 +1904,8 @@ function renderAttendance(){
 
     var ls=c.latest_session;
     var latestHtml='';
+    var classProgHtml='';
+
     if(ls&&ls.timestamp){
       var lsType=ls.attendance_type?('<span class="small" style="color:var(--muted,#94a3b8)">'+esc(ls.attendance_type)+'</span>'):'';
       var lsBadge='';
@@ -1880,8 +1920,29 @@ function renderAttendance(){
         '<div><b>'+esc(fmt(ls.timestamp))+'</b></div>'+
         '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">'+lsBadge+lsType+'</div>'+
         '</div>';
+
+      // 班上總點名人數（實到 / 預計）
+      if(ls.class_total&&ls.class_total>0){
+        sumClassSigned+=attNumber(ls.class_signed);
+        sumClassTotal+=attNumber(ls.class_total);
+        var cRate=Number(ls.class_rate||0);
+        var cClass=cRate>=90?'good':(cRate>=70?'warn':'bad');
+        classProgHtml='<div style="display:flex;flex-direction:column;gap:3px;">'+
+          '<div><span class="pill '+cClass+'">實到 <b>'+attNumber(ls.class_signed)+'</b> / 預計 <b>'+attNumber(ls.class_total)+'</b> 人</span></div>'+
+          '<div class="small" style="color:var(--muted,#94a3b8)">班級出席率 '+cRate.toFixed(1)+'%</div>'+
+          '</div>';
+      }else{
+        sumClassSigned+=attNumber(ls.success);
+        sumClassTotal+=attNumber(ls.total);
+        var pClass=ls.is_all_success?'good':(ls.success>0?'warn':'bad');
+        classProgHtml='<div style="display:flex;flex-direction:column;gap:3px;">'+
+          '<div><span class="pill '+pClass+'">實到 <b>'+attNumber(ls.success)+'</b> / 預計 <b>'+attNumber(ls.total)+'</b> 人</span></div>'+
+          '<div class="small" style="color:var(--muted,#94a3b8)">監控送出率 '+ls.success_rate.toFixed(1)+'%</div>'+
+          '</div>';
+      }
     }else{
       latestHtml=esc(fmt(c.last_at));
+      classProgHtml='<span class="small" style="color:var(--muted,#94a3b8)">-</span>';
     }
 
     /* ATT_STATS_MOBILE_CARDS_V1（fix76）：每格都帶 data-label，手機版摺成卡片時才看得到欄位名。 */
@@ -1891,13 +1952,29 @@ function renderAttendance(){
       '<td data-label="未成功">'+attNumber(c.failed)+'</td>'+
       '<td data-label="累積成功率"><span class="pill '+attRateClass(attNumber(c.success_rate))+'">'+attNumber(c.success_rate).toFixed(1)+'%</span></td>'+
       '<td data-label="最新一次點名">'+latestHtml+'</td>'+
+      '<td data-label="最後班上總點名人數">'+classProgHtml+'</td>'+
       '<td data-label="誰沒有點到名">'+unHtml+'</td></tr>';
   }).join('');
+
+  var overallSuccessRate=sumTotal>0?(sumSuccess/sumTotal*100):100;
+  var overallClassRate=sumClassTotal>0?(sumClassSigned/sumClassTotal*100):100;
+
+  var tfootHtml='<tfoot><tr style="font-weight:650;border-top:2px solid var(--border,#334155);background:var(--card-bg-subtle,rgba(255,255,255,0.03));">'+
+    '<td data-label="課程"><b>全課程彙總 ('+courses.length+' 門)</b></td>'+
+    '<td data-label="累積點名">'+sumTotal+'</td>'+
+    '<td data-label="成功">'+sumSuccess+'</td>'+
+    '<td data-label="未成功">'+sumFailed+'</td>'+
+    '<td data-label="累積成功率"><span class="pill '+attRateClass(overallSuccessRate)+'">'+overallSuccessRate.toFixed(1)+'%</span></td>'+
+    '<td data-label="最新一次點名"><span class="small" style="color:var(--muted,#94a3b8)">最新各課點名彙總</span></td>'+
+    '<td data-label="最後班上總點名人數"><span class="pill '+attRateClass(overallClassRate)+'">實到 <b>'+sumClassSigned+'</b> / 預計 <b>'+sumClassTotal+'</b> 人</span><div class="small" style="color:var(--muted,#94a3b8)">全班平均 '+overallClassRate.toFixed(1)+'%</div></td>'+
+    '<td data-label="誰沒有點到名">'+(sumFailed===0?'<span class="pill good">全員到齊</span>':('<span class="pill bad">共 '+sumFailed+' 筆未到</span>'))+'</td>'+
+    '</tr></tfoot>';
+
   box.innerHTML='<div class="table-wrap"><table class="att-table"><thead><tr>'+
-    '<th>課程</th><th>累積點名</th><th>成功</th><th>未成功</th><th>累積成功率</th><th>最新一次點名（本次狀態）</th><th>誰沒有點到名</th>'+
-    '</tr></thead><tbody>'+rows+'</tbody></table></div>'+
+    '<th>課程</th><th>累積點名</th><th>成功</th><th>未成功</th><th>累積成功率</th><th>最新一次點名（本次狀態）</th><th>最後班上總點名人數（實到／預計）</th><th>誰沒有點到名</th>'+
+    '</tr></thead><tbody>'+rows+'</tbody>'+tfootHtml+'</table></div>'+
     '<div class="small mt12">統計範圍：'+esc(attRangeText(attNumber(attStats.days)))+
-    '。已清楚區分期間累積成功率、最新點名狀態與未點到名冊，出席與否仍以學校系統為準。</div>';
+    '。已清楚區分期間累積成功率、最新點名狀態、最後班上總點名人數與未點到名冊，出席與否仍以學校系統為準。</div>';
 }
 function openUnattendedModal(courseName){
   try{
@@ -1937,11 +2014,18 @@ function openUnattendedModal(courseName){
     var html='';
 
     if(ls&&ls.timestamp){
+      var classInfoBanner='';
+      if(ls.class_total&&ls.class_total>0){
+        classInfoBanner='<div class="small" style="margin-bottom:10px;padding:8px 12px;background:rgba(37,99,235,0.08);border:1px solid rgba(37,99,235,0.2);border-radius:8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;">'+
+          '<span>最後班上總點名人數：預計 <b>'+attNumber(ls.class_total)+'</b> 人 ｜ 實際點到 <b>'+attNumber(ls.class_signed)+'</b> 人</span>'+
+          '<span class="pill good">班級出席率 '+Number(ls.class_rate||0).toFixed(1)+'%</span>'+
+          '</div>';
+      }
       html+='<div style="margin-bottom:16px;">'+
         '<div style="font-weight:750;font-size:14px;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">'+
           '<span>最新一次點名 ('+esc(fmt(ls.timestamp))+')</span>'+
           '<span class="pill '+(ls.is_all_success?'good':'bad')+'">'+(ls.is_all_success?'全數點到':('本次未點到 '+(latestUn.length||ls.failed)+' 人'))+'</span>'+
-        '</div>';
+        '</div>'+classInfoBanner;
       if(latestUn.length===0){
         html+='<div class="small" style="color:var(--ok,#16a34a);padding:6px 0;font-weight:650;">🎉 本次點名全員皆成功簽到！</div>';
       }else{
@@ -2058,6 +2142,7 @@ function renderRollcall(){
     return {
       timestamp:h.timestamp,course_name:h.course_name,success:h.success,rollcall_id:h.rollcall_id,
       account_id:h.account_id||'',type:h.attendance_type||'',
+      class_total:h.class_total||0,class_signed:h.class_signed||0,
       sender:rollcallSender(h)
     };
   });
@@ -2076,11 +2161,12 @@ function renderRollcall(){
       list.slice(0,shown).map(function(h){
     var who=esc(h.sender||'-');
     var account=(h.sender&&h.account_id&&h.sender!==h.account_id)?('（帳號 '+esc(h.account_id)+'）'):'';
+    var classInfo=(h.class_total&&h.class_total>0)?('｜班上點名：<b>'+esc(h.class_signed)+'</b>/'+esc(h.class_total)+' 人'):'';
     return '<div class="item">'+
       '<div class="item-top"><span>'+esc(h.course_name||'-')+'</span>'+
       '<span class="pill '+(h.success?'good':'bad')+'">'+(h.success?'成功':'未成功')+'</span></div>'+
       '<div class="item-meta">送出者：<b>'+who+'</b>'+account+
-      (h.type?'｜'+esc(h.type):'')+'｜'+fmt(h.timestamp)+'｜#'+esc(h.rollcall_id||'-')+
+      (h.type?'｜'+esc(h.type):'')+'｜'+fmt(h.timestamp)+'｜#'+esc(h.rollcall_id||'-')+classInfo+
       (fromDb?'':'｜<span class="small">（記憶體紀錄）</span>')+
       '</div></div>';
   }).join('')+

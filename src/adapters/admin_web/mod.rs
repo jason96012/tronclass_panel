@@ -107,6 +107,8 @@ mod radar;
 mod radar_input;
 // SEO_LANDING_V1（fix60）：公開介紹頁 ＋ robots.txt／sitemap.xml。
 mod seo;
+// WAF_FIREWALL_V1：Web 應用防火牆與全方位資訊安全防護引擎。
+mod waf;
 // INDEXNOW_V1（fix105）：主動把公開首頁提交給 Bing（Bing 官方協定；Google 不參與）。
 mod indexnow;
 mod static_assets;
@@ -497,7 +499,7 @@ static SECURITY_WATCH: once_cell::sync::Lazy<Mutex<SecurityWatch>> =
         })
     });
 
-fn security_now_label() -> String {
+pub(super) fn security_now_label() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
@@ -831,7 +833,7 @@ async fn notify_admins_discord(state: &AdminWebState, text: String, pref_key: &s
     }
 }
 
-async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAlertEvent) {
+pub(super) async fn notify_admins_security_alert(state: &AdminWebState, event: SecurityAlertEvent) {
     // SECURITY_ALERT_PUSH_V1：先取出推播需要的欄位（event 稍後會 move 進 Discord 訊息）。
     let push_username = event.username.clone();
     let push_ip = event.ip.clone();
@@ -2279,6 +2281,7 @@ impl AdminWebState {
 pub fn build_admin_router(state: AdminWebState) -> Router {
     let password_guard_state = state.clone();
     let blacklist_guard_state = state.clone();
+    let waf_guard_state = state.clone();
     Router::new()
         // SEO_LANDING_V1（fix60）：`/` 依身分分流——已登入照舊 302 到 `/admin`，
         // 未登入回公開介紹頁（Google 唯一收得到的內容）。
@@ -3080,6 +3083,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             session_cookie_to_query_middleware,
         ))
         .layer(axum::middleware::from_fn(https_redirect_middleware))
+        // WAF_FIREWALL_V1: 系統防火牆最外層防禦，攔截惡意探針、攻擊載荷與 L7 洪水掃描。
+        .layer(axum::middleware::from_fn_with_state(
+            waf_guard_state,
+            waf::waf_firewall_middleware,
+        ))
         // HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): outermost admin layer, so every
         // middleware and handler below sees forwarded headers only when they
         // came from a trusted proxy hop.
@@ -3920,7 +3928,7 @@ struct InlineCspHashes {
 
 fn format_csp(script_extra: &str, style_extra: &str, style_attr: &str) -> String {
     format!(
-        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_extra} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_extra}; style-src-attr {style_attr}; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com https://docs.google.com; worker-src 'self' blob:; upgrade-insecure-requests"
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'{script_extra} https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self'{style_extra}; style-src-attr {style_attr}; require-trusted-types-for 'script'; trusted-types default dompurify; img-src 'self' data: blob:; connect-src 'self' https://cloudflareinsights.com; font-src 'self' data:; manifest-src 'self'; media-src 'self' blob:; frame-src 'self' https://view.officeapps.live.com https://*.officeapps.live.com https://docs.google.com; worker-src 'self' blob:; block-all-mixed-content; upgrade-insecure-requests"
     )
 }
 
@@ -4099,8 +4107,8 @@ fn is_stock_embed_path(path: &str) -> bool {
 /// 公開掃碼／雷達頁由 `scanner::tool_security_headers_middleware` 另外套。
 /// 不關 `publickey-credentials-get`／clipboard，passkey 與複製按鈕才不會壞。
 fn permissions_policy_for_path(path: &str) -> &'static str {
-    const DENY: &str = "camera=(), geolocation=(), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
-    const RADAR: &str = "camera=(), geolocation=(self), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
+    const DENY: &str = "camera=(), geolocation=(), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=(), accelerometer=(), gyroscope=(), magnetometer=(), ambient-light-sensor=(), autoplay=(), encrypted-media=(), picture-in-picture=(), screen-wake-lock=(), web-share=(), xr-spatial-tracking=(), publickey-credentials-get=(self)";
+    const RADAR: &str = "camera=(), geolocation=(self), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=(), accelerometer=(), gyroscope=(), magnetometer=(), ambient-light-sensor=(), autoplay=(), encrypted-media=(), picture-in-picture=(), screen-wake-lock=(), web-share=(), xr-spatial-tracking=(), publickey-credentials-get=(self)";
     if path == "/admin/radar" || path.starts_with("/admin/radar/") {
         RADAR
     } else {
@@ -4129,6 +4137,7 @@ async fn admin_security_headers_middleware(
     let is_admin_path = path.starts_with("/admin")
         || path == "/manifest.webmanifest"
         || path == "/service-worker.js";
+    let is_root_path = path == "/";
     let cache_static = path.starts_with("/admin/static/") || path.starts_with("/admin/pwa/");
     // PDF_FRAME_PREVIEW_V1: 預覽端點的回應會被 Dashboard 自己的 <iframe> 內嵌
     // （PDF 走瀏覽器原生檢視器）。若沿用全站 `X-Frame-Options: DENY` +
@@ -4184,7 +4193,31 @@ async fn admin_security_headers_middleware(
     }
     headers.insert(
         HeaderName::from_static("referrer-policy"),
-        HeaderValue::from_static("no-referrer"),
+        HeaderValue::from_static(if is_root_path {
+            "strict-origin-when-cross-origin"
+        } else {
+            "no-referrer"
+        }),
+    );
+    headers.insert(
+        HeaderName::from_static("x-xss-protection"),
+        HeaderValue::from_static("1; mode=block"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-permitted-cross-domain-policies"),
+        HeaderValue::from_static("none"),
+    );
+    headers.insert(
+        HeaderName::from_static("origin-agent-cluster"),
+        HeaderValue::from_static("?1"),
+    );
+    headers.insert(
+        HeaderName::from_static("x-dns-prefetch-control"),
+        HeaderValue::from_static("off"),
+    );
+    headers.insert(
+        header::SERVER,
+        HeaderValue::from_static("jasonserver-security-core (shield-v5-max)"),
     );
     headers.insert(
         HeaderName::from_static("permissions-policy"),
@@ -4194,6 +4227,10 @@ async fn admin_security_headers_middleware(
         headers.insert(
             HeaderName::from_static("cross-origin-opener-policy"),
             HeaderValue::from_static("same-origin"),
+        );
+        headers.insert(
+            HeaderName::from_static("cross-origin-embedder-policy"),
+            HeaderValue::from_static("credentialless"),
         );
     }
     headers.insert(

@@ -497,11 +497,7 @@ async fn stream_material_file_response(
     // SNIFF_CONTENT_TYPE_V1: 以真實魔數決定 Content-Type（.ppt 實為 PDF 時回 application/pdf）。
     let content_type = sniff_content_type(&path).await;
     let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("file");
-    let disposition = format!(
-        "{}; filename=\"{}\"",
-        disposition_prefix,
-        sanitize_header_filename(file_name)
-    );
+    let disposition = format_content_disposition(disposition_prefix, file_name);
 
     // RANGE_STREAM_V1：影音要能「邊下邊播、拖動時間軸」，PDF 檢視器也常先要一小段；
     // 沒有 206 時瀏覽器只能整份抓完才動作。只實作單一範圍（見 parse_material_range）。
@@ -1382,7 +1378,7 @@ const SHARE_PAGE: &str = r#"<!doctype html>
 __SCRIPTS__
 </head>
 <body>
-<header><span class="t">__TITLE__</span><a class="dl" href="__DLATTR__">下載</a></header>
+<header><span class="t">__TITLE__</span><a class="dl" href="__DLATTR__" download="__TITLE__">下載</a></header>
 <div id="stage"><div class="msg">載入中…</div></div>
 <script src="/pub/static/js/pdf.min.js?v=sharev6"></script>
 <script src="/pub/static/js/share-preview.js?v=sharev6"></script>
