@@ -41,6 +41,14 @@ pub(super) fn session_public_id(token: &str) -> String {
     hex::encode(&digest[..8])
 }
 
+/// SESSION_TOKEN_HASH_V1（fix125）：DB 列的 `row.token` 本身就是
+/// SHA-256 hex（明文 token 的散列）。它的前 16 hex == `session_public_id(明文)`，
+/// 直接截取即可，**不可**再把整串當明文餵進 `session_public_id`（會二次散列、
+/// 「目前裝置」判錯、依 id 撤銷會找不到目標）。
+fn session_public_id_from_key(row_token: &str) -> String {
+    row_token.chars().take(16).collect()
+}
+
 /// 從 User-Agent 粗略歸納「裝置／瀏覽器」摘要，純字串比對、不引入 UA parser。
 /// BLACKLIST_UX_V1（fix58）：黑名單頁的「裝置」欄也用這支（同層模組共用）。
 pub(super) fn summarize_user_agent(ua: &str) -> (String, String) {
@@ -142,7 +150,7 @@ pub(super) async fn list_handler(
     let sessions: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
-            let id = session_public_id(&row.token);
+            let id = session_public_id_from_key(&row.token);
             let (os, browser) = summarize_user_agent(&row.user_agent);
             let last_seen_at = if row.last_seen_at > 0 {
                 row.last_seen_at
@@ -245,7 +253,7 @@ pub(super) async fn revoke_handler(
         .unwrap_or_default();
     let Some(target) = rows
         .into_iter()
-        .find(|row| session_public_id(&row.token) == target_id)
+        .find(|row| session_public_id_from_key(&row.token) == target_id)
     else {
         return (
             StatusCode::NOT_FOUND,
@@ -253,7 +261,9 @@ pub(super) async fn revoke_handler(
         )
             .into_response();
     };
-    state.revoke_session(&target.token).await;
+    // SESSION_TOKEN_HASH_V1（fix125）：target.token 是 DB 內的 SHA-256 散列鍵
+    // （DB 再也見不到明文），一律走 by-key 撤銷；HTTP 層在公開前已遮罩摘記。
+    state.revoke_session_by_hashed_key(&target.token).await;
     crate::logs::record_audit(
         "web",
         &session.account_id,

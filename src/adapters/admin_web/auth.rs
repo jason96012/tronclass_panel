@@ -54,11 +54,16 @@ pub(super) async fn admin_login_activity_handler(
         .await
     {
         Ok(events) => (StatusCode::OK, Json(json!({ "events": events }))).into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("activity database error: {e}") })),
-        )
-            .into_response(),
+        Err(e) => {
+            // ERR_MSG_GENERIC_V1（fix117）：資料庫錯誤細節（連線字串、SQL、
+            // 內部路徑等）不外洩給 client，僅寫伺服器端日誌。
+            warn!(error = %e, "activity events database lookup failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal server error" })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -95,9 +100,14 @@ pub(super) async fn admin_login_handler(
         warn!(ip = %ip, "password login rejected for blacklisted IP");
         return blocked_ip_response();
     }
+    // IP_BLACKLIST_V6_GROUP_V1：速率限制同樣以群組鍵計數——IPv6 位址輪換
+    // 不能重置 60 秒窗口，也與黑名單／失敗計數用同一個 IP 身分。
     if !state
         .rate_limiter
-        .check_limit(&format!("login-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
+        .check_limit(
+            &format!("login-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)),
+            IP_RATE_LIMIT_MAX_ATTEMPTS,
+        )
         .await
     {
         warn!(ip = %ip, "login rate limited by ip");
@@ -116,7 +126,8 @@ pub(super) async fn admin_login_handler(
             .into_response();
     }
 
-    let client = ip.clone();
+    // IP_BLACKLIST_V6_GROUP_V1：rate key 取群組鍵，與 login-ip: 計數同一把尺。
+    let client = crate::trusted_ip::blacklist_group_key(&ip);
     let rate_key = format!("login:{}:{client}", username.to_lowercase());
     if !state.rate_limiter.check(&rate_key).await {
         warn!(username = %username, client = %client, "admin web login rate limited");
@@ -302,7 +313,10 @@ pub(super) async fn admin_login_handler(
     //
     // LOGIN_UPGRADE_BACKGROUND_V1：升級改為背景任務（不 await）——重算 Argon2id 又是一次
     // 慢雜湊，沒必要讓使用者多等；失敗只記 log，下次登入再試。明文只活在這個 task 內。
-    if !must_change_password && crate::dashboard_auth::is_legacy_pbkdf2_hash(&account.dashboard_password_hash) {
+    if !must_change_password
+        && (crate::dashboard_auth::is_legacy_pbkdf2_hash(&account.dashboard_password_hash)
+            || crate::dashboard_auth::is_argon2_params_outdated(&account.dashboard_password_hash))
+    {
         let state = state.clone();
         let upgrade_id = account.id.clone();
         let provider_password = account.password.clone();
@@ -315,7 +329,7 @@ pub(super) async fn admin_login_handler(
                         .set_dashboard_password_hash(&upgrade_id, &new_hash)
                         .await
                     {
-                        Ok(_) => info!(account = %upgrade_id, "Dashboard 密碼雜湊已由 PBKDF2 升級為 Argon2id"),
+                        Ok(_) => info!(account = %upgrade_id, "Dashboard 密碼雜湊已升級至最新 Argon2id 參數（含 PBKDF2 遷移／參數升級）"),
                         Err(error) => warn!(account = %upgrade_id, error = %error, "Argon2id 雜湊回寫失敗，下次登入再試"),
                     }
                 }
@@ -435,9 +449,18 @@ pub(super) async fn admin_logout_handler(
             .delete_dashboard_session_by_refresh(&refresh)
             .await;
     }
-    fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
+    // LOGOUT_CLEAR_SITE_DATA_V1（fix118）：登出時同時要求瀏覽器清空本站
+    // cache／cookies／storage——與 Set-Cookie 過期並行互補：即使某顆 cookie 因
+    // Path/Domain 不一致沒清掉、或 localStorage 殘留前端快取，共用電腦上也不會
+    // 留下任何本站痕跡。瀏覽器不支援時僅忽略標頭，不影響登出行為。
+    let mut response = fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
         (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
-    ))
+    ));
+    response.headers_mut().insert(
+        header::HeaderName::from_static("clear-site-data"),
+        header::HeaderValue::from_static("\"cache\", \"cookies\", \"storage\""),
+    );
+    response
 }
 
 /// LOGOUT_SERVER_SIDE_V1：瀏覽器導覽式登出。
@@ -482,28 +505,38 @@ pub(super) async fn admin_logout_redirect_handler(
             .delete_dashboard_session_by_refresh(&refresh)
             .await;
     }
-    let response = (StatusCode::FOUND, [(header::LOCATION, "/admin")]).into_response();
-    fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(response))
+    let mut response = fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
+        (StatusCode::FOUND, [(header::LOCATION, "/admin")]).into_response(),
+    ));
+    // LOGOUT_CLEAR_SITE_DATA_V1（fix118）：導覽式登出同樣清空本站
+    // cache／cookies／storage（細節見 admin_logout_handler 的同名註解）。
+    response.headers_mut().insert(
+        header::HeaderName::from_static("clear-site-data"),
+        header::HeaderValue::from_static("\"cache\", \"cookies\", \"storage\""),
+    );
+    response
 }
 
 pub(super) async fn admin_session_refresh_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
     ClientIp(ip): ClientIp,
-    Query(query): Query<AdminQuery>,
+    Query(_query): Query<AdminQuery>,
 ) -> Response {
-    // Prefer the HttpOnly refresh cookie; fall back to a token query param
-    // (only for compatibility with clients that cannot send cookies).
+    // TOKEN_QUERY_FALLBACK_REMOVE_V1（fix127）：refresh 只信 HttpOnly cookie。
+    //
+    // 這裡以前保留「?token= 查詢參數 fallback」給無 cookie 客戶端——但
+    // TOKEN_QUERY_STRIP_ALL_ADMIN_V1（H-2）早已在進 handler 前把呼叫端送來的
+    // query token 全數剝除、只重注入 access cookie 值，該 fallback 拿到的從來
+    // 不是 refresh token，已是事實上的死碼。正式廢除：**URL 永不承載任何認證
+    // 憑證**（避免瀏覽器歷史／反代存取日誌洩漏）。無 cookie 的程式客戶端改在
+    // Cookie header 直接帶 refresh 值即可（HttpOnly 只約束瀏覽器內的 JS）。
     //
     // SESSION_DUAL_CANDIDATE_V1（fix36）：兩個 cookie 名字都當候選依序輪換。
     // 舊版只試 priority 最高的那一顆——「過期 __Host- 殘留＋有效 local」時必定
     // 失敗，前端接著清 cookie 把人登出（使用者回報的「登入成功後又跳回登入
     // 畫面」）。
-    let mut candidates = refresh_cookie_candidates(&headers);
-    let query_token = query.token.trim();
-    if !query_token.is_empty() && !candidates.iter().any(|c| c == query_token) {
-        candidates.push(query_token.to_string());
-    }
+    let candidates = refresh_cookie_candidates(&headers);
 
     // LOGIN_DEVICES_V1：帶入這次請求的來源，讓功能上線前建立的 session
     // （ip / UA 為空）在輪換時補齊。
@@ -630,13 +663,44 @@ pub(super) async fn admin_password_change_handler(
             .into_response();
     }
 
+    // PASSWORD_CHANGE_RATE_LIMIT_V1（fix117）：密碼變更/首次設定原本只靠
+    // PBKDF2 計算成本減速「試猜目前密碼」，沒有明確嘗試上限；若 session token
+    // 外洩，可無限次高速驗證。此處以帳號＋IP 群組鍵限流（與登入端點同一把尺：
+    // IPv6 位址輪換不能重置窗口），超限直接回 rate limited。
+    if !state
+        .rate_limiter
+        .check_limit(
+            &format!(
+                "password-change:{}:{}",
+                session.account_id,
+                crate::trusted_ip::blacklist_group_key(&ip)
+            ),
+            RATE_LIMIT_MAX_ATTEMPTS,
+        )
+        .await
+    {
+        warn!(account = %session.account_id, ip = %ip, "password change rate limited");
+        crate::logs::record_audit(
+            "web",
+            &session.account_id,
+            "dashboard_password_change_rate_limited",
+            Some(&session.account_id),
+            None,
+            "Dashboard 密碼變更觸發速率限制",
+        );
+        return rate_limited_response();
+    }
+
     let account = match state.accounts_db.get(&session.account_id).await {
         Ok(Some(account)) if account.enabled => account,
         Ok(_) => return unauthorized_response(),
         Err(error) => {
+            // ERR_MSG_GENERIC_V1（fix117）：資料庫錯誤細節不外洩給 client，
+            // 只寫伺服器端日誌；對外一律回通用訊息。
+            warn!(account = %session.account_id, error = %error, "password change account lookup failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {error}") })),
+                Json(json!({ "error": "internal server error" })),
             )
                 .into_response();
         }
@@ -677,9 +741,11 @@ pub(super) async fn admin_password_change_handler(
     {
         Ok(hash) => hash,
         Err(error) => {
+            // ERR_MSG_GENERIC_V1（fix117）：雜湊失敗的內部細節不外洩給 client。
+            warn!(account = %session.account_id, error = %error, "password hashing failed");
             return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": error.to_string() })),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal server error" })),
             )
                 .into_response();
         }
@@ -692,9 +758,11 @@ pub(super) async fn admin_password_change_handler(
         Ok(true) => {}
         Ok(false) => return unauthorized_response(),
         Err(error) => {
+            // ERR_MSG_GENERIC_V1（fix117）：資料庫錯誤細節不外洩給 client。
+            warn!(account = %session.account_id, error = %error, "save password hash failed");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("save password failed: {error}") })),
+                Json(json!({ "error": "internal server error" })),
             )
                 .into_response();
         }

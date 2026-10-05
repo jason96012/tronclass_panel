@@ -22,7 +22,14 @@ use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
 use url::Url;
-use uuid::Uuid;
+
+/// SCANNER_TOKEN_256_V1（fix128）：掃碼 token 與面板 session 同級——256-bit
+/// 作業系統亂數（64 hex）。拼圖上原有的 URL 傳遞結構不變，統計枚舉空間。
+fn scanner_secure_token() -> String {
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).expect("SCANNER_TOKEN_256_V1: OS RNG unavailable");
+    hex::encode(buf)
+}
 
 use crate::adapters::admin_web::{self, AdminWebState, HSTS_HEADER_VALUE};
 use crate::adapters::requests::{
@@ -195,7 +202,7 @@ impl QrScannerRegistry {
             cleanup_expired_locked(&mut inner, now);
 
             let entry = inner.entry(key).or_insert_with(|| PendingQrEntry {
-                token: Uuid::new_v4().simple().to_string(),
+                token: scanner_secure_token(),
                 expires_at,
                 used: false,
                 submitted_qr_data: None,
@@ -205,7 +212,7 @@ impl QrScannerRegistry {
             });
 
             if entry.used && entry.submitted_qr_data.is_none() {
-                entry.token = Uuid::new_v4().simple().to_string();
+                entry.token = scanner_secure_token();
                 entry.used = false;
                 entry.accounts.clear();
                 entry.completed_accounts.clear();
@@ -350,7 +357,7 @@ impl QrScannerRegistry {
             cleanup_expired_number_locked(&mut inner, now);
 
             let entry = inner.entry(key).or_insert_with(|| PendingNumberEntry {
-                token: Uuid::new_v4().simple().to_string(),
+                token: scanner_secure_token(),
                 expires_at,
                 accounts: HashMap::new(),
                 completed_accounts: HashSet::new(),
@@ -617,7 +624,7 @@ impl QrScannerRegistry {
             cleanup_expired_radar_locked(&mut inner, now);
 
             let entry = inner.entry(key).or_insert_with(|| PendingRadarEntry {
-                token: Uuid::new_v4().simple().to_string(),
+                token: scanner_secure_token(),
                 expires_at,
                 accounts: HashMap::new(),
                 completed_accounts: HashSet::new(),
@@ -1215,6 +1222,14 @@ pub fn alternate_public_url(_url: &str) -> Option<String> {
 /// **不加 CSP**：`scanner.html` 有大段 inline script、zxing／wechat／ONNX WASM、
 /// `new Worker(..., {type:"module"})`。面板那套 `require-trusted-types-for`
 /// 會讓相機頁白屏。相機只在 `/scanner` 開、定位只在 `/radar` 開。
+// TOOL_PAGE_CSP_V1（fix135）：ZAP DAST 掃描指出公開工具頁沒有任何 CSP。
+// 面板主 CSP 的 require-trusted-types-for 會讓相機/解碼頁整頁白屏（見下方
+// TOOL_PAGE_SECURITY_HEADERS_V1 原註），因此改送「工具頁專用 CSP」：
+// 只允許同源資源＋必要的 inline script/style＋WASM eval＋Worker blob，
+// 但 object-src 'none'、base-uri 'none'、frame-ancestors 'none'、
+// connect-src 'self' —— 外部腳本、外嵌、站外傳輸依舊全數攔下。
+const TOOL_PAGE_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; manifest-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+
 pub(crate) fn tool_permissions_policy_for_path(path: &str) -> &'static str {
     const SCANNER: &str = "camera=(self), geolocation=(), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
     const RADAR: &str = "camera=(), geolocation=(self), microphone=(), payment=(), usb=(), midi=(), bluetooth=(), display-capture=()";
@@ -1247,6 +1262,11 @@ pub(crate) async fn tool_security_headers_middleware(
     headers.insert(
         HeaderName::from_static("referrer-policy"),
         HeaderValue::from_static("no-referrer"),
+    );
+    // TOOL_PAGE_CSP_V1（fix135）
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(TOOL_PAGE_CSP),
     );
     headers.insert(
         HeaderName::from_static("permissions-policy"),

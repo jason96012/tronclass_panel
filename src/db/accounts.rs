@@ -58,14 +58,20 @@ impl From<AccountRow> for RawAccountConfig {
             provider: row.provider,
             username: row.username,
             // Decrypt at-rest credentials so in-memory callers get plaintext.
-            password: crate::secret_encryption::StoreSecret::from_stored(&row.password)
+            password: crate::secret_encryption::StoreSecret::from_stored_with_purpose(
+                &row.password,
+                "accounts.password",
+            )
                 .as_str()
                 .to_string(),
             dashboard_password_hash: row.dashboard_password_hash,
             enabled: row.enabled,
             line_user_id: row.line_user_id,
             discord_user_id: row.discord_user_id,
-            session_cookie: crate::secret_encryption::StoreSecret::from_stored(&row.session_cookie)
+            session_cookie: crate::secret_encryption::StoreSecret::from_stored_with_purpose(
+                &row.session_cookie,
+                "accounts.session_cookie",
+            )
                 .as_str()
                 .to_string(),
             is_admin: row.is_admin,
@@ -161,8 +167,12 @@ impl AccountsDb {
     /// 失敗不影響讀取結果（保留原值，下輪讀取再試）。
     /// 回傳是否有重寫（供 list 彙總計數）。
     async fn rewrap_row_secrets(&self, row: &AccountRow) -> bool {
-        let password = crate::secret_encryption::rewrap_stored(&row.password);
-        let session_cookie = crate::secret_encryption::rewrap_stored(&row.session_cookie);
+        let password =
+            crate::secret_encryption::rewrap_stored_with_purpose(&row.password, "accounts.password");
+        let session_cookie = crate::secret_encryption::rewrap_stored_with_purpose(
+            &row.session_cookie,
+            "accounts.session_cookie",
+        );
         if password.is_none() && session_cookie.is_none() {
             return false;
         }
@@ -200,7 +210,7 @@ impl AccountsDb {
     /// 直接操作原始儲存值，不經過 `RawAccountConfig` 的解密路徑，所以
     /// 解不開的值不會被誤寫成空字串。`dry_run` 為 true 時只統計不寫入。
     pub async fn rotate_all_secrets(&self, dry_run: bool) -> Result<SecretRotationReport> {
-        use crate::secret_encryption::{rotate_stored, RotateOutcome};
+        use crate::secret_encryption::{rotate_stored_with_purpose, RotateOutcome};
 
         let rows = sqlx::query_as::<_, (String, String, String)>(
             "SELECT id, password, session_cookie FROM accounts ORDER BY id",
@@ -213,8 +223,8 @@ impl AccountsDb {
         let mut report = SecretRotationReport::default();
         for (id, password, session_cookie) in rows {
             report.total += 1;
-            let pw = rotate_stored(&password);
-            let ck = rotate_stored(&session_cookie);
+            let pw = rotate_stored_with_purpose(&password, "accounts.password");
+            let ck = rotate_stored_with_purpose(&session_cookie, "accounts.session_cookie");
 
             let mut failed = false;
             let mut changed = false;
@@ -276,9 +286,10 @@ impl AccountsDb {
 
     /// 新增帳號；若 id 已存在則回傳錯誤。
     pub async fn insert(&self, account: &RawAccountConfig) -> Result<()> {
-        let password = crate::secret_encryption::StoreSecret::new(&account.password).store_value();
-        let session_cookie =
-            crate::secret_encryption::StoreSecret::new(&account.session_cookie).store_value();
+        let password = crate::secret_encryption::StoreSecret::new(&account.password)
+            .store_value_with_purpose("accounts.password");
+        let session_cookie = crate::secret_encryption::StoreSecret::new(&account.session_cookie)
+            .store_value_with_purpose("accounts.session_cookie");
         sqlx::query(
             "INSERT INTO accounts (id, provider, username, password, dashboard_password_hash, enabled, line_user_id, discord_user_id, session_cookie, is_admin)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -302,9 +313,10 @@ impl AccountsDb {
 
     /// 新增或更新帳號（upsert）。
     pub async fn upsert(&self, account: &RawAccountConfig) -> Result<()> {
-        let password = crate::secret_encryption::StoreSecret::new(&account.password).store_value();
-        let session_cookie =
-            crate::secret_encryption::StoreSecret::new(&account.session_cookie).store_value();
+        let password = crate::secret_encryption::StoreSecret::new(&account.password)
+            .store_value_with_purpose("accounts.password");
+        let session_cookie = crate::secret_encryption::StoreSecret::new(&account.session_cookie)
+            .store_value_with_purpose("accounts.session_cookie");
         sqlx::query(
             "INSERT INTO accounts (id, provider, username, password, dashboard_password_hash, enabled, line_user_id, discord_user_id, session_cookie, is_admin)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -390,7 +402,8 @@ impl AccountsDb {
 
     /// 更新帳號最近一次成功登入的 session cookie，回傳是否找到並更新。
     pub async fn set_session_cookie(&self, id: &str, session_cookie: &str) -> Result<bool> {
-        let stored = crate::secret_encryption::StoreSecret::new(session_cookie).store_value();
+        let stored = crate::secret_encryption::StoreSecret::new(session_cookie)
+            .store_value_with_purpose("accounts.session_cookie");
         let result = sqlx::query("UPDATE accounts SET session_cookie = ? WHERE id = ?")
             .bind(&stored)
             .bind(id)

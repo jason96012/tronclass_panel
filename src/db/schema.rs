@@ -518,6 +518,29 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 dashboard_sessions refresh index 失敗")?;
 
+    // REFRESH_REUSE_DETECT_V1（fix126）：refresh token 輪換石碑表。
+    // 每把被輪換廢棄的舊 refresh 在此留一筆（SESSION_TOKEN_HASH_V1 的 sha256 鍵）。
+    // 之後同一把舊值再被拿去換新（已超出寬限窗）＝極可能遭竊 → 帳號全家族撤銷。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS refresh_token_tombstones (
+            lookup_key TEXT PRIMARY KEY NOT NULL,
+            account_id TEXT NOT NULL,
+            rotated_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 refresh_token_tombstones 資料表失敗")?;
+
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_refresh_tombstones_rotated_at ON refresh_token_tombstones(rotated_at)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 refresh_token_tombstones 索引失敗")?;
+
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_dashboard_sessions_expires_at ON dashboard_sessions(expires_at)",
     )

@@ -16,6 +16,10 @@ use super::{
 
 const PAGE_HTML: &str = include_str!("static/push_status.html");
 
+/// PUSH_SUBSCRIPTION_CAP_V1（fix121）：每帳號保留的推播訂閱裝置上限。
+/// 一般使用者 1–3 台；超過者多半是舊裝置累積（或惡意灌入），要求先退訂。
+const PUSH_SUBSCRIPTION_MAX_PER_ACCOUNT: i64 = 20;
+
 pub(super) async fn page_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -231,6 +235,27 @@ pub(super) async fn subscribe_handler(
     };
     if let Err(message) = validate_subscription(&request) {
         return (StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response();
+    }
+    // PUSH_SUBSCRIPTION_CAP_V1（fix121）：原先沒有訂閱數上限——任一登入
+    // session 都能以不重複端點對自己帳號灌入無限量訂閱列（SQLite 漲大 +
+    // 每次發送都要遍歷它們，工具人向量）。一般使用者只有 1–3 台裝置：
+    // 每帳號上限 20；額滿後先退訂舊裝置才能訂閱新裝置。
+    match state
+        .accounts_db
+        .count_web_push_subscriptions(&account_id)
+        .await
+    {
+        Ok(current) if current >= PUSH_SUBSCRIPTION_MAX_PER_ACCOUNT => {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({
+                    "error": "推播訂閱裝置已達上限（20），請先移除不需要的訂閱",
+                    "code": "PUSH_SUBSCRIPTION_CAP"
+                })),
+            )
+                .into_response();
+        }
+        _ => {}
     }
     match state
         .accounts_db

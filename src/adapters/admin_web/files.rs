@@ -1235,6 +1235,11 @@ static PUB_RATE_LIMIT: once_cell::sync::Lazy<
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 fn pub_rate_exceeded(ip: &str, limit: u32, window_secs: u64) -> bool {
+    // PUB_RATE_GROUP_KEY_V1（fix120）：原本以原始 IP 字串當鍵——攻擊者在 IPv6
+    // 隱私位址空間逐請求輪換，即可無限繞過公開端點限速（分享頁 120/分、
+    // 預覽紀錄 10/分），且每次輪換都讓記憶體多長一筆。改成與黑名單／登入節流
+    // 同一把尺（IP_BLACKLIST_V6_GROUP_V1）：IPv6 收斂成 /64、IPv4-mapped 先收斂。
+    let key = crate::trusted_ip::blacklist_group_key(ip);
     let now = office_now_secs();
     let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
         return false;
@@ -1242,7 +1247,7 @@ fn pub_rate_exceeded(ip: &str, limit: u32, window_secs: u64) -> bool {
     if map.len() > 4096 {
         map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
     }
-    let entry = map.entry(ip.to_string()).or_insert((now, 0));
+    let entry = map.entry(key).or_insert((now, 0));
     if now.saturating_sub(entry.0) >= window_secs {
         *entry = (now, 1);
         false

@@ -73,6 +73,9 @@ async fn location_label(ip: &str) -> String {
     if ip.is_empty() || ip == "-" {
         return String::new();
     }
+    // IP_BLACKLIST_V6_GROUP_V1：黑名單列可能是 IPv6 /64 群組鍵（例如
+    // `2001:db8:...::/64`）；前綴位址本身就足以代表這段的地理位置。
+    let ip = ip.split_once('/').map(|(addr, _)| addr).unwrap_or(ip);
     if is_private_or_local_ip(ip) {
         return "區域網路內".to_string();
     }

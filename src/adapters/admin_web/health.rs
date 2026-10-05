@@ -64,6 +64,25 @@ async fn healthz_detail_allowed(
 /// 任一項失敗 → 503 + `ok:false`；全部正常 → 200。
 /// 回應內容依憑證分兩級（見 `HEALTHZ_MINIMAL_PUBLIC_V1` 的說明）：公開只有 ok／service，
 /// 細節（版本、資料庫延遲、監控統計、失聯帳號）要 session 或 `HEALTHZ_DETAIL_TOKEN`。
+/// HEALTHZ_CACHE_V1（fix120）：/healthz 是公開端點，但每呼叫一次都對 DB 做一次
+/// 寫入＋讀回探測——攻擊者只要高頻刷這條，就把 SQLite 變成 DoS 放大器。
+/// 快取 5 秒：健康檢查的監控頻率遠低於「5 秒一次」的需求，staleness 可忽略；
+/// 轟炸下 DB 只會被真正探測一次。Mutex 兼作 single-flight：快取過期時併發
+/// 請求也僅一個跑探測，其餘等它寫回後命中快取。
+struct HealthzCached {
+    computed_at: std::time::Instant,
+    detail_json: serde_json::Value,
+    ok: bool,
+}
+
+const HEALTHZ_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn healthz_cache() -> &'static tokio::sync::Mutex<Option<HealthzCached>> {
+    static HEALTHZ_CACHE: once_cell::sync::OnceCell<tokio::sync::Mutex<Option<HealthzCached>>> =
+        once_cell::sync::OnceCell::new();
+    HEALTHZ_CACHE.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
 pub(super) async fn healthz_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -71,6 +90,27 @@ pub(super) async fn healthz_handler(
 ) -> Response {
     let started = std::time::Instant::now();
     let now = chrono::Local::now().timestamp();
+
+    // HEALTHZ_CACHE_V1：detail_allowed 先取（本身不走 DB 探測寫入），
+    // 快取命中就直接回上次結果；之後整段探測在 single-flight 鎖內進行。
+    let detail_allowed = healthz_detail_allowed(&state, &headers, &query.token).await;
+    let cache = healthz_cache();
+    let mut cache_guard = cache.lock().await;
+    if let Some(cached) = cache_guard.as_ref() {
+        if cached.computed_at.elapsed() < HEALTHZ_CACHE_TTL {
+            let body = if detail_allowed {
+                cached.detail_json.clone()
+            } else {
+                healthz_public_body(cached.ok)
+            };
+            let status = if cached.ok {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            return (status, [(header::CACHE_CONTROL, "no-store")], Json(body)).into_response();
+        }
+    }
 
     // ── 1. 資料庫讀寫 ─────────────────────────────────────────────────────
     let db_probe_value = now.to_string();
@@ -139,32 +179,45 @@ pub(super) async fn healthz_handler(
     let ok = db_ok && monitors_ok;
 
     // HEALTHZ_MINIMAL_PUBLIC_V1（fix62）：先決定這個請求能看多少，再組回應。
-    let detail_allowed = healthz_detail_allowed(&state, &headers, &query.token).await;
-    let body = if detail_allowed {
-        json!({
-            "ok": ok,
-            "service": "tronclass_dashboard",
-            "version": env!("CARGO_PKG_VERSION"),
-            "time": now,
-            "checks": {
-                "database": {
-                    "ok": db_ok,
-                    "latency_ms": db_latency_ms,
-                    "error": db_error,
-                },
-                "monitors": {
-                    "ok": monitors_ok,
-                    "total": accounts.len(),
-                    "running": running,
-                    "paused": paused,
-                    "starting": starting,
-                    "stale": stale,
-                    "poll_interval_secs": poll_interval_secs,
-                    "stale_after_secs": threshold_secs,
-                    "oldest_heartbeat_age_secs": oldest_heartbeat_age,
-                },
+    // （HEALTHZ_CACHE_V1：detail_allowed 已於快取檢查之前取得；詳細版一律組出來
+    // 存進快取——所需值都已在手上、零額外成本——本次只依身分決定回哪一版。）
+    let detail_body = json!({
+        "ok": ok,
+        "service": "tronclass_dashboard",
+        "version": env!("CARGO_PKG_VERSION"),
+        "time": now,
+        "checks": {
+            "database": {
+                "ok": db_ok,
+                "latency_ms": db_latency_ms,
+                "error": db_error,
             },
-        })
+            // AT_REST_ENCRYPTION_HEALTHZ_V1（fix119）：把憑證加密狀態浮上
+            // 健康檢查詳細模式——管理員一眼就能發現「忘記設 master key、
+            // 帳號密碼正以明文落盤」的錯誤部署。公開模式仍只回 ok+service。
+            "security": {
+                "at_rest_encryption": crate::secret_encryption::is_encryption_enabled(),
+            },
+            "monitors": {
+                "ok": monitors_ok,
+                "total": accounts.len(),
+                "running": running,
+                "paused": paused,
+                "starting": starting,
+                "stale": stale,
+                "poll_interval_secs": poll_interval_secs,
+                "stale_after_secs": threshold_secs,
+                "oldest_heartbeat_age_secs": oldest_heartbeat_age,
+            },
+        },
+    });
+    *cache_guard = Some(HealthzCached {
+        computed_at: std::time::Instant::now(),
+        detail_json: detail_body.clone(),
+        ok,
+    });
+    let body = if detail_allowed {
+        detail_body
     } else {
         healthz_public_body(ok)
     };

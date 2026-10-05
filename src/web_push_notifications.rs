@@ -1,3 +1,10 @@
+//! NOTIF_STRUCTURED_V1（fix131）：推播文案統一「結構完整風」規範——
+//! 1. 標題＝類別 emoji ＋ 一句主結論（課名用《》包住，一眼辨識）。
+//! 2. 主體首行放摺疊預覽最重要的資訊；細節以「標籤：值」逐行排列，
+//!    捨棄「｜」管線壓縮（手機通知中心展開後成段、可直接閱讀）。
+//! 3. 行動呼籲獨立最末行，讓 CTA 不被欄位淹沒。
+//! 4. tag／dedupe 語義不變：同一筆點名的催促與結果仍互相替換、不堆疊。
+//!
 //! Account-scoped background Web Push notifications.
 
 use std::collections::HashMap;
@@ -197,8 +204,8 @@ pub async fn send_homework_test(
         .ok_or_else(|| miette::miette!("Web Push 尚未初始化"))?;
     let subscriptions = service.db.list_web_push_subscriptions(account_id).await?;
     let payload = serde_json::to_vec(&json!({
-        "title": format!("作業截止提醒｜{course_name}"),
-        "body": format!("{stage_badge}：{title}"),
+        "title": format!("⏳ 作業截止提醒：《{course_name}》"),
+        "body": format!("類別：{stage_badge}\n項目：{title}"),
         "url": "/admin/homework",
         "tag": format!("tronclass-homework-test-{account_id}"),
     }))
@@ -370,9 +377,9 @@ pub fn notify_rollcall_reminder(
             .clone()
             .unwrap_or_else(|| "/admin/dashboard#rollcall".to_string());
         let payload = match serde_json::to_vec(&json!({
-            "title": format!("還沒送出：{course_name}"),
+            "title": format!("⏰ 點名尚未送出：《{course_name}》"),
             "body": format!(
-                "{attendance_type}｜帳號 {account_id}，還剩 {remaining_secs} 秒就會逾時，點一下立即輸入"
+                "類型：{attendance_type}\n帳號：{account_id}\n\n剩 {remaining_secs} 秒逾時——點一下立即輸入"
             ),
             "url": url,
             "tag": format!("tronclass-rollcall-{account_id}-{rollcall_id}"),
@@ -421,10 +428,10 @@ pub fn notify_rollcall_finished(
         if subscriptions.is_empty() {
             return;
         }
-        let headline = if success { "點名完成" } else { "點名未完成" };
+        let headline = if success { "✅ 點名完成" } else { "❌ 點名未完成" };
         let payload = match serde_json::to_vec(&json!({
-            "title": format!("{headline}：{course_name}"),
-            "body": format!("{attendance_type}｜帳號 {account_id}｜{result_text}"),
+            "title": format!("{headline}：《{course_name}》"),
+            "body": format!("類型：{attendance_type}\n帳號：{account_id}\n結果：{result_text}"),
             "url": "/admin/dashboard#rollcall",
             "tag": format!("tronclass-rollcall-finished-{account_id}-{rollcall_id}"),
             "rollcall_id": rollcall_id,
@@ -471,8 +478,8 @@ pub fn notify_rollcall_submitted(
             return;
         }
         let payload = match serde_json::to_vec(&json!({
-            "title": format!("點名已送出：{course_name}"),
-            "body": format!("{attendance_type}｜帳號 {account_id}｜已送出 iClass，正在二次確認…"),
+            "title": format!("📤 點名已送出：《{course_name}》"),
+            "body": format!("類型：{attendance_type}\n帳號：{account_id}\n\n已送出 iClass，正在二次確認…"),
             "url": "/admin/dashboard#rollcall",
             "tag": format!("tronclass-rollcall-finished-{account_id}-{rollcall_id}"),
             "rollcall_id": rollcall_id,
@@ -514,8 +521,8 @@ pub fn notify_class_reminder(
             return;
         }
         let payload = match serde_json::to_vec(&json!({
-            "title": format!("上課提醒｜{course_name}"),
-            "body": format!("{headline}｜{body_text}"),
+            "title": format!("🔔 上課提醒：《{course_name}》"),
+            "body": format!("{headline}\n{body_text}"),
             "url": "/admin/dashboard#timetable",
             "tag": format!("tronclass-class-reminder-{account_id}"),
         })) {
@@ -805,11 +812,12 @@ impl WebPushService {
         if subscriptions.is_empty() {
             return Ok(());
         }
-        let headline = if is_new { "🆕 新作業" } else { "作業截止提醒" };
+        // NOTIF_STRUCTURED_V1：類別（新作業／截止）與項目分兩行，展開即讀。
+        let headline = if is_new { "🆕 新作業" } else { "⏳ 作業截止提醒" };
         let url = if is_new { "/admin/homework" } else { "/admin/dashboard" };
         let payload = serde_json::to_vec(&json!({
-            "title": format!("{headline}｜{course_name}"),
-            "body": format!("{stage_badge}：{title}"),
+            "title": format!("{headline}：《{course_name}》"),
+            "body": format!("類別：{stage_badge}\n項目：{title}"),
             "url": url,
             "tag": format!("tronclass-homework-{account_id}"),
         }))
@@ -832,13 +840,14 @@ impl WebPushService {
         }
         // BULLETIN_NOTIFY_SUMMARY_V1：通知主體優先放 AI 重點摘要（精簡但保留截止、
         // 地點、待辦等關鍵資訊）；摘要為空時退回標題。避免手機彈出一長串。
+        // NOTIF_STRUCTURED_V1：標題列清楚（展開後一眼對回原文），AI 摘要雙行斷行。
         let body = if summary.trim().is_empty() {
-            title.to_string()
+            format!("標題：{title}")
         } else {
-            summary.to_string()
+            format!("標題：{title}\n\n摘要：{summary}")
         };
         let payload = serde_json::to_vec(&json!({
-            "title": format!("新公告｜{course_name}"),
+            "title": format!("📢 課程公告｜《{course_name}》"),
             "body": body,
             "url": "/admin/bulletins",
             "tag": format!("tronclass-bulletin-{account_id}"),
@@ -866,13 +875,15 @@ impl WebPushService {
             .filter(|url| url.starts_with("https://") || url.starts_with('/'))
             .unwrap_or("/admin/dashboard#rollcall");
         let has_deep_link = deep_link != "/admin/dashboard#rollcall";
-        let body = if has_deep_link {
-            format!("{attendance_type}｜帳號 {account_id}，點一下直接開啟輸入頁")
+        // NOTIF_STRUCTURED_V1：首行是摺疊預覽最重要的類型與帳號；CTA 置末行。
+        let cta = if has_deep_link {
+            "點一下直接開啟輸入頁"
         } else {
-            format!("{attendance_type}｜帳號 {account_id}，點一下立即查看")
+            "點一下立即查看"
         };
+        let body = format!("類型：{attendance_type}\n帳號：{account_id}\n\n{cta}");
         let payload = serde_json::to_vec(&json!({
-            "title": format!("偵測到點名：{course_name}"),
+            "title": format!("🚨 點名偵測：《{course_name}》"),
             "body": body,
             "url": deep_link,
             "tag": format!("tronclass-rollcall-{account_id}-{rollcall_id}"),

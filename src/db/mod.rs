@@ -128,6 +128,8 @@ pub(crate) use preferences::{
 };
 #[allow(unused_imports)]
 pub use sessions::{DashboardSessionInsert, DashboardSessionRow};
+// SESSION_TOKEN_HASH_V1（fix125）：給 admin_web 比對記憶體鍵與 no-rehash 比對用。
+pub(crate) use sessions::session_lookup_key;
 #[allow(unused_imports)]
 pub use timetable::{TimetableEntryInput, TimetableEntryRow, TimetableTemplateRow};
 
@@ -149,6 +151,22 @@ pub struct AccountsDb {
 }
 
 impl AccountsDb {
+    /// DB_SNAPSHOT_BACKUP_V1（fix123）：線上快照——以 SQLite 內建 `VACUUM INTO`
+    /// 輸出一份與目前狀態一致的完整副本到 `dest`（WAL 模式下無需停服、
+    /// 不阻塞讀寫）。由 main.rs 的定時輪替任務每日呼叫；失敗時由呼叫端
+    /// 記 warn，不影響服務本體。路徑以「防誤用」為設計：呼叫端只傳
+    /// 與 accounts.db 同目錄的固定命名檔，此處不出現任何路徑字串拼接。
+    pub async fn backup_snapshot(&self, dest: &Path) -> Result<()> {
+        let dest_str = dest.display().to_string();
+        sqlx::query("VACUUM INTO ?")
+            .bind(&dest_str)
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| format!("備份資料庫到 `{dest_str}` 失敗"))?;
+        Ok(())
+    }
+
     /// 開啟（或建立）帳號資料庫，並確保 schema 存在。
     pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();

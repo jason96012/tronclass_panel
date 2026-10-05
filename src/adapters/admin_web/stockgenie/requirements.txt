@@ -1,6 +1,6 @@
-fastapi
-uvicorn
-yfinance
-pandas
-numpy
-httpx
+fastapi==0.124.0
+uvicorn==0.38.0
+yfinance==0.2.66
+pandas==2.3.3
+numpy==2.2.6
+httpx==0.28.1

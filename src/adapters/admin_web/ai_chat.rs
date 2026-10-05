@@ -36,6 +36,11 @@ use super::{
 
 const PAGE_HTML: &str = include_str!("static/ai.html");
 
+/// AI_CHAT_RATE_LIMIT_V1（fix121）：每帳號每分鐘可建立的 AI 工作數上限。
+/// AI 呼叫使用的是管理員設定的共用密鑰池——沒有這條，任一 session 外洩或
+/// 一般使用者不當狂刷，都能瞬間燒光上游 API 額度、塞滿上游連線（財務型 DoS）。
+const AI_CHAT_MAX_PER_MINUTE: u32 = 12;
+
 /// AI_CHAT_V3：頁面版本。前端是 `include_str!` 編進二進位的，忘了重新編譯就會
 /// 看到舊畫面卻以為改動沒生效。把版本與編譯時間顯示在側欄，一眼就能分辨。
 const PAGE_VERSION: &str = "v10";
@@ -598,6 +603,18 @@ static CHAT_STORE: once_cell::sync::Lazy<std::sync::Mutex<ChatStore>> =
                 store = parsed;
             }
         }
+        // AI_CHAT_KEY_AT_REST_V1（fix124）：載入時解封 secret——落盤一律
+        // AES-256-GCM 信封（見 persist_chat_store）；既有明文檔會被當成
+        // legacy 原樣解出，下一次落盤自動升級成 enc: 信封；master key 遺失
+        // 或信封無效時 secret 變空字串（該把密鑰自然停用，不會誤用舊值）。
+        for key in store.keys.iter_mut() {
+            // STORE_ENVELOPE_AAD_V1（fix128）：用途綁定——AI 密鑰信封不得搬到其他欄位複用。
+            let unsealed = crate::secret_encryption::StoreSecret::from_stored_with_purpose(
+                &key.secret,
+                "ai_chat.key_secret",
+            );
+            key.secret = unsealed.as_str().to_string();
+        }
         // AI_CHAT_V6：舊設定檔可能存著「GPT-4o mini」這種顯示名稱，
         // 開機時就正規化並合併，使用者不必手動整理。
         let (fixed, merged, dropped) = migrate_models(&mut store.models);
@@ -617,9 +634,18 @@ fn persist_chat_store(store: &ChatStore) {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    match serde_json::to_string_pretty(store) {
+    // AI_CHAT_KEY_AT_REST_V1（fix124）：落盤副本的 secret 一律用 master key
+    // 加密成 enc:v2 信封；記憶體中的原件維持明文（呼叫 API 時需要放進
+    // Authorization 標頭）。沒設 master key 時 store_value 原樣落盤
+    // （legacy 行為不變），並由 AT_REST_ENCRYPTION_ALERT_V1 負責告警。
+    let mut on_disk = store.clone();
+    for key in on_disk.keys.iter_mut() {
+        key.secret = crate::secret_encryption::StoreSecret::new(std::mem::take(&mut key.secret))
+            .store_value_with_purpose("ai_chat.key_secret");
+    }
+    match serde_json::to_string_pretty(&on_disk) {
         Ok(text) => {
-            // ATOMIC_WRITE_V1：temp → fsync → rename；檔案含明文密鑰，權限在 rename 前就收到 0600。
+            // ATOMIC_WRITE_V1：temp → fsync → rename；檔案含加密密鑰，權限在 rename 前就收到 0600。
             if let Err(e) = crate::atomic_write::write_atomic_with_mode(&path, text, 0o600) {
                 tracing::warn!("無法寫入 ai_chat.json：{e}");
             }
@@ -2224,6 +2250,19 @@ pub(super) async fn summarize_handler(
     let Some(session) = state.authorize_any(&token).await else {
         return unauthorized_response();
     };
+    // AI_CHAT_RATE_LIMIT_V1（fix121）：與 chat_handler 同一把尺——每帳號
+    // 每分鐘摘要工作數上限，防共用密鑰池被狂刷燒額度（財務型 DoS）。
+    if !state
+        .rate_limiter
+        .check_limit_memory(
+            &format!("ai-chat:{}", session.account_id),
+            AI_CHAT_MAX_PER_MINUTE,
+        )
+        .await
+    {
+        tracing::warn!(account = %session.account_id, "AI summarize 觸發每帳號限流");
+        return super::rate_limited_response();
+    }
 
     let text = body.text.trim().to_string();
     if text.is_empty() {
@@ -4059,6 +4098,19 @@ pub(super) async fn chat_handler(
     let Some(session) = state.authorize_any(&token).await else {
         return unauthorized_response();
     };
+    // AI_CHAT_RATE_LIMIT_V1（fix121）：建立工作才限流；chat_stream／status
+    // 只是輪詢既有工作，不計（限了會壞掉合法的 600ms 輪詢）。
+    if !state
+        .rate_limiter
+        .check_limit_memory(
+            &format!("ai-chat:{}", session.account_id),
+            AI_CHAT_MAX_PER_MINUTE,
+        )
+        .await
+    {
+        tracing::warn!(account = %session.account_id, "AI chat 觸發每帳號限流");
+        return super::rate_limited_response();
+    }
 
     // AI_CHAT_V7：先把附件驗好，訊息可不可以是空的要看有沒有附件。
     let attachments = match prepare_attachments(&body.attachments) {

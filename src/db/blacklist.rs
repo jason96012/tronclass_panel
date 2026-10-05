@@ -23,10 +23,16 @@ pub struct IpBlacklistRow {
 
 impl AccountsDb {
     pub async fn is_ip_blacklisted(&self, ip: &str) -> Result<bool> {
+        let trimmed = ip.trim();
+        // IP_BLACKLIST_V6_GROUP_V1：同時比對精確位址與 IPv6 /64 群組鍵——
+        // 封鎖以「整段前綴」生效，位址輪換（privacy addresses）不能洗白身分。
+        // IPv4 的群組鍵＝自己，行為與舊版完全一致。
+        let group = crate::trusted_ip::blacklist_group_key(trimmed);
         let exists: i64 = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM ip_blacklist WHERE ip = ?)",
+            "SELECT EXISTS(SELECT 1 FROM ip_blacklist WHERE ip = ? OR ip = ?)",
         )
-        .bind(ip.trim())
+        .bind(trimmed)
+        .bind(group)
         .fetch_one(&self.pool)
         .await
         .into_diagnostic()
@@ -58,13 +64,17 @@ impl AccountsDb {
         reason: &str,
         failure_count: u32,
     ) -> Result<bool> {
+        // IP_BLACKLIST_V6_GROUP_V1：IPv6 一律以 /64 群組鍵入庫（手動與自動同規則），
+        // 否則被封者切換同前綴位址即可繞過；IPv4 與既有列行為不變。
+        // `blacklist_group_key` 冪等：已是群組鍵的字串會原樣通過。
+        let ip = crate::trusted_ip::blacklist_group_key(ip);
         let now = Local::now();
         let result = sqlx::query(
             "INSERT OR IGNORE INTO ip_blacklist
                 (ip, blocked_at, blocked_time, blocked_by, reason, failure_count)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(ip.trim())
+        .bind(ip.as_str())
         .bind(now.timestamp())
         .bind(now.format("%Y-%m-%d %H:%M:%S").to_string())
         .bind(truncate_event_text(blocked_by.to_string(), EVENT_IDENTITY_MAX_BYTES))

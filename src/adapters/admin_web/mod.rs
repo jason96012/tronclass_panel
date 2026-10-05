@@ -7,7 +7,6 @@
 //! bypass and is retained only for configuration compatibility.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -34,6 +33,8 @@ use base64::{engine::general_purpose::STANDARD as B64_STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{error, info, warn};
+// fix128 曾誤移下行：files.rs／passkey.rs／indexnow.rs 等子模組靠 `use super::*`
+// 的 glob 從這裡拿到 Uuid——刪掉會讓那三檔編不過。此 import 屬模組間契約，勿刪。
 use uuid::Uuid;
 
 use crate::account::RawAccountConfig;
@@ -251,16 +252,29 @@ pub(super) fn validate_admin_text(
     max_bytes: usize,
     field: &'static str,
 ) -> Result<(), Response> {
-    if value.len() <= max_bytes {
-        return Ok(());
+    if value.len() > max_bytes {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("{field} is too long; max {max_bytes} bytes")
+            })),
+        )
+            .into_response());
     }
-    Err((
-        StatusCode::BAD_REQUEST,
-        Json(json!({
-            "error": format!("{field} is too long; max {max_bytes} bytes")
-        })),
-    )
-        .into_response())
+    // LOG_INJECTION_GUARD_V1（fix118）：拒絕所有 Unicode 控制字元
+    // （C0/C1/DEL）。這些欄位（username／password／file path／multipart 欄位名…）
+    // 會原樣寫進伺服器日誌、稽核紀錄、限流鍵與 Discord／Web Push 告警；允許
+    // \n／\r 就能偽造日誌行甚至注入假告警內容。正常 Web 輸入皆不含控制字元。
+    if value.chars().any(|c| c.is_control()) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!("{field} contains disallowed control characters")
+            })),
+        )
+            .into_response());
+    }
+    Ok(())
 }
 
 pub(super) fn validate_optional_admin_text(
@@ -537,7 +551,9 @@ async fn record_auth_failure(username: &str, ip: &str) -> (u32, u32) {
         let now = unix_now_secs();
         let window = SECURITY_FAIL_WINDOW.as_secs() as i64;
         let user_key = format!("user:{}", username.trim().to_lowercase());
-        let ip_key = format!("ip:{}", ip.trim());
+        // IP_BLACKLIST_V6_GROUP_V1：失敗計數以「群組鍵」累計——IPv6 位址輪換
+        // 不能歸零計數、閃過自動封鎖門檻。
+        let ip_key = format!("ip:{}", crate::trusted_ip::blacklist_group_key(ip));
         let user = db.throttle_record("fail", &user_key, now, window).await;
         let ip_count = db.throttle_record("fail", &ip_key, now, window).await;
         match (user, ip_count) {
@@ -556,7 +572,7 @@ async fn record_auth_failure(username: &str, ip: &str) -> (u32, u32) {
     let mut counts = [0u32, 0u32];
     for (idx, key) in [
         format!("user:{}", username.trim().to_lowercase()),
-        format!("ip:{}", ip.trim()),
+        format!("ip:{}", crate::trusted_ip::blacklist_group_key(ip)),
     ]
     .into_iter()
     .enumerate()
@@ -595,7 +611,11 @@ async fn peek_recent_auth_failures(username: &str, ip: &str) -> u32 {
             .throttle_count("fail", &format!("user:{}", username.trim().to_lowercase()), since)
             .await;
         let ip_count = db
-            .throttle_count("fail", &format!("ip:{}", ip.trim()), since)
+            .throttle_count(
+                "fail",
+                &format!("ip:{}", crate::trusted_ip::blacklist_group_key(ip)),
+                since,
+            )
             .await;
         if let (Ok(u), Ok(i)) = (&user, &ip_count) {
             return (*u).max(*i);
@@ -613,14 +633,17 @@ async fn peek_recent_auth_failures(username: &str, ip: &str) -> u32 {
             .map(|attempts| attempts.iter().filter(|at| **at > window_start).count() as u32)
             .unwrap_or(0)
     };
-    count(format!("user:{}", username.trim().to_lowercase())).max(count(format!("ip:{}", ip.trim())))
+    count(format!("user:{}", username.trim().to_lowercase())).max(count(format!(
+        "ip:{}",
+        crate::trusted_ip::blacklist_group_key(ip)
+    )))
 }
 
 /// 登入成功後重置該帳號與 IP 的失敗計數，讓告警只在「連續」失敗時觸發。
 async fn clear_auth_failures(username: &str, ip: &str) {
     if let Some(db) = throttle_db() {
         let user_key = format!("user:{}", username.trim().to_lowercase());
-        let ip_key = format!("ip:{}", ip.trim());
+        let ip_key = format!("ip:{}", crate::trusted_ip::blacklist_group_key(ip));
         if let Err(error) = db.throttle_clear("fail", &user_key).await {
             warn!(error = %error, "清除 SQLite 失敗計數失敗");
         }
@@ -632,7 +655,10 @@ async fn clear_auth_failures(username: &str, ip: &str) {
     watch
         .fails
         .remove(&format!("user:{}", username.trim().to_lowercase()));
-    watch.fails.remove(&format!("ip:{}", ip.trim()));
+    watch.fails.remove(&format!(
+        "ip:{}",
+        crate::trusted_ip::blacklist_group_key(ip)
+    ));
 }
 
 // ── LOGIN_TIERED_LOCKOUT_V1：第一層「帳號密碼登入鎖定」 ─────────────────────
@@ -1705,7 +1731,8 @@ impl AdminWebState {
     /// TC_URL_GRANT_REPLAY_V1（fix36）：`url_grant` 直接沿用 single_use——
     /// 「放進轉址 URL 的 token」就是允許以 URL 身分重複使用的那一顆。
     fn mint_tc_nav_token(&self, account_id: &str, is_admin: bool, single_use: bool) -> String {
-        let token = uuid::Uuid::new_v4().simple().to_string();
+        // SESSION_TOKEN_256_V1（fix128）：與 session 同級的 256-bit 亂數。
+        let token = mint_secure_token();
         let mut guard = self
             .tc_nav_tokens
             .lock()
@@ -1824,6 +1851,9 @@ impl AdminWebState {
         if token.is_empty() {
             return None;
         }
+        // SESSION_TOKEN_HASH_V1（fix125）：in-memory map 與 DB 一律以
+        // SHA-256(token) 為鍵——browser cookie 裡的明文在伺服器端永不長留。
+        let lookup_key = crate::db::session_lookup_key(token);
 
         // A legacy numeric access token is intentionally not accepted here.
         // Public deployments must authenticate as a real Dashboard account.
@@ -1834,7 +1864,7 @@ impl AdminWebState {
         // current token is expired and needs removal.
         let session = {
             let sessions = self.sessions.read().await;
-            sessions.get(token).cloned()
+            sessions.get(&lookup_key).cloned()
         };
 
         if let Some(session) = session {
@@ -1844,11 +1874,11 @@ impl AdminWebState {
 
             let mut sessions = self.sessions.write().await;
             if sessions
-                .get(token)
+                .get(&lookup_key)
                 .map(|session| session.expires_at <= Instant::now())
                 .unwrap_or(false)
             {
-                sessions.remove(token);
+                sessions.remove(&lookup_key);
                 let db = self.accounts_db.clone();
                 let tok = token.to_string();
                 tokio::spawn(async move {
@@ -1874,7 +1904,7 @@ impl AdminWebState {
                     expires_at: Instant::now() + Duration::from_secs(remaining_secs),
                 };
                 let mut sessions = self.sessions.write().await;
-                sessions.insert(token.to_string(), session.clone());
+                sessions.insert(lookup_key.clone(), session.clone());
                 return Some(session);
             } else {
                 let db = self.accounts_db.clone();
@@ -1946,8 +1976,10 @@ impl AdminWebState {
             must_change_password,
             origin,
         } = new;
-        let access = Uuid::new_v4().simple().to_string();
-        let refresh = Uuid::new_v4().simple().to_string();
+        // SESSION_TOKEN_256_V1（fix128）：256-bit CSPRNG（64 hex）——既不可猜、
+        // 也不可預測；搭配落盤 SHA-256 與重放偵測，枚舉空間趨近無限大。
+        let access = mint_secure_token();
+        let refresh = mint_secure_token();
         let session = AdminSession {
             account_id: account_id.clone(),
             is_admin,
@@ -1994,7 +2026,9 @@ impl AdminWebState {
                 sessions.remove(&key);
             }
         }
-        sessions.insert(access.clone(), session);
+        // SESSION_TOKEN_HASH_V1：map 鍵 = SHA-256(access)；回給呼叫端的
+        // SessionTokens 仍是明文（走 cookie），伺服器端不留明文。
+        sessions.insert(crate::db::session_lookup_key(&access), session);
         SessionTokens { access, refresh }
     }
 
@@ -2006,6 +2040,80 @@ impl AdminWebState {
     ///
     /// `current`：這次 refresh 請求的來源。舊列的 ip / user_agent 為空時
     /// （功能上線前建立的 session）用它補齊；有值時一律保留原始登入來源。
+    /// REFRESH_REUSE_DETECT_V1（fix126）：refresh 在 DB 查不到時呼叫。
+    ///
+    /// 可查不到＝已輪換／已銷毀／自然過期／純偽造。前三種裡，只有「曾被輪換」
+    /// 會在石碑表留痕——合法客戶端靠的是每次輪換後寫回的最新 cookie（瀏覽器
+    /// cookie 罐跨分頁共享），永遠不會主動拿舊值來換；**舊值再現＝極可能憑證
+    /// 遭竊**（OAuth2 RFC 6819 refresh-token theft 的標準訊號）。處置採
+    /// fail-closed：撤銷該帳號**全部** session（記憶體＋DB）＋活動日誌＋安全
+    /// 推播，寧可讓本人重登一次也不能讓竊取者接續。
+    ///
+    /// 兩個誤判護欄：
+    ///   1. 寬限窗內的並行重播由 `refresh_grace_replay`（記憶體）先攔截；這裡
+    ///      再多給一段「跨重啟保護窗」——服務重啟會清掉記憶體 grace，剛輪換完
+    ///      的並行請求才不會被當竊聽。
+    ///   2. 登出／改密碼／自然過期等「非輪換」刪除不立碑 → 不會誤檢。
+    async fn detect_refresh_reuse(&self, refresh_token: &str) {
+        let tombstone = self
+            .accounts_db
+            .lookup_refresh_tombstone(refresh_token)
+            .await
+            .ok()
+            .flatten();
+        let Some((account_id, rotated_at)) = tombstone else {
+            return;
+        };
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        // 跨重啟保護窗：寬限窗（180s）加 60s 緩衝；窗內一律靜默放棄，避免把
+        // 服務重啟時的並行請求誤判成竊聽。
+        if rotated_at + (SESSION_ROTATE_GRACE_SECS as i64) + 60 >= now_unix {
+            return;
+        }
+
+        let warned_age_secs = now_unix - rotated_at;
+        warn!(
+            account_id = %account_id,
+            age_secs = warned_age_secs,
+            "REFRESH_REUSE_DETECT_V1：已輪換的 refresh token 被重複使用，疑似憑證遭竊——執行家族撤銷"
+        );
+
+        // 家族撤銷：記憶體＋DB 全清（revoke_sessions_for_account 走 account_id 路徑，
+        // 與 token 形狀無關，SESSION_TOKEN_HASH_V1 之後照樣成立）。
+        self.revoke_sessions_for_account(&account_id).await;
+
+        let _ = self
+            .accounts_db
+            .record_activity_event(crate::db::ActivityEventInput {
+                kind: "security".to_string(),
+                actor: "system:refresh-reuse-detect".to_string(),
+                action: "refresh_token_reuse_detected".to_string(),
+                account_id: account_id.clone(),
+                path: "/admin/api/auth/refresh".to_string(),
+                result: "family_revoked".to_string(),
+                details: format!(
+                    "偵測到已輪換的 refresh token 被重複使用（輪換後 {warned_age_secs} 秒），\
+                     疑似憑證遭竊；已撤銷該帳號所有裝置的登入 session"
+                ),
+                ip: String::new(),
+                user_agent: String::new(),
+            })
+            .await;
+
+        crate::web_push_notifications::notify_security_alert(
+            vec![account_id.clone()],
+            "您的登入憑證疑似遭竊用".to_string(),
+            format!(
+                "系統偵測到帳號 {account_id} 的舊登入憑證被重複使用，可能已遭他人截取。\
+                 已立即登出該帳號在所有裝置上的 session，請盡快重新登入並更改密碼。"
+            ),
+            "refresh-token-reuse".to_string(),
+        );
+    }
+
     async fn rotate_session(
         &self,
         refresh_token: &str,
@@ -2013,9 +2121,10 @@ impl AdminWebState {
     ) -> Option<SessionTokens> {
         let refresh_token = refresh_token.trim();
         // REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): reject malformed values here as
-        // well as at the cookie reader. `admin_session_refresh_handler` also
-        // accepts a `?token=` fallback for cookie-less clients, so the cookie
-        // check alone does not cover every way a value reaches this function.
+        // well as at the cookie reader. 自 TOKEN_QUERY_FALLBACK_REMOVE_V1
+        // （fix127）起 refresh 只信 HttpOnly cookie；TOKEN_QUERY_STRIP_ALL_ADMIN_V1
+        // （H-2）在進 handler 前就已剝除呼叫端送來的任何 query token，因此唯一的
+        // 輸入口就是 cookie。這層嚴格格式檢查是最後一道深度防禦。
         //
         // This also stops a legacy row whose `refresh_token` column is the
         // schema default `''` from ever being matched (the empty-string guard
@@ -2029,11 +2138,20 @@ impl AdminWebState {
         if let Some(tokens) = self.refresh_grace_replay(refresh_token).await {
             return Some(tokens);
         }
-        let row = self
+        let row = match self
             .accounts_db
             .get_dashboard_session_by_refresh(refresh_token)
             .await
-            .ok()??;
+        {
+            Ok(Some(row)) => row,
+            Ok(None) => {
+                // REFRESH_REUSE_DETECT_V1（fix126）：DB 查不到＝已輪換／已銷毀／偽造。
+                // 查石碑表命中＝曾被輪換的舊值再現 → 疑似遭竊 → 帳號家族撤銷＋警報。
+                self.detect_refresh_reuse(refresh_token).await;
+                return None;
+            }
+            Err(_) => return None,
+        };
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2063,10 +2181,11 @@ impl AdminWebState {
         }
         {
             let db = self.accounts_db.clone();
-            let old_access = row.token.clone();
+            // SESSION_TOKEN_HASH_V1：row.token 是散列鍵（非明文）→ 走 by_key 刪除。
+            let old_access_key = row.token.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_secs(SESSION_ROTATE_GRACE_SECS)).await;
-                let _ = db.delete_dashboard_session(&old_access).await;
+                let _ = db.delete_dashboard_session_hashed_key(&old_access_key).await;
             });
         }
 
@@ -2100,6 +2219,13 @@ impl AdminWebState {
             .delete_dashboard_session_by_refresh(refresh_token)
             .await;
 
+        // REFRESH_REUSE_DETECT_V1（fix126）：為剛廢棄的舊 refresh 立碑——日後同一把
+        // 舊值再現（超出寬限窗的重播）＝疑似憑證遭竊，觸發帳號家族撤銷＋安全警報。
+        let _ = self
+            .accounts_db
+            .record_refresh_tombstone(refresh_token, &row.account_id, now_unix)
+            .await;
+
         // REFRESH_ROTATE_GRACE_V1（fix38）：記下「舊 refresh → 這次的新 token」，
         // 讓晚到的重複請求拿回同一組結果（等同同一顆 session，不會互相撤銷）。
         self.refresh_grace_remember(refresh_token, &tokens);
@@ -2123,7 +2249,12 @@ impl AdminWebState {
                 .map(|entry| (entry.access.clone(), entry.refresh.clone()))
         };
         let (access, refresh) = entry?;
-        let alive = self.sessions.read().await.contains_key(&access);
+        // SESSION_TOKEN_HASH_V1：grace 記錄存的是明文 access，比對前先散列對齊 map 鍵。
+        let alive = self
+            .sessions
+            .read()
+            .await
+            .contains_key(&crate::db::session_lookup_key(&access));
         if !alive {
             self.refresh_grace_forget(refresh_token);
             return None;
@@ -2197,11 +2328,28 @@ impl AdminWebState {
         map.get(account_id).map(|entry| entry.token.clone())
     }
 
+    /// SESSION_TOKEN_HASH_V1：刪「明文 token」路徑（logout／middleware 注入）。
+    /// 記憶體鍵先散列對齊；DB 由 `delete_dashboard_session` 內部散列。
     async fn revoke_session(&self, token: &str) {
         let token_trimmed = token.trim();
-        self.sessions.write().await.remove(token_trimmed);
+        let key = crate::db::session_lookup_key(token_trimmed);
+        self.sessions.write().await.remove(&key);
         if let Err(e) = self.accounts_db.delete_dashboard_session(token_trimmed).await {
             warn!(error = %e, "從資料庫刪除 Dashboard session 失敗");
+        }
+    }
+
+    /// SESSION_TOKEN_HASH_V1：刪「DB 散列鍵」路徑——給已持有 `row.token`（散列
+    /// 值）的呼叫端（登入裝置管理、rotate 延遲清理），全程零明文處理。
+    async fn revoke_session_by_hashed_key(&self, key: &str) {
+        let key_trimmed = key.trim();
+        self.sessions.write().await.remove(key_trimmed);
+        if let Err(e) = self
+            .accounts_db
+            .delete_dashboard_session_hashed_key(key_trimmed)
+            .await
+        {
+            warn!(error = %e, "依散列鍵刪除 Dashboard session 失敗");
         }
     }
 
@@ -2256,7 +2404,8 @@ impl AdminWebState {
 
     /// LOGIN_DEVICES_V1：撤銷「某帳號的其他所有 session」（保留目前這一個）。
     async fn revoke_other_sessions(&self, account_id: &str, keep_token: &str) -> usize {
-        let keep = keep_token.trim();
+        // SESSION_TOKEN_HASH_V1：row.token 是 SHA-256 散列鍵，保留鍵先雜湊對齊。
+        let keep_key = crate::db::session_lookup_key(keep_token);
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -2268,10 +2417,10 @@ impl AdminWebState {
             .unwrap_or_default();
         let mut revoked = 0usize;
         for row in rows {
-            if row.token == keep {
+            if row.token == keep_key {
                 continue;
             }
-            self.revoke_session(&row.token).await;
+            self.revoke_session_by_hashed_key(&row.token).await;
             revoked += 1;
         }
         revoked
@@ -3514,7 +3663,7 @@ fn append_refresh_cookie(
 /// Read the refresh token from the request cookies.
 ///
 /// REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): refresh tokens are minted by
-/// `create_session` as `Uuid::new_v4().simple()` — exactly 32 hex characters,
+/// `create_session` 自 SESSION_TOKEN_256_V1 起 = 64 hex（256-bit）；舊 UUID 時代 32 hex,
 /// byte-for-byte the same shape as the access token. The previous
 /// `len() >= 16` test accepted anything longer than that, including multi-
 /// kilobyte values and arbitrary non-hex bytes, and passed them on to the DB
@@ -4356,11 +4505,10 @@ struct AdminQuery {
 }
 
 fn normalize_admin_ip(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.is_empty() || value.len() > 64 {
-        return None;
-    }
-    value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
+    // IP_BLACKLIST_V6_GROUP_V1：統一走 trusted_ip 的正規化——IPv4 原樣、
+    // `::ffff:a.b.c.d` 收斂成 IPv4、IPv6 收斂為 /64 群組鍵；也接受既有清單
+    // 裡的 "xxxx/64" 形式（解除封鎖時前端原樣送回）。
+    crate::trusted_ip::normalize_blacklist_key(value)
 }
 
 #[derive(Debug, Deserialize)]
@@ -4539,16 +4687,25 @@ fn session_token(headers: &HeaderMap, query_token: &str) -> String {
     session_cookie_from_headers(headers).unwrap_or_default()
 }
 
-/// Both session token kinds are `Uuid::new_v4().simple()` — exactly 32 hex
-/// characters (see `AdminWebState::create_session`, which mints the access and
-/// refresh tokens the same way). Used to reject malformed/injected values
-/// before they reach a DB lookup or a log line.
+/// SESSION_TOKEN_256_V1（fix128）：採 256-bit 作業系統亂數產生 session／導航
+/// token（64 個十六進位字元）。統一由這支函式鑄造全部高價值 token。
+/// 舊版 UUID v4（112-bit）格式仍被接受，新鑄造一律走此路。
+fn mint_secure_token() -> String {
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).expect("SESSION_TOKEN_256_V1: OS RNG unavailable");
+    hex::encode(buf)
+}
+
+/// Session token 格式驗證：SESSION_TOKEN_256_V1 起新 token = 64 個十六進位
+/// 字元（256-bit）；舊 UUID v4 時代的 32 字元（112-bit）格式維持相容（既有
+/// session 不會因升級被踢出）。任何在此之外的形狀（長度、字元集）都是偽造，
+/// 在進 DB 查詢或寫 log 前一律擋下。
 ///
 /// REFRESH_TOKEN_STRICT_FORMAT_V1 (M-2): this is the single definition shared
 /// by `session_cookie_from_headers`, `refresh_cookie_from_headers` and
 /// `session_token`, so the access and refresh paths cannot drift apart again.
 fn is_valid_session_token_format(value: &str) -> bool {
-    value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+    (value.len() == 32 || value.len() == 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 /// Historical name kept as a thin alias so existing call sites and tests read

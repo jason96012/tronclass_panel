@@ -836,8 +836,13 @@ pub async fn waf_firewall_middleware(
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
         .map(|info| info.0.ip());
 
-    // 取得經過信任反向代理校驗的真實客戶端 IP
-    let trusted = crate::trusted_ip::TrustedProxies::from_config(&[]);
+    // WAF_TRUSTED_PROXY_CONFIG_V1：必須與全站同一份信任清單
+    // （`trusted_from_global_config`），不能寫死 `from_config(&[])`——
+    // 否則營運者在 config.toml 額外宣告的信任代理（例如直連 Cloudflare 時
+    // `trusted_proxies = ["cloudflare"]`）在 WAF 眼裡會失效：所有請求都被當成
+    // 「代理自己的 IP」，真實攻擊者洗成別人；更糟的是自動封鎖會把**代理本身**
+    // 關進黑名單 → 全站對所有人斷線。
+    let trusted = crate::trusted_ip::trusted_from_global_config();
     let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
     let uri = request.uri().clone();
     let method = request.method().clone();
@@ -863,56 +868,74 @@ pub async fn waf_firewall_middleware(
         // 非本機/私網 IP 自動觸發自動黑名單封鎖與安全告警
         let is_local = is_local_or_trusted_ip(&ip) || ip == "unknown";
         if !is_local {
-            let db = state.accounts_db.clone();
-            let block_ip = ip.clone();
-            let alert_desc = threat_desc.clone();
-            let path_for_log = raw_path.clone();
-            let ua_for_log = user_agent.clone();
-            let state_clone = state.clone();
+            // WAF_BAN_DEDUP_V1：黑名單中介層在 WAF **之後**才跑，因此已被封鎖的
+            // IP 之後的每個請求仍會走到這裡。若不看「是否已封鎖」就照單全收地
+            // spawn，攻擊者拿著已封鎖的 IP 對蜜罐路徑狂打，就能造成：
+            // ① 每請求一個 spawn　② 每請求一筆活動日誌　③ 每請求一則管理員
+            // Discord／Web Push 告警——變成對告警與資料庫的放大 DoS。
+            // 先查一次黑名單（主鍵 EXISTS），已封鎖者靜默擋下（回應照舊 403），
+            // 把「封鎖＋稽核＋告警」留給第一次。
+            let ban_key = crate::trusted_ip::blacklist_group_key(&ip);
+            let already_banned = state
+                .accounts_db
+                .is_ip_blacklisted(&ban_key)
+                .await
+                .unwrap_or(false);
+            if !already_banned {
+                let db = state.accounts_db.clone();
+                let block_ip = ban_key.clone();
+                let alert_desc = threat_desc.clone();
+                let path_for_log = raw_path.clone();
+                let ua_for_log = user_agent.clone();
+                let state_clone = state.clone();
 
-            tokio::spawn(async move {
-                // 自動將惡意攻擊者 IP 寫入永久黑名單
-                let _ = db
-                    .block_ip_with_failure_count(
-                        &block_ip,
-                        "system:waf-firewall-max",
-                        &format!("最高級 WAF 防火牆自動封鎖: {alert_desc}"),
-                        1,
-                    )
-                    .await;
+                tokio::spawn(async move {
+                    // 自動將惡意攻擊者 IP 寫入永久黑名單；只有「新建立」的封鎖
+                    // 才留稽核軌跡與發告警（INSERT OR IGNORE 回傳是否新列），
+                    // 與上面的 already_banned 併用可擋掉併發下的重複告警。
+                    if let Ok(true) = db
+                        .block_ip_with_failure_count(
+                            &block_ip,
+                            "system:waf-firewall-max",
+                            &format!("最高級 WAF 防火牆自動封鎖: {alert_desc}"),
+                            1,
+                        )
+                        .await
+                    {
+                        // 寫入後台安全活動日誌
+                        let _ = db
+                            .record_activity_event(ActivityEventInput {
+                                kind: "security".to_string(),
+                                actor: "system:waf-firewall-max".to_string(),
+                                action: "waf_threat_blocked".to_string(),
+                                account_id: "unknown".to_string(),
+                                path: path_for_log,
+                                result: "blocked".to_string(),
+                                details: format!("最高級 WAF 攔截威脅並自動封鎖: {alert_desc}"),
+                                ip: block_ip.clone(),
+                                user_agent: ua_for_log,
+                            })
+                            .await;
 
-                // 寫入後台安全活動日誌
-                let _ = db
-                    .record_activity_event(ActivityEventInput {
-                        kind: "security".to_string(),
-                        actor: "system:waf-firewall-max".to_string(),
-                        action: "waf_threat_blocked".to_string(),
-                        account_id: "unknown".to_string(),
-                        path: path_for_log,
-                        result: "blocked".to_string(),
-                        details: format!("最高級 WAF 攔截威脅並自動封鎖: {alert_desc}"),
-                        ip: block_ip.clone(),
-                        user_agent: ua_for_log,
-                    })
-                    .await;
-
-                // 發送最高危險等級管理員即時資安通報
-                notify_admins_security_alert(
-                    &state_clone,
-                    SecurityAlertEvent {
-                        username: "WAF-Military-Shield".to_string(),
-                        ip: block_ip,
-                        user_failures: 0,
-                        ip_failures: 1,
-                        timestamp: security_now_label(),
-                        ip_is_blacklisted: true,
-                        account_id: String::new(),
-                        allow_owner_unblock: false,
-                        login_locked: false,
-                    },
-                )
-                .await;
-            });
+                        // 發送最高危險等級管理員即時資安通報
+                        notify_admins_security_alert(
+                            &state_clone,
+                            SecurityAlertEvent {
+                                username: "WAF-Military-Shield".to_string(),
+                                ip: block_ip,
+                                user_failures: 0,
+                                ip_failures: 1,
+                                timestamp: security_now_label(),
+                                ip_is_blacklisted: true,
+                                account_id: String::new(),
+                                allow_owner_unblock: false,
+                                login_locked: false,
+                            },
+                        )
+                        .await;
+                    }
+                });
+            }
         }
 
         if matches!(threat, WafThreat::DangerousMethod(_)) {
@@ -936,9 +959,16 @@ pub async fn waf_firewall_middleware(
             .into_response();
     }
 
-    // 2. 全域 Layer-7 請求限速與防 DoS 洪水防護
+    // 2. 全域 Layer-7 請求限速與防 DoS 洪水防護。
+    // IP_BLACKLIST_V6_GROUP_V1：限速鍵與黑名單同一把尺（IPv6 收斂為 /64 群組）——
+    // 否則攻擊者在同前綴內輪換位址，每換一個位址就是全新的 240/分鐘額度，
+    // 全域限速形同虛設。
     let is_exempt = is_local_or_trusted_ip(&ip) || ip == "unknown";
-    if !is_exempt && !WAF_GLOBAL_LIMITER.check_limit(&ip).await {
+    if !is_exempt
+        && !WAF_GLOBAL_LIMITER
+            .check_limit(&crate::trusted_ip::blacklist_group_key(&ip))
+            .await
+    {
         WAF_TELEMETRY.rate_limited.fetch_add(1, Ordering::Relaxed);
         warn!(ip = %ip, "🛡️ [最高級 WAF 防火牆] 客戶端觸發全域 L7 速率上限，予以暫時限流！");
         let mut response = (

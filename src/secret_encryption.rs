@@ -28,6 +28,14 @@
 //! - 輪替程序：產生新 key → 設 `TRONCLASS_MASTER_KEY=<新>`、
 //!   `TRONCLASS_MASTER_KEY_OLD=<舊>` → 重啟 → 等待 log 出現各帳號
 //!   「已重加密」→ 移除舊 key 環境變數再重啟。
+//!
+//! STORE_ENVELOPE_AAD_V1（fix128，v3 信封，加密強度最大化）:
+//! - 新寫入一律 `enc:v3:<key_id>:<nonce><ct>`，加解密使用 AES-256-GCM 的
+//!   **AAD（附加認證資料）綁定「用途字串」**（`tronclass.store.v3|<purpose>`，
+//!   例如 `accounts.password`）——攜帶 DB 寫入權的攻擊者無法把 A 欄位／A 帳號
+//!   的密文搬到 B 欄位／B 帳號複用密文（密文搬家攻擊會在 GCM 驗證失敗）。
+//! - 讀取雙讀：v1／v2 以空 AAD（沿用舊行為），v3 驗證用途對應；env v1/v2 列經由
+//!   `needs_rewrap` 判定為「需重加密」，讀取路徑自動重寫成 v3。
 
 use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -37,10 +45,20 @@ use tracing::warn;
 const ENC_PREFIX: &str = "enc:v1:";
 /// MASTER_KEY_ROTATION_V1：v2 信封前綴，後接 16 字元 key id 與 `:`。
 const ENC_PREFIX_V2: &str = "enc:v2:";
+/// STORE_ENVELOPE_AAD_V1（fix128）：v3 信封前綴——AES-GCM AAD 綁定用途。
+const ENC_PREFIX_V3: &str = "enc:v3:";
 
-/// 此儲存值是否為加密信封（v1 或 v2）。
+/// 此儲存值是否為加密信封（v1／v2／v3）。
 fn is_envelope(stored: &str) -> bool {
-    stored.starts_with(ENC_PREFIX) || stored.starts_with(ENC_PREFIX_V2)
+    stored.starts_with(ENC_PREFIX)
+        || stored.starts_with(ENC_PREFIX_V2)
+        || stored.starts_with(ENC_PREFIX_V3)
+}
+
+/// STORE_ENVELOPE_AAD_V1（fix128）：v3 信封的 GCM AAD——把「這段密文是哪個
+/// 欄位／用途」寫進 GCM 驗證，密文被搬家（跨欄位／跨帳號複用）時驗證必敗。
+fn v3_aad(purpose: &str) -> Vec<u8> {
+    format!("tronclass.store.v3|{purpose}").into_bytes()
 }
 
 /// A stored secret that is transparently encrypted at rest.
@@ -62,22 +80,39 @@ impl StoreSecret {
     }
 
     /// Serialize for storage, encrypting with the master key if configured.
+    ///
+    /// 無特定用途欄位時用這支（AAD 以空用途編碼）。敏感欄位請改用
+    /// [`StoreSecret::store_value_with_purpose`] 做密文用途綁定。
     pub fn store_value(&self) -> String {
+        self.store_value_with_purpose("")
+    }
+
+    /// STORE_ENVELOPE_AAD_V1（fix128）：以「用途」做 GCM AAD 綁定的加密寫法。
+    /// `purpose` 是穩定的分類字串（例如 `"accounts.password"`），解密端需
+    /// 以同一用途呼叫 [`StoreSecret::from_stored_with_purpose`]；跨用途／跨欄位
+    /// 複用密文會讓 GCM 驗證失敗，被當成解密失敗處理。
+    pub fn store_value_with_purpose(&self, purpose: &str) -> String {
         match master_key() {
-            Some(key) => encrypt_with_key(&self.0, key).unwrap_or_else(|| self.0.clone()),
-            None => {
-                self.0.clone()
+            Some(key) => {
+                encrypt_with_key(&self.0, key, purpose).unwrap_or_else(|| self.0.clone())
             }
+            None => self.0.clone(),
         }
     }
 
     /// Parse a value loaded from the DB: decrypt if it is an envelope, else
     /// treat it as legacy plaintext.
     pub fn from_stored(stored: &str) -> Self {
+        Self::from_stored_with_purpose(stored, "")
+    }
+
+    /// STORE_ENVELOPE_AAD_V1（fix128）：搭配用途的解密讀取。對 v3 信封要求
+    /// 用途一致；v1／v2 舊信封仍以空 AAD 雙讀（`needs_rewrap` 會排定升級重寫）。
+    pub fn from_stored_with_purpose(stored: &str, purpose: &str) -> Self {
         match master_key() {
             Some(key) => {
                 if is_envelope(stored) {
-                    match decrypt_layered(stored, key) {
+                    match decrypt_layered(stored, key, purpose) {
                         Some(plaintext) => StoreSecret(plaintext),
                         None => {
                             // AT_REST_DECRYPT_FAIL_V1 + DECRYPT_FAIL_NO_SUBMIT_V1
@@ -182,17 +217,24 @@ pub fn is_encryption_enabled() -> bool {
     master_key().is_some()
 }
 
-fn encrypt_with_key(plaintext: &str, key: [u8; 32]) -> Option<String> {
+fn encrypt_with_key(plaintext: &str, key: [u8; 32], purpose: &str) -> Option<String> {
+    use aes_gcm::aead::Payload;
     // Random 12-byte nonce per value.
     let mut nonce_bytes = [0u8; 12];
     getrandom::getrandom(&mut nonce_bytes).ok()?;
     let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
     let ciphertext = cipher
-        .encrypt(&Nonce::from(nonce_bytes), plaintext.as_bytes())
+        .encrypt(
+            &Nonce::from(nonce_bytes),
+            Payload {
+                msg: plaintext.as_bytes(),
+                aad: &v3_aad(purpose),
+            },
+        )
         .ok()?;
-    // MASTER_KEY_ROTATION_V1：一律寫 v2 信封（帶 key id），輪替時可直接對應 key。
+    // STORE_ENVELOPE_AAD_V1（fix128）：一律寫 v3 信封（帶 key id＋AAD 綁定）。
     Some(format!(
-        "{ENC_PREFIX_V2}{}:{}{}",
+        "{ENC_PREFIX_V3}{}:{}{}",
         key_id(&key),
         hex::encode(nonce_bytes),
         STANDARD.encode(ciphertext)
@@ -204,24 +246,37 @@ fn encrypt_with_key(plaintext: &str, key: [u8; 32]) -> Option<String> {
 /// - v2 `enc:v2:<key_id>:<payload>`：依 key id 比對目前＋舊 key 直接選 key。
 /// - v1 `enc:v1:<payload>`：依序嘗試目前 key 與舊 key（GCM 驗證失敗＝用錯
 ///   key，天然安全，逐一嘗試不會誤解密）。
-fn decrypt_any(stored: &str, current: [u8; 32]) -> Option<String> {
+fn decrypt_any(stored: &str, current: [u8; 32], purpose: &str) -> Option<String> {
     let olds = old_master_keys();
     let candidates = || std::iter::once(current).chain(olds.into_iter());
-    if let Some(rest) = stored.strip_prefix(ENC_PREFIX_V2) {
+    if let Some(rest) = stored.strip_prefix(ENC_PREFIX_V3) {
+        let (id_hex, payload) = rest.split_once(':')?;
+        if id_hex.len() != 16 {
+            return None;
+        }
+        // v3：GCM AAD 以呼叫端宣告的用途編碼——密文遭搬家時驗證必敗。
+        let aad = v3_aad(purpose);
+        for key in candidates() {
+            if key_id(&key) == id_hex {
+                return decrypt_payload(payload, key, &aad);
+            }
+        }
+        None
+    } else if let Some(rest) = stored.strip_prefix(ENC_PREFIX_V2) {
         let (id_hex, payload) = rest.split_once(':')?;
         if id_hex.len() != 16 {
             return None;
         }
         for key in candidates() {
             if key_id(&key) == id_hex {
-                return decrypt_payload(payload, key);
+                return decrypt_payload(payload, key, b"");
             }
         }
         None
     } else {
         let payload = stored.strip_prefix(ENC_PREFIX)?;
         for key in candidates() {
-            if let Some(plaintext) = decrypt_payload(payload, key) {
+            if let Some(plaintext) = decrypt_payload(payload, key, b"") {
                 return Some(plaintext);
             }
         }
@@ -230,7 +285,8 @@ fn decrypt_any(stored: &str, current: [u8; 32]) -> Option<String> {
 }
 
 /// 解 `<nonce_hex24><b64_ct>` payload（v1／v2 共用格式）。
-fn decrypt_payload(payload: &str, key: [u8; 32]) -> Option<String> {
+fn decrypt_payload(payload: &str, key: [u8; 32], aad: &[u8]) -> Option<String> {
+    use aes_gcm::aead::Payload;
     if payload.len() < 24 {
         return None;
     }
@@ -244,7 +300,13 @@ fn decrypt_payload(payload: &str, key: [u8; 32]) -> Option<String> {
     let ciphertext = STANDARD.decode(b64).ok()?;
     let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
     let plaintext = cipher
-        .decrypt(&Nonce::from(nonce_arr), ciphertext.as_ref())
+        .decrypt(
+            &Nonce::from(nonce_arr),
+            Payload {
+                msg: ciphertext.as_ref(),
+                aad,
+            },
+        )
         .ok()?;
     String::from_utf8(plaintext).ok()
 }
@@ -255,13 +317,13 @@ fn decrypt_payload(payload: &str, key: [u8; 32]) -> Option<String> {
 /// `enc:v2( enc:v1( 明文 ) )` 的多層結構——單層解密「成功」但得到的仍是
 /// 信封字串，登入必然失敗且不出現解密警告。這裡連續解到不是信封為止
 /// （上限 4 層），讓此類污染自動修復。
-fn decrypt_layered(stored: &str, current: [u8; 32]) -> Option<String> {
+fn decrypt_layered(stored: &str, current: [u8; 32], purpose: &str) -> Option<String> {
     let mut value = stored.to_string();
     for _ in 0..4 {
         if !is_envelope(&value) {
             return Some(value);
         }
-        value = decrypt_any(&value, current)?;
+        value = decrypt_any(&value, current, purpose)?;
     }
     None
 }
@@ -272,21 +334,21 @@ pub fn looks_like_envelope(value: &str) -> bool {
     is_envelope(value)
 }
 
-/// MASTER_KEY_ROTATION_V1：此儲存值是否需要重加密至目前 key。
+/// MASTER_KEY_ROTATION_V1＋STORE_ENVELOPE_AAD_V1：此儲存值是否需要重加密。
 ///
-/// v1 信封一律需要（輪替後補上 key id 標記）；v2 信封僅在 key id ≠
+/// v1 一律需要；v2 一律需要（fix128 起升級為用途綁定 v3）；v3 僅在 key id ≠
 /// 目前 key 時需要；純文字或未啟用加密＝不需要。
 pub fn needs_rewrap(stored: &str) -> bool {
     let Some(current) = master_key() else {
         return false;
     };
-    if let Some(rest) = stored.strip_prefix(ENC_PREFIX_V2) {
+    if let Some(rest) = stored.strip_prefix(ENC_PREFIX_V3) {
         match rest.split_once(':') {
             Some((id_hex, _)) => id_hex != key_id(&current),
             None => true,
         }
     } else {
-        stored.starts_with(ENC_PREFIX)
+        stored.starts_with(ENC_PREFIX) || stored.starts_with(ENC_PREFIX_V2)
     }
 }
 
@@ -317,6 +379,11 @@ pub enum RotateOutcome {
 /// SECRET_ROTATE_CLI_V1：把任意儲存值（明文／舊信封／目前信封）收斂成
 /// 目前 key 的 v2 信封。呼叫前請確認 [`is_encryption_enabled`]。
 pub fn rotate_stored(stored: &str) -> RotateOutcome {
+    rotate_stored_with_purpose(stored, "")
+}
+
+/// STORE_ENVELOPE_AAD_V1（fix128）：同上，但以指定用途寫 v3。
+pub fn rotate_stored_with_purpose(stored: &str, purpose: &str) -> RotateOutcome {
     let Some(current) = master_key() else {
         return RotateOutcome::Unchanged;
     };
@@ -324,7 +391,7 @@ pub fn rotate_stored(stored: &str) -> RotateOutcome {
         return RotateOutcome::Unchanged;
     }
     if !is_envelope(stored) {
-        return match encrypt_with_key(stored, current) {
+        return match encrypt_with_key(stored, current, purpose) {
             Some(value) => RotateOutcome::Encrypted(value),
             None => RotateOutcome::Undecryptable,
         };
@@ -332,7 +399,9 @@ pub fn rotate_stored(stored: &str) -> RotateOutcome {
     if !needs_rewrap(stored) {
         return RotateOutcome::Unchanged;
     }
-    match decrypt_layered(stored, current).and_then(|plain| encrypt_with_key(&plain, current)) {
+    match decrypt_layered(stored, current, purpose)
+        .and_then(|plain| encrypt_with_key(&plain, current, purpose))
+    {
         Some(value) => RotateOutcome::Rewrapped(value),
         None => RotateOutcome::Undecryptable,
     }
@@ -343,19 +412,39 @@ pub fn rotate_stored(stored: &str) -> RotateOutcome {
 /// 失敗（未啟用加密、非信封、解不開）回 `None`，呼叫端應保留原值。
 /// 使用多層解密——雙重加密的污染值會被重寫為乾淨的單層 v2。
 pub fn rewrap_stored(stored: &str) -> Option<String> {
+    rewrap_stored_with_purpose(stored, "")
+}
+
+/// STORE_ENVELOPE_AAD_V1（fix128）：同上，但以指定用途寫 v3。
+pub fn rewrap_stored_with_purpose(stored: &str, purpose: &str) -> Option<String> {
     let current = master_key()?;
     if !is_envelope(stored) {
         return None;
     }
-    let plaintext = decrypt_layered(stored, current)?;
-    encrypt_with_key(&plaintext, current)
+    let plaintext = decrypt_layered(stored, current, purpose)?;
+    encrypt_with_key(&plaintext, current, purpose)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 以固定 nonce 構造 v1 信封（僅測試用；量產路徑一律寫 v2）。
+    /// 測試專用：構造 v2 信封（量產 fix128 起一律 v3，這支只為相容路徑驗證）。
+    fn encrypt_with_key_v2_legacy(plaintext: &str, key: [u8; 32]) -> Option<String> {
+        let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
+        let nonce = [0u8; 12];
+        let ciphertext = cipher
+            .encrypt(&Nonce::from(nonce), plaintext.as_bytes())
+            .ok()?;
+        Some(format!(
+            "{ENC_PREFIX_V2}{}:{}{}",
+            key_id(&key),
+            hex::encode(nonce),
+            STANDARD.encode(ciphertext)
+        ))
+    }
+
+    /// 以固定 nonce 構造 v1 信封（僅測試用；量產路徑一律寫 v3）。
     fn build_v1(plaintext: &str, key: [u8; 32]) -> Option<String> {
         let cipher = Aes256Gcm::new_from_slice(&key).ok()?;
         let nonce = [0u8; 12];
@@ -373,14 +462,36 @@ mod tests {
     fn store_secret_roundtrip() {
         // Test the envelope primitives directly with a known key.
         let key = [7u8; 32];
-        let enc = encrypt_with_key("sup3rs3cret", key).unwrap();
-        // MASTER_KEY_ROTATION_V1：新寫入為 v2 信封（帶 key id）
-        assert!(enc.starts_with("enc:v2:"));
+        let enc = encrypt_with_key("sup3rs3cret", key, "").unwrap();
+        // STORE_ENVELOPE_AAD_V1（fix128）：新寫入為 v3 信封（AAD 綁定用途）
+        assert!(enc.starts_with("enc:v3:"));
         assert!(enc.contains(&key_id(&key)));
-        assert_eq!(decrypt_any(&enc, key).as_deref(), Some("sup3rs3cret"));
+        assert_eq!(decrypt_any(&enc, key, "").as_deref(), Some("sup3rs3cret"));
         // Wrong key must not decrypt.
         let bad = [8u8; 32];
-        assert!(decrypt_any(&enc, bad).is_none());
+        assert!(decrypt_any(&enc, bad, "").is_none());
+    }
+
+    #[test]
+    fn aad_purpose_swap_fails() {
+        // STORE_ENVELOPE_AAD_V1（fix128）：密文搬家攻擊——把 A 用途的密文拿到
+        // B 用途的解密路徑（或反過來），GCM 驗證必敗。
+        let key = [7u8; 32];
+        let enc_password = encrypt_with_key("s3cret", key, "accounts.password").unwrap();
+        let enc_cookie = encrypt_with_key("cookie-value", key, "accounts.session_cookie").unwrap();
+        // 正確用途可解
+        assert_eq!(
+            decrypt_any(&enc_password, key, "accounts.password").as_deref(),
+            Some("s3cret")
+        );
+        assert_eq!(
+            decrypt_any(&enc_cookie, key, "accounts.session_cookie").as_deref(),
+            Some("cookie-value")
+        );
+        // 跨用途／空用途一律失敗
+        assert!(decrypt_any(&enc_password, key, "accounts.session_cookie").is_none());
+        assert!(decrypt_any(&enc_password, key, "").is_none());
+        assert!(decrypt_any(&enc_cookie, key, "accounts.password").is_none());
     }
 
     #[test]
@@ -403,28 +514,28 @@ mod tests {
         let cur = [10u8; 32];
 
         let v1_old = build_v1("secret1", old_key).unwrap();
-        let v2_old = encrypt_with_key("secret3", old_key).unwrap();
-        let v2_cur = encrypt_with_key("secret2", cur).unwrap();
+        let v2_old = encrypt_with_key_v2_legacy("secret3", old_key).unwrap();
+        let v2_cur = encrypt_with_key_v2_legacy("secret2", cur).unwrap();
 
         // 讀取：v1 由舊 key 解出；v2 依 key id 找到（含舊 key）
         assert_eq!(StoreSecret::from_stored(&v1_old).as_str(), "secret1");
         assert_eq!(StoreSecret::from_stored(&v2_old).as_str(), "secret3");
         assert_eq!(StoreSecret::from_stored(&v2_cur).as_str(), "secret2");
 
-        // needs_rewrap：v1 → true；v2(舊 key id) → true；v2(目前 key id) → false；純文字 → false
+        // needs_rewrap：v1 → true；v2 一律 → true（fix128 升級 v3）；v3(目前 key) → false；純文字 → false
         assert!(needs_rewrap(&v1_old));
         assert!(needs_rewrap(&v2_old));
-        assert!(!needs_rewrap(&v2_cur));
+        assert!(needs_rewrap(&v2_cur));
         assert!(!needs_rewrap("plain"));
 
-        // rewrap：v1(舊 key) → v2(目前 key) 且明文不變
+        // rewrap：v1(舊 key) → v3(目前 key) 且明文不變
         let rewrapped = rewrap_stored(&v1_old).unwrap();
-        assert!(rewrapped.starts_with("enc:v2:"));
+        assert!(rewrapped.starts_with("enc:v3:"));
         assert!(rewrapped.contains(&key_id(&cur)));
         assert_eq!(StoreSecret::from_stored(&rewrapped).as_str(), "secret1");
         assert!(!needs_rewrap(&rewrapped));
 
-        // rewrap：v2(舊 key) → v2(目前 key)
+        // rewrap：v2(舊 key) → v3(目前 key)
         let rewrapped2 = rewrap_stored(&v2_old).unwrap();
         assert_eq!(StoreSecret::from_stored(&rewrapped2).as_str(), "secret3");
         assert!(!needs_rewrap(&rewrapped2));
@@ -449,17 +560,17 @@ mod tests {
 
         // 模擬污染：解密失敗 fallback 的 v1 密文被當成「密碼」再加密一層 v2
         let inner = build_v1("real-password", [9u8; 32]).unwrap();
-        let polluted = encrypt_with_key(&inner, cur).unwrap();
+        let polluted = encrypt_with_key(&inner, cur, "").unwrap();
 
         // 多層解開：讀取時直接得到真實明文
         assert_eq!(StoreSecret::from_stored(&polluted).as_str(), "real-password");
 
-        // rewrap 後寫回乾淨的單層 v2，且仍解出真實明文
+        // rewrap 後寫回乾淨的單層 v3，且仍解出真實明文
         let cleaned = rewrap_stored(&polluted).unwrap();
-        assert!(cleaned.starts_with("enc:v2:"));
+        assert!(cleaned.starts_with("enc:v3:"));
         assert_eq!(StoreSecret::from_stored(&cleaned).as_str(), "real-password");
         // 三層也應解開（上限 4 層）
-        let triple = encrypt_with_key(&polluted, cur).unwrap();
+        let triple = encrypt_with_key(&polluted, cur, "").unwrap();
         assert_eq!(StoreSecret::from_stored(&triple).as_str(), "real-password");
 
         std::env::remove_var("TRONCLASS_MASTER_KEY");

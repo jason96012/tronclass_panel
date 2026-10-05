@@ -957,6 +957,39 @@ fn compile_time_stamp() -> &'static str {
     option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("unknown")
 }
 
+/// DB_SNAPSHOT_BACKUP_V1（fix123）：把與 `db_path` 同目錄、命名為
+/// `<stem>.backup-YYYYMMDD` 的快照檔輪替到最近 `keep` 份（其餘刪除）。
+/// 檔名含日期，字典序即時間序，排序後刪最舊的即正確。
+fn prune_db_backups(db_path: &std::path::Path, keep: usize) -> std::io::Result<()> {
+    let dir = db_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let stem = db_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "accounts".to_string());
+    let prefix = format!("{stem}.backup-");
+    let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect();
+    files.sort();
+    while files.len() > keep {
+        let oldest = files.remove(0);
+        match std::fs::remove_file(&oldest) {
+            Ok(()) => tracing::info!(path = %oldest.display(), "已輪替刪除舊資料庫快照"),
+            Err(e) => tracing::warn!(path = %oldest.display(), error = %e, "刪除舊資料庫快照失敗"),
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Build marker: proves at a glance whether the running binary actually
@@ -1112,6 +1145,37 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // DB_SNAPSHOT_BACKUP_V1（fix123）：資料庫損毀韌性——accounts.db 是單一
+    // SQLite 檔，一旦毀損／誤刪／磁碟故障，所有帳號設定（含 at-rest 加密
+    // 憑證）就全數遺失。這裡以 SQLite 的線上安全快照（VACUUM INTO，WAL 下
+    // 免停服）維護一份「每日輪替」副本：啟動 5 分鐘後做第一份（先讓
+    // schema 遷移與 auto-reencrypt 跑完），之後每 24 小時一份，同目錄
+    // `accounts.backup-YYYYMMDD`，保留最近 7 份。失敗只 warn，不影響服務。
+    {
+        let backup_db = accounts_db.clone();
+        let backup_base = args.accounts_path.clone();
+        tokio::spawn(async move {
+            const START_DELAY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+            const INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+            const KEEP: usize = 7;
+            tokio::time::sleep(START_DELAY).await;
+            loop {
+                let date = chrono::Local::now().format("%Y%m%d").to_string();
+                let dest = backup_base.with_extension(format!("backup-{date}"));
+                match backup_db.backup_snapshot(&dest).await {
+                    Ok(()) => {
+                        tracing::info!(path = %dest.display(), "accounts.db 每日安全快照完成");
+                        if let Err(e) = prune_db_backups(&backup_base, KEEP) {
+                            tracing::warn!(error = %e, "清理舊資料庫快照失敗");
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "accounts.db 每日安全快照失敗"),
+                }
+                tokio::time::sleep(INTERVAL).await;
+            }
+        });
+    }
+
     apply_runtime_timezone(&config.time.timezone)?;
 
     // config 載入後才初始化 tracing，確保使用設定檔中的等級
@@ -1124,6 +1188,34 @@ async fn main() -> Result<()> {
         at_rest_encryption = crate::secret_encryption::is_encryption_enabled(),
         "at-rest 加密狀態（需 TRONCLASS_MASTER_KEY 環境變數為有效的 64 hex）"
     );
+    // AT_REST_ENCRYPTION_ALERT_V1（fix119）：未啟用 at-rest 加密時——
+    // 帳號密碼／cookie 會以**明文**寫入 accounts.db。單一行啟動日誌很容易被
+    // 淹沒，這裡啟動時用 error 層級點名，並且每小時重複 warn 提醒，直到
+    // 營運者設定 TRONCLASS_MASTER_KEY 為止（降不回去：db 裡一旦出現 enc: 信封
+    // 就必須有 key 才能登入，因此永不主動把明文重新寫回）。
+    if !crate::secret_encryption::is_encryption_enabled() {
+        tracing::error!(
+            "安全警告：未設定有效的 TRONCLASS_MASTER_KEY（64 個 hex 字元），\
+             帳號的 TronClass 密碼／cookie 正以明文儲存在 accounts.db。\
+             請立即以 `openssl rand -hex 32` 產生 key 並加入環境變數後重啟；\
+             既有明文會在啟動時自動升級為 AES-256-GCM 加密。"
+        );
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            // 第一跳立刻觸發；跳過它，第一次提醒在一小時後。
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if crate::secret_encryption::is_encryption_enabled() {
+                    break;
+                }
+                tracing::warn!(
+                    "安全提醒：at-rest 加密仍未啟用（缺 TRONCLASS_MASTER_KEY），\
+                     帳號憑證持續以明文儲存，請參閱啟動時的安全警告。"
+                );
+            }
+        });
+    }
 
     info!(
         version = VERSION,

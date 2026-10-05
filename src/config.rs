@@ -871,6 +871,8 @@ pub fn load(path: impl AsRef<Path>) -> Result<Self> {
             if p.api.base_url.is_empty() {
                 return Err(miette::miette!("providers.{name}.api.base_url 不可為空"));
             }
+            // HTTPS_STRICT_V1（fix124）：這條連線攜帶 TronClass 帳密／cookie。
+            validate_https_strict_url(&format!("providers.{name}.api.base_url"), &p.api.base_url)?;
             if p.api.poll_interval_secs == 0 {
                 return Err(miette::miette!(
                     "providers.{name}.api.poll_interval_secs 必須大於 0"
@@ -948,15 +950,11 @@ pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         }
 
         if !self.adapters.line_bot.public_base_url.trim().is_empty() {
-            let parsed =
-                url::Url::parse(self.adapters.line_bot.public_base_url.trim()).map_err(|_| {
-                    miette::miette!("adapters.line_bot.public_base_url 必須是有效的 http(s) URL")
-                })?;
-            if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-                return Err(miette::miette!(
-                    "adapters.line_bot.public_base_url 必須是有效的 http(s) URL"
-                ));
-            }
+            // HTTPS_STRICT_V1（fix124）：對外公開地址一律 https（本機測試可用私有位址）。
+            validate_https_strict_url(
+                "adapters.line_bot.public_base_url",
+                self.adapters.line_bot.public_base_url.trim(),
+            )?;
         }
         if self
             .adapters
@@ -1000,7 +998,8 @@ pub fn load(path: impl AsRef<Path>) -> Result<Self> {
             }
         }
         if !self.adapters.discord.public_base_url.trim().is_empty() {
-            validate_http_url(
+            // HTTPS_STRICT_V1（fix124）：對外公開地址一律 https（本機測試可用私有位址）。
+            validate_https_strict_url(
                 "adapters.discord.public_base_url",
                 self.adapters.discord.public_base_url.trim(),
             )?;
@@ -1087,6 +1086,36 @@ fn validate_http_url(field: &str, value: &str) -> Result<()> {
         return Err(miette::miette!("{field} 必須是有效的 http(s) URL"));
     }
 
+    Ok(())
+}
+
+/// HTTPS_STRICT_V1（fix124）：攜帶憑證的連線必須走 https——明文 http 的遠端
+/// 主機等於把 TronClass 帳密／cookie 交給中間人（MITM 攔截）。http 僅保留給
+/// localhost／私有網段（本機與內網開發測試），公網主機一律拒絕。
+fn validate_https_strict_url(field: &str, value: &str) -> Result<()> {
+    validate_http_url(field, value)?;
+    let parsed =
+        url::Url::parse(value).map_err(|_| miette::miette!("{field} 必須是有效的 http(s) URL"))?;
+    if parsed.scheme() != "http" {
+        return Ok(());
+    }
+    let host = parsed
+        .host_str()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let local = host == "localhost"
+        || host.ends_with(".localhost")
+        || host.parse::<std::net::IpAddr>().is_ok_and(|ip| match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback() || v4.is_private() || v4.is_link_local()
+            }
+            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        });
+    if !local {
+        return Err(miette::miette!(
+            "{field} 使用明文 http 的遠端主機——這條連線攜帶憑證，請改用 https（http 僅允許 localhost／私有網段）"
+        ));
+    }
     Ok(())
 }
 

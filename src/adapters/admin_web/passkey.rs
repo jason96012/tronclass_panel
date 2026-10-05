@@ -242,8 +242,22 @@ pub(super) async fn admin_passkey_register_finish_handler(
         Err(resp) => return resp,
     };
     cleanup_passkey_states().await;
+    // PASSKEY_REGISTER_BIND_SESSION_V1（fix122）：原先 finish 只憑 ceremony_id
+    // 就完成註冊。雖然 ceremony_id 是 122-bit 隨機 UUID、POST 又有同源中介層＋
+    // SameSite=Lax 把守（遠端無法取得／利用），但若 TTL 內經其他途徑外洩
+    // （本機惡意程式、頁面注入），攻擊者可把自己的通行密鑰**註冊進別人帳號**，
+    // 日後直接以 passkey 登入為受害者。補強：finish 必須帶有效 session，且
+    // session 帳號必須等於 start 時發起註冊的帳號。
+    let Some(session) = state.authorize_any_from_cookies(&headers).await else {
+        return unauthorized_response();
+    };
     let ceremony = match PASSKEY_REG_STATES.lock().await.remove(&req.ceremony_id) {
-        Some(ceremony) if ceremony.expires_at > Instant::now() => ceremony,
+        Some(ceremony)
+            if ceremony.expires_at > Instant::now()
+                && ceremony.account_id == session.account_id =>
+        {
+            ceremony
+        }
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -285,11 +299,15 @@ pub(super) async fn admin_passkey_register_finish_handler(
             )
                 .into_response()
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save passkey failed: {e}") })),
-        )
-            .into_response(),
+        Err(e) => {
+            // ERR_MSG_GENERIC_V1（fix117）：資料庫錯誤細節不外洩給 client。
+            tracing::warn!(account = %ceremony.account_id, error = %e, "save passkey credential failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal server error" })),
+            )
+                .into_response()
+        }
     }
 }
 

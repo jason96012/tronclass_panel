@@ -183,13 +183,79 @@ impl TrustedProxies {
     }
 }
 
+// IP_CANONICAL_V4_MAPPED_V1：黑名單與節流計數都以「字串」比對 IP 身分。
+// 若伺服器以雙疊（`[::]`，Linux 預設 v6only=0）監聽，IPv4 客戶端的 peer 會被
+// 作業系統包成 `::ffff:203.0.113.9`；這個字串與黑名單裡的 `203.0.113.9` 不相等
+// → 封鎖被繞過、失敗計數也換了鑰匙（自動封鎖永遠湊不到門檻）。
+// 統一在這裡把 v4-mapped 位址收斂回純 IPv4，讓同一台機器永遠只有一個字串身分。
+pub fn canonicalize_ip(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => IpAddr::V4(v4),
+            // 刻意只收斂 ::ffff:0:0/96（v4-mapped）。不使用 `to_ipv4()`：
+            // 它會把 `::1`、`::` 這些 compatible 位址誤轉成 0.0.0.x，
+            // 反而把 IPv6 loopback 改寫成別的身分。
+            None => IpAddr::V6(v6),
+        },
+        v4 => v4,
+    }
+}
+
+/// IP_BLACKLIST_V6_GROUP_V1：節流與黑名單共用的「群組鍵」。
+///
+/// IPv6 終端通常握有整個 /64（作業系統會自動輪換 privacy addresses，電信業者
+/// 也多配發 /56～/64）：只封、只算單一 128-bit 位址等於沒封——換一個位址就
+/// 繞過。因此 IPv6 一律收斂成「前 64 位元前綴」作為封鎖與計數單位
+/// （fail2ban 與 Cloudflare 的標準做法）；IPv4 不變。
+/// 無法解析的字串（例如 `"unknown"`）原樣回傳，交由上層自行處理。
+pub fn blacklist_group_key(ip: &str) -> String {
+    let trimmed = ip.trim();
+    match trimmed.parse::<IpAddr>() {
+        Ok(parsed) => match canonicalize_ip(parsed) {
+            IpAddr::V4(v4) => v4.to_string(),
+            IpAddr::V6(v6) => {
+                let seg = v6.segments();
+                format!(
+                    "{}/64",
+                    Ipv6Addr::new(seg[0], seg[1], seg[2], seg[3], 0, 0, 0, 0)
+                )
+            }
+        },
+        Err(_) => trimmed.to_string(),
+    }
+}
+
+/// 把管理員輸入（或既有黑名單列字串）正規化成「儲存鍵」：
+/// IPv4 原樣、`::ffff:a.b.c.d` 收斂成 IPv4、IPv6 收斂為 `/64` 群組鍵；
+/// 也接受既有清單裡的 `"xxxx/64"` 形式（解除封鎖時前端原樣送回）並重新正規化。
+/// 其他輸入一律拒絕（回 `None`）。
+pub fn normalize_blacklist_key(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 64 {
+        return None;
+    }
+    if value.parse::<IpAddr>().is_ok() {
+        return Some(blacklist_group_key(value));
+    }
+    if let Some((addr, len)) = value.split_once('/') {
+        if len.trim() == "64" && matches!(addr.trim().parse::<IpAddr>(), Ok(IpAddr::V6(_))) {
+            return Some(blacklist_group_key(addr));
+        }
+    }
+    None
+}
+
 /// Sanitize an untrusted forwarded value into a canonical IP string, or `None`.
 fn normalized_ip(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() || value.len() > 64 {
         return None;
     }
-    value.parse::<IpAddr>().ok().map(|ip| ip.to_string())
+    value
+        .parse::<IpAddr>()
+        .ok()
+        .map(canonicalize_ip)
+        .map(|ip| ip.to_string())
 }
 
 /// Resolve the effective client IP for a request.
@@ -204,6 +270,10 @@ pub fn resolve_client_ip(
     headers: &http::HeaderMap,
     trusted: &TrustedProxies,
 ) -> String {
+    // IP_CANONICAL_V4_MAPPED_V1：先做位址收斂——雙疊監聽下 `::ffff:127.0.0.1`
+    // 也應被判為 loopback（可信任的本機代理），且最後輸出的字串才會與
+    // 黑名單／節流鍵一致，不會出現「同一台機器兩個身分」。
+    let peer = peer.map(canonicalize_ip);
     let from_trusted_proxy = trusted.is_trusted(peer);
 
     if from_trusted_proxy {
@@ -379,5 +449,79 @@ mod tests {
         // Only loopback remains.
         assert!(t.is_trusted(Some(IpAddr::from_str("127.0.0.1").unwrap())));
         assert!(!t.is_trusted(Some(IpAddr::from_str("10.0.0.1").unwrap())));
+    }
+
+    // ─── IP_CANONICAL_V4_MAPPED_V1 ───────────────────────────────────────────
+
+    #[test]
+    fn v4_mapped_peer_is_canonicalized_and_trusted_as_loopback() {
+        // 雙疊（[::]）監聽時，本機代理的 IPv4 連線會以 ::ffff:127.0.0.1 抵達；
+        // 收斂後必須回到 loopback 信任清單，且輸出字串是純 IPv4。
+        let mut headers = hmap();
+        headers.insert("cf-connecting-ip", http::HeaderValue::from_static("9.9.9.9"));
+        let t = trusted(&[]);
+        let ip = resolve_client_ip(
+            Some(IpAddr::from_str("::ffff:127.0.0.1").unwrap()),
+            &headers,
+            &t,
+        );
+        assert_eq!(ip, "9.9.9.9");
+    }
+
+    #[test]
+    fn v4_mapped_public_peer_keeps_single_blacklist_identity() {
+        // 非信任來源：忽略偽造標頭，輸出收斂成純 IPv4——與黑名單儲存字串一致。
+        let mut headers = hmap();
+        headers.insert("x-forwarded-for", http::HeaderValue::from_static("6.6.6.6"));
+        let t = trusted(&[]);
+        let ip = resolve_client_ip(
+            Some(IpAddr::from_str("::ffff:203.0.113.9").unwrap()),
+            &headers,
+            &t,
+        );
+        assert_eq!(ip, "203.0.113.9");
+    }
+
+    #[test]
+    fn loopback_v6_is_not_remapped_to_ipv4() {
+        // ::1 不是 v4-mapped，絕不能被改寫成 0.0.0.1。
+        let ip = canonicalize_ip(IpAddr::from_str("::1").unwrap());
+        assert_eq!(ip, IpAddr::from_str("::1").unwrap());
+    }
+
+    // ─── IP_BLACKLIST_V6_GROUP_V1 ─────────────────────────────────────────────
+
+    #[test]
+    fn v6_group_key_collapses_to_slash64() {
+        assert_eq!(
+            blacklist_group_key("2001:db8:abcd:1234:aaaa:bbbb:cccc:dddd"),
+            "2001:db8:abcd:1234::/64"
+        );
+        assert_eq!(
+            blacklist_group_key("2001:db8:abcd:1234::1"),
+            "2001:db8:abcd:1234::/64"
+        );
+        assert_eq!(blacklist_group_key("203.0.113.9"), "203.0.113.9");
+        assert_eq!(blacklist_group_key("::ffff:203.0.113.9"), "203.0.113.9");
+        assert_eq!(blacklist_group_key("unknown"), "unknown");
+    }
+
+    #[test]
+    fn normalize_blacklist_key_accepts_ip_and_stored_prefix() {
+        assert_eq!(
+            normalize_blacklist_key("203.0.113.9").as_deref(),
+            Some("203.0.113.9")
+        );
+        assert_eq!(
+            normalize_blacklist_key("2001:db8:abcd:1234:ffff::1").as_deref(),
+            Some("2001:db8:abcd:1234::/64")
+        );
+        assert_eq!(
+            normalize_blacklist_key("2001:DB8:abcd:1234::/64").as_deref(),
+            Some("2001:db8:abcd:1234::/64")
+        );
+        assert_eq!(normalize_blacklist_key("1.2.3.0/24"), None);
+        assert_eq!(normalize_blacklist_key("not-an-ip"), None);
+        assert_eq!(normalize_blacklist_key(""), None);
     }
 }

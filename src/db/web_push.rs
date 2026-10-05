@@ -57,6 +57,15 @@ impl AccountsDb {
         auth: &str,
     ) -> Result<()> {
         let now = chrono::Local::now().timestamp();
+        // WEB_PUSH_KEYS_AT_REST_V1（fix124）：p256dh/auth 等同「能對使用者裝置
+        // 發假推播（釣魚）」的私鑰——落盤必須加密成 AES-256-GCM 信封；既有明文
+        // 行在讀取端以 legacy 原樣解出，下一次 upsert 自動升級；master key 遺失
+        // 時解出空白，該訂閱推播失敗後自然被清理（與密碼容器同一把尺）。
+        let p256dh_stored =
+            crate::secret_encryption::StoreSecret::new(p256dh.trim())
+            .store_value_with_purpose("web_push.p256dh");
+        let auth_stored = crate::secret_encryption::StoreSecret::new(auth.trim())
+            .store_value_with_purpose("web_push.auth");
         sqlx::query(
             "INSERT INTO web_push_subscriptions
                 (endpoint, account_id, p256dh, auth, created_at, updated_at)
@@ -70,8 +79,8 @@ impl AccountsDb {
         )
         .bind(endpoint.trim())
         .bind(account_id.trim())
-        .bind(p256dh.trim())
-        .bind(auth.trim())
+        .bind(p256dh_stored)
+        .bind(auth_stored)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -85,7 +94,7 @@ impl AccountsDb {
         &self,
         account_id: &str,
     ) -> Result<Vec<WebPushSubscriptionRow>> {
-        sqlx::query_as::<_, WebPushSubscriptionRow>(
+        let mut rows = sqlx::query_as::<_, WebPushSubscriptionRow>(
             "SELECT account_id, endpoint, p256dh, auth, consecutive_failures
              FROM web_push_subscriptions WHERE account_id = ?
              ORDER BY updated_at DESC LIMIT 16",
@@ -94,7 +103,24 @@ impl AccountsDb {
         .fetch_all(&self.pool)
         .await
         .into_diagnostic()
-        .wrap_err_with(|| format!("讀取 `{account_id}` Web Push 訂閱失敗"))
+        .wrap_err_with(|| format!("讀取 `{account_id}` Web Push 訂閱失敗"))?;
+        // WEB_PUSH_KEYS_AT_REST_V1（fix124）：落盤解封——legacy 明文原樣通過，
+        // enc: 信封以目前／舊 master key 解密；無效的變空白（不會誤推）。
+        for row in rows.iter_mut() {
+            row.p256dh = crate::secret_encryption::StoreSecret::from_stored_with_purpose(
+                &row.p256dh,
+                "web_push.p256dh",
+            )
+                .as_str()
+                .to_string();
+            row.auth = crate::secret_encryption::StoreSecret::from_stored_with_purpose(
+                &row.auth,
+                "web_push.auth",
+            )
+                .as_str()
+                .to_string();
+        }
+        Ok(rows)
     }
 
     /// PUSH_OVERVIEW_V1：全部帳號的推播綁定統計（管理員總覽用）。

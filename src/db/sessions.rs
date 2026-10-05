@@ -57,6 +57,20 @@ pub struct DashboardSessionInsert {
 const SESSION_COLUMNS: &str = "token, account_id, is_admin, must_change_password, created_at, expires_at,
                     refresh_token, refresh_expires_at, ip, user_agent, last_seen_at, is_viewer";
 
+// SESSION_TOKEN_HASH_V1（fix125）：Dashboard session token（access／refresh）
+// 是 bearer credential——DB 一洩漏，常駐 session 就會被直接接管。現在**落盤
+// 一律只存 SHA-256 hex(token)**：查／寫／刪在進 DB 前散列，資料庫裡再也沒有
+// 可重放的明文。注意兩條約定：
+//   1. 自本函式散列後，`row.token`／`row.refresh_token` 是**散列鍵**（lookup
+//      key），不是明文；管理伺服器的 in-memory sessions map 也以同一把散列鍵
+//      建鍵（見 admin_web/mod.rs）。
+//   2. 所有以「DB 列值」回查的呼叫端，必須用不散列的 by_key 系列函式
+//      （delete_dashboard_session_hashed_key），避免二次散列。
+pub(crate) fn session_lookup_key(raw_token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(raw_token.trim().as_bytes()))
+}
+
 impl AccountsDb {
     // ── Dashboard Session 持久化 ──────────────────────────────────────────────
 
@@ -99,13 +113,13 @@ impl AccountsDb {
                  refresh_token, refresh_expires_at, ip, user_agent, last_seen_at, is_viewer)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
-        .bind(row.token.trim())
+        .bind(session_lookup_key(&row.token))
         .bind(row.account_id.trim())
         .bind(row.is_admin)
         .bind(row.must_change_password)
         .bind(created_at)
         .bind(row.expires_at)
-        .bind(row.refresh_token.trim())
+        .bind(session_lookup_key(&row.refresh_token))
         .bind(row.refresh_expires_at)
         .bind(row.ip.trim())
         .bind(row.user_agent.trim())
@@ -141,7 +155,7 @@ impl AccountsDb {
             .bind(last_seen_at)
             .bind(ip.trim())
             .bind(user_agent.trim())
-            .bind(token.trim())
+            .bind(session_lookup_key(token))
             .execute(&self.pool)
             .await
             .into_diagnostic()
@@ -177,7 +191,7 @@ impl AccountsDb {
     pub async fn get_dashboard_session(&self, token: &str) -> Result<Option<DashboardSessionRow>> {
         let sql = format!("SELECT {SESSION_COLUMNS} FROM dashboard_sessions WHERE token = ?");
         let row = sqlx::query_as::<_, DashboardSessionRow>(&sql)
-            .bind(token.trim())
+            .bind(session_lookup_key(token))
             .fetch_optional(&self.pool)
             .await
             .into_diagnostic()
@@ -193,7 +207,7 @@ impl AccountsDb {
         let sql =
             format!("SELECT {SESSION_COLUMNS} FROM dashboard_sessions WHERE refresh_token = ?");
         let row = sqlx::query_as::<_, DashboardSessionRow>(&sql)
-            .bind(refresh_token.trim())
+            .bind(session_lookup_key(refresh_token))
             .fetch_optional(&self.pool)
             .await
             .into_diagnostic()
@@ -223,11 +237,24 @@ impl AccountsDb {
     /// 刪除指定 Token 的 Dashboard Session
     pub async fn delete_dashboard_session(&self, token: &str) -> Result<bool> {
         let result = sqlx::query("DELETE FROM dashboard_sessions WHERE token = ?")
-            .bind(token.trim())
+            .bind(session_lookup_key(token))
             .execute(&self.pool)
             .await
             .into_diagnostic()
             .wrap_err("刪除 dashboard_session 失敗")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// SESSION_TOKEN_HASH_V1（fix125）：以「DB 列內的散列鍵」刪除——給已經
+    /// 拿到 `row.token`（散列值而非明文）的呼叫端用（rotate 延遲刪除／
+    /// 登入裝置撤銷），在這裡不再二次散列。
+    pub async fn delete_dashboard_session_hashed_key(&self, key: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM dashboard_sessions WHERE token = ?")
+            .bind(key.trim())
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("刪除 dashboard_session（by key）失敗")?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -312,12 +339,63 @@ impl AccountsDb {
     /// 依 Refresh Token 刪除該 Session（refresh 輪換時撤銷舊 token）。
     pub async fn delete_dashboard_session_by_refresh(&self, refresh_token: &str) -> Result<u64> {
         let result = sqlx::query("DELETE FROM dashboard_sessions WHERE refresh_token = ?")
-            .bind(refresh_token.trim())
+            .bind(session_lookup_key(refresh_token))
             .execute(&self.pool)
             .await
             .into_diagnostic()
             .wrap_err("依 refresh token 刪除 dashboard_sessions 失敗")?;
         Ok(result.rows_affected())
+    }
+
+    // ── REFRESH_REUSE_DETECT_V1（fix126）：refresh token 輪換石碑 ─────────────
+
+    /// REFRESH_REUSE_DETECT_V1（fix126）：每完成一次 refresh 輪換，就為被廢棄的
+    /// 舊 refresh 立碑（鍵＝`session_lookup_key`）。日後同一把舊值再被使用（已超出
+    /// 寬限窗）＝極可能遭竊，mod.rs 的 `detect_refresh_reuse` 會走帳號家族撤銷。
+    /// 順帶清掉超過保留期的舊碑（refresh TTL 7 天；碑多留 1 天後修剪）。
+    pub async fn record_refresh_tombstone(
+        &self,
+        refresh_token: &str,
+        account_id: &str,
+        rotated_at: i64,
+    ) -> Result<()> {
+        const TOMBSTONE_RETENTION_SECS: i64 = 8 * 24 * 60 * 60;
+        sqlx::query("DELETE FROM refresh_token_tombstones WHERE rotated_at < ?")
+            .bind(rotated_at - TOMBSTONE_RETENTION_SECS)
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("清理過期 refresh 石碑失敗")?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO refresh_token_tombstones (lookup_key, account_id, rotated_at)
+             VALUES (?, ?, ?)",
+        )
+        .bind(session_lookup_key(refresh_token))
+        .bind(account_id.trim())
+        .bind(rotated_at)
+        .execute(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("寫入 refresh 石碑失敗")?;
+        Ok(())
+    }
+
+    /// REFRESH_REUSE_DETECT_V1（fix126）：查這把 refresh 曾否被輪換；
+    /// 命中回傳 (account_id, rotated_at)。登出／改密碼等「非輪換」刪除不立碑，
+    /// 因此不會誤檢。
+    pub async fn lookup_refresh_tombstone(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Option<(String, i64)>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "SELECT account_id, rotated_at FROM refresh_token_tombstones WHERE lookup_key = ?",
+        )
+        .bind(session_lookup_key(refresh_token))
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢 refresh 石碑失敗")?;
+        Ok(row)
     }
 }
 
