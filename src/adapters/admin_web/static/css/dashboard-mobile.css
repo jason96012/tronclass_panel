@@ -103,7 +103,14 @@ html body #mobileMoreFinalV2.visible,
  * 出席統計的表格有 7 欄（課程／點名次數／成功／未成功／成功率／送出者／最近一次），
  * 手機上原本只能靠橫向捲動，最右邊的欄位常常看不到。這裡改成「一列一張卡」：
  * 每個欄位用 data-label 顯示名稱，全部欄位都在畫面內，不需要左右滑。
- * （桌機版仍然是原本的表格，行為不變。） */
+ * （桌機版仍然是原本的表格，行為不變。）
+ *
+ * ATT_STATS_TFOOT_CARD_FIX_V1：
+ * 「全課程彙總」那一列是 <tfoot><tr>…</tr></tfoot>，但上面這些卡片化規則
+ * 原本只選取了 tbody。tfoot 完全沒被轉成卡片，在手機上維持瀏覽器預設的
+ * 表格排版——欄位被壓到只剩幾個像素寬，中文內容（例如「最新各課點名彙總」）
+ * 只能一個字一行地往下擠。這裡把所有結構性規則同時套用在 tbody 與 tfoot，
+ * 讓彙總列呈現跟一般課程卡片一致的版面。 */
 @media (max-width:820px){
   #attBody .table-wrap{
     overflow:visible!important;
@@ -120,12 +127,14 @@ html body #mobileMoreFinalV2.visible,
     border-collapse:separate!important;
   }
   #attBody .att-table thead{display:none!important}
-  #attBody .att-table tbody{
+  #attBody .att-table tbody,
+  #attBody .att-table tfoot{
     display:flex!important;
     flex-direction:column!important;
     gap:12px!important;
   }
-  #attBody .att-table tbody tr{
+  #attBody .att-table tbody tr,
+  #attBody .att-table tfoot tr{
     display:grid!important;
     grid-template-columns:minmax(0,1fr) minmax(0,1fr)!important;
     gap:8px 12px!important;
@@ -137,7 +146,8 @@ html body #mobileMoreFinalV2.visible,
     border-radius:16px!important;
     background:var(--card,#fff)!important;
   }
-  #attBody .att-table tbody td{
+  #attBody .att-table tbody td,
+  #attBody .att-table tfoot td{
     display:flex!important;
     flex-direction:column!important;
     gap:2px!important;
@@ -150,21 +160,26 @@ html body #mobileMoreFinalV2.visible,
     overflow-wrap:anywhere!important;
     word-break:break-word!important;
   }
-  #attBody .att-table tbody td::before{
+  #attBody .att-table tbody td::before,
+  #attBody .att-table tfoot td::before{
     content:attr(data-label);
     color:var(--muted,#64748b);
     font-size:12px;
     font-weight:800;
   }
-  /* 第一格＝課程名稱：整列標題，不需要欄位名 */
-  #attBody .att-table tbody td:first-child{
+  /* 第一格＝課程名稱（或「全課程彙總」）：整列標題，不需要欄位名 */
+  #attBody .att-table tbody td:first-child,
+  #attBody .att-table tfoot td:first-child{
     grid-column:1/-1!important;
     font-size:17px!important;
   }
-  #attBody .att-table tbody td:first-child::before{content:none}
+  #attBody .att-table tbody td:first-child::before,
+  #attBody .att-table tfoot td:first-child::before{content:none}
   /* 送出者與最近一次：各佔一列的一半；「最近一次」不會再被切掉 */
   #attBody .att-table tbody td:nth-child(6),
-  #attBody .att-table tbody td:nth-child(7){grid-column:1/-1!important}
+  #attBody .att-table tbody td:nth-child(7),
+  #attBody .att-table tfoot td:nth-child(6),
+  #attBody .att-table tfoot td:nth-child(7){grid-column:1/-1!important}
 }
 
 /* 其他表格（課表等）在手機上真的需要橫向捲動時的觸控與過捲行為 */

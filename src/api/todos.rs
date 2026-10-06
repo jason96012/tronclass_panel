@@ -2029,17 +2029,17 @@ fn current_semester_start_with(
     let (start_year, start_month) = match override_semester {
         Some((western_year, term)) => (western_year, if term == 1 { 8 } else { 2 }),
         None => {
+            // SEMESTER_AUTO_CALC_SHARED_V1：日期→學年度/學期的推算規則收在
+            // config::academic_year_for()（原本這裡跟下面 semester_text_is_current_with、
+            // tku.rs::current_yr_sem 各自重複一份），這裡只做「學年度/學期 →
+            // 學期起點日曆日期」的轉換：第 1 學期起點＝該學年度 8 月，
+            // 第 2 學期起點＝（學年度 + 1）年的 2 月（下學期開學月份落在隔年）。
             let local = now.with_timezone(&taipei);
-            let (year, month) = (local.year(), local.month());
-
-            // 8 月～隔年 1 月 → 上學期（起點為當年 8 月，1 月時為前一年 8 月）
-            // 2 月～7 月       → 下學期（起點為當年 2 月）
-            if month >= 8 {
-                (year, 8)
-            } else if month <= 1 {
-                (year - 1, 8)
+            let (academic_year, term) = crate::config::academic_year_for(local.year(), local.month());
+            if term == 1 {
+                (academic_year, 8)
             } else {
-                (year, 2)
+                (academic_year + 1, 2)
             }
         }
     };
@@ -2138,18 +2138,12 @@ fn semester_text_is_current_with(
     let (western_year, term) = match override_semester {
         Some((western_year, term)) => (western_year, term as i32),
         None => {
+            // SEMESTER_AUTO_CALC_SHARED_V1：見 config::academic_year_for() 說明。
             let taipei = chrono::FixedOffset::east_opt(8 * 3600)?;
             let local = now.with_timezone(&taipei);
-            let year = local.year();
-            let month = local.month();
-
-            if month >= 8 {
-                (year, 1)
-            } else if month <= 1 {
-                (year - 1, 1)
-            } else {
-                (year - 1, 2)
-            }
+            let (western_year, term) =
+                crate::config::academic_year_for(local.year(), local.month());
+            (western_year, term as i32)
         }
     };
     let roc_year = western_year - 1911;

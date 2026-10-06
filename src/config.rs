@@ -415,6 +415,13 @@ pub struct AdminWebConfig {
     /// LOGIN_GEO_ALERT_V1：視為「本國」的國家代碼（ISO 3166-1 alpha-2）。
     /// 從這些國家的新 IP 登入只記錄、不通知；境外／Tor／查不到國家才通知。
     /// 預設 `["TW"]`。設成空陣列 = 恢復「任何新 IP 都通知」的舊行為。
+    ///
+    /// ADMIN_GEO_RESTRICT_V1：這份清單同時也是「僅限台灣 IP 存取 /admin」
+    /// 開關（`/admin/blacklist` 頁、預設開啟）判斷「本國」的依據——兩個功能
+    /// 問的是同一個問題（這個國家算不算自己人），刻意共用同一份清單，不另外
+    /// 生出第二個設定值；調整這裡會同時影響「新位置登入告警」與「國外 IP 擋」
+    /// 兩個功能。空陣列對擋國外 IP 這個功能沒有意義（表示沒有任何國家算本國，
+    /// 等同全擋），因此擋國外 IP 功能在空陣列時固定退回 `["TW"]`，不會真的全擋。
     #[serde(default = "default_login_home_countries")]
     pub login_home_countries: Vec<String>,
 
@@ -576,6 +583,42 @@ pub(crate) fn parse_semester_current(text: &str) -> Option<(i32, u32)> {
 pub(crate) fn semester_override() -> Option<(i32, u32)> {
     crate::runtime_settings::semester_override()
         .or_else(|| try_get_config().and_then(|config| config.semester.resolved()))
+}
+
+/// SEMESTER_AUTO_CALC_SHARED_V1：依「西元年、月份」自動推算台灣學制的學年度與
+/// 學期（純粹依日期推算，不含任何覆蓋判斷——覆蓋請用 [`semester_override`]）。
+///
+/// 回傳 `(學年度起始的西元年, 學期 1|2)`。「學年度起始的西元年」＝該學年度上
+/// 學期開學（8 月）那一年，例如民國 115 學年度（無論第 1 或第 2 學期）回傳的
+/// 西元年一律是 2026，即使查詢月份落在 2027 年（下學期期間）。
+///
+/// 規則（台灣學制，三處呼叫端原本各自重複實作過這條規則，整併成這一份正本）：
+/// - 8～12 月：當年度上學期 → `(year, 1)`
+/// - 1 月：仍屬前一學年度上學期（跨年但沒換學期）→ `(year - 1, 1)`
+/// - 2～7 月：前一學年度下學期 → `(year - 1, 2)`
+///
+/// 呼叫端目前有三處，各自需要的「輸出形狀」不同，所以這裡只做最小公倍數的
+/// 日期推算，格式轉換留給呼叫端自己做：
+/// - `api::todos::current_semester_start_with`：需要「學期起點的日曆日期」
+///   （`(start_year, start_month)`），第 1 學期＝`(academic_year, 8)`、
+///   第 2 學期＝`(academic_year + 1, 2)`（下學期開學月份落在隔年）。
+/// - `api::todos::semester_text_is_current_with`：直接拿 `(西元年, 學期)`
+///   去跟課程學期字串（如 `"1151"`）解析出的 `(民國年, 學期)` 比對。
+/// - `timetable_source::tku::current_yr_sem`：轉成民國年格式化成 `"1151"` 這種
+///   YrSem 代碼字串（`western_year - 1911`）。
+///
+/// 三處原本各自手刻這條 if/else（寫法、變數命名都不同），已用三邊既有的單元
+/// 測試逐一手算核對這份正本與原本三份邏輯在所有已知測試案例上輸出一致
+/// （含跨年 1 月、7 月暑假、覆蓋等邊界案例），詳見下方 `tests` 模組與三個
+/// 呼叫端自己的測試。
+pub(crate) fn academic_year_for(year: i32, month: u32) -> (i32, u32) {
+    if month >= 8 {
+        (year, 1)
+    } else if month <= 1 {
+        (year - 1, 1)
+    } else {
+        (year - 1, 2)
+    }
 }
 
 // ======== Homework ========
@@ -1871,6 +1914,27 @@ rest_weekdays = ["sun", "sun"]
     }
 
     // ── CURRENT_SEMESTER_OVERRIDE_V1 ──────────────────────────────────────────
+
+    #[test]
+    fn test_academic_year_for_matches_known_boundaries() {
+        // SEMESTER_AUTO_CALC_SHARED_V1：跟三個呼叫端原本各自的測試案例交叉核對，
+        // 確保整併成單一正本後，在所有已知邊界案例上行為不變。
+        // 8 月：當年度上學期（對照 tku.rs::yr_sem_matches_known_reference）。
+        assert_eq!(academic_year_for(2026, 8), (2026, 1));
+        // 1 月：跨年但仍屬前一學年度上學期
+        // （對照 tku.rs::yr_sem_handles_semester_boundaries 的 jan 案例）。
+        assert_eq!(academic_year_for(2027, 1), (2026, 1));
+        // 3 月：前一學年度下學期
+        // （對照 tku.rs::yr_sem_handles_semester_boundaries 的 mar 案例）。
+        assert_eq!(academic_year_for(2027, 3), (2026, 2));
+        // 7 月（暑假）：仍屬前一學年度下學期
+        // （對照 tku.rs::yr_sem_handles_semester_boundaries 的 jul 案例）。
+        assert_eq!(academic_year_for(2026, 7), (2025, 2));
+        // 9 月：對照 todos.rs::test_roc_semester_text_matching /
+        // test_semester_start_is_stable_within_semester 使用的 2026-08/09/12。
+        assert_eq!(academic_year_for(2026, 9), (2026, 1));
+        assert_eq!(academic_year_for(2026, 12), (2026, 1));
+    }
 
     #[test]
     fn test_parse_semester_current_formats() {

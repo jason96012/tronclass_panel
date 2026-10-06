@@ -86,12 +86,20 @@ const SUMMARY_TRIGGER: usize = 12;
 /// 摘要後仍保留原文的最近則數。
 const SUMMARY_KEEP_RAW: usize = 6;
 /// 摘要本身的長度上限（token）。
-const SUMMARY_MAX_TOKENS: u32 = 320;
+// AI_SUMMARY_TRUNCATION_FIX_V1（fix-442-k2）：Gemini 2.5／3.x 系列預設會把
+// 「思考」(thinking) 也算進同一個 max_tokens 額度裡，且預設思考力道是
+// medium／high；在沒有把思考關小、額度又只有一兩百 token 的情況下，模型常常
+// 把整包額度燒在看不見的思考上，導致可見內容只剩半句話就被硬切斷（實測畫面
+// 顯示「1:*」「10月6日（」這種斷在詞中間的殘缺摘要，finish_reason 其實是
+// length，不是模型亂寫）。這裡把額度調大，讓「思考 + 真正輸出」都有空間；
+// 實際是否要思考、思考多少由 complete_once 內针對 Gemini 加的 reasoning_effort
+// 參數負責收斂，兩者要搭配著看才完整。
+const SUMMARY_MAX_TOKENS: u32 = 1600;
 // BULLETIN_AI_SUMMARY_V1：把單則學校公告濃縮成「字數精簡但重點不漏」的摘要。
-const BULLETIN_SUMMARY_MAX_TOKENS: u32 = 420;
+const BULLETIN_SUMMARY_MAX_TOKENS: u32 = 1600;
 // BULLETIN_NOTIFY_SUMMARY_V2：通知預覽用的摘要。要比條列版更短 ——
 // 像手機／Discord 通知預覽那樣，「一到兩句」就讓人看懂重點。
-const BULLETIN_PREVIEW_MAX_TOKENS: u32 = 160;
+const BULLETIN_PREVIEW_MAX_TOKENS: u32 = 900;
 /// 送進摘要模型的上游來源文字上限（位元組）。公告多半不長，但設上限以免錯字溢出。
 const BULLETIN_SUMMARY_MAX_SOURCE: usize = 40_000;
 /// 相同問題的回覆快取。
@@ -1701,16 +1709,31 @@ async fn complete_once(
         return Err("沒有 API 網址".to_string());
     }
     let model = sanitize_model_name(&key.provider, model)?;
+    let mut payload = json!({
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": 0.2,
+        "stream": false,
+    });
+    // AI_SUMMARY_TRUNCATION_FIX_V1（fix-442-k2）：complete_once 只用在「摘要」
+    // 這類短輸出任務（公告摘要／通知預覽／對話濃縮），本來就不需要模型認真
+    // 「思考」。Gemini 2.5／3.x 系列預設思考力道是 medium／high、且思考 token
+    // 跟可見輸出共用同一包 max_tokens 額度，短任務配小額度時常常額度被思考
+    // 吃光，畫面上看到的摘要就斷在句子中間（例如「10月6日（」）。這裡明確把
+    // Gemini 的 reasoning_effort 調到官方文件列出的最低、且跨 2.5／3.x、
+    // Pro／Flash／Flash-Lite 都保證支援的「low」檔位（official doc:
+    // ai.google.dev/gemini-api/docs/openai#thinking），把額度留給真正要顯示
+    // 的文字。只對 Gemini 加這個欄位：其他服務商（OpenAI／DeepSeek…）的
+    // OpenAI 相容端點不一定認得這個欄位的語意，亂送可能被當成不支援的值而
+    // 直接 400，犯不著冒這個險。
+    if key.provider == "gemini" {
+        payload["reasoning_effort"] = json!("low");
+    }
     let response = AI_CLIENT
         .post(format!("{base}/chat/completions"))
         .bearer_auth(key.secret.trim())
-        .json(&json!({
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": 0.2,
-            "stream": false,
-        }))
+        .json(&payload)
         .send()
         .await
         .map_err(|e| detail_snippet(&e.to_string()))?;
@@ -1733,6 +1756,18 @@ async fn complete_once(
         .to_string();
     if text.is_empty() {
         return Err("上游沒有回傳摘要內容".to_string());
+    }
+    // AI_SUMMARY_TRUNCATION_FIX_V1（fix-442-k2）：finish_reason=="length" 代表
+    // 上游是因為撞到 max_tokens 才停筆，不是正常講完。調高額度／關小思考之後
+    // 這應該很少發生，但萬一真的遇到（例如公告內容特別長），寧可讓使用者看到
+    // 「摘要失敗，可重試」，也不要把斷在句子中間的殘缺文字當成正常摘要顯示
+    // 出去（這正是本次要修的那種「1:*」「10月6日（」半句摘要的根因）。
+    let finish_reason = value
+        .pointer("/choices/0/finish_reason")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    if finish_reason == "length" {
+        return Err("上游在輸出完整前就被長度上限截斷（finish_reason=length）".to_string());
     }
     Ok(text)
 }

@@ -73,6 +73,14 @@ pub(super) const CORE_API_JS: &str = include_str!("static/js/core-api.js");
 pub(super) const WEB_PUSH_JS: &str = include_str!("static/js/web-push.js");
 // DASHBOARD_LIVE_EVENTS_V1
 pub(super) const LIVE_EVENTS_JS: &str = include_str!("static/js/live-events.js");
+// URL_SAFETY_SHARED_V1：「這個字串是不是可信的 http(s) 網址」共用判斷，排在
+// ROLLCALL_DETECT_JS／ROLLCALL_PENDING_FAB_JS 之前（兩者皆會用到它）。
+pub(super) const URL_SAFETY_JS: &str = include_str!("static/js/url-safety.js");
+// ROLLCALL_DETECT_SHARED_V1：「偵測到點名、分組、算完成/未送出人數」的共用正本，
+// 必須排在下面 ROLLCALL_PENDING_FAB_JS 之前載入（inject_theme 會保證順序）。
+pub(super) const ROLLCALL_DETECT_JS: &str = include_str!("static/js/rollcall-detect.js");
+// ROLLCALL_PENDING_FAB_V1：全站共用、右下角「還有點名尚未送出」捷徑按鈕。
+pub(super) const ROLLCALL_PENDING_FAB_JS: &str = include_str!("static/js/rollcall-pending-fab.js");
 /// SUBPAGE_FETCH_SHARED_V1：子頁共用的唯一 window.fetch 包裝（同步、在 inline script 之前）。
 pub(super) const SUBPAGE_FETCH_JS: &str = include_str!("static/js/subpage-fetch.js");
 /// CLIENT_ERROR_REPORT_V1：前端錯誤／看門狗事件回報。
@@ -156,6 +164,10 @@ pub(super) const ADMIN_PASSWORD_HTML: &str = include_str!("static/password.html"
 pub(super) const ADMIN_PASSKEY_HTML: &str = include_str!("static/passkey.html");
 pub(super) const ADMIN_BLACKLIST_HTML: &str = include_str!("static/blacklist.html");
 pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
+// ADMIN_GEO_RESTRICT_V1：與 ADMIN_BLOCKED_HTML（IP 黑名單）是兩種不同原因、
+// 兩個不同頁面——這個是「國外 IP 被擋」專用，文案不談黑名單，避免使用者誤以為
+// 自己的帳號出了問題。
+pub(super) const ADMIN_GEO_BLOCKED_HTML: &str = include_str!("static/geo_blocked.html");
 pub(super) const ADMIN_HOMEWORK_HTML: &str = include_str!("static/homework.html");
 pub(super) const ADMIN_FILES_HTML: &str = include_str!("static/files.html");
 pub(super) const ADMIN_SETTINGS_HTML: &str = include_str!("static/settings.html");
@@ -292,6 +304,21 @@ try{var mo=new MutationObserver(function(records){for(var i=0;i<records.length;i
         r#"<script defer src="/admin/static/live-events.js?v=20260908live"></script>"#,
         // CLIENT_ERROR_REPORT_V1：前端錯誤回報（defer；未登入頁由 login_page_response 剝掉）。
         r#"<script defer src="/admin/static/client-log.js?v=20260909clientlog"></script>"#,
+        // URL_SAFETY_SHARED_V1：同源 http(s) 網址驗證的共用正本（原本 dashboard.html／
+        // health.html／dashboard-live-alerts.js／rollcall-pending-fab.js 各自抄一份）。
+        // 排在下面兩支共用模組之前，兩者都會用到它。
+        r#"<script defer src="/admin/static/url-safety.js?v=20261005urlsafety1"></script>"#,
+        // ROLLCALL_DETECT_SHARED_V1：三份一模一樣（其實已經悄悄分岔）的「偵測到點名／
+        // 算未送出人數」判斷邏輯（dashboard.html、rollcall-pending-fab.js、health.html
+        // 各自一份）收成這支共用模組。必須排在下面 rollcall-pending-fab.js「之前」——
+        // defer 腳本保證照文件順序依序執行，fab.js 會直接呼叫這支模組的函式。
+        r#"<script defer src="/admin/static/rollcall-detect.js?v=20261005detect1"></script>"#,
+        // ROLLCALL_PENDING_FAB_V1：使用者要求「不管在哪個頁面只要有點名就要顯示」，所以
+        // 跟 live-events.js／client-log.js 一樣掛在全站共用層，每個 admin 頁都會載入
+        // （未登入頁由 login_page_response 剝掉，邏輯跟 live-events.js 一致）。
+        // ROLLCALL_FAB_STUCK_FETCH_FIX_V1：版號 fab1→fab2，避免瀏覽器/CDN 快取舊版（有卡死
+        // inFlight 那個 bug 的版本）——不改版號的話，部署新檔案後使用者端可能還是吃到舊快取。
+        r#"<script defer src="/admin/static/rollcall-pending-fab.js?v=20261005fab2"></script>"#,
         r#"<style id="appSettingsDynamicCss">
 html[data-app-settings][data-theme="dark"]{color-scheme:dark!important}
 html[data-app-settings][data-theme="light"]{color-scheme:light!important}
@@ -831,9 +858,10 @@ fn login_page_response(headers: &HeaderMap) -> Response {
     // LOGIN_PERF_V1：登入頁沒有任何 per-session 內容，inject_theme（字串拼接＋版號改寫）
     // 的結果全程相同，只做一次。雜湊 CSP／ETag 由 html_page_response 依本體計算（可 304）。
     // 登入頁用不到：web-push.js（推播訂閱要已登入）、live-events.js（未登入時 SSE 只會
-    // 401 後重試三次）、dompurify + trusted-types-init（登入頁沒有任何 innerHTML 寫入；
-    // session-security.js 的密碼視窗只在已登入頁的按鈕觸發）。連同對應的 preload 一起拿掉，
-    // 首次開登入頁少 4 個請求（約 40 KB 原始碼）與對應的解析時間。
+    // 401 後重試三次）、rollcall-pending-fab.js（同樣要打一次 /admin/api/status，
+    // 未登入一定 401，沒意義先載）、dompurify + trusted-types-init（登入頁沒有任何
+    // innerHTML 寫入；session-security.js 的密碼視窗只在已登入頁的按鈕觸發）。連同
+    // 對應的 preload 一起拿掉，首次開登入頁少幾個請求與對應的解析時間。
     static LOGIN_HTML_THEMED: once_cell::sync::Lazy<String> = once_cell::sync::Lazy::new(|| {
         let themed = inject_theme(ADMIN_LOGIN_HTML);
         strip_asset_tags(
@@ -842,6 +870,9 @@ fn login_page_response(headers: &HeaderMap) -> Response {
                 "/admin/static/web-push.js",
                 "/admin/static/live-events.js",
                 "/admin/static/client-log.js",
+                "/admin/static/url-safety.js",
+                "/admin/static/rollcall-detect.js",
+                "/admin/static/rollcall-pending-fab.js",
                 "/admin/static/js/dompurify.min.js",
                 "/admin/static/js/trusted-types-init.js",
             ],

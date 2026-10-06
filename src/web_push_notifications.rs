@@ -644,6 +644,45 @@ pub fn notify_security_alert(account_ids: Vec<String>, title: String, body: Stri
     });
 }
 
+/// ADMIN_GEO_RESTRICT_V1：國外 IP 申請暫時放行的推播。落地頁是「IP 黑名單」
+/// 管理頁（`/admin/blacklist`，核准／忽略按鈕就在那裡，不用另外做一個頁面）；
+/// 偏好鍵 `geo_access_request` 可在通知設定頁單獨關閉。
+pub fn notify_geo_access_request(account_ids: Vec<String>, title: String, body: String, tag: String) {
+    let Some(service) = SERVICE.get().cloned() else {
+        return;
+    };
+    tokio::spawn(async move {
+        let payload = match serde_json::to_vec(&json!({
+            "title": title,
+            "body": body,
+            "url": "/admin/blacklist",
+            "tag": tag,
+        })) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!(error = %error, "序列化國外存取申請 payload 失敗");
+                return;
+            }
+        };
+        for account_id in account_ids {
+            if !push_preference_enabled(&service, &account_id, "geo_access_request").await {
+                continue;
+            }
+            let subscriptions = match service.db.list_web_push_subscriptions(&account_id).await {
+                Ok(rows) => rows,
+                Err(error) => {
+                    warn!(account = %account_id, error = %error, "國外存取申請讀取推播訂閱失敗");
+                    continue;
+                }
+            };
+            if subscriptions.is_empty() {
+                continue;
+            }
+            service.send_to_many(subscriptions, &payload).await;
+        }
+    });
+}
+
 /// TRAFFIC_ALERT_PUSH_V1：異常流量警示推播（60 秒內嘗試超過上限、已暫時封鎖）。
 /// 落地頁是登入審計（/admin/activity）；偏好鍵 `traffic_alert` 可在通知設定頁關閉。
 pub fn notify_traffic_alert(admin_account_ids: Vec<String>, title: String, body: String) {

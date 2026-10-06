@@ -104,6 +104,22 @@ impl AccountsDb {
     }
 }
 
+/// BLACKLIST_RETENTION_V1：`/admin/blacklist` 頁「最近登入失敗」只保留最新
+/// 這麼多筆——跟同一頁另外兩份清單（已封鎖的 IP、國外存取申請）用同一個
+/// 數字。這張 `activity_events` 表是全站共用的活動紀錄（不只登入事件），
+/// 所以不能整張表砍到只剩 100 筆，必須用跟顯示端一樣的「登入失敗」判斷條件
+/// 篩選過再刪，才不會波及其他種類的活動紀錄（例如一般的操作稽核）。
+const LOGIN_FAILURE_RETENTION_ROWS: i64 = 100;
+
+/// 跟 `adapters::admin_web::blacklist::admin_blacklist_recent_logins_handler`
+/// 用的是同一套「算不算登入失敗」規則，只是這裡要寫成 SQL 判斷式。兩邊分別
+/// 維護、但條件必須保持一致，否則這裡清掉的和畫面上顯示的會對不上。
+const LOGIN_FAILURE_SQL_FILTER: &str = "(
+    LOWER(TRIM(action)) = 'login_failed'
+    OR LOWER(TRIM(result)) IN ('fail', 'failed', 'error', 'false')
+    OR (LOWER(TRIM(action)) = 'login' AND LOWER(TRIM(result)) <> 'success')
+)";
+
 pub(crate) async fn activity_event_batch_writer(
     pool: SqlitePool,
     mut rx: mpsc::Receiver<ActivityEventInput>,
@@ -135,6 +151,23 @@ pub(crate) async fn activity_event_batch_writer(
             )
             .execute(&pool)
             .await;
+            // 再多清一道：只鎖定「登入失敗」這個子集合，只留最新 100 筆——
+            // 不符合這個條件的其他活動紀錄（成功登入、其他操作稽核等）完全
+            // 不受影響，所以即使上面那道 500 筆的全站上限還沒觸發，這裡也可能
+            // 先把舊的登入失敗紀錄清掉。
+            let prune_sql = format!(
+                "DELETE FROM activity_events
+                 WHERE {LOGIN_FAILURE_SQL_FILTER}
+                   AND id NOT IN (
+                     SELECT id FROM activity_events
+                     WHERE {LOGIN_FAILURE_SQL_FILTER}
+                     ORDER BY id DESC LIMIT ?
+                   )"
+            );
+            let _ = sqlx::query(&prune_sql)
+                .bind(LOGIN_FAILURE_RETENTION_ROWS)
+                .execute(&pool)
+                .await;
         }
     }
 }

@@ -847,7 +847,28 @@
     let allDoneStopped = false;      // 這一輪已經因為「全部點到」自動收工過
     let allDoneManual = false;       // 使用者自己按了「開啟相機」→ 不再自動關（尊重他的選擇）
 
+    /* QR_BADGE_PENDING_COUNT_V1：預覽畫面左上角那顆膠囊（掃描中…／✓ 已掃描到 QR）
+       以前只講「有沒有掃到」，沒講「還要不要繼續掃」——拿著手機對黑板／投影幕的人
+       必須低頭看下面的「總帳號／已點到／未點到」三個數字，才知道還有幾個人沒點到、
+       什麼時候能收手。這裡把同一份 /scanner/status 讀數（跟 allDoneCounts() 共用）
+       存一份起來，讓膠囊本身就能顯示「還有 N 人未點到」，不用低頭找別的地方看。 */
+    let lastKnownCounts = null;      // 最近一次成功輪詢的 { total, pending, completed, allDone }
+
+    /* 回傳膠囊文字要加在後面的那一小段（含開頭的「・」），拿不到讀數時回傳空字串。 */
+    function pendingBadgeSuffix() {
+      const s = lastKnownCounts;
+      if (!s || s.total <= 0) return "";
+      if (s.pending <= 0) return "・全部已點到🎉";
+      return `・還有 ${s.pending} 人未點到`;
+    }
+    /* 「掃描中…」／「已停止」這兩種閒置狀態的膠囊文字，統一從這裡組，
+       確保跟 ✓ 已掃描到 QR 那句用的是同一份讀數、不會兩邊顯示不一致。 */
+    function idleBadgeText() {
+      return (scanning ? "掃描中…" : "已停止") + pendingBadgeSuffix();
+    }
+
     let targetZoom = ZOOM_DEFAULT;   // 只影響預覽（畫面放大）
+
     let lastHitLabel = "";          // 上一次成功解碼用的尺度／分區（顯示在相機資訊列）
     let lastHitVia = "";            // QR_ZXING_V1：上一次是用哪個解碼器解到的（zxing／jsQR）
     let cameraStarting = false;      // QR_CAMERA_SINGLETON_V1：開啟流程互斥
@@ -1010,6 +1031,9 @@
         renderList(pendingListEl, body.pending_accounts || []);
         syncClassProgress(body);
         syncCountdown(body.expires_in_secs);
+        /* QR_BADGE_PENDING_COUNT_V1：記下這次讀數，給預覽膠囊（掃描中…／✓ 已掃描到 QR）
+           顯示「還有 N 人未點到」用；跟下面三個數字、ALL_DONE_AUTOSTOP_V1 共用同一份 body。 */
+        lastKnownCounts = allDoneCounts(body);
         /* ALL_DONE_AUTOSTOP_V1：只有「讀成功」的回應才列入讀數（失敗／逾時不算，免得網路抖一下誤判）。 */
         noteAttendanceProgress(body);
       } catch (err) {
@@ -2540,7 +2564,7 @@ void main() {
       const full = at - lastHitUiAt >= HIT_UI_MIN_GAP_MS;
       if (full) {
         lastHitUiAt = at;
-        const bits = `✓ 已掃描到 QR（第 ${seenCount} 次・${found.scale}${found.via ? "・" + found.via : ""}）`;
+        const bits = `✓ 已掃描到 QR${pendingBadgeSuffix()}`;
         setPreviewBadge(bits, "ok");
         if (aimBoxEl) aimBoxEl.classList.add("found");
         if (aimTextEl) aimTextEl.textContent = "✓ 看到 QR 了";
@@ -2551,7 +2575,7 @@ void main() {
       }
       if (badgeTimer) clearTimeout(badgeTimer);
       badgeTimer = setTimeout(() => {
-        setPreviewBadge(scanning ? "掃描中…" : "已停止", scanning ? "" : "");
+        setPreviewBadge(idleBadgeText(), scanning ? "" : "");
       }, 2500);
       if (aimTimer) clearTimeout(aimTimer);
       aimTimer = setTimeout(() => {
@@ -2567,7 +2591,7 @@ void main() {
     function reportSubmitOnPreview(ok, text) {
       setPreviewBadge(text, ok ? "ok" : "err");
       if (badgeTimer) clearTimeout(badgeTimer);
-      badgeTimer = setTimeout(() => { setPreviewBadge(scanning ? "掃描中…" : "已停止", ""); }, 3000);
+      badgeTimer = setTimeout(() => { setPreviewBadge(idleBadgeText(), ""); }, 3000);
     }
 
     /* QR_MULTISCALE_V1／QR_TILE_SCAN_V1：解碼迴圈。
@@ -4662,7 +4686,7 @@ void main() {
         video.srcObject = stream;
         await video.play();
       sizeHitOverlay();                    // QR_PREVIEW_FEEDBACK_V1：重疊層跟著預覽尺寸
-      setPreviewBadge("掃描中…", "");
+      setPreviewBadge(idleBadgeText(), "");
       /* QR_BLUR_GUARD_V1（fix88）：相機真的開好了 → 先自動對焦一次
          （坐很遠時鏡頭常常對在近處，畫面一開始是糊的；使用者不必拉拉桿也會對焦）。 */
       if (!initialFocusKicked) {
@@ -4748,7 +4772,7 @@ void main() {
       clearHitOverlay();                   // QR_PREVIEW_FEEDBACK_V1：停止時不要留著綠框
       if (aimBoxEl) aimBoxEl.classList.remove("found");
       if (aimTextEl) aimTextEl.textContent = AIM_TEXT_DEFAULT;
-      setPreviewBadge("已停止", "");
+      setPreviewBadge(idleBadgeText(), "");
       setStatus("已停止掃描", "");
       setScanHint("已停止掃描（可按「開啟相機」重新開始）", "");
     }

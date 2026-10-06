@@ -52,12 +52,25 @@
     .copy-ip:hover{color:var(--primary)}
     .card-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
     .card-actions button{min-height:34px;font-size:12.5px}
+    /* BLACKLIST_LIST_COLLAPSE_V1：三份清單預設只顯示前 5 筆，按鈕展開其餘。 */
+    .show-more-row{padding:13px 16px;text-align:center;border-top:1px solid var(--line2)}
+    .show-more-row button{min-height:36px;padding:0 18px;font-size:12.5px}
     .toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0px));transform:translateX(-50%) translateY(8px);
       max-width:min(520px,calc(100vw - 24px));padding:11px 16px;border-radius:14px;border:1px solid var(--line);
       background:var(--card);color:var(--text);box-shadow:0 14px 40px rgba(15,23,42,.22);font-size:13px;font-weight:700;
       opacity:0;pointer-events:none;transition:opacity .18s ease,transform .18s ease;z-index:200}
     .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
     .toast.bad{border-color:rgba(248,113,113,.42);color:var(--bad)}
+    /* ADMIN_GEO_RESTRICT_V1：「僅限台灣 IP 存取」開關卡片，沿用偵測排程頁的開關樣式。 */
+    .geo-card{margin-bottom:18px}
+    .geo-requests-card{margin-bottom:18px}
+    .geo-switch{display:flex;align-items:center;justify-content:space-between;gap:15px;padding:16px 18px;flex-wrap:wrap}
+    .geo-switch input{width:22px;height:22px;accent-color:#2563eb;flex:0 0 auto}
+    .geo-switch .hint{color:var(--muted);font-size:12.5px;margin-top:4px;line-height:1.5}
+    .geo-switch .state{font-size:12px;font-weight:800;padding:3px 10px;border-radius:999px;background:rgba(100,116,139,.14);color:var(--muted)}
+    .geo-switch .state.on{background:rgba(16,185,129,.14);color:#047857}
+    @media(prefers-color-scheme:dark){.geo-switch .state.on{color:#34d399}}
+    .geo-switch .state.off{background:rgba(248,113,113,.14);color:var(--bad)}
     @media(max-width:700px){
       .top{align-items:center;flex-direction:row;gap:10px;padding:14px 16px}
       .brand{width:auto;flex:1 1 auto}.brand-title{font-size:17px}.brand-sub{font-size:11px}
@@ -113,6 +126,30 @@
     </div>
   </header>
   <main>
+    <section class="card geo-card">
+      <div class="card-head"><strong>僅限台灣 IP 存取管理後台</strong><span class="summary" id="geoState">載入中...</span></div>
+      <div class="geo-switch">
+        <div>
+          <b>國外 IP 一律擋下</b>
+          <div class="hint" id="geoHint">開啟時，非本國（預設僅台灣）的 IP 連進 /admin 會直接看到拒絕存取頁面；公開分享連結、搜尋引擎、第三方登入串接端點不受影響。查不出 IP 所在國家時（服務逾時等）一律放行，不會因此把整個台灣鎖在外面。</div>
+        </div>
+        <input id="geoToggle" type="checkbox" aria-label="僅限台灣 IP 存取管理後台">
+      </div>
+    </section>
+    <section class="card geo-requests-card">
+      <div class="card-head">
+        <div class="card-head-copy">
+          <strong>國外存取申請</strong>
+          <span class="card-note">被「僅限台灣 IP」擋下的訪客按了「聯絡管理員」才會出現在這裡；同一筆 Discord 也會收到通知與按鈕，兩邊處理一筆即可。按「暫時放行」只對這個 IP 生效，不是關掉整個限制。短時間內出現太多不同來源 IP 的申請時，會自動暫停逐筆通知，改成只提醒一次，避免洗版；按下方「清空並恢復通知」後才會再逐筆通知。</span>
+        </div>
+        <div class="card-actions">
+          <span class="summary" id="geoRequestsSummary">載入中...</span>
+          <button id="geoRequestsClearAll" class="danger" type="button" disabled>清空並恢復通知</button>
+        </div>
+      </div>
+      <div class="hint" id="geoRequestsMutedHint" hidden>通知目前已暫停：短時間內出現太多不同來源 IP 的申請。清單裡的申請仍可個別處理；按「清空並恢復通知」會把目前待處理的申請全部標成忽略並恢復逐筆通知。</div>
+      <div id="geoRequestsContent"><div class="empty">載入中...</div></div>
+    </section>
     <section class="card">
       <div class="card-head"><strong>已封鎖的 IP</strong><span class="summary" id="summary">載入中...</span></div>
       <div id="content"><div class="empty">載入中...</div></div>
@@ -142,6 +179,18 @@
     var blockedIps={};
     var recentItems=[];
     var loading=false;
+    // BLACKLIST_LIST_COLLAPSE_V1：三份清單各自的「展開／收合」狀態，以及完整
+    // 資料快取（展開/收合時直接用快取重畫，不必重新打 API）。
+    var expanded={blacklist:false,recent:false,geoRequests:false};
+    var blacklistItems=[];
+    var geoRequestItems=[];
+    var geoRequestsMuted=false;
+    function showMoreControl(key,total,shownCount){
+      if(total<=5)return'';
+      var isExpanded=!!expanded[key];
+      var label=isExpanded?'顯示較少':('顯示更多（還有 '+(total-shownCount)+' 筆）');
+      return '<div class="show-more-row"><button type="button" class="show-more" data-show-more="'+key+'">'+label+'</button></div>';
+    }
     function toast(message,bad){
       var el=document.getElementById('blToast');
       if(!el){el=document.createElement('div');el.id='blToast';el.className='toast';document.body.appendChild(el)}
@@ -168,6 +217,7 @@
       return fetch(u.pathname+u.search,Object.assign({credentials:'same-origin',cache:'no-store'},options||{})).then(function(res){return res.json().catch(function(){return {}}).then(function(body){if(res.status===401||res.status===403){location.replace('/admin');throw new Error('未授權')}if(!res.ok)throw new Error(body.error||('HTTP '+res.status));return body})})
     }
     function render(rows){
+      blacklistItems=rows;
       blockedIps={};
       rows.forEach(function(row){if(row.ip)blockedIps[String(row.ip).trim()]=true});
       q('summary').textContent=rows.length+' 個 IP';
@@ -176,7 +226,8 @@
         renderRecent(recentItems);   // 黑名單變了 → 下方那張表的按鈕狀態要跟著更新
         return;
       }
-      q('content').innerHTML='<table><thead><tr><th>IP</th><th>位置</th><th>封鎖時間</th><th>操作者</th><th>封鎖原因</th><th>失敗次數</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){
+      var visible=expanded.blacklist?rows:rows.slice(0,5);
+      q('content').innerHTML='<table><thead><tr><th>IP</th><th>位置</th><th>封鎖時間</th><th>操作者</th><th>封鎖原因</th><th>失敗次數</th><th>操作</th></tr></thead><tbody>'+visible.map(function(row){
         var failures=Number(row.failure_count||0);var failureLabel=failures>0?failures+' 次':'-';
         var ip=String(row.ip||'');
         return '<tr>'
@@ -187,7 +238,7 @@
           +'<td data-label="封鎖原因">'+esc(row.reason||'未提供')+'</td>'
           +'<td data-label="失敗次數">'+esc(failureLabel)+'</td>'
           +'<td data-label="操作"><button class="danger" type="button" data-unblock="'+esc(ip)+'">解除封鎖</button></td>'
-          +'</tr>'}).join('')+'</tbody></table>';
+          +'</tr>'}).join('')+'</tbody></table>'+showMoreControl('blacklist',rows.length,visible.length);
       renderRecent(recentItems);   // 同上：讓「已封鎖」標籤即時反映
     }
     function load(){
@@ -209,7 +260,8 @@
       if(btn){btn.disabled=!pending.length;btn.textContent=pending.length?('一鍵封鎖未封鎖的 IP（'+pending.length+'）'):'一鍵封鎖未封鎖的 IP'}
       q('recentSummary').textContent=rows.length+' 筆';
       if(!rows.length){q('recentContent').innerHTML='<div class="empty">目前沒有登入失敗紀錄。</div>';return}
-      q('recentContent').innerHTML='<div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>時間</th><th>帳號</th><th>IP 位址</th><th>裝置</th><th>位置</th><th>結果</th><th>操作</th></tr></thead><tbody>'+rows.map(function(row){
+      var visible=expanded.recent?rows:rows.slice(0,5);
+      q('recentContent').innerHTML='<div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>時間</th><th>帳號</th><th>IP 位址</th><th>裝置</th><th>位置</th><th>結果</th><th>操作</th></tr></thead><tbody>'+visible.map(function(row){
         var account=row.account||row.account_id||row.actor||'未知帳號';
         var ip=String(row.ip||'-').trim()||'-';
         var location=row.location||'未知位置';
@@ -228,7 +280,7 @@
           +'<td class="location" data-label="位置">'+esc(location)+'</td>'
           +'<td class="failure" data-label="結果">登入失敗</td>'
           +'<td class="action-cell" data-label="操作">'+action+'</td>'
-          +'</tr>'}).join('')+'</tbody></table></div>';
+          +'</tr>'}).join('')+'</tbody></table></div>'+showMoreControl('recent',rows.length,visible.length);
     }
     function loadRecent(){
       q('recentContent').innerHTML='<div class="empty">載入中...</div>';
@@ -244,14 +296,113 @@
       loading=true;
       if(btn){btn.disabled=true;btn.textContent='更新中…'}
       var done=function(){loading=false;if(btn){btn.disabled=false;btn.textContent='重新整理'}};
-      // 兩支 API 平行抓；黑名單先回來就先畫（下方表格的按鈕狀態會跟著更新）。
-      Promise.all([load(),loadRecent()]).then(done,done);
+      // 三支 API 平行抓；黑名單先回來就先畫（下方表格的按鈕狀態會跟著更新）。
+      Promise.all([load(),loadRecent(),loadGeoRequests()]).then(done,done);
     }
+    // ADMIN_GEO_RESTRICT_V1：僅限台灣 IP 存取開關。
+    var geoBusy=false;
+    function renderGeoState(enabled,homeCountries){
+      var stateEl=q('geoState');
+      stateEl.textContent=enabled?'已開啟':'已關閉';
+      stateEl.className='summary state '+(enabled?'on':'off');
+      q('geoToggle').checked=!!enabled;
+      var list=(homeCountries&&homeCountries.length)?homeCountries.join('、'):'TW';
+      q('geoHint').textContent='開啟時，非本國（目前設定：'+list+'）的 IP 連進 /admin 會直接看到拒絕存取頁面；公開分享連結、搜尋引擎、第三方登入串接端點不受影響。查不出 IP 所在國家時（服務逾時等）一律放行，不會因此把整個台灣鎖在外面。';
+    }
+    function loadGeoRestrict(){
+      return api('/admin/api/geo-restrict').then(function(body){renderGeoState(!!body.enabled,body.home_countries)})
+        .catch(function(error){q('geoState').textContent='載入失敗';toast(error.message||String(error),true)});
+    }
+    q('geoToggle').addEventListener('change',function(){
+      if(geoBusy){return}
+      var target=q('geoToggle');
+      var next=target.checked;
+      // 開啟是比較容易「把自己也鎖在外面」的方向，多一道確認；關閉則直接生效。
+      if(next&&!confirm('確定開啟「僅限台灣 IP 存取」？\n\n開啟後，非本國 IP（含你自己若人在國外）將無法連進管理後台。若不確定自己目前的連線位置，建議先用其他方式測試過再開啟。')){
+        target.checked=!next;
+        return;
+      }
+      geoBusy=true;
+      target.disabled=true;
+      api('/admin/api/geo-restrict/set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:next})})
+        .then(function(body){toast(next?'已開啟「僅限台灣 IP 存取」':'已關閉「僅限台灣 IP 存取」');renderGeoState(!!body.enabled)})
+        .catch(function(error){target.checked=!next;toast(error.message||String(error),true)})
+        .then(function(){geoBusy=false;target.disabled=false});
+    });
+    // ADMIN_GEO_RESTRICT_V1：待處理的國外存取申請（Discord 按鈕的網頁版備援）。
+    var geoRequestBusy=false;
+    function renderGeoRequests(items,muted){
+      var rows=items||[];
+      geoRequestItems=rows;
+      geoRequestsMuted=!!muted;
+      q('geoRequestsSummary').textContent=rows.length+' 筆待處理'+(muted?'（通知已暫停）':'');
+      var clearBtn=q('geoRequestsClearAll');
+      if(clearBtn)clearBtn.disabled=!rows.length;
+      var hint=q('geoRequestsMutedHint');
+      if(hint)hint.hidden=!muted;
+      if(!rows.length){q('geoRequestsContent').innerHTML='<div class="empty">目前沒有待處理的國外存取申請。</div>';return}
+      var visible=expanded.geoRequests?rows:rows.slice(0,5);
+      q('geoRequestsContent').innerHTML='<div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>時間</th><th>IP 位址</th><th>位置</th><th>想前往</th><th>操作</th></tr></thead><tbody>'+visible.map(function(row){
+        var ip=String(row.ip||'-');
+        return '<tr>'
+          +'<td data-label="時間">'+esc(row.requested_time||'-')+'</td>'
+          +'<td class="ip" data-label="IP 位址">'+esc(ip)+'</td>'
+          +'<td class="location" data-label="位置">'+esc(row.location||'未知位置')+'</td>'
+          +'<td class="muted" data-label="想前往">'+esc(row.path||'/admin')+'</td>'
+          +'<td class="action-cell" data-label="操作">'
+            +'<button class="primary" type="button" data-geo-approve="'+esc(row.id)+'">暫時放行</button> '
+            +'<button type="button" data-geo-dismiss="'+esc(row.id)+'">忽略</button>'
+          +'</td>'
+          +'</tr>'}).join('')+'</tbody></table></div>'+showMoreControl('geoRequests',rows.length,visible.length);
+    }
+    function loadGeoRequests(){
+      return api('/admin/api/geo-restrict/requests').then(function(body){renderGeoRequests(body.items||[],!!body.muted)})
+        .catch(function(error){q('geoRequestsSummary').textContent='';q('geoRequestsContent').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'});
+    }
+    q('geoRequestsContent').addEventListener('click',function(event){
+      if(geoRequestBusy)return;
+      var approve=event.target.closest('[data-geo-approve]');
+      var dismiss=event.target.closest('[data-geo-dismiss]');
+      var button=approve||dismiss;
+      if(!button)return;
+      var id=button.getAttribute(approve?'data-geo-approve':'data-geo-dismiss');
+      if(approve&&!confirm('確定暫時放行這個 IP？\n\n放行時間一到會自動恢復限制，不需要手動收回。'))return;
+      geoRequestBusy=true;
+      button.disabled=true;
+      var path=approve?'/admin/api/geo-restrict/requests/approve':'/admin/api/geo-restrict/requests/dismiss';
+      api(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:id})})
+        .then(function(){toast(approve?'已暫時放行':'已忽略這筆申請');return loadGeoRequests()})
+        .catch(function(error){toast(error.message||String(error),true)})
+        .then(function(){geoRequestBusy=false});
+    });
+    // GEO_ACCESS_BURST_MUTE_V1：洗版時的「清空並恢復通知」——把目前所有待處理
+    // 申請一次標成忽略（維持擋下，不放行任何人）並解除靜音，恢復逐筆通知。
+    q('geoRequestsClearAll').addEventListener('click',function(){
+      if(geoRequestBusy)return;
+      if(!confirm('確定清空目前所有待處理的國外存取申請？\n\n這些申請會全部被標成「忽略」（維持擋下，不會放行任何人），並重新開始逐筆通知。'))return;
+      geoRequestBusy=true;
+      var btn=q('geoRequestsClearAll');
+      btn.disabled=true;
+      api('/admin/api/geo-restrict/requests/clear-all',{method:'POST'})
+        .then(function(body){toast('已清空 '+(body.cleared||0)+' 筆，通知已恢復');return loadGeoRequests()})
+        .catch(function(error){toast(error.message||String(error),true)})
+        .then(function(){geoRequestBusy=false});
+    });
+    loadGeoRestrict();
+    loadGeoRequests();
     q('reload').addEventListener('click',loadAll);
-    // 複製 IP（兩張表共用同一個委派監聽）。
+    // 複製 IP、展開／收合「顯示更多」（三份清單共用同一個委派監聽）。
     document.addEventListener('click',function(event){
       var copy=event.target.closest('[data-copy]');
-      if(copy){copyIp(copy.getAttribute('data-copy'));}
+      if(copy){copyIp(copy.getAttribute('data-copy'));return}
+      var showMoreBtn=event.target.closest('[data-show-more]');
+      if(showMoreBtn){
+        var key=showMoreBtn.getAttribute('data-show-more');
+        expanded[key]=!expanded[key];
+        if(key==='blacklist')render(blacklistItems);
+        else if(key==='recent')renderRecent(recentItems);
+        else if(key==='geoRequests')renderGeoRequests(geoRequestItems,geoRequestsMuted);
+      }
     });
     q('content').addEventListener('click',function(event){
       var button=event.target.closest('[data-unblock]');if(!button)return;

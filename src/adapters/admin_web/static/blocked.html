@@ -12,7 +12,7 @@
     .banner{height:8px;background:linear-gradient(90deg,#dc2626,#fb7185,#f59e0b)} .content{padding:42px 42px 36px}.icon{width:68px;height:68px;display:grid;place-items:center;border-radius:22px;background:#fff1f2;color:#dc2626;font-size:35px;box-shadow:inset 0 0 0 1px #fecdd3}
     h1{margin:23px 0 10px;font-size:clamp(27px,5vw,38px);letter-spacing:-.04em}.lead{margin:0;color:#64748b;font-size:16px;line-height:1.8}.notice{display:flex;gap:12px;margin:27px 0 20px;padding:16px 17px;border:1px solid #fecaca;border-radius:17px;background:#fff7f7;color:#991b1b;font-weight:750;line-height:1.6}.dot{width:10px;height:10px;flex:0 0 auto;margin-top:8px;border-radius:50%;background:#ef4444;box-shadow:0 0 0 5px #fee2e2}
     h2{margin:22px 0 12px;font-size:16px}.reasons{display:grid;gap:10px;margin:0;padding:0;list-style:none}.reasons li{position:relative;padding:13px 15px 13px 42px;border:1px solid #e2e8f0;border-radius:14px;background:#fbfdff;color:#475569;font-size:14px;line-height:1.55}.reasons li::before{content:"✓";position:absolute;left:15px;top:12px;width:19px;height:19px;display:grid;place-items:center;border-radius:50%;background:#e0e7ff;color:#4338ca;font-size:12px;font-weight:900}
-    .help{margin:24px 0 0;padding:16px 17px;border-radius:16px;background:#eff6ff;color:#1e40af;font-size:14px;line-height:1.7}.help b{color:#1d4ed8}.footer{margin-top:25px;color:#94a3b8;font-size:12px}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800;color:#64748b}@media(max-width:540px){body{padding:15px}.content{padding:30px 24px}.card{border-radius:24px}}
+    .help{margin:24px 0 0;padding:16px 17px;border-radius:16px;background:#eff6ff;color:#1e40af;font-size:14px;line-height:1.7}.help b{color:#1d4ed8}.footer{margin-top:25px;color:#94a3b8;font-size:12px}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800;color:#64748b}.status-line{margin:16px 0 0;min-height:18px;color:#475569;font-size:13px;line-height:1.6;text-align:center}@media(max-width:540px){body{padding:15px}.content{padding:30px 24px}.card{border-radius:24px}}
   </style>
 <style id="SAFE_AREA_TOP_V1">
   /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
@@ -36,8 +36,51 @@
         <li>目前的網路可能共用相同的公開 IP，其他使用者的異常登入也可能觸發保護措施。</li>
       </ul>
       <div class="help"><b>需要恢復存取？</b><br>請聯絡系統管理員，請他在 Discord 的安全通知按下「移除黑名單」，或從 Dashboard 的黑名單管理頁解除封鎖。</div>
+      <p id="statusLine" class="status-line" role="status" aria-live="polite"></p>
       <div class="footer">錯誤代碼：<span class="code">ACCESS_DENIED_IP_BLACKLIST</span></div>
     </div>
   </main>
-<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script></body>
+<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script>
+<script>
+  (function () {
+    // IP_BLACKLIST_AUTO_REDIRECT_V1：管理員解除封鎖之後，這個分頁不用手動
+    // 重新整理——背景每 5 秒問一次自己還在不在黑名單，不在了就自動跳轉回
+    // 原本要去的頁面（道理跟 geo_blocked.html 的自動跳轉一樣）。
+    var status = document.getElementById('statusLine');
+    if (!status) { return; }
+    var POLL_INTERVAL_MS = 5000;
+    var MAX_POLL_ATTEMPTS = 360; // 5 秒 * 360 = 30 分鐘，避免分頁開著忘了關就無限輪詢。
+    var pollAttempts = 0;
+    var pollTimer = null;
+
+    function stopPolling() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function checkBlacklistStatus() {
+      pollAttempts += 1;
+      fetch('/admin/api/blacklist/status', { cache: 'no-store' })
+        .then(function (res) { return res.json().catch(function () { return {}; }); })
+        .then(function (data) {
+          if (data && data.blacklisted === false) {
+            stopPolling();
+            status.textContent = '已經解除封鎖，正在為你跳轉...';
+            setTimeout(function () { location.reload(); }, 1200);
+            return;
+          }
+          if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+            stopPolling();
+            status.textContent = '等候時間較久，請確認處理進度後手動重新整理頁面。';
+          }
+        })
+        .catch(function () {
+          // 單次輪詢失敗（網路閃斷等）不用特別提示，下一次會再試。
+        });
+    }
+
+    pollTimer = setInterval(checkBlacklistStatus, POLL_INTERVAL_MS);
+    checkBlacklistStatus();
+  })();
+</script>
+</body>
 </html>

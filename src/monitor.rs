@@ -1810,6 +1810,8 @@ async fn record_rollcall_event(ctx: &MonitorContext, outcome: &crate::rollcalls:
         result: outcome.result.to_string(),
         class_total,
         class_signed,
+        // ATT_STATS_AUTO_MANUAL_V1：見 `rollcalls::RollcallOutcome::auto_submitted` 說明。
+        auto_submitted: outcome.auto_submitted,
     };
     if let Err(error) = ctx.accounts_db.record_rollcall_event(input).await {
         warn!(

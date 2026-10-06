@@ -129,7 +129,7 @@ mod logs;
 mod mock;
 mod pwa;
 mod utils;
-use self::pages::{load_runtime_theme, ADMIN_BLOCKED_HTML};
+use self::pages::{load_runtime_theme, ADMIN_BLOCKED_HTML, ADMIN_GEO_BLOCKED_HTML};
 use self::utils::*;
 
 const PW_SALT: &[u8] = b"tronclass-rollcall-admin-web-password-hash-v2";
@@ -478,6 +478,10 @@ async fn reject_blacklisted_ip_middleware(
         || path.starts_with("/favicon.")
         || path == "/healthz"
         || path == "/admin/api/logout"
+        // IP_BLACKLIST_AUTO_REDIRECT_V1：被擋頁面（`blocked.html`）輪詢用，
+        // 只回傳「這個 IP 現在還在不在黑名單」的布林值，不會讓任何人多拿到
+        // 存取權限，跟上面幾個豁免路徑是同一種考量。
+        || path == "/admin/api/blacklist/status"
         || path == "/admin/logout"
     {
         return next.run(request).await;
@@ -498,6 +502,178 @@ async fn reject_blacklisted_ip_middleware(
         return blocked_ip_response();
     }
     next.run(request).await
+}
+
+// ── ADMIN_GEO_RESTRICT_V1：僅限台灣（或設定檔 `login_home_countries` 列出的國家）
+//    IP 存取 /admin 管理後台 ───────────────────────────────────────────────
+//
+// 需求原文：「國外 IP 一律被系統擋下來」。範圍與使用者確認過的刻意排除：
+// * `/pub/*`（公開分享連結）——本來就是要分享給外部人看的，可能人在國外。
+// * `/admin/oidc/*`（OIDC 端點）——可能被架在國外的第三方伺服器呼叫（server-to-
+//   server token 交換），不是使用者本人的瀏覽器連線。
+// * `/`、`robots.txt`、`sitemap.xml`、PWA 圖示／manifest、`/healthz`——本來就
+//   不在 `/admin` 底下，且是公開資訊或搜尋引擎／探活用途，與既有
+//   `reject_blacklisted_ip_middleware` 的豁免範圍一致（不要讓 Google 的美國
+//   爬蟲因為這個新功能連首頁都爬不到）。
+// * `/homework`——雖然不是 `/admin` 開頭，但只是 `/admin/homework` 的別名、同一
+//   支 handler，視同管理後台的一部分一併納管。
+
+/// 讀取「僅限台灣 IP 存取 /admin」開關的生效值。
+///
+/// 兩種「不確定」情況，刻意採不同的保守方向（都已與使用者確認過）：
+/// * 資料庫裡**從未設定過**這個鍵（帳號資料庫是舊的、這個功能剛上線）→ 預設
+///   **開啟**（使用者要求的預設行為）。
+/// * 讀取這個鍵本身就**失敗**（資料庫一時故障等）→ 視為**關閉**（不擋），
+///   與既有 `ip_is_blacklisted` 讀取失敗時「暫不拒絕請求」同一套保守原則：
+///   安全性開關本身壞掉，不該連帶把整個台灣的使用者一起鎖在外面。
+async fn geo_restrict_admin_enabled(state: &AdminWebState) -> bool {
+    match state
+        .accounts_db
+        .get_security_setting(crate::db::GEO_RESTRICT_ADMIN_KEY)
+        .await
+    {
+        Ok(Some(value)) => value.trim() == "1",
+        Ok(None) => true,
+        Err(error) => {
+            warn!(error = %error, "讀取「僅限台灣 IP 存取」開關失敗，暫不擋國外 IP");
+            false
+        }
+    }
+}
+
+/// 設定檔 `adapters.admin_web.login_home_countries` 當「本國」清單用；
+/// 與 LOGIN_GEO_ALERT_V1 共用同一份清單（見 `config.rs` 欄位文件註解）。
+/// 空陣列對這個功能沒有意義（等同全擋），固定退回 `["TW"]`。
+fn geo_restrict_home_countries() -> Vec<String> {
+    let configured: Vec<String> = crate::config::try_get_config()
+        .map(|cfg| {
+            cfg.adapters
+                .admin_web
+                .login_home_countries
+                .iter()
+                .map(|c| c.trim().to_ascii_uppercase())
+                .filter(|c| !c.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    if configured.is_empty() {
+        vec!["TW".to_string()]
+    } else {
+        configured
+    }
+}
+
+/// 最小的 HTML 跳脫：geo.label() 可能含外部服務回傳、未必可信的文字
+/// （城市／ISP 名稱），嵌回靜態頁面前一定要跳脫，否則是反射型 XSS 風險。
+fn geo_escape_html(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn geo_blocked_browser_response(geo: &crate::geoip::GeoInfo) -> Response {
+    let page = ADMIN_GEO_BLOCKED_HTML
+        .replace("__GEO_LOCATION__", &geo_escape_html(&geo.label()));
+    let mut response = (StatusCode::FORBIDDEN, Html(page)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn geo_blocked_json_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": "access_denied_geo" })),
+    )
+        .into_response()
+}
+
+/// 這個路徑是不是「管理後台的一部分」（含 `/homework` 別名），決定要不要套用
+/// 國外 IP 限制。刻意排除 `/admin/oidc/*`（見本節開頭說明）。
+fn is_admin_guarded_path(path: &str) -> bool {
+    if path == "/homework" {
+        return true;
+    }
+    if !path.starts_with("/admin") {
+        return false;
+    }
+    if path.starts_with("/admin/oidc/") {
+        return false;
+    }
+    true
+}
+
+async fn reject_foreign_admin_ip_middleware(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    if !is_admin_guarded_path(path)
+        || path.starts_with("/admin/static/")
+        || path.starts_with("/admin/pwa/")
+        || path == "/admin/api/logout"
+        || path == "/admin/logout"
+        // ADMIN_GEO_RESTRICT_V1：被擋下的人要能按「聯絡管理員」——這支端點只會
+        // 寫一筆「待處理」申請並通知管理員，不會讓任何人多拿到存取權限（真正
+        // 放行要管理員本人在 Discord 或 /admin/blacklist 按過才算數），跟
+        // `/admin/api/logout` 一樣是刻意公開、本質上不構成繞過限制的例外。
+        || path == "/admin/api/geo-restrict/request-access"
+        // GEO_ACCESS_AUTO_REDIRECT_V1：被擋頁面輪詢用——只回傳「這個 IP 現在
+        // 是否已經被核准暫時放行」的布林值，本身不會讓任何人多拿到存取權限
+        // （跟上面那支一樣，查詢結果是 true 也只是代表「已經有管理員核准過」，
+        // 不是這支端點自己授權的），所以可以公開、不算繞過限制。
+        || path == "/admin/api/geo-restrict/access-status"
+        // IP_BLACKLIST_AUTO_REDIRECT_V1：黑名單擋下頁面也會輪詢這支（道理同
+        // 上一支），讓「國外 IP 同時也在黑名單」這種組合狀況下，黑名單那邊
+        // 的輪詢一樣連得到，不會被這層攔住。
+        || path == "/admin/api/blacklist/status"
+    {
+        return next.run(request).await;
+    }
+    if !geo_restrict_admin_enabled(&state).await {
+        return next.run(request).await;
+    }
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let trusted = crate::trusted_ip::trusted_from_global_config();
+    let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
+    // IP 都解析不出來（"unknown"）：不是這層該處理的問題，交給其他防線，這裡放行。
+    // 區網／私有位址（內部健康檢查、同網段存取）本來就查不出國家，直接放行。
+    if ip == "unknown" || blacklist::is_private_or_local_ip(&ip) {
+        return next.run(request).await;
+    }
+    // ADMIN_GEO_RESTRICT_V1：管理員已經核准過這個 IP 的「暫時放行」申請——
+    // 時限內一律放行，不查地區。讀取失敗視為「沒有放行」（fail-closed在這裡才
+    // 對：查不到就當作沒放行，退回正常的國別判斷，不會因為這一步出錯就放行
+    // 不該放行的連線）。
+    match state.accounts_db.geo_access_is_ip_allowed(&ip).await {
+        Ok(true) => return next.run(request).await,
+        Ok(false) => {}
+        Err(error) => warn!(error = %error, "查詢國外存取暫時放行狀態失敗，退回正常地區判斷"),
+    }
+    let cf_ipcountry = cf_ipcountry_header(&headers);
+    let geo = crate::geoip::resolve(&ip, cf_ipcountry.as_deref()).await;
+    // 查不到國家（逾時／外部服務掛掉／Tor 的 CF 標頭 `T1` 沒有國碼）：使用者已
+    // 明確選擇 fail-open——查詢服務萬一掛掉，寧可偶爾放過一個真正的國外連線，
+    // 也不要因為查不到就把全台灣的人一起擋在外面。
+    if geo.country_code.is_empty() {
+        return next.run(request).await;
+    }
+    let home_countries = geo_restrict_home_countries();
+    if home_countries.iter().any(|c| c == &geo.country_code) {
+        return next.run(request).await;
+    }
+    if !path.starts_with("/admin/api/") && request_prefers_html(&headers) {
+        return geo_blocked_browser_response(&geo);
+    }
+    geo_blocked_json_response()
 }
 
 struct SecurityWatch {
@@ -924,6 +1100,134 @@ pub(super) async fn notify_admins_security_alert(state: &AdminWebState, event: S
             title,
             body,
             format!("tronclass-security-alert-{push_ip}"),
+        );
+    }
+}
+
+/// ADMIN_GEO_RESTRICT_V1：通知管理員「有國外 IP 申請暫時放行」——與
+/// `notify_admins_security_alert` 同一種雙渠道寫法（Discord 按鈕＋Web Push），
+/// 只有送達對象、文案、偏好鍵（`geo_access_request`）、落地頁不同。只在
+/// `create_or_reuse_geo_access_request` 回報「這是新申請」時呼叫一次，同一個
+/// IP 在時間窗內重複按「聯絡管理員」不會重複通知。
+pub(super) async fn notify_admins_geo_access_request(
+    state: &AdminWebState,
+    event: crate::adapters::events::GeoAccessRequestEvent,
+) {
+    let push_ip = event.ip.clone();
+    let push_location = event.location.clone();
+    let push_path = event.path.clone();
+    let Some(messenger) = state.messenger.clone() else {
+        warn!("geo access request skipped: no Discord/LINE messenger");
+        return;
+    };
+    let recipients = admin_discord_recipients(state).await;
+    if recipients.is_empty() {
+        warn!("geo access request skipped: no admin Discord user id");
+        return;
+    }
+    let message = OutboundMessage::GeoAccessRequest(event);
+    for (to, pref_account) in recipients {
+        if let Some(account_id) = &pref_account {
+            match state
+                .accounts_db
+                .notification_preference_enabled(account_id, "discord", "geo_access_request")
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(
+                        account = %account_id,
+                        "國外存取申請 Discord 通知已由使用者關閉"
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    warn!(
+                        account = %account_id,
+                        error = %error,
+                        "讀取國外存取申請 Discord 通知設定失敗，仍發送"
+                    );
+                }
+            }
+        }
+        if let Err(error) = messenger.push(&to, &message).await {
+            warn!(to = %to, error = %error, "geo access request notification 推送失敗");
+        }
+    }
+    let mut admin_account_ids = Vec::new();
+    if let Ok(accounts) = state.accounts_db.list().await {
+        for account in accounts {
+            if account.is_admin {
+                admin_account_ids.push(account.id);
+            }
+        }
+    }
+    if !admin_account_ids.is_empty() {
+        let title = "[安全] 國外 IP 嘗試存取管理後台".to_string();
+        let body = format!(
+            "來源 IP：{push_ip}\n位置：{push_location}\n想前往：{}\n\n請到「IP 黑名單」頁查看並決定是否暫時放行。",
+            if push_path.is_empty() { "/admin" } else { &push_path }
+        );
+        crate::web_push_notifications::notify_geo_access_request(
+            admin_account_ids,
+            title,
+            body,
+            format!("tronclass-geo-access-request-{push_ip}"),
+        );
+    }
+}
+
+/// GEO_ACCESS_BURST_MUTE_V1：短時間內「不同 IP」的國外存取申請暴增時，改發
+/// 這一則一次性的彙總警示，取代原本逐筆的 [`notify_admins_geo_access_request`]
+/// （呼叫端在觸發靜音旗標的那一刻呼叫一次，之後新申請一律靜音到管理員手動
+/// 在 `/admin/blacklist` 按「清空並恢復通知」為止）。純文字訊息、沒有按鈕
+/// ——引導管理員去網頁處理，不在 Discord 上對大量申請逐一核准／忽略。
+pub(super) async fn notify_admins_geo_access_burst(state: &AdminWebState, distinct_ip_count: i64) {
+    let text = format!(
+        "[安全] 國外存取申請短時間內大量出現（過去 10 分鐘內已有 {distinct_ip_count} 個不同來源 IP 申請），為避免洗版已暫停逐筆通知。請到「IP 黑名單」頁查看，按「清空並恢復通知」後才會再逐筆通知。"
+    );
+    if let Some(messenger) = state.messenger.clone() {
+        let recipients = admin_discord_recipients(state).await;
+        for (to, pref_account) in recipients {
+            if let Some(account_id) = &pref_account {
+                match state
+                    .accounts_db
+                    .notification_preference_enabled(account_id, "discord", "geo_access_request")
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        warn!(
+                            account = %account_id,
+                            error = %error,
+                            "讀取國外存取申請 Discord 通知設定失敗，仍發送"
+                        );
+                    }
+                }
+            }
+            if let Err(error) = messenger
+                .push(&to, &OutboundMessage::Text(text.clone()))
+                .await
+            {
+                warn!(to = %to, error = %error, "geo access burst notification 推送失敗");
+            }
+        }
+    }
+    let mut admin_account_ids = Vec::new();
+    if let Ok(accounts) = state.accounts_db.list().await {
+        for account in accounts {
+            if account.is_admin {
+                admin_account_ids.push(account.id);
+            }
+        }
+    }
+    if !admin_account_ids.is_empty() {
+        crate::web_push_notifications::notify_geo_access_request(
+            admin_account_ids,
+            "[安全] 國外存取申請短時間暴增".to_string(),
+            text,
+            "tronclass-geo-access-burst".to_string(),
         );
     }
 }
@@ -2430,6 +2734,7 @@ impl AdminWebState {
 pub fn build_admin_router(state: AdminWebState) -> Router {
     let password_guard_state = state.clone();
     let blacklist_guard_state = state.clone();
+    let geo_guard_state = state.clone();
     let waf_guard_state = state.clone();
     Router::new()
         // SEO_LANDING_V1（fix60）：`/` 依身分分流——已登入照舊 302 到 `/admin`，
@@ -2525,6 +2830,23 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         // DASHBOARD_LIVE_EVENTS_V1
         .route("/admin/static/live-events.js", get(static_assets::admin_live_events_js_handler))
+        // URL_SAFETY_SHARED_V1
+        .route(
+            "/admin/static/url-safety.js",
+            get(static_assets::admin_url_safety_js_handler),
+        )
+        // ROLLCALL_DETECT_SHARED_V1：要排在 rollcall-pending-fab.js 的路由「之前」
+        // 沒有順序要求（Axum router 比對的是獨立路徑，跟宣告順序無關），但程式碼放在這裡
+        // 跟 inject_theme() 裡 <script> 標籤的順序對應，方便日後維護時一眼看出依賴關係。
+        .route(
+            "/admin/static/rollcall-detect.js",
+            get(static_assets::admin_rollcall_detect_js_handler),
+        )
+        // ROLLCALL_PENDING_FAB_V1
+        .route(
+            "/admin/static/rollcall-pending-fab.js",
+            get(static_assets::admin_rollcall_pending_fab_js_handler),
+        )
         .route(
             "/admin/static/js/dompurify.min.js",
             get(static_assets::admin_dompurify_js_handler),
@@ -2870,6 +3192,61 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/api/blacklist/unblock",
             post(blacklist::admin_blacklist_unblock_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // IP_BLACKLIST_AUTO_REDIRECT_V1：`blocked.html` 輪詢用，不需要 session
+        // （道理同 `/admin/api/geo-restrict/access-status`）。
+        .route(
+            "/admin/api/blacklist/status",
+            get(blacklist::admin_blacklist_status_handler),
+        )
+        // ADMIN_GEO_RESTRICT_V1：「僅限台灣 IP 存取 /admin」開關，放在黑名單頁一起管理
+        // ——同屬 IP 層級的存取控制，不另開一個管理頁面。GET／POST 分開兩條路徑，
+        // 與既有 `/admin/api/blacklist`（讀）+ `/admin/api/blacklist/block`（寫）
+        // 同一種風格，不用同一路徑疊加方法 handler。
+        .route(
+            "/admin/api/geo-restrict",
+            get(blacklist::admin_geo_restrict_get_handler),
+        )
+        .route(
+            "/admin/api/geo-restrict/set",
+            post(blacklist::admin_geo_restrict_set_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // ADMIN_GEO_RESTRICT_V1：被擋下的訪客按「聯絡管理員」——這條刻意不需要
+        // session（見 handler 文件註解），已在 `reject_foreign_admin_ip_
+        // middleware` 的豁免清單排除，否則被擋的人連這支都連不到。
+        .route(
+            "/admin/api/geo-restrict/request-access",
+            post(blacklist::admin_geo_access_request_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // GEO_ACCESS_AUTO_REDIRECT_V1：被擋頁面用 JS 輪詢，管理員核准後不用
+        // 使用者手動重新整理——一樣不需要 session（道理同上面那支）。
+        .route(
+            "/admin/api/geo-restrict/access-status",
+            get(blacklist::admin_geo_access_status_handler),
+        )
+        // 待處理申請清單＋核准／忽略：Discord 按鈕的網頁版備援，一樣要登入。
+        .route(
+            "/admin/api/geo-restrict/requests",
+            get(blacklist::admin_geo_access_pending_handler),
+        )
+        .route(
+            "/admin/api/geo-restrict/requests/approve",
+            post(blacklist::admin_geo_access_approve_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/geo-restrict/requests/dismiss",
+            post(blacklist::admin_geo_access_dismiss_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // GEO_ACCESS_BURST_MUTE_V1：洗版時「清空並恢復通知」按鈕——把目前所有
+        // 待處理申請標成忽略（維持擋下）並解除靜音旗標，恢復逐筆通知。
+        .route(
+            "/admin/api/geo-restrict/requests/clear-all",
+            post(blacklist::admin_geo_access_clear_all_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         .route("/admin/api/health", get(health::admin_health_api_handler))
@@ -3219,6 +3596,14 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                 .layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
         )
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
+        // ADMIN_GEO_RESTRICT_V1：刻意放在 IP 黑名單檢查「之內」（layer 疊加順序下，
+        // 後加的 layer 較外層、較早執行）——已被列入黑名單的 IP 一律先看到黑名單的
+        // 說明頁，不論是不是國外，黑名單的訊息更明確、也是管理員手動／既有規則判定的
+        // 結果，優先序理當高於這個新功能。
+        .layer(axum::middleware::from_fn_with_state(
+            geo_guard_state,
+            reject_foreign_admin_ip_middleware,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             blacklist_guard_state,
             reject_blacklisted_ip_middleware,
@@ -5762,6 +6147,9 @@ mod tests {
         assert!(!html.contains("/admin/static/web-push.js"));
         assert!(!html.contains("/admin/static/live-events.js"));
         assert!(!html.contains("/admin/static/client-log.js"));
+        assert!(!html.contains("/admin/static/url-safety.js"));
+        assert!(!html.contains("/admin/static/rollcall-detect.js"));
+        assert!(!html.contains("/admin/static/rollcall-pending-fab.js"));
         assert!(html.contains("/admin/static/session-security.js"));
         assert!(html.contains("/admin/static/app-settings.js"));
         assert!(html.contains("/admin/static/theme.css"));
@@ -5811,6 +6199,61 @@ mod tests {
         assert!(login_alert_reason(&tw, &[], 0).is_some(), "空清單 = 舊行為");
         let two = vec!["TW".to_string(), "JP".to_string()];
         assert!(login_alert_reason(&jp, &two, 0).is_none());
+    }
+
+    /// ADMIN_GEO_RESTRICT_V1：`/admin*`（含 `/homework` 別名）要納管；
+    /// `/admin/oidc/*`、`/pub/*`、首頁與公開資產一律不納管。
+    #[test]
+    fn is_admin_guarded_path_scope() {
+        assert!(is_admin_guarded_path("/admin"));
+        assert!(is_admin_guarded_path("/admin/blacklist"));
+        assert!(is_admin_guarded_path("/admin/api/blacklist"));
+        assert!(is_admin_guarded_path("/homework"));
+        assert!(!is_admin_guarded_path("/admin/oidc/token"));
+        assert!(!is_admin_guarded_path("/admin/oidc/authorize"));
+        assert!(!is_admin_guarded_path("/pub/office"));
+        assert!(!is_admin_guarded_path("/pub/share"));
+        assert!(!is_admin_guarded_path("/"));
+        assert!(!is_admin_guarded_path("/robots.txt"));
+        assert!(!is_admin_guarded_path("/sitemap.xml"));
+        assert!(!is_admin_guarded_path("/healthz"));
+        assert!(!is_admin_guarded_path("/manifest.webmanifest"));
+    }
+
+    /// ADMIN_GEO_RESTRICT_V1：設定檔沒載入（測試環境常見）時退回 `["TW"]`，
+    /// 不會因為 `try_get_config()` 回 `None` 就變成空清單（等同全擋）。
+    #[test]
+    fn geo_restrict_home_countries_defaults_to_tw_without_config() {
+        let countries = geo_restrict_home_countries();
+        assert!(!countries.is_empty(), "不該因為讀不到設定檔就變成空清單");
+    }
+
+    /// ADMIN_GEO_RESTRICT_V1：從未設定過開關鍵時預設「開」；明確寫入「0」／「1」
+    /// 之後要如實反映，不能一直卡在預設值。
+    #[tokio::test]
+    async fn geo_restrict_admin_enabled_defaults_on_and_respects_explicit_value() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+
+        assert!(
+            geo_restrict_admin_enabled(&state).await,
+            "從未設定過時應預設開啟"
+        );
+
+        state
+            .accounts_db
+            .set_security_setting(crate::db::GEO_RESTRICT_ADMIN_KEY, "0", "test-admin")
+            .await
+            .unwrap();
+        assert!(!geo_restrict_admin_enabled(&state).await, "明確關閉後應回 false");
+
+        state
+            .accounts_db
+            .set_security_setting(crate::db::GEO_RESTRICT_ADMIN_KEY, "1", "test-admin")
+            .await
+            .unwrap();
+        assert!(geo_restrict_admin_enabled(&state).await, "明確開啟後應回 true");
     }
 
     /// UPDATE_TIMES_PAGE_V1：頁面需登入（未登入 302 到登入頁）；API 回傳排程器清單與帳號陣列。

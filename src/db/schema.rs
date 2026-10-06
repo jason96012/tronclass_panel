@@ -752,6 +752,12 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
 
     ensure_table_column(pool, "rollcall_events", "class_total", "INTEGER NOT NULL DEFAULT 0").await?;
     ensure_table_column(pool, "rollcall_events", "class_signed", "INTEGER NOT NULL DEFAULT 0").await?;
+    // ATT_STATS_AUTO_MANUAL_V1：這一筆是不是「大家都沒按按鈕，系統因為班上
+    // 超過 AUTO_SUBMIT_PERCENT（15%）人點名成功而自動送出」（見
+    // `rollcalls::mod::AUTO_SUBMIT_BY_CLASS_PROGRESS_V1` / fix72）。
+    // 舊資料（這個欄位還不存在前寫入的紀錄）一律預設 0（視為手動）——那些年代
+    // 這個機制還沒做自動/手動區分，沒有辦法回溯判斷，用「手動」當保守預設值。
+    ensure_table_column(pool, "rollcall_events", "auto_submitted", "INTEGER NOT NULL DEFAULT 0").await?;
 
     // 查詢一律「時間範圍 ＋（可選）帳號」，這兩個索引剛好對上。
     sqlx::query(
@@ -793,6 +799,59 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .into_diagnostic()
     .wrap_err("初始化 radar_preferences 資料表失敗")?;
+
+    // ADMIN_GEO_RESTRICT_V1：全站性（非單一帳號）的安全性開關通用鍵值表。
+    // 與 `web_push_settings` 同樣是 key/value 結構，但那張表語意上專屬 Web Push，
+    // 這張另外獨立出來放「跟哪個帳號都無關、全站共用」的安全性開關（目前只有
+    // 「僅限台灣 IP 存取 /admin」一個鍵，日後若有其他全站安全開關可以沿用同一張表）。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS security_settings (
+            key TEXT PRIMARY KEY NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at INTEGER NOT NULL DEFAULT 0,
+            updated_by TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 security_settings 資料表失敗")?;
+
+    // ADMIN_GEO_RESTRICT_V1：被「僅限台灣 IP」擋下的訪客按「聯絡管理員」後的
+    // 申請紀錄。`ip` 以 `blacklist_group_key()` 正規化（IPv6 以 /64 群組計），
+    // 與黑名單同一把尺，避免切換同前綴位址就重新申請一次。`status` 三態：
+    // pending（待處理）／allowed（已暫時放行，`allowed_until` 之前都免查地區）／
+    // ignored（管理員已讀但不放行）。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS geo_access_requests (
+            id TEXT PRIMARY KEY NOT NULL,
+            ip TEXT NOT NULL,
+            location TEXT NOT NULL DEFAULT '',
+            path TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            requested_at INTEGER NOT NULL DEFAULT 0,
+            requested_time TEXT NOT NULL DEFAULT '',
+            allowed_until INTEGER NOT NULL DEFAULT 0,
+            handled_by TEXT NOT NULL DEFAULT '',
+            handled_at INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 geo_access_requests 資料表失敗")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_geo_access_requests_ip_status ON geo_access_requests(ip, status)")
+        .execute(pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 geo_access_requests ip/status index 失敗")?;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_geo_access_requests_requested_at ON geo_access_requests(requested_at DESC)")
+        .execute(pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("初始化 geo_access_requests requested_at index 失敗")?;
 
     Ok(())
 }

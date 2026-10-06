@@ -46,6 +46,9 @@ const COMPONENT_UNBLOCK_OWN_IP_PREFIX: &str = "trc:unblock-own-ip:";
 /// payload：`{account_id}|{ip}`；account_id 只做顯示與鍵值，授權以資料庫的 Discord 綁定為準。
 const COMPONENT_CANCEL_LOCK_PREFIX: &str = "trc:cancel-lock:";
 const COMPONENT_OWNER_BLOCK_IP_PREFIX: &str = "trc:owner-block-ip:";
+/// ADMIN_GEO_RESTRICT_V1：payload 是 `geo_access_requests.id`（UUID）。
+const COMPONENT_GEO_ALLOW_PREFIX: &str = "trc:geo-allow:";
+const COMPONENT_GEO_IGNORE_PREFIX: &str = "trc:geo-ignore:";
 const DISCORD_SEND_INTERVAL_MS: u64 = 350;
 const DISCORD_DASHBOARD_DEDUPE_TTL_SECS: u64 = 10 * 60;
 const MAX_DISCORD_DM_CHANNEL_CACHE: usize = 2048;
@@ -556,6 +559,26 @@ impl EventHandler for DiscordRuntime {
 }
 
 impl DiscordRuntime {
+    /// GEO_ACCESS_ALL_ADMINS_V1：「暫時放行／忽略」按鈕要讓所有管理員都能按，
+    /// 不是只有設定檔裡那一組 `admin_user_id`——通知本來就會發給所有
+    /// `is_admin=true` 的帳號（見 `admin_discord_recipients`），按鈕權限理當
+    /// 跟著放寬，否則其他管理員收到通知卻按不動，體驗不一致。讀取帳號清單
+    /// 失敗時保守地只認設定檔管理員，不因為資料庫錯誤而放寬權限。
+    async fn is_admin_discord_user(&self, user_id: &str) -> bool {
+        if user_id == self.bot.admin_user_id {
+            return true;
+        }
+        match self.accounts_db.list().await {
+            Ok(accounts) => accounts
+                .into_iter()
+                .any(|account| account.is_admin && account.discord_user_id.trim() == user_id),
+            Err(error) => {
+                warn!(error = %error, "讀取帳號清單失敗，Discord 按鈕權限檢查以設定檔管理員為準");
+                false
+            }
+        }
+    }
+
     async fn handle_command(&self, ctx: &Context, command: CommandInteraction) -> Result<()> {
         let user_id = command.user.id.to_string();
         let reply_token = interaction_reply_token(command.id, &command.token);
@@ -890,6 +913,53 @@ impl DiscordRuntime {
                 Ok(true) => OutboundMessage::Text(format!("[安全] 已將 IP `{ip}` 從黑名單移除。")),
                 Ok(false) => OutboundMessage::Text("[安全] 找不到可由你解除的自動黑名單。".to_string()),
                 Err(error) => OutboundMessage::Text(format!("[安全] 移除黑名單失敗：{error}")),
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        // ADMIN_GEO_RESTRICT_V1：只有真正的管理員能核准／忽略；GEO_ACCESS_ALL_
+        // ADMINS_V1 之後改成「任一 is_admin 帳號」都算數，不再只認設定檔裡
+        // 那一組 `admin_user_id`——通知本來就會發給所有管理員，按鈕也該一致。
+        if let Some(request_id) = parse_geo_allow_custom_id(&component.data.custom_id) {
+            if !self.is_admin_discord_user(&user_id).await {
+                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
+                return Ok(());
+            }
+            let message = match self
+                .accounts_db
+                .approve_geo_access_request(&request_id, crate::db::GEO_ACCESS_ALLOW_SECONDS, &user_id)
+                .await
+            {
+                Ok(Some(row)) => OutboundMessage::Text(format!(
+                    "[安全] 已暫時放行 IP `{}`，{} 小時內可跳過僅限台灣的限制。",
+                    row.ip,
+                    crate::db::GEO_ACCESS_ALLOW_SECONDS / 3600
+                )),
+                Ok(None) => {
+                    OutboundMessage::Text("[安全] 找不到這筆申請，可能已過期或已被處理過。".to_string())
+                }
+                Err(error) => OutboundMessage::Text(format!("[安全] 暫時放行失敗：{error}")),
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        if let Some(request_id) = parse_geo_ignore_custom_id(&component.data.custom_id) {
+            if !self.is_admin_discord_user(&user_id).await {
+                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
+                return Ok(());
+            }
+            let message = match self
+                .accounts_db
+                .dismiss_geo_access_request(&request_id, &user_id)
+                .await
+            {
+                Ok(true) => OutboundMessage::Text("[安全] 已忽略這筆申請（維持擋下）。".to_string()),
+                Ok(false) => {
+                    OutboundMessage::Text("[安全] 找不到這筆申請，可能已過期或已被處理過。".to_string())
+                }
+                Err(error) => OutboundMessage::Text(format!("[安全] 忽略申請失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -1776,6 +1846,16 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                 vec![]
             }
         }
+        OutboundMessage::GeoAccessRequest(event) => vec![CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("{COMPONENT_GEO_ALLOW_PREFIX}{}", event.request_id))
+                .label("暫時放行")
+                .style(ButtonStyle::Success),
+            CreateButton::new(format!("{COMPONENT_GEO_IGNORE_PREFIX}{}", event.request_id))
+                .label("忽略")
+                .style(ButtonStyle::Secondary),
+            CreateButton::new_link("https://dashboard.jasoncloudserver.me/admin/blacklist")
+                .label("查看管理後台"),
+        ])],
         _ => vec![],
     }
 }
@@ -1878,14 +1958,20 @@ fn render_pending_account_request(request: &PendingAccountRequest) -> String {
     )
 }
 
-// ─── DISCORD_NOTIFY_UNIFY_V1 + DISCORD_NOTIFY_ALL_CARDS_V1 ──────────────────
+// ─── DISCORD_NOTIFY_UNIFY_V1 + DISCORD_NOTIFY_ALL_CARDS_V1 + NOTIF_CARD_ONLY_V1 ─
 //
 // 所有 Discord 出口（DM、管理員頻道、slash 回覆、按鈕回覆）都經過
 // `render_discord_payload`，**一律 embed 卡片**（含點名急件與指令回覆）。
-// content 仍放「類別｜標題」一行，鎖屏預覽與關閉 embed 的使用者看得到。
-// 純文字 `render_discord_message` 只當 fallback（測試／攤平）。
-// NOTIF_STRUCTURED_V1・fix132：embed 標題統一「類別 emoji＋主結論＋《課名》」、
-// content 預覽行為「類別：標題」；「[安全]」「[點名]」前綴會映射為對應類別卡片。LINE 文案不動。
+// NOTIF_CARD_ONLY_V1（取代舊版 fix132 的「content 鎖屏預覽」設計）：有卡片時
+// content 留空，不再額外疊一行「類別：標題」——使用者反映這樣在 Discord 上
+// 看起來像同一則通知顯示兩次（純文字 + 卡片各一份幾乎一樣的內容）。
+// 純文字 `render_discord_message` 目前只有兩種用途：(1) 測試／攤平比對、
+// (2) 極少數刻意要用純文字 `.say()`（不走卡片）的地方，例如非管理 channel
+// 裡有人誤用管理指令時的拒絕訊息。`render_discord_payload` 裡的 `None`
+// 分支（也會落到這個 fallback）目前沒有任何 `OutboundMessage` 變體會真的
+// 走到——`notice_card_for` 窮舉所有變體都回傳 `Some`，這段純屬保險。
+// NOTIF_STRUCTURED_V1・fix132：embed 標題統一「類別 emoji＋主結論＋《課名》」；
+// 「[安全]」「[點名]」前綴會映射為對應類別卡片。LINE 文案不動、不受影響。
 
 /// 通知類別：決定 embed 顏色與 footer 文字。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2073,19 +2159,21 @@ fn truncate_embed(value: &str, max_chars: usize) -> String {
     crate::text_utils::truncate_chars(value, max_chars).to_string()
 }
 
-/// 一次 Discord 送出的內容：`content` 一定有（「類別：emoji 標題」鎖屏預覽，fix132），
-/// `embed` 在 DISCORD_NOTIFY_ALL_CARDS_V1 下每則通知都有。
+/// 一次 Discord 送出的內容：有 `embed` 時 `content` 留空，避免卡片上方又疊一行
+/// 幾乎一樣的文字（NOTIF_CARD_ONLY_V1，取代舊版 fix132 的「content 鎖屏預覽」
+/// 設計——使用者反映疊字看起來像重複通知兩次，故改成只留卡片）；完全沒有卡片
+/// 的訊息（`notice_card_for` 回傳 `None`）才會用 `content` 承載純文字。
 struct DiscordPayload {
     content: String,
     embed: Option<CreateEmbed>,
 }
 
-/// 把 OutboundMessage 轉成 Discord payload。DISCORD_NOTIFY_ALL_CARDS_V1：
-/// 一律 embed 卡片＋一行 content（鎖屏預覽）。
+/// 把 OutboundMessage 轉成 Discord payload。NOTIF_CARD_ONLY_V1：有卡片就只送
+/// 卡片（`content` 留空字串），不再額外疊一行「類別：標題」的純文字 content。
 fn render_discord_payload(message: &OutboundMessage) -> DiscordPayload {
     match notice_card_for(message) {
         Some(card) => DiscordPayload {
-            content: format!("{}：{}", card.category.label(), card.title),
+            content: String::new(),
             embed: Some(card.to_embed()),
         },
         None => DiscordPayload {
@@ -2328,6 +2416,17 @@ fn notice_card_for(message: &OutboundMessage) -> Option<NoticeCard> {
                     )),
             )
         }
+        OutboundMessage::GeoAccessRequest(event) => Some(
+            NoticeCard::new(NoticeCategory::Security, "🌐 國外 IP 嘗試存取管理後台", "")
+                .field("來源 IP", &event.ip, true)
+                .field("位置", &event.location, true)
+                .field("想前往", if event.path.is_empty() { "/admin" } else { &event.path }, true)
+                .field("時間", &event.timestamp, false)
+                .hint(format!(
+                    "按「暫時放行」可讓這個 IP 在 {} 小時內跳過僅限台灣的限制；按「忽略」維持擋下。\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+                    crate::db::GEO_ACCESS_ALLOW_SECONDS / 3600
+                )),
+        ),
         OutboundMessage::Text(text) => {
             let text = strip_leading_emoji(text);
             // NOTIF_STRUCTURED_V1・fix132：內建「[安全]／[點名]」前綴映射為對應類別卡片。
@@ -2442,6 +2541,14 @@ fn render_discord_message(message: &OutboundMessage) -> String {
                 action,
             )
         },
+        OutboundMessage::GeoAccessRequest(event) => format!(
+            "[安全] 國外 IP 嘗試存取管理後台\n\n來源 IP：{}\n位置：{}\n想前往：{}\n時間：{}\n\n按「暫時放行」可讓這個 IP 在 {} 小時內跳過僅限台灣的限制；按「忽略」維持擋下。\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+            event.ip,
+            event.location,
+            if event.path.is_empty() { "/admin" } else { &event.path },
+            event.timestamp,
+            crate::db::GEO_ACCESS_ALLOW_SECONDS / 3600,
+        ),
         OutboundMessage::SystemStarted(event) => format!(
             "Tronclass Rollcall 已啟動\n帳號：{} / {}\n輪詢間隔：{} 秒\nAdapter：{}",
             event.account, event.user_name, event.poll_interval_secs, event.adapter_name
@@ -2672,6 +2779,24 @@ fn parse_unblock_ip_custom_id(value: &str) -> Option<String> {
     parse_discord_ip(ip)
 }
 
+/// `geo_access_requests.id` 是 `Uuid::new_v4().simple()`（32 個小寫十六進位字元，
+/// 不含連字號）；只接受這個形狀，避免 custom_id 被竄改成任意字串傳進 SQL 查詢鍵。
+fn parse_geo_request_id(value: &str) -> Option<String> {
+    if value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+fn parse_geo_allow_custom_id(value: &str) -> Option<String> {
+    parse_geo_request_id(value.strip_prefix(COMPONENT_GEO_ALLOW_PREFIX)?)
+}
+
+fn parse_geo_ignore_custom_id(value: &str) -> Option<String> {
+    parse_geo_request_id(value.strip_prefix(COMPONENT_GEO_IGNORE_PREFIX)?)
+}
+
 /// LOGIN_TIERED_LOCKOUT_V1：解析 `{prefix}{account_id}|{ip}` 形式的 custom_id。
 fn parse_prefixed_account_ip(value: &str, prefix: &str) -> Option<(String, String)> {
     let value = value.strip_prefix(prefix)?;
@@ -2739,10 +2864,13 @@ mod tests {
         });
         let payload = render_discord_payload(&detected);
         assert!(payload.embed.is_some(), "點名偵測應為 embed 卡片");
-        assert!(payload.content.contains('：'), "content 需為「類別：標題」：{}", payload.content);
-        assert!(payload.content.contains("點名"));
-        assert!(payload.content.contains("偵測到新簽到"));
-        assert!(payload.content.contains("🚨"), "fix132：預覽需含類別 emoji：{}", payload.content);
+        // NOTIF_CARD_ONLY_V1：有卡片時 content 留空，標題／類別改看卡片本身，
+        // 不再疊一行跟卡片幾乎一樣的純文字（這就是使用者回報的「顯示兩次」）。
+        assert!(payload.content.is_empty(), "有卡片時 content 應留空：{}", payload.content);
+        let card = notice_card_for(&detected).expect("應產生卡片");
+        assert_eq!(card.category, NoticeCategory::Rollcall);
+        assert!(card.title.contains("偵測到新簽到"));
+        assert!(card.title.contains("🚨"), "標題需含類別 emoji：{}", card.title);
 
         let alert = OutboundMessage::SecurityAlert(crate::adapters::events::SecurityAlertEvent {
             account_id: "acc".to_string(),
@@ -2757,9 +2885,10 @@ mod tests {
         });
         let payload = render_discord_payload(&alert);
         assert!(payload.embed.is_some(), "安全警示應為 embed 卡片");
-        assert!(payload.content.contains('：'), "content 需為「類別：標題」：{}", payload.content);
-        assert!(payload.content.contains("安全"));
-        assert!(payload.content.contains("🔐"), "fix132：預覽需含類別 emoji：{}", payload.content);
+        assert!(payload.content.is_empty(), "有卡片時 content 應留空：{}", payload.content);
+        let card = notice_card_for(&alert).expect("應產生卡片");
+        assert_eq!(card.category, NoticeCategory::Security);
+        assert!(card.title.contains("🔐"), "標題需含類別 emoji：{}", card.title);
     }
 
     #[test]
@@ -2775,9 +2904,12 @@ mod tests {
         });
         let payload = render_discord_payload(&finished);
         assert!(payload.embed.is_some(), "完成點名應為 embed 卡片");
-        assert!(payload.content.contains("點名"));
-        assert!(payload.content.contains("你已完成點名"));
-        assert!(payload.content.contains("✅"), "fix132：預覽需含類別 emoji：{}", payload.content);
+        // NOTIF_CARD_ONLY_V1：content 不再重複卡片標題，改看 notice_card_for。
+        assert!(payload.content.is_empty(), "有卡片時 content 應留空：{}", payload.content);
+        let card = notice_card_for(&finished).expect("應產生卡片");
+        assert_eq!(card.category, NoticeCategory::Rollcall);
+        assert!(card.title.contains("你已完成點名"));
+        assert!(card.title.contains("✅"));
 
         let number = OutboundMessage::NumberCodeRequested(crate::adapters::events::NumberCodeRequest {
             rollcall_id: 42,
@@ -2790,13 +2922,15 @@ mod tests {
         });
         let payload = render_discord_payload(&number);
         assert!(payload.embed.is_some(), "需要數字碼應為 embed 卡片");
-        assert!(payload.content.contains("點名"));
-        assert!(payload.content.contains("需要數字點名碼"));
+        assert!(payload.content.is_empty(), "有卡片時 content 應留空：{}", payload.content);
+        let card = notice_card_for(&number).expect("應產生卡片");
+        assert_eq!(card.category, NoticeCategory::Rollcall);
+        assert!(card.title.contains("需要數字點名碼"));
         assert!(!action_rows_for_message(&number).is_empty());
     }
 
     #[test]
-    fn unify_background_notices_are_embeds_with_uniform_content_line() {
+    fn unify_background_notices_are_embeds_without_duplicate_content() {
         let msgs = vec![
             OutboundMessage::ClassReminder(crate::adapters::events::ClassReminderEvent {
                 account: "student001".to_string(),
@@ -2831,8 +2965,10 @@ mod tests {
         for msg in msgs {
             let payload = render_discord_payload(&msg);
             assert!(payload.embed.is_some(), "{msg:?} 應為 embed 卡片");
-            assert!(payload.content.contains('：'), "content 需為「類別：標題」：{}", payload.content);
-            assert!(has_emoji(&payload.content), "fix132：預覽需含類別 emoji：{}", payload.content);
+            // NOTIF_CARD_ONLY_V1：有卡片就不疊 content，避免跟卡片重複顯示。
+            assert!(payload.content.is_empty(), "有卡片時 content 應留空：{}", payload.content);
+            let card = notice_card_for(&msg).expect("應產生卡片");
+            assert!(has_emoji(&card.title), "卡片標題需含類別 emoji：{}", card.title);
             let text = render_discord_message(&msg);
             assert!(text.contains("student001"), "純文字 fallback 需含帳號：{text}");
             assert!(has_emoji(&text), "fix132：fallback 首行需含類別 emoji：{text}");
@@ -2846,10 +2982,14 @@ mod tests {
         assert_eq!(strip_leading_emoji("ℹ️ 找不到"), "找不到");
         assert_eq!(strip_leading_emoji("內文中的 ✅ 保留"), "內文中的 ✅ 保留");
         assert_eq!(strip_leading_emoji("✅"), "✅");
-        let payload = render_discord_payload(&OutboundMessage::Text("❌ 失敗：x".to_string()));
-        assert!(payload.content.contains("失敗：x"), "content={}", payload.content);
+        let text_msg = OutboundMessage::Text("❌ 失敗：x".to_string());
+        let payload = render_discord_payload(&text_msg);
+        // NOTIF_CARD_ONLY_V1：Text 一樣會變成卡片，content 就留空，文字改看卡片標題。
+        assert!(payload.content.is_empty(), "有卡片時 content 應留空：{}", payload.content);
         assert!(payload.embed.is_some(), "Text 通知也應為 embed 卡片");
-        assert!(!has_emoji(&payload.content));
+        let card = notice_card_for(&text_msg).expect("應產生卡片");
+        assert!(card.title.contains("失敗：x"), "title={}", card.title);
+        assert!(!has_emoji(&card.title));
     }
 
     #[test]

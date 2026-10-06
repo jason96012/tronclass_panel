@@ -143,6 +143,10 @@ pub(super) async fn admin_rollcall_stats_handler(
     let success: i64 = courses.iter().map(|c| c.success).sum();
     let failed = total - success;
     let last_at = rows.iter().map(|row| row.timestamp).max().unwrap_or(0);
+    // ATT_STATS_AUTO_MANUAL_V1：總覽卡片用的「這段期間系統自動送出 / 手動送出」
+    // 總次數（跨全部課程），auto + manual 必定等於 total。
+    let auto_submitted_total: i64 = courses.iter().map(|c| c.auto_count).sum();
+    let manual_submitted_total: i64 = courses.iter().map(|c| c.manual_count).sum();
 
     // CLASS_ATTENDANCE_PROGRESS_V1：彙整各課最新一次點名之班上總點名人數（實到／預計）
     let latest_class_signed: i64 = courses
@@ -184,6 +188,9 @@ pub(super) async fn admin_rollcall_stats_handler(
             "latest_class_total": latest_class_total,
             "latest_class_signed": latest_class_signed,
             "latest_class_rate": latest_class_rate,
+            // ATT_STATS_AUTO_MANUAL_V1
+            "auto_submitted": auto_submitted_total,
+            "manual_submitted": manual_submitted_total,
         },
         "courses": courses,
         "senders": senders,

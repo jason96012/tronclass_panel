@@ -169,6 +169,21 @@ pub(super) async fn admin_live_events_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::LIVE_EVENTS_JS)
 }
 
+// URL_SAFETY_SHARED_V1
+pub(super) async fn admin_url_safety_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::URL_SAFETY_JS)
+}
+
+// ROLLCALL_DETECT_SHARED_V1
+pub(super) async fn admin_rollcall_detect_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::ROLLCALL_DETECT_JS)
+}
+
+// ROLLCALL_PENDING_FAB_V1
+pub(super) async fn admin_rollcall_pending_fab_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::ROLLCALL_PENDING_FAB_JS)
+}
+
 // SUBPAGE_FETCH_SHARED_V1
 pub(super) async fn admin_subpage_fetch_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::SUBPAGE_FETCH_JS)

@@ -19,6 +19,17 @@
     h2 { margin:0; font-size:17px; }
     p { margin:0; color:var(--muted); line-height:1.55; }
     .panel { margin-top:18px; padding:16px; border:1px solid var(--border); border-radius:8px; background:var(--panel); }
+    /* RADAR_FOCUSED_SUBMIT_V1：送出按鈕那塊用比較粗的強調邊框，第一眼就看得出是主要動作。 */
+    #submitPanel { border:2px solid var(--accent); }
+    /* RADAR_FOCUSED_SUBMIT_V1：班上進度／定位細節／地圖／簽到名單收進可展開區塊，預設收合。 */
+    #moreInfo > summary { cursor:pointer; font-weight:700; font-size:14px; color:var(--muted); list-style:none; padding:2px 0; }
+    #moreInfo > summary::-webkit-details-marker { display:none; }
+    #moreInfo > summary::before { content:"▸ "; }
+    #moreInfo[open] > summary::before { content:"▾ "; }
+    #moreInfo > summary:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:4px; }
+    #moreInfo[open] > summary { margin-bottom:14px; }
+    #moreInfo h2 { margin-top:22px; }
+    #moreInfo h2:first-of-type { margin-top:0; }
     .actions { display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; }
     button { min-height:44px; border:0; border-radius:8px; padding:0 14px; background:var(--accent); color:white; font-size:15px; font-weight:650; }
     button.secondary { border:1px solid var(--border); background:transparent; color:var(--text); }
@@ -139,20 +150,10 @@
 <body>
   <main>
     <h1>Tronclass Radar Rollcall</h1>
-    <p>這一頁不用輸入任何數字：按下面那顆按鈕，系統就會用教室位置替你送出點名。定位只用來在小地圖上顯示你在哪裡。</p>
-    <!-- CLASS_COUNT_HEADER_V1：頁面上方這一欄＝目前班上已點人數（大字）＋倒數小字 -->
-    <div id="countdown" class="countdown">
-      <div style="flex:1">
-        <div class="label" id="countdownLabel">班上已點人數</div>
-        <div class="bar"><i id="countdownBar"></i></div>
-      </div>
-      <div class="cd-right">
-        <div class="time" id="countdownTime">--</div>
-        <div class="sub" id="countdownSub">讀取中…</div>
-      </div>
-    </div>
+    <p>按下面那顆按鈕，系統就會用教室位置替你送出點名；定位只用來在地圖上顯示你在哪裡，不影響送出。</p>
 
-    <!-- RADAR_UI_CLARITY_V1：一句話的「現在該按哪一個」（依定位精度自動更新） -->
+    <!-- RADAR_UI_CLARITY_V1：一句話的「現在該按哪一個」（依定位精度自動更新）。
+         RADAR_FOCUSED_SUBMIT_V1：移到按鈕正上方，跟按鈕變成同一組視覺焦點。 -->
     <div id="advice" class="advice" role="status" aria-live="polite">
       <span class="advice-icon" id="adviceIcon">📍</span>
       <div class="advice-body">
@@ -161,18 +162,10 @@
       </div>
     </div>
 
-    <section class="panel">
-      <h2>你的位置（只顯示，不會送出）</h2>
-      <!-- RADAR_SYSTEM_ONLY_V1：自動定位只拿來畫地圖；送出點名一律用「系統演算」（教室位置）。 -->
-      <div id="geoState" class="geo-state">
-        <span class="ping"></span>
-        <div class="grow">
-          <div class="geo-main" id="geoMain">正在取得你的位置…</div>
-          <div class="geo-sub" id="geoSub">室內可能要等幾秒，系統會自動偵測。</div>
-          <div class="geo-coords" id="deviceCoords"></div>
-        </div>
-        <button id="geoRetry" class="mini" type="button">重新定位</button>
-      </div>
+    <!-- RADAR_FOCUSED_SUBMIT_V1：使用者反映原本按鈕被壓在一堆說明文字下面要滑半天才找得到，
+         所以把「送出」這整塊挪到最上面、緊接在標題跟一句話提示後面，不用捲動就看得到。
+         RADAR_SYSTEM_ONLY_V1：自動定位只拿來畫地圖；送出點名一律用「系統演算」（教室位置）。 -->
+    <section class="panel" id="submitPanel">
       <div class="choice">
         <button id="useClassroom" class="choice-btn primary" type="button" disabled>
           <span class="cb-badge" id="classroomBadge">按這個送出</span>
@@ -188,7 +181,52 @@
       <div id="schoolBlock" class="block-box" style="display:none"></div>
     </section>
 
-    <section class="panel">
+    <!-- 使用者要求：簽到狀態（總帳號／已點到／未點到＋名單）要常駐顯示，不能預設收合，
+         所以獨立成自己的常駐區塊，放在送出按鈕之後、可收合的「更多資訊」之前。 -->
+    <section class="panel" id="attendancePanel">
+      <h2>簽到狀態</h2>
+      <p style="margin-top:6px">「已點到」＝學校已回報成功；這一頁會自動更新。</p>
+      <div class="summary">
+        <div class="metric"><strong id="totalCount">0</strong><span>總帳號</span></div>
+        <div class="metric"><strong id="doneCount">0</strong><span>已點到</span></div>
+        <div class="metric"><strong id="pendingCount">0</strong><span>未點到</span></div>
+      </div>
+      <div class="lists">
+        <div class="list done"><h3>已點到</h3><ul id="doneList"><li>尚無</li></ul></div>
+        <div class="list pending"><h3>還沒點到</h3><ul id="pendingList"><li>尚無</li></ul></div>
+      </div>
+      <div id="pendingNote" class="pending-note"></div>
+    </section>
+
+    <!-- RADAR_FOCUSED_SUBMIT_V1：班上進度／定位細節／地圖都是「看得到更好、
+         但不影響你送出」的補充資訊，收進可展開區塊，預設收合，避免蓋住上面的送出按鈕。
+         裡面所有元素的 id 都原封不動搬過來，JS 全部用 getElementById 存取，跟 DOM 位置無關。 -->
+    <details class="panel" id="moreInfo">
+      <summary>更多資訊（班上進度・定位細節・地圖）</summary>
+
+      <!-- CLASS_COUNT_HEADER_V1：目前班上已點人數（大字）＋倒數小字 -->
+      <div id="countdown" class="countdown">
+        <div style="flex:1">
+          <div class="label" id="countdownLabel">班上已點人數</div>
+          <div class="bar"><i id="countdownBar"></i></div>
+        </div>
+        <div class="cd-right">
+          <div class="time" id="countdownTime">--</div>
+          <div class="sub" id="countdownSub">讀取中…</div>
+        </div>
+      </div>
+
+      <h2>你的位置（只顯示，不會送出）</h2>
+      <div id="geoState" class="geo-state">
+        <span class="ping"></span>
+        <div class="grow">
+          <div class="geo-main" id="geoMain">正在取得你的位置…</div>
+          <div class="geo-sub" id="geoSub">室內可能要等幾秒，系統會自動偵測。</div>
+          <div class="geo-coords" id="deviceCoords"></div>
+        </div>
+        <button id="geoRetry" class="mini" type="button">重新定位</button>
+      </div>
+
       <h2>位置地圖與進度</h2>
       <svg id="radarMap" viewBox="0 0 640 420" preserveAspectRatio="xMidYMid meet" role="img" aria-label="位置地圖：你的位置、教室位置與點名進度"></svg>
       <div class="legend">
@@ -222,23 +260,9 @@
       <!-- RADAR_DEDUCE_TRACE_V1（fix75）：系統是怎麼推算出教室位置的（逐步照實寫） -->
       <div id="probeHint" class="auto-hint">🧭 還沒有推估紀錄：第一次送出就成功的話，系統不需要推估教室位置。</div>
       <div id="mapHint" class="auto-hint">地圖以教室座標為中心，格線每一格是固定的實際距離（左下角有比例尺）。</div>
-    </section>
-
-    <section class="panel">
-      <h2>簽到狀態</h2>
-      <p style="margin-top:6px">「已點到」＝學校已回報成功；這一頁會自動更新。</p>
-      <div class="summary">
-        <div class="metric"><strong id="totalCount">0</strong><span>總帳號</span></div>
-        <div class="metric"><strong id="doneCount">0</strong><span>已點到</span></div>
-        <div class="metric"><strong id="pendingCount">0</strong><span>未點到</span></div>
-      </div>
-      <div class="lists">
-        <div class="list done"><h3>已點到</h3><ul id="doneList"><li>尚無</li></ul></div>
-        <div class="list pending"><h3>還沒點到</h3><ul id="pendingList"><li>尚無</li></ul></div>
-      </div>
-      <div id="pendingNote" class="pending-note"></div>
-    </section>
+    </details>
   </main>
+
 
   <script>
     const params = new URLSearchParams(window.location.search);

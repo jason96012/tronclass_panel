@@ -134,6 +134,9 @@ impl AdapterMessenger for AdapterHub {
 pub enum OutboundMessage {
     Text(String),
     SecurityAlert(SecurityAlertEvent),
+    /// ADMIN_GEO_RESTRICT_V1：被「僅限台灣 IP」擋下的訪客按「聯絡管理員」。
+    /// 只送給管理員（Discord 按鈕＋Web Push），不會送到一般使用者。
+    GeoAccessRequest(GeoAccessRequestEvent),
     SystemStarted(SystemStartedEvent),
     RollcallDetected(RollcallEvent),
     NumberCodeRequested(NumberCodeRequest),
@@ -525,6 +528,20 @@ pub struct SecurityAlertEvent {
     /// LOGIN_TIERED_LOCKOUT_V1：第一層鎖定（帳號密碼登入暫時鎖住、IP 尚未封鎖）。
     /// Discord 端據此改渲染「取消這次鎖定」＋「封鎖此 IP」兩顆按鈕給帳號持有人。
     pub login_locked: bool,
+}
+
+/// ADMIN_GEO_RESTRICT_V1：訪客在「僅限台灣地區存取」頁按「聯絡管理員」後產生。
+/// `request_id` 是資料庫 `geo_access_requests.id`（UUID），Discord 按鈕的
+/// custom_id 帶著這個值，核准／忽略都靠它去比對、不會信任其他欄位。
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeoAccessRequestEvent {
+    pub request_id: String,
+    pub ip: String,
+    /// `GeoInfo::label()`：人類可讀的位置描述（國家／城市／ISP），已事先截斷。
+    pub location: String,
+    /// 訪客原本想前往的路徑，純顯示用，一樣已事先截斷。
+    pub path: String,
+    pub timestamp: String,
 }
 
 /// Outbound event emitted when a monitored account starts.

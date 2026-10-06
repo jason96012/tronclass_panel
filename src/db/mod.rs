@@ -16,6 +16,8 @@
 //! - [`sessions`]    Dashboard 登入 session
 //! - [`homework`]    作業截止提醒去重與快照
 //! - [`rollcalls`]   點名送出紀錄（出席統計與送出者查詢的來源）
+//! - [`security_settings`] 全站性安全開關（與單一帳號無關；目前只有
+//!   「僅限台灣 IP 存取 /admin」）
 //!
 //! 對外仍以 `crate::db::AccountsDb` 與既有型別使用，公開 API 不變；所有型別
 //! 透過下方的 `pub use` 再匯出，維持 `crate::db::Xxx` 路徑。
@@ -26,6 +28,7 @@ mod auth_throttle;
 mod blacklist;
 // CREDITS_EMIS_V1：學分報告快照（impl AccountsDb 的分散實作）。
 mod credit_reports;
+mod geo_access_requests;
 mod homework;
 mod materials;
 mod passkeys;
@@ -34,6 +37,8 @@ mod radar;
 // ROLLCALL_ATTENDANCE_V1（fix66）：點名送出紀錄（出席統計）。
 mod rollcalls;
 mod schema;
+// ADMIN_GEO_RESTRICT_V1：全站性安全開關（目前只有「僅限台灣 IP 存取 /admin」）。
+mod security_settings;
 mod sessions;
 mod timetable;
 mod timetable_sync;
@@ -102,6 +107,7 @@ pub use activity::{ActivityEventInput, ActivityEventRow};
 #[allow(unused_imports)]
 pub use blacklist::IpBlacklistRow;
 #[allow(unused_imports)]
+pub use geo_access_requests::{GeoAccessRequestRow, GEO_ACCESS_ALLOW_SECONDS, GEO_ACCESS_NOTIFY_MUTED_KEY};
 pub use materials::{MaterialEventInput, MaterialEventRow};
 // ROLLCALL_STATS_V1（fix66）：點名統計。函式與列型別在 API 層直接使用；兩個統計結構
 // （RollcallCourseStat／RollcallSenderStat）目前只有本模組內部在建構與序列化時用到值，
@@ -121,6 +127,7 @@ pub use preferences::{
 // RADAR_PANEL_V1（fix70）：雷達設定列（面板 API 只用欄位，不具名引用型別）。
 #[allow(unused_imports)]
 pub use radar::RadarPreferenceRow;
+pub use security_settings::GEO_RESTRICT_ADMIN_KEY;
 // HOMEWORK_LADDER_V1：提醒引擎（homework_reminders）與通知頁 API 共用的預設階梯。
 pub(crate) use preferences::{
     DEFAULT_HOMEWORK_LADDER_HOURS, HOMEWORK_LADDER_MAX_HOURS, HOMEWORK_LADDER_MAX_STAGES,

@@ -21,7 +21,9 @@
     if(label)label.textContent=state==='connected'?'即時點名：已連線 · '+now:state==='reconnecting'?'即時點名：重新連線中':'即時點名：連線中';
   }
   function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]})}
-  function safeUrl(v){try{var u=new URL(String(v||''),location.origin);return /^https?:$/.test(u.protocol)?u.href:''}catch(_){return ''}}
+  /* URL_SAFETY_SHARED_V1：委派給共用模組 url-safety.js（跟 dashboard.html／health.html／
+     rollcall-pending-fab.js 原本各自維護一份一樣的邏輯收成正本，見該檔頭註解）。 */
+  function safeUrl(v){return window.TronclassUrlSafety?window.TronclassUrlSafety.safeHttpUrl(v):''}
   function seen(){try{return JSON.parse(sessionStorage.getItem(seenKey)||'{}')}catch(_){return {}}}
   function mark(key){try{var s=seen();s[key]=Date.now();sessionStorage.setItem(seenKey,JSON.stringify(s))}catch(_){}}
   var soundKey='tronclass_rollcall_sound_settings_v1';

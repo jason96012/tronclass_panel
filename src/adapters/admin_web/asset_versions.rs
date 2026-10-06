@@ -229,10 +229,44 @@ const ASSETS: &[(&str, &str)] = &[
         "/admin/static/js/pdf.worker.min.js",
         include_str!("static/js/pdf.worker.min.js"),
     ),
-    // 分享頁資源（參與 build id；URL 改寫與否無妨）
-    ("/pub/share.css", include_str!("static/css/share.css")),
+    // URL_SAFETY_SHARED_V1 / ROLLCALL_DETECT_SHARED_V1 / ROLLCALL_PENDING_FAB_V1
+    // （fix-asset-version-gap）：rollcall-pending-fab.js 原本漏掉沒登記進 build id——
+    // `rewrite_asset_versions()` 會把 HTML 裡這支的 URL 一律改寫成 `?sv=<build id>`
+    // （連同本來手動維護的 `?v=fab2` 一起蓋掉，手動版號從此只是文件，不是真的在
+    // 生效），但因為沒登記在這份清單，改這支檔案的內容不會讓 build id 變動，URL
+    // 就不變；而這些都是用 `Cache-Control: immutable, max-age=604800` 送出的，
+    // URL 不變，瀏覽器完全不會重新驗證，等於每次部署新版都可能有使用者卡在舊版
+    // 最長 7 天——這正是這份清單檔頭註解講的「已經踩過兩次坑」的那種問題，只是
+    // 這次是漏登記、不是手動忘記 bump。這裡把 url-safety.js／rollcall-detect.js
+    // 一開始就登記進來，不再重蹈覆轍。
     (
-        "/pub/share-preview.js",
+        "/admin/static/url-safety.js",
+        include_str!("static/js/url-safety.js"),
+    ),
+    (
+        "/admin/static/rollcall-detect.js",
+        include_str!("static/js/rollcall-detect.js"),
+    ),
+    (
+        "/admin/static/rollcall-pending-fab.js",
+        include_str!("static/js/rollcall-pending-fab.js"),
+    ),
+    // 分享頁資源（參與 build id；URL 改寫與否無妨——這兩個路徑字串只是拿來給
+    // 下面 BUILD_ID 雜湊當 key，從不會被 rewrite_asset_versions() 實際改寫，因為
+    // 它的 regex 只比對 `/admin/static/...`，不碰 `/pub/...`）。
+    // ASSET_VERSION_LABEL_FIX_V1：原本這兩個字串寫的是 "/pub/share.css" /
+    // "/pub/share-preview.js"，但 mod.rs 實際註冊的路由其實是
+    // "/pub/static/css/share.css" / "/pub/static/js/share-preview.js"（多了
+    // "static/" 這一段）——純屬命名打錯，從未對應到真正存在的路由。因為這兩個
+    // 字串只被當 HashMap 的 key 用（雜湊同時吃 key 與 value），不影響內容本身
+    // 有沒有被算進 build id，所以不是功能缺陷；改成跟真正路由一致純粹是讓這份
+    // 清單能被信任「路徑欄＝真實路由」，日後要用路徑反查資產時才不會查錯。
+    (
+        "/pub/static/css/share.css",
+        include_str!("static/css/share.css"),
+    ),
+    (
+        "/pub/static/js/share-preview.js",
         include_str!("static/js/share-preview.js"),
     ),
 ];

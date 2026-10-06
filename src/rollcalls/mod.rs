@@ -53,6 +53,19 @@ pub struct RollcallOutcome {
 
     /// 本次簽到花費的時間（毫秒）
     pub elapsed_ms: u64,
+
+    /// ATT_STATS_AUTO_MANUAL_V1：這次是不是「大家都沒按按鈕，系統因為班上
+    /// 超過 `AUTO_SUBMIT_PERCENT`（15%）人點名成功而自動送出」
+    /// （`AUTO_SUBMIT_BY_CLASS_PROGRESS_V1`／fix72）。
+    ///
+    /// 只有「使用者完全沒有提供任何輸入（沒打代碼、沒按『自動讀取』／
+    /// 『系統演算』）、純粹因為等待逾時 + 班上進度超過門檻，系統自己讀碼/
+    /// 用座標送出」才算 `true`。使用者自己打代碼、或自己按下「自動讀取」
+    /// （number.html）／「系統演算」（radar.html）按鈕，即使底層一樣是「自動
+    /// 讀取代碼」或「用系統座標送出」，也算「手動」——因為是人觸發的。
+    /// 目前只有數字點名與雷達點名有這個機制（QR Code／自主報到沒有，一律
+    /// `false`）；跳過（已簽到／已過期／狀態非 absent）也一律 `false`。
+    pub auto_submitted: bool,
 }
 
 impl RollcallOutcome {
@@ -176,6 +189,7 @@ pub async fn process_rollcall(
                 reason: "已簽到（on_call_fine）".to_string(),
             },
             elapsed_ms: start.elapsed().as_millis() as u64,
+            auto_submitted: false,
             rollcall,
         };
     }
@@ -189,6 +203,7 @@ pub async fn process_rollcall(
                 reason: "簽到已過期".to_string(),
             },
             elapsed_ms: start.elapsed().as_millis() as u64,
+            auto_submitted: false,
             rollcall,
         };
     }
@@ -206,6 +221,7 @@ pub async fn process_rollcall(
                 reason: format!("狀態為 `{}`，不需要簽到", rollcall.status),
             },
             elapsed_ms: start.elapsed().as_millis() as u64,
+            auto_submitted: false,
             rollcall,
         };
     }
@@ -257,6 +273,10 @@ pub async fn process_rollcall(
     }
 
     // ── 根據類型分派 ──────────────────────────────────────────────────────────
+    // ATT_STATS_AUTO_MANUAL_V1：只有數字／雷達點名有「15% 自動送出」機制，
+    // 用這個 out 參數讓對應 handler 回報這次最終結果是不是純系統自動送出
+    // （沒有任何人動手）；其餘類型不會去動它，維持預設 `false`（手動）。
+    let mut auto_submitted = false;
     let result = match attendance_type {
         AttendanceType::Number => {
             handle_number_rollcall(
@@ -270,6 +290,7 @@ pub async fn process_rollcall(
                 number_rx,
                 number_tx,
                 scanner_registry.clone(),
+                &mut auto_submitted,
             )
             .await
         }
@@ -285,6 +306,7 @@ pub async fn process_rollcall(
                 radar_rx,
                 radar_tx,
                 scanner_registry.clone(),
+                &mut auto_submitted,
             )
             .await
         }
@@ -375,6 +397,7 @@ pub async fn process_rollcall(
         attendance_type,
         result,
         elapsed_ms,
+        auto_submitted,
     };
 
     if outcome.is_success() {
@@ -510,6 +533,7 @@ async fn handle_number_rollcall(
     number_rx: Option<NumberCodeReceiver>,
     number_tx: Option<NumberCodeSender>,
     scanner_registry: Option<Arc<QrScannerRegistry>>,
+    auto_submitted: &mut bool,
 ) -> RollcallResult {
     let max_wait_duration = Duration::from_secs(10800); // 3 小時安全硬上限，老師開多久等多久
 
@@ -709,6 +733,11 @@ async fn handle_number_rollcall(
                                             .await;
                                     }
                                 }
+                                // ATT_STATS_AUTO_MANUAL_V1：這條路徑是「等不到手動
+                                // 輸入、純粹因逾時輪詢發現班上超過 15% 門檻」才觸發
+                                // （見上面 `class_progress_over_threshold`），全程沒有
+                                // 任何人按過按鈕，是真正的「系統自動送出」。
+                                *auto_submitted = true;
                                 return result;
                             }
                             Err(AutoLookupFailure::NoCode { status }) => {
@@ -1175,6 +1204,7 @@ async fn handle_radar_rollcall(
     radar_rx: Option<RadarPointReceiver>,
     radar_tx: Option<RadarPointSender>,
     scanner_registry: Option<Arc<QrScannerRegistry>>,
+    auto_submitted: &mut bool,
 ) -> RollcallResult {
     info!(
         rollcall_id = rollcall.rollcall_id,
@@ -1301,6 +1331,11 @@ async fn handle_radar_rollcall(
                 total = progress.as_ref().map(|p| p.total).unwrap_or(0),
                 "班上已點人數超過 15%，開始自動送出雷達點名"
             );
+            // ATT_STATS_AUTO_MANUAL_V1：沿用上面既有的判斷優先序（`passed` 比
+            // `manual` 先檢查）——這裡走到的是「班上超過門檻」這條路，即使使用者
+            // 「剛好同一輪」也按了系統演算（極少見的巧合），仍歸類為自動送出，
+            // 與上面既有的 log 訊息（只提 15% 沒提使用者是否也按了）口徑一致。
+            *auto_submitted = true;
             break;
         }
         if manual {
@@ -1378,6 +1413,10 @@ async fn handle_radar_rollcall(
             .await;
             if retry.is_success() {
                 result = retry;
+                // ATT_STATS_AUTO_MANUAL_V1：這次成功是「系統自己發現班上超過
+                // 15% 門檻才主動重試」送出的（不管前一次失敗的嘗試原本是手動
+                // 還是自動觸發），最終算數的這一次是自動送出。
+                *auto_submitted = true;
             } else if let Some(bot) = messenger {
                 // 班上都在成功、我們卻還失敗 → 給使用者一個明確的下一步：
                 // 開頁面用「現在的位置」再送一次（教室座標若已用過，再送也不會過）。
@@ -2375,6 +2414,7 @@ mod tests {
             attendance_type: AttendanceType::QrCode,
             result,
             elapsed_ms: 100,
+            auto_submitted: false,
         }
     }
 }

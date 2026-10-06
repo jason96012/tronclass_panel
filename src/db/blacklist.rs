@@ -9,6 +9,14 @@ use super::{
     truncate_event_text, AccountsDb, EVENT_DETAILS_MAX_BYTES, EVENT_IDENTITY_MAX_BYTES,
 };
 
+/// BLACKLIST_RETENTION_V1（2026-10-06 新增，當天隨即撤回）：原本這裡有一條
+/// 「黑名單只保留最新 100 筆，滿了就把最舊那筆連帶解除封鎖」的規則。使用者
+/// 試用後認為「已封鎖的 IP 不應該被數量限制」（封鎖的 IP 再多也該一直生效，
+/// 不該因為滿 100 筆就被自動解除），因此這條筆數上限已經移除——
+/// `block_ip_with_failure_count` 現在只負責新增，不再順手清舊資料。
+/// 畫面上「只顯示前 5 筆、按『顯示更多』展開」的 UI 行為不受影響，繼續保留
+/// （那是純顯示層的分頁，跟這裡講的資料庫筆數上限是兩回事）。
+
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct IpBlacklistRow {
     pub ip: String,
@@ -20,6 +28,7 @@ pub struct IpBlacklistRow {
     /// Manual and legacy blocks use zero.
     pub failure_count: i64,
 }
+
 
 impl AccountsDb {
     pub async fn is_ip_blacklisted(&self, ip: &str) -> Result<bool> {

@@ -250,6 +250,14 @@ fn render_message(message: &OutboundMessage) -> String {
                 ""
             },
         ),
+        // ADMIN_GEO_RESTRICT_V1：這則一律只送管理員 Discord ID，LINE 端理論上
+        // 不會真的送達（hub 會對每個 adapter 都呼叫一次 push，LINE 收到不屬於
+        // 自己的 user id 會送失敗，由呼叫端吞掉錯誤）；仍補上文字版避免 match
+        // 漏 arm，且 LINE 沒有互動按鈕，只能請管理員改用 Discord 或網頁處理。
+        OutboundMessage::GeoAccessRequest(event) => format!(
+            "⚠️ 國外 IP 嘗試存取管理後台\n\n來源 IP：{}\n位置：{}\n時間：{}\n\n請改用 Discord 或 /admin/blacklist 頁面處理（暫時放行／忽略）。",
+            event.ip, event.location, event.timestamp,
+        ),
         OutboundMessage::SystemStarted(event) => format!(
             "🚀 Tronclass Rollcall 已啟動\n\
              帳號：{} / {}\n\

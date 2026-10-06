@@ -1319,6 +1319,30 @@ pub fn build_scanner_router_with_admin(
         .route("/radar/submit", post(radar_submit_handler))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(tool_security_headers_middleware))
+        // SCANNER_PAGE_COMPRESSION_V1：scanner.html／number.html／radar.html 都是
+        // 整份內嵌 script/CSS 的純文字頁面（scanner.html 本身就有 ~260KB），
+        // brotli/gzip 可以把這種文字壓到原本的一到兩成；admin_web 的
+        // dashboard.html（同樣 ~260KB）已經證實這招有效（見
+        // `admin_web::build_admin_router` 裡 CompressionLayer 的註解）。這裡補上
+        // 同一招——掃碼點名的手機連線常常是教室 wifi／行動網路，省下來的位元組
+        // 直接換成「開頁到能掃」的秒數。status/submit 的 JSON 回應也一併受惠。
+        .layer(
+            tower_http::compression::CompressionLayer::new()
+                .br(true)
+                .gzip(true)
+                .deflate(true),
+        )
+        // SCANNER_NO_COMPRESSION_BINARY_V1：上面那層壓縮預設「什麼都壓」，但
+        // zxing／微信／AI 超解析度用的 wasm、onnx 資產本來就是幾 MB 等級的已編譯
+        // 二進位（不像 HTML/JS 那種純文字好壓），每個請求重新跑一次 brotli/gzip
+        // 省下的位元組有限，CPU 卻要多花好幾百毫秒；教室尖峰時間（一整班同時點開
+        // 「深度掃描」）反而會變成新的效能瓶頸——跟 admin_web 的
+        // `STREAM_NO_COMPRESSION_V1`（教材檔案）是同一個道理。沿用同一招：在壓縮層
+        // 外面（更晚加的 `.layer()` 會包在外層，先看到請求）把這幾條路徑的
+        // Accept-Encoding 拔掉，壓縮層協商不到編碼就會原樣放行位元組。
+        .layer(axum::middleware::from_fn(
+            no_compression_for_scanner_binary_assets_middleware,
+        ))
         .with_state(ScannerHttpState::new(scanner));
 
     if let Some(admin_web) = admin_web {
@@ -1326,6 +1350,34 @@ pub fn build_scanner_router_with_admin(
     }
 
     app
+}
+
+/// SCANNER_NO_COMPRESSION_BINARY_V1：這幾條路徑回的是已編譯的 wasm／onnx 二進位，
+/// 都是 MB 等級（953KB～10.5MB），即時 brotli/gzip 壓縮省下的位元組有限、CPU 成本卻
+/// 不小。`/scanner/sr/ort.mjs`、`/scanner/wechat/index.mjs`、`/scanner/sr/worker.mjs`
+/// 是純文字 JS（分別約 145KB／1.8KB／4KB），不在這裡排除，照常給壓縮層處理。
+fn is_no_compression_scanner_asset_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/scanner/zxing_reader.wasm"
+            | "/scanner/wechat/wasm.mjs"
+            | "/scanner/sr/ort-wasm-simd.wasm"
+            | "/scanner/sr/model.onnx"
+    )
+}
+
+async fn no_compression_for_scanner_binary_assets_middleware(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !is_no_compression_scanner_asset_path(request.uri().path()) {
+        return next.run(request).await;
+    }
+    // 拿掉 accept-encoding：壓縮層協商不到編碼，就會原樣傳輸位元組（跟
+    // admin_web 的 `no_compression_for_file_streams_middleware` 同一招）。
+    let (mut parts, body) = request.into_parts();
+    parts.headers.remove(header::ACCEPT_ENCODING);
+    next.run(axum::extract::Request::from_parts(parts, body)).await
 }
 
 pub async fn start_scanner_server(

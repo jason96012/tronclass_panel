@@ -746,3 +746,77 @@ body.auth-ok main{
    （選擇器都只命中 dashboard 元素，其它頁面不受影響） */
 header.topbar .top-actions>*:not(#logoutBtn){display:none!important}
 html.tron-auth-logged-out:has(#loginCard[data-animated-login-installed]){visibility:visible!important}
+
+/* ─── ROLLCALL_PENDING_FAB_V1 ───
+   全站共用、右下角的「還有點名尚未送出」捷徑按鈕（rollcall-pending-fab.js 建立／
+   顯示控制；位置由該腳本依實際量到的手機導覽列高度動態計算，這裡只負責外觀）。
+   放在 theme.css 是因為這是唯一「每一個 admin 頁、包含登入頁都會載入」的樣式檔——
+   使用者要求「不管在哪個頁面只要有點名就要顯示」，不能只放在 dashboard 專用的 CSS 裡。
+   預設 display:none，没有 .visible 時完全不佔版面、不影響任何頁面的既有排版。 */
+#rollcallPendingFab{
+  position:fixed;
+  right:24px;
+  bottom:24px;
+  width:52px;
+  height:52px;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  border-radius:50%;
+  background:var(--ok,#15803d);
+  color:#fff;
+  text-decoration:none;
+  box-shadow:0 10px 30px rgba(15,23,42,.32);
+  z-index:2147482480;
+  -webkit-tap-highlight-color:transparent;
+}
+#rollcallPendingFab.visible{display:flex}
+#rollcallPendingFab:active{transform:scale(.94)}
+#rollcallPendingFab .rpf-ring{
+  position:absolute;
+  inset:-6px;
+  border-radius:50%;
+  border:2px solid var(--ok,#15803d);
+  opacity:.55;
+  animation:rollcallPendingFabPulse 1.8s ease-out infinite;
+  pointer-events:none;
+}
+#rollcallPendingFab .rpf-icon{
+  width:24px;
+  height:24px;
+  stroke:currentColor;
+  fill:none;
+  stroke-width:2.4;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  position:relative;
+}
+#rollcallPendingFab .rpf-count{
+  position:absolute;
+  top:-4px;
+  right:-4px;
+  min-width:18px;
+  height:18px;
+  padding:0 4px;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  border-radius:999px;
+  background:#dc2626;
+  color:#fff;
+  font-size:11px;
+  font-weight:900;
+  border:2px solid var(--card,#fff);
+}
+#rollcallPendingFab.has-count .rpf-count{display:flex}
+@keyframes rollcallPendingFabPulse{
+  0%{transform:scale(.85);opacity:.55}
+  70%{transform:scale(1.35);opacity:0}
+  100%{opacity:0}
+}
+@media(max-width:820px){
+  /* 手機版導覽列貼右邊 10px，FAB 稍微再內縮一點，視覺上不會疊在一條線上。
+     底部位置（bottom）完全交給 rollcall-pending-fab.js 依實際導覽列高度計算，
+     這裡不寫死，避免 mobile-navigation.css 改高度時兩邊對不齊。 */
+  #rollcallPendingFab{right:16px}
+}

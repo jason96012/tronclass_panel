@@ -62,6 +62,11 @@ const DISCORD_NOTIFICATION_KEYS: &[(&str, &str, &str)] = &[
         "異常流量",
         "60 秒內嘗試次數超過上限的暫時封鎖通知（管理員）",
     ),
+    (
+        "geo_access_request",
+        "國外存取申請",
+        "國外 IP 被「僅限台灣」擋下、按「聯絡管理員」後的申請通知（管理員）",
+    ),
     ("status", "狀態回覆", "主動推送狀態摘要通知（僅 Discord）"),
     (
         "control",
@@ -83,6 +88,7 @@ const PUSH_NOTIFICATION_KEYS: &[&str] = &[
     "monitor_alert",
     "security_alert",
     "traffic_alert",
+    "geo_access_request",
 ];
 
 pub(super) fn resolve_notification_target(

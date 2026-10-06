@@ -40,6 +40,11 @@ pub struct RollcallEventInput {
     pub result: String,
     pub class_total: i64,
     pub class_signed: i64,
+    /// ATT_STATS_AUTO_MANUAL_V1：這次是不是「大家都沒按按鈕，系統因為班上
+    /// 超過 15% 的人點名成功而自動送出」（`AUTO_SUBMIT_BY_CLASS_PROGRESS_V1`／
+    /// fix72）。使用者自己輸入代碼、按「自動讀取」／「系統演算」按鈕都算手動
+    /// （有人動手觸發）；只有系統在完全沒人動手的情況下自己送出才算 `true`。
+    pub auto_submitted: bool,
 }
 
 /// 從資料庫讀出的一筆點名送出紀錄。
@@ -60,6 +65,9 @@ pub struct RollcallEventRow {
     pub class_total: i64,
     #[sqlx(default)]
     pub class_signed: i64,
+    /// ATT_STATS_AUTO_MANUAL_V1：0／1。舊資料（欄位新增前寫入）一律是 0（手動）。
+    #[sqlx(default)]
+    pub auto_submitted: i64,
 }
 
 impl RollcallEventRow {
@@ -78,6 +86,11 @@ impl RollcallEventRow {
 
     pub fn is_success(&self) -> bool {
         self.success != 0
+    }
+
+    /// ATT_STATS_AUTO_MANUAL_V1：見 [`RollcallEventInput::auto_submitted`] 說明。
+    pub fn is_auto_submitted(&self) -> bool {
+        self.auto_submitted != 0
     }
 }
 
@@ -105,6 +118,12 @@ pub struct RollcallCourseStat {
     pub unattended_users: Vec<RollcallUnattendedUser>,
     /// 這門課各送出者的次數（多帳號時一眼看出是誰送的）。
     pub senders: Vec<RollcallSenderStat>,
+    /// ATT_STATS_AUTO_MANUAL_V1：這段期間「系統自動送出」（無人按按鈕，班上
+    /// 超過 15% 人點名成功觸發）的場次數。`auto_count + manual_count == total`。
+    pub auto_count: i64,
+    /// ATT_STATS_AUTO_MANUAL_V1：這段期間「有人動手」（輸入代碼／按自動讀取或
+    /// 系統演算按鈕）送出的場次數。
+    pub manual_count: i64,
 }
 
 /// 單門課最新一次點名場次的摘要資訊。
@@ -125,6 +144,11 @@ pub struct RollcallLatestSession {
     pub class_rate: f64,
     /// 最新這一次未點到名（失敗）的使用者名單。
     pub unattended_users: Vec<RollcallUnattendedUser>,
+    /// ATT_STATS_AUTO_MANUAL_V1：這一場（可能含多帳號）是不是系統自動送出。
+    /// 只要有帳號是「成功且自動送出」就算 `true`；沒有任何成功紀錄時，
+    /// 退而只要有任何一筆自動送出的嘗試就算 `true`（與 `class_total`/
+    /// `class_signed` 採「這個群組裡取最大/有意義的那個值」同一個精神）。
+    pub auto_submitted: bool,
 }
 
 /// 未點到名（簽到失敗）的使用者資訊。
@@ -179,8 +203,8 @@ impl AccountsDb {
 
         let inserted = sqlx::query(
             "INSERT INTO rollcall_events
-                (timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed, auto_submitted)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(timestamp)
         .bind(&account_id)
@@ -193,6 +217,7 @@ impl AccountsDb {
         .bind(&result)
         .bind(input.class_total)
         .bind(input.class_signed)
+        .bind(if input.auto_submitted { 1i64 } else { 0i64 })
         .execute(&self.pool)
         .await
         .into_diagnostic()
@@ -219,7 +244,7 @@ impl AccountsDb {
         let limit = limit.clamp(1, 5000);
         let rows = if let Some(account_id) = account_id.map(str::trim).filter(|v| !v.is_empty()) {
             sqlx::query_as::<_, RollcallEventRow>(
-                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed
+                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed, auto_submitted
                  FROM rollcall_events WHERE account_id = ? AND timestamp >= ?
                  ORDER BY timestamp DESC, id DESC LIMIT ?",
             )
@@ -230,7 +255,7 @@ impl AccountsDb {
             .await
         } else {
             sqlx::query_as::<_, RollcallEventRow>(
-                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed
+                "SELECT id, timestamp, account_id, username, user_name, rollcall_id, course_name, attendance_type, success, result, class_total, class_signed, auto_submitted
                  FROM rollcall_events WHERE timestamp >= ?
                  ORDER BY timestamp DESC, id DESC LIMIT ?",
             )
@@ -315,6 +340,8 @@ pub struct ConsolidatedSessionOutcome {
     pub last_failed_result: String,
     pub class_total: i64,
     pub class_signed: i64,
+    /// ATT_STATS_AUTO_MANUAL_V1：見下方 `consolidate_sessions` 的取值說明。
+    pub auto_submitted: bool,
 }
 
 impl ConsolidatedSessionOutcome {
@@ -367,6 +394,16 @@ pub fn consolidate_sessions(rows: &[RollcallEventRow]) -> Vec<ConsolidatedSessio
         let last_failed_result = last_failed.map(|r| r.result.clone()).unwrap_or_default();
         let class_total = evs.iter().map(|r| r.class_total).max().unwrap_or(0);
         let class_signed = evs.iter().map(|r| r.class_signed).max().unwrap_or(0);
+        // ATT_STATS_AUTO_MANUAL_V1：同一場點名可能因逾時重試留下好幾筆原始紀錄
+        // （例如先被系統自動送出失敗、使用者後來手動再送一次成功）。真正代表
+        // 這場「最終算數的那一次」是「最後一筆成功紀錄」；完全沒有成功紀錄時
+        // （整場都失敗）才退而使用最後一筆嘗試的旗標。
+        let auto_submitted = evs
+            .iter()
+            .filter(|r| r.is_success())
+            .max_by_key(|r| r.timestamp)
+            .map(|r| r.is_auto_submitted())
+            .unwrap_or_else(|| last_ev.is_auto_submitted());
 
         outcomes.push(ConsolidatedSessionOutcome {
             course_name,
@@ -382,6 +419,7 @@ pub fn consolidate_sessions(rows: &[RollcallEventRow]) -> Vec<ConsolidatedSessio
             last_failed_result,
             class_total,
             class_signed,
+            auto_submitted,
         });
     }
 
@@ -423,6 +461,13 @@ pub fn aggregate_courses(rows: &[RollcallEventRow]) -> Vec<RollcallCourseStat> {
             course.failed += 1;
         }
         course.last_at = course.last_at.max(out.timestamp);
+        // ATT_STATS_AUTO_MANUAL_V1：每場（去重後）點名都算進自動或手動其中一邊，
+        // 所以 `auto_count + manual_count` 恆等於 `total`。
+        if out.auto_submitted {
+            course.auto_count += 1;
+        } else {
+            course.manual_count += 1;
+        }
     }
 
     for course in &mut courses {
@@ -459,6 +504,12 @@ fn extract_latest_session_consolidated(
     let mut total = 0i64;
     let mut success = 0i64;
     let mut unattended_users: Vec<RollcallUnattendedUser> = Vec::new();
+    // ATT_STATS_AUTO_MANUAL_V1：這場可能有多個帳號（多帳號同時修同一門課），
+    // 優先看「有成功且自動送出」的那幾筆；若這場全部失敗，退而看「有沒有任何
+    // 自動送出的嘗試」——跟 class_total/class_signed 用 `.max()` 同一個精神：
+    // 在同一個群組裡挑出最有參考價值的那個值。
+    let mut any_success_auto = false;
+    let mut any_auto = false;
 
     for out in outcomes
         .iter()
@@ -467,6 +518,9 @@ fn extract_latest_session_consolidated(
         total += 1;
         if out.success {
             success += 1;
+            if out.auto_submitted {
+                any_success_auto = true;
+            }
         } else {
             unattended_users.push(RollcallUnattendedUser {
                 account_id: out.account_id.clone(),
@@ -478,7 +532,11 @@ fn extract_latest_session_consolidated(
                 last_failed_at: out.last_failed_at,
             });
         }
+        if out.auto_submitted {
+            any_auto = true;
+        }
     }
+    let auto_submitted = if success > 0 { any_success_auto } else { any_auto };
 
     unattended_users.sort_by(|a, b| a.label.cmp(&b.label));
 
@@ -513,6 +571,7 @@ fn extract_latest_session_consolidated(
         class_signed,
         class_rate,
         unattended_users,
+        auto_submitted,
     })
 }
 
@@ -620,7 +679,23 @@ mod tests {
             result: String::new(),
             class_total: 0,
             class_signed: 0,
+            auto_submitted: 0,
         }
+    }
+
+    /// ATT_STATS_AUTO_MANUAL_V1：跟 `row_id` 同一個精神，多帶一個 auto 旗標。
+    fn row_id_auto(
+        course: &str,
+        success: bool,
+        timestamp: i64,
+        account: &str,
+        name: &str,
+        rid: i64,
+        auto: bool,
+    ) -> RollcallEventRow {
+        let mut r = row_id(course, success, timestamp, account, name, rid);
+        r.auto_submitted = if auto { 1 } else { 0 };
+        r
     }
 
     #[test]
@@ -692,6 +767,49 @@ mod tests {
         assert_eq!(courses[0].unattended_users.len(), 1);
         assert_eq!(courses[0].unattended_users[0].label, "學生A");
         assert_eq!(courses[0].unattended_users[0].failed_count, 1);
+    }
+
+    /// ATT_STATS_AUTO_MANUAL_V1：自動／手動次數分別累計，且兩者加總等於 total；
+    /// 「最新一場」的 auto_submitted 以該場「有成功且自動送出」的那筆為準。
+    #[test]
+    fn counts_auto_and_manual_submissions_separately() {
+        let rows = vec![
+            // 場次 1：手動輸入代碼成功
+            row_id_auto("體育", true, 100, "a", "甲", 1, false),
+            // 場次 2：系統因班上超過 15% 自動送出成功
+            row_id_auto("體育", true, 200, "b", "乙", 2, true),
+            // 場次 3：手動失敗（沒有成功紀錄，退回看最後一筆嘗試的旗標＝手動）
+            row_id_auto("體育", false, 300, "c", "丙", 3, false),
+        ];
+        let courses = aggregate_courses(&rows);
+        assert_eq!(courses.len(), 1);
+        assert_eq!(courses[0].total, 3);
+        assert_eq!(courses[0].auto_count, 1);
+        assert_eq!(courses[0].manual_count, 2);
+        assert_eq!(courses[0].auto_count + courses[0].manual_count, courses[0].total);
+
+        // 最新一場（場次 3）全部失敗、唯一一筆嘗試是手動 -> 最新場次標記為手動
+        let ls = courses[0].latest_session.as_ref().unwrap();
+        assert_eq!(ls.timestamp, 300);
+        assert!(!ls.auto_submitted);
+    }
+
+    /// 同一場點名先被系統自動送出失敗、使用者後來手動再送一次成功：
+    /// 代表「最終算數」的是最後那筆成功紀錄（手動），不是先前失敗的自動嘗試。
+    #[test]
+    fn latest_success_wins_over_earlier_failed_auto_attempt() {
+        let rows = vec![
+            row_id_auto("體育", false, 100, "a", "甲", 1, true),
+            row_id_auto("體育", true, 110, "a", "甲", 1, false),
+        ];
+        let courses = aggregate_courses(&rows);
+        assert_eq!(courses.len(), 1);
+        // 去重後只算 1 筆點名（同一場次同一帳號）
+        assert_eq!(courses[0].total, 1);
+        assert_eq!(courses[0].auto_count, 0);
+        assert_eq!(courses[0].manual_count, 1);
+        let ls = courses[0].latest_session.as_ref().unwrap();
+        assert!(!ls.auto_submitted);
     }
 
     #[test]

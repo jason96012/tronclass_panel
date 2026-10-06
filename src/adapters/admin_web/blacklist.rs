@@ -10,6 +10,11 @@
 //      → 位置改由伺服器用 `crate::geoip::resolve` 現查（24 小時快取，私網段直接
 //        標「區域網路內」）；MAC 欄改成真正拿得到的「裝置」（User-Agent 摘要，
 //        新的登入事件會記錄，舊資料顯示「未記錄」）。
+//!
+//! ADMIN_GEO_RESTRICT_V1：「僅限台灣 IP 存取 /admin」開關（`admin_geo_restrict_
+//! get_handler`／`admin_geo_restrict_set_handler`），放在同一個檔案、同一個頁面
+//! ——與 IP 黑名單同屬「誰可以連進管理後台」這個問題，不另開一支模組或一個頁面。
+//! 實際擋人的中介層在 `mod.rs` 的 `reject_foreign_admin_ip_middleware`。
 
 use super::*;
 use super::pages::{inject_theme, ADMIN_BLACKLIST_HTML};
@@ -54,7 +59,12 @@ pub(super) async fn admin_blacklist_page_handler(
 }
 
 /// 位置描述：私網／回送位址不必問外部服務，直接給確定的答案（不會再出現「無法取得」）。
-fn is_private_or_local_ip(ip: &str) -> bool {
+///
+/// `pub(super)`：ADMIN_GEO_RESTRICT_V1 的國外 IP 封鎖中介層（`mod.rs`）也要判斷
+/// 「這個 IP 是不是區網內部」，刻意重用這裡既有的邏輯，不要再長出第三份一樣的
+/// 私網判斷（`mod.rs` 的 `check_unusual_login_location` 裡其實已經有一份幾乎一樣
+/// 但獨立內嵌的邏輯，是既有的技術債，非本次改動範圍，不在這裡一併處理）。
+pub(super) fn is_private_or_local_ip(ip: &str) -> bool {
     match ip.trim().parse::<std::net::IpAddr>() {
         Ok(std::net::IpAddr::V4(v4)) => {
             v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
@@ -356,4 +366,536 @@ pub(super) async fn admin_blacklist_unblock_handler(
         )
             .into_response(),
     }
+}
+
+/// IP_BLACKLIST_AUTO_REDIRECT_V1：黑名單擋下頁面（`blocked.html`）輪詢用——
+/// 跟 geo-restrict 那支 `admin_geo_access_status_handler` 是同一個道理，只是
+/// 這裡查的是「IP 還在不在黑名單」。一樣刻意不需要 session（被擋的人本來就
+/// 登入不了），一樣要排進 `reject_blacklisted_ip_middleware` 與
+/// `reject_foreign_admin_ip_middleware` 兩層中介層的豁免清單，否則被擋的人
+/// 連這支都連不到；限流數字一樣給寬鬆一點，因為是設計成被定時輪詢。
+const BLACKLIST_STATUS_RATE_LIMIT: u32 = 30;
+
+pub(super) async fn admin_blacklist_status_handler(
+    State(state): State<AdminWebState>,
+    ClientIp(ip): ClientIp,
+) -> Response {
+    if ip == "unknown" || is_private_or_local_ip(&ip) {
+        return (StatusCode::OK, Json(json!({ "blacklisted": false }))).into_response();
+    }
+    if !state
+        .rate_limiter
+        .check_limit(
+            &format!(
+                "blacklist-status-ip:{}",
+                crate::trusted_ip::blacklist_group_key(&ip)
+            ),
+            BLACKLIST_STATUS_RATE_LIMIT,
+        )
+        .await
+    {
+        return rate_limited_response();
+    }
+    match state.accounts_db.is_ip_blacklisted(&ip).await {
+        Ok(blacklisted) => {
+            (StatusCode::OK, Json(json!({ "blacklisted": blacklisted }))).into_response()
+        }
+        Err(error) => {
+            // 查詢失敗：誠實回報「還在黑名單」（不要讓前端因為這一次查詢失敗
+            // 就誤判成已經解除、觸發不該發生的自動跳轉），下一次輪詢再試。
+            warn!(error = %error, "查詢 IP 黑名單狀態失敗");
+            (StatusCode::OK, Json(json!({ "blacklisted": true }))).into_response()
+        }
+    }
+}
+
+// ─── ADMIN_GEO_RESTRICT_V1：「僅限台灣 IP 存取 /admin」開關 ─────────────────
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminGeoRestrictRequest {
+    enabled: bool,
+}
+
+/// 讀取目前的開關狀態＋生效中的「本國」國家清單（供前端顯示，例如
+/// 「目前僅允許：TW」），不需要查任何外部服務、單純讀資料庫＋設定檔。
+pub(super) async fn admin_geo_restrict_get_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let enabled = super::geo_restrict_admin_enabled(&state).await;
+    let home_countries = super::geo_restrict_home_countries();
+    (
+        StatusCode::OK,
+        Json(json!({ "enabled": enabled, "home_countries": home_countries })),
+    )
+        .into_response()
+}
+
+pub(super) async fn admin_geo_restrict_set_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminGeoRestrictRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let value = if request.enabled { "1" } else { "0" };
+    match state
+        .accounts_db
+        .set_security_setting(crate::db::GEO_RESTRICT_ADMIN_KEY, value, &session.account_id)
+        .await
+    {
+        Ok(()) => {
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "geo_restrict_admin_toggle",
+                None,
+                None,
+                if request.enabled {
+                    "Web 管理頁開啟「僅限台灣 IP 存取」"
+                } else {
+                    "Web 管理頁關閉「僅限台灣 IP 存取」"
+                },
+            );
+            let _ = state
+                .accounts_db
+                .record_activity_event(crate::db::ActivityEventInput {
+                    kind: "security".to_string(),
+                    actor: session.account_id.clone(),
+                    action: "geo_restrict_admin_toggle".to_string(),
+                    account_id: String::new(),
+                    path: String::new(),
+                    result: "success".to_string(),
+                    details: format!(
+                        "僅限台灣 IP 存取 /admin：{}",
+                        if request.enabled { "開啟" } else { "關閉" }
+                    ),
+                    ip: String::new(),
+                    user_agent: String::new(),
+                })
+                .await;
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "enabled": request.enabled })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("更新「僅限台灣 IP 存取」開關失敗：{error}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// ADMIN_GEO_RESTRICT_V1：訪客在 `geo_blocked.html` 按「聯絡管理員」打的端點。
+/// **刻意不檢查 session**——會被這層擋下的人，定義上就是登入不了的人，若要求
+/// 先登入就等於這顆按鈕永遠按不到。安全性靠三點保證，不是「要不要登入」：
+/// ① 這裡只會新增一筆「待處理」申請並發通知，不會讓任何人多拿到任何存取權限；
+/// ② 真正放行一定要管理員本人在 Discord 按鈕或 `/admin/blacklist` 頁面按過
+///    才會生效；③ 速率限制＋15 分鐘內同 IP 去重，防止被拿來洗版灌爆通知。
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct AdminGeoAccessRequestBody {
+    #[serde(default)]
+    path: String,
+}
+
+/// 同一來源 IP（以黑名單群組鍵計）一分鐘最多幾次——防止誤觸發連點或惡意腳本
+/// 對這支公開端點灌爆請求；真正避免「重複通知」靠的是 DB 層 15 分鐘去重。
+const GEO_ACCESS_REQUEST_IP_RATE_LIMIT: u32 = 3;
+
+/// GEO_ACCESS_BURST_MUTE_V1：單一 IP 限流擋不住「很多不同 IP 一起打」的洗版
+/// ——這裡換個角度看「這段時間內有幾個不同 IP 在申請」，超過視為異常。
+const GEO_ACCESS_BURST_WINDOW_SECS: i64 = 10 * 60;
+/// 10 分鐘內超過這個數字的不同 IP 申請，視為洗版，之後新申請改成靜音
+/// （只在觸發當下發一次彙總警示），直到管理員按「清空並恢復通知」為止。
+const GEO_ACCESS_BURST_THRESHOLD: i64 = 5;
+
+pub(super) async fn admin_geo_access_request_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    ClientIp(ip): ClientIp,
+    body: axum::body::Bytes,
+) -> Response {
+    // 請求體是可選的（純點按鈕也可能完全不帶 body）；解析失敗一律當作沒有帶
+    // path，不要因為格式錯誤就把整個申請擋掉——這支端點本來就不相信呼叫端。
+    let request_path = serde_json::from_slice::<AdminGeoAccessRequestBody>(&body)
+        .map(|b| b.path)
+        .unwrap_or_default();
+    // 私網／本機位址或解析不出 IP：這層限制本來就不會擋這種來源，沒有「申請」
+    // 的意義，也避免內部呼叫誤觸發通知。
+    if ip == "unknown" || is_private_or_local_ip(&ip) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "not_applicable" })),
+        )
+            .into_response();
+    }
+    if !state
+        .rate_limiter
+        .check_limit(
+            &format!(
+                "geo-access-request-ip:{}",
+                crate::trusted_ip::blacklist_group_key(&ip)
+            ),
+            GEO_ACCESS_REQUEST_IP_RATE_LIMIT,
+        )
+        .await
+    {
+        return rate_limited_response();
+    }
+    let cf_ipcountry = super::cf_ipcountry_header(&headers);
+    let geo = crate::geoip::resolve(&ip, cf_ipcountry.as_deref()).await;
+    let location = geo.label();
+    match state
+        .accounts_db
+        .create_or_reuse_geo_access_request(&ip, &location, &request_path)
+        .await
+    {
+        Ok((row, is_new)) => {
+            if is_new {
+                // GEO_ACCESS_BURST_MUTE_V1：先看是不是已經在靜音中（有人之前
+                // 觸發過洗版警示、管理員還沒按「清空並恢復通知」）——靜音中
+                // 完全不發任何通知，只留稽核紀錄，避免管理員被連續灌爆。
+                let muted = state
+                    .accounts_db
+                    .get_security_setting(crate::db::GEO_ACCESS_NOTIFY_MUTED_KEY)
+                    .await
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some("1");
+                if muted {
+                    crate::logs::record_audit(
+                        "web",
+                        "",
+                        "geo_access_request_created_muted",
+                        None,
+                        None,
+                        &format!("國外 IP {ip}（{location}）申請暫時放行（通知靜音中）"),
+                    );
+                } else {
+                    let recent_ip_count = state
+                        .accounts_db
+                        .count_recent_geo_access_ips(GEO_ACCESS_BURST_WINDOW_SECS)
+                        .await
+                        .unwrap_or(0);
+                    if recent_ip_count > GEO_ACCESS_BURST_THRESHOLD {
+                        // 觸發靜音：寫旗標 + 發一次彙總警示，取代這次（以及之後）
+                        // 原本要逐筆發的個別通知。
+                        if let Err(error) = state
+                            .accounts_db
+                            .set_security_setting(
+                                crate::db::GEO_ACCESS_NOTIFY_MUTED_KEY,
+                                "1",
+                                "system",
+                            )
+                            .await
+                        {
+                            warn!(error = %error, "寫入國外存取申請靜音旗標失敗");
+                        }
+                        super::notify_admins_geo_access_burst(&state, recent_ip_count).await;
+                        crate::logs::record_audit(
+                            "web",
+                            "",
+                            "geo_access_request_burst_muted",
+                            None,
+                            None,
+                            &format!(
+                                "10 分鐘內已有 {recent_ip_count} 個不同來源 IP 申請暫時放行，\
+                                 已靜音逐筆通知（本次：{ip} / {location}）"
+                            ),
+                        );
+                    } else {
+                        let event = crate::adapters::events::GeoAccessRequestEvent {
+                            request_id: row.id.clone(),
+                            ip: ip.clone(),
+                            location: row.location.clone(),
+                            path: row.path.clone(),
+                            timestamp: row.requested_time.clone(),
+                        };
+                        super::notify_admins_geo_access_request(&state, event).await;
+                        crate::logs::record_audit(
+                            "web",
+                            "",
+                            "geo_access_request_created",
+                            None,
+                            None,
+                            &format!("國外 IP {ip}（{location}）申請暫時放行"),
+                        );
+                    }
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "already_pending": !is_new })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            warn!(error = %error, "建立國外存取申請失敗");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal_error" })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// GEO_ACCESS_AUTO_REDIRECT_V1：被擋頁面輪詢用——每隔幾秒問一次「我現在算不算
+/// 已被放行」，拿到 `true` 就自己重新整理，不用等使用者手動重新整理。這支
+/// 查詢頻率比申請按鈕高很多（被擋頁面一開就會定時打），限流數字刻意抓寬鬆
+/// 一點；查不到 IP／私網位址一律回 `false`（沒有「放行」的意義，不是錯誤）。
+const GEO_ACCESS_STATUS_RATE_LIMIT: u32 = 30;
+
+pub(super) async fn admin_geo_access_status_handler(
+    State(state): State<AdminWebState>,
+    ClientIp(ip): ClientIp,
+) -> Response {
+    if ip == "unknown" || is_private_or_local_ip(&ip) {
+        return (StatusCode::OK, Json(json!({ "allowed": false }))).into_response();
+    }
+    if !state
+        .rate_limiter
+        .check_limit(
+            &format!(
+                "geo-access-status-ip:{}",
+                crate::trusted_ip::blacklist_group_key(&ip)
+            ),
+            GEO_ACCESS_STATUS_RATE_LIMIT,
+        )
+        .await
+    {
+        return rate_limited_response();
+    }
+    match state.accounts_db.geo_access_is_ip_allowed(&ip).await {
+        Ok(allowed) => (StatusCode::OK, Json(json!({ "allowed": allowed }))).into_response(),
+        Err(error) => {
+            // 查詢失敗：回報「還沒放行」，讓前端繼續輪詢，不要因為這一次查詢
+            // 失敗就誤導使用者（這裡不是要擋存取，只是誠實回報查不到）。
+            warn!(error = %error, "查詢國外存取放行狀態失敗");
+            (StatusCode::OK, Json(json!({ "allowed": false }))).into_response()
+        }
+    }
+}
+
+/// `/admin/blacklist` 頁面的備用清單——Discord 收不到通知、或管理員比較常看
+/// 網頁時，一樣可以在這裡核准／忽略，不是只能靠 Discord 按鈕。
+const GEO_ACCESS_PENDING_LIST_LIMIT: i64 = 100;
+
+pub(super) async fn admin_geo_access_pending_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let muted = state
+        .accounts_db
+        .get_security_setting(crate::db::GEO_ACCESS_NOTIFY_MUTED_KEY)
+        .await
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some("1");
+    match state
+        .accounts_db
+        .list_pending_geo_access_requests(GEO_ACCESS_PENDING_LIST_LIMIT)
+        .await
+    {
+        Ok(rows) => {
+            let items: Vec<Value> = rows
+                .into_iter()
+                .map(|row| {
+                    json!({
+                        "id": row.id,
+                        "ip": row.ip,
+                        "location": row.location,
+                        "path": row.path,
+                        "requested_time": row.requested_time,
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({ "items": items, "muted": muted })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("讀取待處理申請失敗：{error}") })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminGeoAccessActionRequest {
+    id: String,
+}
+
+pub(super) async fn admin_geo_access_approve_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminGeoAccessActionRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    match state
+        .accounts_db
+        .approve_geo_access_request(
+            &request.id,
+            crate::db::GEO_ACCESS_ALLOW_SECONDS,
+            &session.account_id,
+        )
+        .await
+    {
+        Ok(Some(row)) => {
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "geo_access_request_approved",
+                None,
+                None,
+                &format!("Web 管理頁核准國外 IP {} 暫時放行", row.ip),
+            );
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "ip": row.ip, "allowed_until": row.allowed_until })),
+            )
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "not_found_or_already_handled" })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("核准失敗：{error}") })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn admin_geo_access_dismiss_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminGeoAccessActionRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    match state
+        .accounts_db
+        .dismiss_geo_access_request(&request.id, &session.account_id)
+        .await
+    {
+        Ok(true) => {
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "geo_access_request_dismissed",
+                None,
+                None,
+                "Web 管理頁忽略一筆國外存取申請",
+            );
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "not_found_or_already_handled" })),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("忽略失敗：{error}") })),
+        )
+            .into_response(),
+    }
+}
+
+/// GEO_ACCESS_BURST_MUTE_V1：洗版時的「清空並恢復通知」按鈕——把目前所有
+/// 待處理申請一次標成忽略（維持擋下，不放行任何人）並解除靜音旗標，之後
+/// 新申請會恢復逐筆通知。跟核准／忽略一樣要求已登入的管理員身分。
+pub(super) async fn admin_geo_access_clear_all_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let cleared = match state
+        .accounts_db
+        .dismiss_all_pending_geo_access_requests(&session.account_id)
+        .await
+    {
+        Ok(count) => count,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("清空失敗：{error}") })),
+            )
+                .into_response();
+        }
+    };
+    // 不論清空前靜音與否都重設成「未靜音」，恢復逐筆通知；寫入失敗只記警告，
+    // 不讓已經成功的清空動作因此回報失敗（清單本身確實清乾淨了）。
+    if let Err(error) = state
+        .accounts_db
+        .set_security_setting(crate::db::GEO_ACCESS_NOTIFY_MUTED_KEY, "0", &session.account_id)
+        .await
+    {
+        warn!(error = %error, "解除國外存取申請靜音旗標失敗");
+    }
+    crate::logs::record_audit(
+        "web",
+        &session.account_id,
+        "geo_access_request_cleared_all",
+        None,
+        None,
+        &format!("Web 管理頁一鍵清空 {cleared} 筆待處理國外存取申請並恢復通知"),
+    );
+    (
+        StatusCode::OK,
+        Json(json!({ "ok": true, "cleared": cleared })),
+    )
+        .into_response()
 }

@@ -374,15 +374,14 @@ impl TimetableSource for TkuTimetableSource {
 ///
 /// 規則：8 月～次年 1 月為第 1 學期，2 月～7 月為第 2 學期。
 /// 跨年的 1 月仍屬前一學年度的第 1 學期。
+///
+/// SEMESTER_AUTO_CALC_SHARED_V1：日期→學年度/學期的推算規則已收進
+/// `config::academic_year_for()`（原本這裡跟 `api::todos` 的兩個學期判斷函式
+/// 各自重複一份），這裡只做「西元年 → 民國年」的格式轉換。
 pub(crate) fn current_yr_sem(today: chrono::NaiveDate) -> String {
-    let roc_year = today.year() - 1911;
-    let month = today.month();
-    let (academic_year, semester) = match month {
-        8..=12 => (roc_year, 1),
-        1 => (roc_year - 1, 1),
-        _ => (roc_year - 1, 2),
-    };
-    format!("{academic_year}{semester}")
+    let (western_year, semester) = crate::config::academic_year_for(today.year(), today.month());
+    let roc_year = western_year - 1911;
+    format!("{roc_year}{semester}")
 }
 
 /// CURRENT_SEMESTER_OVERRIDE_V1：套用 `[semester] current` 覆蓋後的 YrSem。

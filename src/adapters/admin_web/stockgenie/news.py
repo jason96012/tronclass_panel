@@ -5,11 +5,16 @@ from __future__ import annotations
 import json
 import re
 import time
-import xml.etree.ElementTree as ET
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+# SECURITY_XXE_HARDENING_V1：改用 defusedxml 取代原生 xml.etree.ElementTree。
+# 這裡解析的是從外部網路（RSS feed）抓回來的文字，屬於不受信任的輸入，
+# 原生 xml 函式庫理論上可能受 XML 炸彈（entity expansion）等攻擊影響，
+# Python 官方文件建議一律改用 defusedxml；API 相容（同樣提供 fromstring），
+# 不需要改動下方任何呼叫處。
+import defusedxml.ElementTree as ET
 
 from paths import cache_dir, ensure_dir
 
