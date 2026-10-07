@@ -17,7 +17,7 @@
 //! 實際擋人的中介層在 `mod.rs` 的 `reject_foreign_admin_ip_middleware`。
 
 use super::*;
-use super::pages::{inject_theme, ADMIN_BLACKLIST_HTML};
+use super::pages::{inject_auth_attrs, inject_theme, ADMIN_BLACKLIST_HTML};
 // 編譯修正：`use super::*;` 只帶得進 mod.rs 的 `json!`（父模組只 `use serde_json::json;`），
 // `Value` 不在 scope —— 同層其他模組（ai_chat.rs 等）也都是自己 import。
 use serde_json::Value;
@@ -55,7 +55,13 @@ pub(super) async fn admin_blacklist_page_handler(
     if !session.is_admin {
         return unauthorized_response();
     }
-    html_page_response(&headers, inject_theme(ADMIN_BLACKLIST_HTML))
+    // CSRF_TOKEN_V1：這頁原本不注入任何 session 屬性到 HTML。黑名單/地理限制/
+    // 放行審核等按鈕都是寫入操作，一併補上 data-csrf，讓它們能通過新的顯式
+    // CSRF 檢查。
+    html_page_response(
+        &headers,
+        inject_auth_attrs(&inject_theme(ADMIN_BLACKLIST_HTML), &session),
+    )
 }
 
 /// 位置描述：私網／回送位址不必問外部服務，直接給確定的答案（不會再出現「無法取得」）。

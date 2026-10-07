@@ -645,9 +645,23 @@ pub(super) async fn admin_root_redirect_handler(uri: axum::http::Uri) -> Respons
     (StatusCode::TEMPORARY_REDIRECT, [(header::LOCATION, loc)]).into_response()
 }
 
-pub(super) async fn admin_password_page_handler(headers: HeaderMap) -> Response {
+pub(super) async fn admin_password_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+) -> Response {
     static THEMED: once_cell::sync::Lazy<String> =
         once_cell::sync::Lazy::new(|| inject_theme(ADMIN_PASSWORD_HTML));
+    // CSRF_TOKEN_V1：這頁原本完全不檢查 session——未登入也看得到頁面骨架，真正
+    // 的身分驗證留給 `/admin/api/password`、`/admin/api/status` 等 API 自己把
+    // 關。這裡刻意不新增任何「未登入就擋」的行為，只在剛好帶著合法 cookie
+    // （含 must_change_password 的首登 session）時，額外注入 `data-csrf`，讓
+    // 這頁「變更密碼」表單的寫入請求能通過新的顯式 CSRF 檢查；沒有合法 session
+    // 時維持原樣，跟改動前完全一致。
+    for candidate in super::session_cookie_candidates(&headers) {
+        if let Some(session) = state.authorize_any(&candidate).await {
+            return html_page_response(&headers, inject_auth_attrs(THEMED.as_str(), &session));
+        }
+    }
     html_page_response(&headers, THEMED.clone())
 }
 
@@ -687,9 +701,20 @@ pub(super) async fn admin_settings_page_handler(
     attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(THEMED.as_str(), &page.session)), &page, &headers)
 }
 
-pub(super) async fn admin_passkey_page_handler(headers: HeaderMap) -> Response {
+pub(super) async fn admin_passkey_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+) -> Response {
     static THEMED: once_cell::sync::Lazy<String> =
         once_cell::sync::Lazy::new(|| inject_theme(ADMIN_PASSKEY_HTML));
+    // CSRF_TOKEN_V1：同 admin_password_page_handler 的作法——不新增登入檢查，
+    // 只在偵測到合法 session 時注入 data-csrf，讓「新增通行金鑰」會打的
+    // `/admin/api/passkey/register/*` 寫入請求能通過新的顯式 CSRF 檢查。
+    for candidate in super::session_cookie_candidates(&headers) {
+        if let Some(session) = state.authorize_any(&candidate).await {
+            return html_page_response(&headers, inject_auth_attrs(THEMED.as_str(), &session));
+        }
+    }
     html_page_response(&headers, THEMED.clone())
 }
 
@@ -776,8 +801,8 @@ pub(super) fn attach_fresh_cookies(
     let Some(tokens) = page.fresh_cookies.as_ref() else {
         return response;
     };
-    let response = append_session_cookie(response, &tokens.access, headers);
-    let response = append_refresh_cookie(response, &tokens.refresh, headers);
+    let response = append_session_cookie(response, &tokens.access, headers, tokens.access_max_age);
+    let response = append_refresh_cookie(response, &tokens.refresh, headers, tokens.refresh_max_age);
     if page.session.must_change_password || page.session.account_id == "<token-admin>" {
         return response;
     }
@@ -825,12 +850,19 @@ pub(super) fn inject_auth_state(html: &str, session: &AdminSession) -> String {
 }
 
 /// LOGIN_PERF_V1：`<html>` 上的驗證資料屬性（Dashboard 與所有子頁共用同一組）。
+///
+/// CSRF_TOKEN_V1：一併注入 `data-csrf`（見 `csrf::token_for_account`）。
+/// `session-security.js` 在最早期讀出這個屬性，包一層
+/// `window.fetch`，對所有送往 `/admin/api/*`、`/admin/stock-api/*` 的非 GET
+/// 請求自動附上 `X-CSRF-Token` 標頭；`admin_same_origin_middleware` 收到請求
+/// 時用同一把雜湊查找鍵重算比對。
 fn auth_attrs(session: &AdminSession) -> String {
     format!(
-        " data-auth=\"ok\" data-account=\"{}\" data-admin=\"{}\" data-viewer=\"{}\"",
+        " data-auth=\"ok\" data-account=\"{}\" data-admin=\"{}\" data-viewer=\"{}\" data-csrf=\"{}\"",
         html_attr_escape(&session.account_id),
         if session.is_admin { "1" } else { "0" },
         if session.is_viewer { "1" } else { "0" },
+        html_attr_escape(&super::csrf::token_for_account(&session.account_id)),
     )
 }
 

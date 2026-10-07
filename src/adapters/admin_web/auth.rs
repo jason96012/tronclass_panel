@@ -589,8 +589,9 @@ pub(super) async fn admin_session_refresh_handler(
             .into_response(),
         &tokens.access,
         &headers,
+        tokens.access_max_age,
     );
-    let response = append_refresh_cookie(response, &tokens.refresh, &headers);
+    let response = append_refresh_cookie(response, &tokens.refresh, &headers, tokens.refresh_max_age);
 
     // Rotation invalidates the old access token the Filebrowser SSO ticket was
     // bound to, so re-sign the SSO cookie with the new access token. Bootstrap

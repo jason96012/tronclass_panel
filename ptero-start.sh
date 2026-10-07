@@ -43,6 +43,19 @@ export CARGO_PROFILE_RELEASE_LTO=false
 export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 export CARGO_INCREMENTAL=1
 
+# CARGO_AUTO_UPDATE_V1：定期在背景跑 `cargo update`，把 Cargo.lock 裡鎖住的
+# 依賴套件版本拉到「Cargo.toml 允許範圍內」的最新版（只在 semver 相容範圍內移動，
+# 不會跳 major 版、不會違反 Cargo.toml 寫的版本限制）。用來讓已知的上游安全性
+# 修補（例如 rustls / rustls-webpki 這類純函式庫更新）自動跟上，不必每次都手動
+# SSH 進容器跑 `cargo update`。
+#   CARGO_AUTO_UPDATE=0            關閉此功能，完全不會跑 cargo update。
+#   CARGO_AUTO_UPDATE_INTERVAL_SECS 兩次 cargo update 間至少間隔多久（預設 24 小時）。
+#   CARGO_AUTO_UPDATE_MAX_FAILURES 這次更新造成連續編譯失敗達此次數就自動回滾
+#                                   Cargo.lock 到更新前的版本（預設 3 次）。
+export CARGO_AUTO_UPDATE="${CARGO_AUTO_UPDATE:-1}"
+export CARGO_AUTO_UPDATE_INTERVAL_SECS="${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400}"
+export CARGO_AUTO_UPDATE_MAX_FAILURES="${CARGO_AUTO_UPDATE_MAX_FAILURES:-3}"
+
 mkdir -p config logs run
 
 # Keep a consistent, local recovery copy of the Dashboard credential database.
@@ -1093,6 +1106,43 @@ src_hash() {
   [[ -n "$h" ]] && printf '%s' "$h" || printf 'empty'
 }
 
+# ─── CARGO_AUTO_UPDATE_V1：定期背景跑 cargo update，自動跟上上游安全性修補 ──
+# 只在 Cargo.toml 允許的 semver 範圍內移動版本（不會跳 major、不會破壞既有
+# 版本限制），等同於請人定期手動跑一次 `cargo update`。真的更新到東西時，
+# Cargo.lock 內容會變 → 下一輪 src_hash() 自然偵測到變化、交給既有的
+# hot_rebuild_if_needed() 去重編＋換 binary，不另外寫一套重編流程。
+# 若這次更新造成連續編譯失敗，自動把 Cargo.lock 還原成更新前的版本，
+# 避免服務卡在「舊 binary 一直在跑、但新版怎麼編都失敗」的無限重試迴圈。
+cargo_auto_update_if_due() {
+  [[ "${CARGO_AUTO_UPDATE:-1}" == "1" ]] || return 1
+  [[ -f Cargo.toml ]] || return 1
+  command -v cargo >/dev/null 2>&1 || return 1
+  local now last
+  now="$(date +%s)"
+  last="$(cat logs/cargo-auto-update.last 2>/dev/null || echo 0)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  if (( now - last < ${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400} )); then
+    return 1
+  fi
+  printf '%s\n' "$now" > logs/cargo-auto-update.last
+  echo "[watchdog] 定期 cargo update：檢查依賴套件是否有相容的新版本"
+  cp -f Cargo.lock logs/Cargo.lock.before-auto-update 2>/dev/null || true
+  if ! cargo update >> logs/cargo-auto-update.log 2>&1; then
+    echo "[watchdog] cargo update 本身失敗（可能是網路問題），還原 Cargo.lock"
+    [[ -f logs/Cargo.lock.before-auto-update ]] && cp -f logs/Cargo.lock.before-auto-update Cargo.lock
+    return 1
+  fi
+  if cmp -s Cargo.lock logs/Cargo.lock.before-auto-update 2>/dev/null; then
+    echo "[watchdog] cargo update：依賴套件已是允許範圍內的最新版，無變更"
+    rm -f logs/Cargo.lock.before-auto-update
+    return 1
+  fi
+  echo "[watchdog] cargo update 已更新 Cargo.lock，詳見 logs/cargo-auto-update.log；將於下一輪熱重編套用"
+  rm -f logs/cargo-auto-update-rebuild-failures
+  touch logs/cargo-auto-update-pending-verify
+  return 0
+}
+
 # ─── 熱重編：來源內容有變時，背景重新編譯並替換執行中的程式 ─────────────
 # 讓使用者在面板上傳新 src/ 後「不用按 Restart」：看門狗會自動偵測、編譯，
 # 成功後短暫重啟服務程序（Pterodactyl 本身不重啟）。設 HOT_REBUILD=0 可關閉。
@@ -1129,9 +1179,34 @@ hot_rebuild_if_needed() {
     touch "$bin" 2>/dev/null || true
     touch logs/hot-rebuild.pending
     echo "[watchdog] 編譯完成，即將以新 binary 替換（僅服務程序短暫重啟）"
+    # 這次重編成功套用了 cargo_auto_update_if_due() 更新過的 Cargo.lock：
+    # 不需要再保留回滾備份，清掉驗證旗標與失敗計數。
+    if [[ -f logs/cargo-auto-update-pending-verify ]]; then
+      echo "[watchdog] cargo update 的新依賴版本編譯成功，保留使用"
+      rm -f logs/cargo-auto-update-pending-verify logs/cargo-auto-update-rebuild-failures logs/Cargo.lock.before-auto-update
+    fi
     return 0
   fi
   echo "[watchdog] 編譯失敗，維持舊 binary；上傳修正後的新檔會自動重試"
+  # CARGO_AUTO_UPDATE_ROLLBACK_V1：如果這次失敗是 cargo_auto_update_if_due()
+  # 更新 Cargo.lock 造成的（而不是使用者自己上傳的 src/ 有問題），連續失敗
+  # 達 CARGO_AUTO_UPDATE_MAX_FAILURES 次就自動還原成更新前的 Cargo.lock，
+  # 避免每 HOT_REBUILD_BACKOFF_SECS 秒就徒勞重編一次、永遠卡住。
+  if [[ -f logs/cargo-auto-update-pending-verify && -f logs/Cargo.lock.before-auto-update ]]; then
+    local auf
+    auf="$(cat logs/cargo-auto-update-rebuild-failures 2>/dev/null || echo 0)"
+    [[ "$auf" =~ ^[0-9]+$ ]] || auf=0
+    auf=$((auf + 1))
+    printf '%s\n' "$auf" > logs/cargo-auto-update-rebuild-failures
+    echo "[watchdog] 本次編譯失敗疑似與自動 cargo update 有關（連續 ${auf}/${CARGO_AUTO_UPDATE_MAX_FAILURES:-3} 次）"
+    if (( auf >= ${CARGO_AUTO_UPDATE_MAX_FAILURES:-3} )); then
+      echo "[watchdog] 已達上限，自動回滾 Cargo.lock 到 cargo update 之前的版本"
+      cp -f logs/Cargo.lock.before-auto-update Cargo.lock
+      rm -f logs/cargo-auto-update-pending-verify logs/cargo-auto-update-rebuild-failures logs/Cargo.lock.before-auto-update
+      # 讓下一輪 watchdog 用還原後的 Cargo.lock 重新觸發一次編譯。
+      rm -f logs/hot-rebuild.last
+    fi
+  fi
   return 1
 }
 
@@ -1146,6 +1221,7 @@ watchdog_loop() {
     rotate_logs
     watchdog_start_tunnel
     watchdog_start_stockgenie
+    cargo_auto_update_if_due || true
     if hot_rebuild_if_needed "$bin"; then
       kill "$child" 2>/dev/null || true
       break
@@ -1195,6 +1271,11 @@ run_bin() {
       echo "[ptero-start] 熱重編監控：已啟用（每 ${WATCHDOG_INTERVAL_SECS:-15}s 檢查 src/ 是否比 binary 新，新則自動重編、免重啟）"
     else
       echo "[ptero-start] 熱重編監控：已關閉（HOT_REBUILD=0）"
+    fi
+    if [[ "${CARGO_AUTO_UPDATE:-1}" == "1" ]]; then
+      echo "[ptero-start] cargo update 自動更新：已啟用（每 ${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400}s 檢查一次依賴套件，連續編譯失敗 ${CARGO_AUTO_UPDATE_MAX_FAILURES:-3} 次會自動回滾）"
+    else
+      echo "[ptero-start] cargo update 自動更新：已關閉（CARGO_AUTO_UPDATE=0）"
     fi
     "$bin" &
     local child=$!

@@ -20,6 +20,81 @@
   var resumeValidation = null;
   var lastResumeValidationAt = 0;
 
+  // CSRF_TOKEN_V1: wrap window.fetch here, as early as possible — this script
+  // is loaded synchronously at the very start of every admin page's <head>
+  // (see pages.rs inject_theme's SHARED_ASSETS), before subpage-fetch.js,
+  // dashboard.html's own RUNTIME_PATCH_CONSOLIDATE_V1 patch, or any page's own
+  // inline <script> gets a chance to run. Whichever of those captures
+  // "window.fetch" as its own "native" reference afterwards is actually
+  // capturing this wrapped version, so every mutating request to
+  // /admin/api/* automatically carries the explicit
+  // X-CSRF-Token header exactly once, no matter how many layers of fetch
+  // wrapping a given page stacks on top of this one. The server side of this
+  // check lives in admin_same_origin_middleware / csrf.rs.
+  (function installCsrfFetchGuard() {
+    var CSRF_HEADER = 'X-CSRF-Token';
+    var MUTATING_METHODS = { POST: 1, PUT: 1, PATCH: 1, DELETE: 1 };
+    var preCsrfFetch = window.fetch;
+    if (typeof preCsrfFetch !== 'function') return;
+
+    function csrfTokenValue() {
+      try {
+        return document.documentElement.getAttribute('data-csrf') || '';
+      } catch (_) {
+        return '';
+      }
+    }
+
+    function needsCsrfHeader(url, method) {
+      if (!MUTATING_METHODS[String(method || 'GET').toUpperCase()]) return false;
+      try {
+        var resolved = new URL(url, window.location.href);
+        if (resolved.origin !== window.location.origin) return false;
+        // Matches the server-side enforcement scope exactly (see
+        // admin_same_origin_middleware / csrf.rs): /admin/stock-api/* is the
+        // StockGenie sidecar's own isolated frontend, never loads this
+        // script, and is intentionally not covered by the explicit token.
+        return resolved.pathname.indexOf('/admin/api/') === 0;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    window.fetch = function (input, init) {
+      try {
+        // Only the common (and, in this codebase, exclusive) call shape —
+        // fetch(stringUrl, { method, ... }) — is handled. A Request object
+        // as the first argument is passed through untouched rather than
+        // risked being rebuilt (streaming bodies/FormData could be mangled);
+        // worst case that one call gets a 403 from the server-side check,
+        // which is a visible, debuggable failure rather than a corrupted
+        // request body.
+        if (typeof input === 'string') {
+          var method = (init && init.method) || 'GET';
+          if (needsCsrfHeader(input, method)) {
+            var token = csrfTokenValue();
+            if (token) {
+              var nextInit = init ? Object.assign({}, init) : {};
+              var h = nextInit.headers;
+              if (h instanceof Headers) {
+                h.set(CSRF_HEADER, token);
+              } else if (Array.isArray(h)) {
+                nextInit.headers = h.concat([[CSRF_HEADER, token]]);
+              } else {
+                nextInit.headers = Object.assign({}, h || {});
+                nextInit.headers[CSRF_HEADER] = token;
+              }
+              init = nextInit;
+            }
+          }
+        }
+      } catch (_) {
+        // Never let CSRF header injection break a real request.
+      }
+      return preCsrfFetch.call(window, input, init);
+    };
+  })();
+
   function storageItems() {
     var out = [];
     try { out.push(localStorage); } catch (_) {}

@@ -308,6 +308,12 @@
     var status=currentStatus();
     if(!status || !status.current_account_id){ if(tries>240) clearInterval(autoTimer); return; }
     if(status.must_change_password){ clearInterval(autoTimer); return; }
+    /* TKU_NOTICE_BEFORE_ONBOARDING_V1：淡江校園網段的「這次 session 只有 1 小時」
+       提示要先讓使用者看到、關掉之後，新手導覽才能跳出來——不是兩個疊在一起、也不是
+       導覽先蓋住提示。dashboard.html 的 maybeShowTkuNotice() 在提示顯示/關閉時會
+       切換 window.__tkuNoticeOpen；這裡只要發現它還開著就先不清 interval、直接
+       return，500ms 後自動再檢查一次，提示關掉後下一輪就會正常往下開導覽。 */
+    if(window.__tkuNoticeOpen){ return; }
     clearInterval(autoTimer);
     if(forceFromUrl || !isDone(status.current_account_id)){
       forceFromUrl=false;

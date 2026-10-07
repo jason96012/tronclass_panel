@@ -37,6 +37,12 @@ pub(super) struct AdminStatusResponse {
     /// ONBOARDING_PUSH_STATE_V1：目前登入帳號在伺服器端登記的 Web Push 訂閱裝置數
     /// （新手導覽用；本機瀏覽器沒訂閱但別台手機有訂閱時，仍應顯示「已啟用（其他裝置）」）。
     push_subscription_count: Option<i64>,
+    /// TKU_SHORT_SESSION_NOTICE_V1：這次打 /admin/api/status 的來源 IP 是否落在淡江
+    /// 大學校園網段（163.13.0.0/16）——為真時代表這個 session 只有 1 小時效期（而非
+    /// 一般的 12 小時／7 天），前端用來決定要不要跳一次性提示告知使用者。只看「這次
+    /// 請求」的來源 IP，不是登入當下存的值：使用者中途換網路（例如離開校園）時，這裡
+    /// 會立刻反映目前的真實狀態，但不會回頭延長或縮短已經核發的 session 本身效期。
+    tku_short_session: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -457,6 +463,9 @@ pub(super) async fn admin_status_handler(
     // measurements around lock acquisition and SQLite, rather than around
     // individual accounts, to avoid leaking account-specific timing.
     let request_started = Instant::now();
+    // TKU_SHORT_SESSION_NOTICE_V1：這次請求的來源 IP 是否在淡江網段，供下面兩處
+    // AdminStatusResponse 共用（must_change_password 分支與正常分支都要帶）。
+    let tku_short_session = is_tku_campus_ip(&ip);
     // PERFORMANCE_STATUS_AUTH_V1:
     // The session_cookie_to_query_middleware already injected the HttpOnly
     // cookie into query.token, so we can skip redundant header parsing.
@@ -538,6 +547,7 @@ pub(super) async fn admin_status_handler(
             rest_day: None,
             passkey_count: None,
             push_subscription_count: None,
+            tku_short_session,
         });
         admin_status_short_cache_put(cache_key, response_json.clone()).await;
         return (StatusCode::OK, Json(response_json)).into_response();
@@ -719,6 +729,7 @@ pub(super) async fn admin_status_handler(
         rest_day: crate::holidays::rest_day_reason(chrono::Local::now().date_naive()),
         passkey_count,
         push_subscription_count,
+        tku_short_session,
     });
 
     admin_status_short_cache_put(cache_key, response_json.clone()).await;

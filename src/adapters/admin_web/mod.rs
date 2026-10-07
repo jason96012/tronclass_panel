@@ -53,6 +53,7 @@ mod ai_chat;
 mod asset_versions;
 mod auth;
 mod blacklist;
+mod csrf;
 mod class_reminder;
 mod bulletins;
 mod detection_schedule;
@@ -185,6 +186,14 @@ const TC_PAGE_GRANT_TTL_SECS: u64 = 30 * 60;
 const ACCESS_TOKEN_TTL: Duration = Duration::from_secs(12 * 60 * 60);
 /// Long-lived refresh token lifetime (7 days). Each refresh rotates it.
 const REFRESH_TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// TKU_SHORT_SESSION_V1：淡江大學校園網段（163.13.0.0/16，TANet 配賦給淡江大學，
+/// 已以 WHOIS 核實）登入時，access／refresh 一律縮短為 1 小時，逾時即需重新登入
+/// ——不會被背景 refresh 悄悄延長。此網段是校園共用網路（實驗室／公用電腦等風險
+/// 較高的環境常見於此類網段），縮短曝險窗口；其餘來源 IP 不受影響，仍是原本的
+/// 12 小時／7 天。套用點只有 `create_session_with` 一處：無論是全新登入或是
+/// refresh 輪換（輪換時沿用的是原始登入 IP，見 `SessionOrigin::or_fill`），
+/// 只要這個 session 的來源 IP 落在此網段，每次重新核發 token 都會套用這個短效期。
+const TKU_SHORT_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_SESSIONS: usize = 500;
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
@@ -213,13 +222,15 @@ const LOGIN_GEO_SUSPICIOUS_FAILURES: u32 = 3;
 const SESSION_COOKIE_MARKER: &str = "cookie";
 const SECURE_SESSION_COOKIE: &str = "__Host-tronclass_admin_session";
 const LOCAL_SESSION_COOKIE: &str = "tronclass_admin_session";
-/// HttpOnly access-token cookie lifetime (matches ACCESS_TOKEN_TTL).
-// DASHBOARD_ACCESS_TTL_V1: HttpOnly access-token cookie 壽命對齊 ACCESS_TOKEN_TTL。
-const SESSION_COOKIE_MAX_AGE: u64 = 12 * 60 * 60;
-/// HttpOnly refresh-token cookie name and lifetime.
+/// HttpOnly refresh-token cookie name.
 const SECURE_REFRESH_COOKIE: &str = "__Host-tronclass_admin_refresh";
 const LOCAL_REFRESH_COOKIE: &str = "tronclass_admin_refresh";
-const REFRESH_COOKIE_MAX_AGE: u64 = 7 * 24 * 60 * 60;
+// TKU_SHORT_SESSION_V1：access/refresh cookie 的實際 Max-Age 不再是固定常數——
+// 一律由 `create_session_with` 依來源 IP 算好、經 `SessionTokens.access_max_age`／
+// `refresh_max_age` 交給 `append_session_cookie`／`append_refresh_cookie`。一般情況
+// 下數值仍等於 `ACCESS_TOKEN_TTL`／`REFRESH_TOKEN_TTL`；原本這裡重複定義的
+// `SESSION_COOKIE_MAX_AGE`／`REFRESH_COOKIE_MAX_AGE`（與上面兩個常數數值完全相同）
+// 已移除，避免兩份數字各自維護、容易改一個漏改另一個。
 
 /// HSTS_PRELOAD_ALIGN_V1：HSTS 只在這一處定義，面板／智選／掃碼頁共用。
 ///
@@ -1813,6 +1824,10 @@ struct GraceEntry {
     access: String,
     refresh: String,
     expires_at: Instant,
+    /// TKU_SHORT_SESSION_V1：延續原本那次核發時算好的 cookie Max-Age（秒），
+    /// 讓寬限視窗內的重播回應也帶正確的壽命（而不是重播時又套用預設值）。
+    access_max_age: u64,
+    refresh_max_age: u64,
 }
 
 /// PROXY_CSRF_BRIDGE_V1（fix40）：iClass 的 `csrftoken`（Django CSRF cookie）。
@@ -1896,6 +1911,30 @@ impl SessionOrigin {
     }
 }
 
+/// TKU_SHORT_SESSION_V1：判斷來源 IP 是否落在淡江大學網段（163.13.0.0/16，
+/// 經 WHOIS 核實為該校配賦範圍）。空字串／無法解析一律回傳 false（fail-open：
+/// 查不出來源 IP 時維持原本的 12 小時／7 天效期，不會誤傷其他使用者）。
+fn is_tku_campus_ip(ip: &str) -> bool {
+    let ip = ip.trim();
+    if ip.is_empty() {
+        return false;
+    }
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let o = v4.octets();
+            o[0] == 163 && o[1] == 13
+        }
+        Ok(std::net::IpAddr::V6(v6)) => v6
+            .to_ipv4_mapped()
+            .map(|v4| {
+                let o = v4.octets();
+                o[0] == 163 && o[1] == 13
+            })
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 /// VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：`create_session` 的完整參數。
 #[derive(Debug, Clone, Default)]
 struct NewSession {
@@ -1912,6 +1951,15 @@ struct NewSession {
 struct SessionTokens {
     access: String,
     refresh: String,
+    /// TKU_SHORT_SESSION_V1：這次核發的 cookie 該用多少 Max-Age（秒）——一般
+    /// 情況下等於 `ACCESS_TOKEN_TTL`／`REFRESH_TOKEN_TTL`，但來源 IP
+    /// 落在淡江大學網段時會是 `TKU_SHORT_SESSION_TTL`。由 `create_session_with`
+    /// 算好後經由這兩個欄位交給 `append_session_cookie`／`append_refresh_cookie`，
+    /// 這樣瀏覽器裡 cookie 本身宣告的壽命才會跟伺服器端真正認定的到期時間一致
+    /// （不然伺服器端 1 小時後就會拒絕，但瀏覽器 DevTools 看到的 Max-Age 卻還是
+    /// 舊的 12 小時／7 天，造成「怎麼看起來沒生效」的困惑）。
+    access_max_age: u64,
+    refresh_max_age: u64,
 }
 
 impl AdminWebState {
@@ -2284,20 +2332,27 @@ impl AdminWebState {
         // 也不可預測；搭配落盤 SHA-256 與重放偵測，枚舉空間趨近無限大。
         let access = mint_secure_token();
         let refresh = mint_secure_token();
+        // TKU_SHORT_SESSION_V1：來源 IP 落在淡江大學網段時，這次核發的 access／
+        // refresh 都只給 1 小時（見常數定義處的完整說明）。
+        let (access_ttl, refresh_ttl) = if is_tku_campus_ip(&origin.ip) {
+            (TKU_SHORT_SESSION_TTL, TKU_SHORT_SESSION_TTL)
+        } else {
+            (ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL)
+        };
         let session = AdminSession {
             account_id: account_id.clone(),
             is_admin,
             is_viewer,
             must_change_password,
-            expires_at: Instant::now() + ACCESS_TOKEN_TTL,
+            expires_at: Instant::now() + access_ttl,
         };
 
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let access_expires_at = now_unix + ACCESS_TOKEN_TTL.as_secs() as i64;
-        let refresh_expires_at = now_unix + REFRESH_TOKEN_TTL.as_secs() as i64;
+        let access_expires_at = now_unix + access_ttl.as_secs() as i64;
+        let refresh_expires_at = now_unix + refresh_ttl.as_secs() as i64;
 
         if let Err(e) = self
             .accounts_db
@@ -2333,7 +2388,12 @@ impl AdminWebState {
         // SESSION_TOKEN_HASH_V1：map 鍵 = SHA-256(access)；回給呼叫端的
         // SessionTokens 仍是明文（走 cookie），伺服器端不留明文。
         sessions.insert(crate::db::session_lookup_key(&access), session);
-        SessionTokens { access, refresh }
+        SessionTokens {
+            access,
+            refresh,
+            access_max_age: access_ttl.as_secs(),
+            refresh_max_age: refresh_ttl.as_secs(),
+        }
     }
 
     /// Rotate a refresh token into a fresh access+refresh pair.
@@ -2549,10 +2609,16 @@ impl AdminWebState {
                 .unwrap_or_else(|poison| poison.into_inner());
             let now = Instant::now();
             map.retain(|_, entry| entry.expires_at > now);
-            map.get(refresh_token)
-                .map(|entry| (entry.access.clone(), entry.refresh.clone()))
+            map.get(refresh_token).map(|entry| {
+                (
+                    entry.access.clone(),
+                    entry.refresh.clone(),
+                    entry.access_max_age,
+                    entry.refresh_max_age,
+                )
+            })
         };
-        let (access, refresh) = entry?;
+        let (access, refresh, access_max_age, refresh_max_age) = entry?;
         // SESSION_TOKEN_HASH_V1：grace 記錄存的是明文 access，比對前先散列對齊 map 鍵。
         let alive = self
             .sessions
@@ -2563,7 +2629,12 @@ impl AdminWebState {
             self.refresh_grace_forget(refresh_token);
             return None;
         }
-        Some(SessionTokens { access, refresh })
+        Some(SessionTokens {
+            access,
+            refresh,
+            access_max_age,
+            refresh_max_age,
+        })
     }
 
     /// REFRESH_ROTATE_GRACE_V1（fix38）：記下舊 refresh 對應的輪換結果。
@@ -2580,6 +2651,8 @@ impl AdminWebState {
                 access: tokens.access.clone(),
                 refresh: tokens.refresh.clone(),
                 expires_at: now + Duration::from_secs(SESSION_ROTATE_GRACE_SECS),
+                access_max_age: tokens.access_max_age,
+                refresh_max_age: tokens.refresh_max_age,
             },
         );
     }
@@ -2736,6 +2809,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
     let blacklist_guard_state = state.clone();
     let geo_guard_state = state.clone();
     let waf_guard_state = state.clone();
+    let same_origin_guard_state = state.clone();
     Router::new()
         // SEO_LANDING_V1（fix60）：`/` 依身分分流——已登入照舊 302 到 `/admin`，
         // 未登入回公開介紹頁（Google 唯一收得到的內容）。
@@ -3612,7 +3686,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             password_guard_state,
             require_dashboard_password_change_middleware,
         ))
-        .layer(axum::middleware::from_fn(admin_same_origin_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            same_origin_guard_state,
+            admin_same_origin_middleware,
+        ))
         .layer(axum::middleware::from_fn(
             session_cookie_to_query_middleware,
         ))
@@ -3962,7 +4039,15 @@ fn session_cookie_value_named(headers: &HeaderMap, want: &str) -> Option<String>
     None
 }
 
-fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMap) -> Response {
+/// `max_age_secs`：TKU_SHORT_SESSION_V1 起，呼叫端傳入這次核發時實際算好的壽命
+/// （一般情況下就是 `ACCESS_TOKEN_TTL`；來源 IP 在淡江大學網段時會更短）
+/// ——瀏覽器裡 cookie 本身宣告的到期時間，才會跟伺服器端真正認定的到期時間一致。
+fn append_session_cookie(
+    mut response: Response,
+    token: &str,
+    headers: &HeaderMap,
+    max_age_secs: u64,
+) -> Response {
     let name = session_cookie_name(headers);
     let secure = if name == SECURE_SESSION_COOKIE {
         "; Secure"
@@ -3970,7 +4055,7 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
         ""
     };
     let cookie = format!(
-        "{name}={token}; Path=/; Max-Age={SESSION_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure}"
+        "{name}={token}; Path=/; Max-Age={max_age_secs}; HttpOnly; SameSite=Lax{secure}"
     );
     // The session token is generated hex so this always parses, but never panic
     // on a header in the login path.
@@ -4015,10 +4100,13 @@ fn append_session_cookie(mut response: Response, token: &str, headers: &HeaderMa
 /// 規則——舊版連單向清理都沒有，只要歷史上出現過不同名字的 refresh cookie
 ///（http 期 vs https 期），讀取端永遠優先讀到舊的那一顆，輪換就會以「已消耗
 /// 的 refresh token」失敗，前端接著把使用者登出。
+/// `max_age_secs`：TKU_SHORT_SESSION_V1 起，呼叫端傳入這次核發時實際算好的壽命
+/// （一般情況下就是 `REFRESH_TOKEN_TTL`；來源 IP 在淡江大學網段時會更短）。
 fn append_refresh_cookie(
     mut response: Response,
     refresh_token: &str,
     headers: &HeaderMap,
+    max_age_secs: u64,
 ) -> Response {
     let secure = request_uses_https(headers);
     let (name, secure_attr) = if secure {
@@ -4027,7 +4115,7 @@ fn append_refresh_cookie(
         (LOCAL_REFRESH_COOKIE, "")
     };
     let cookie = format!(
-        "{name}={refresh_token}; Path=/; Max-Age={REFRESH_COOKIE_MAX_AGE}; HttpOnly; SameSite=Lax{secure_attr}"
+        "{name}={refresh_token}; Path=/; Max-Age={max_age_secs}; HttpOnly; SameSite=Lax{secure_attr}"
     );
     if let Ok(value) = cookie.parse::<HeaderValue>() {
         response.headers_mut().append(header::SET_COOKIE, value);
@@ -4400,7 +4488,30 @@ fn same_origin_request(headers: &HeaderMap) -> bool {
 
 /// Reject browser cross-site state changes before they reach authenticated
 /// handlers. SameSite=Lax cookies remain the primary CSRF control.
+///
+/// CSRF_TOKEN_V1：在既有 Origin／Sec-Fetch-Site 比對之上，疊加一層顯式、
+/// 不可被第三方猜到的 `X-CSRF-Token` 標頭檢查。
+///
+/// 只有「這次請求帶著的 cookie 剛好能解析出一個目前仍有效的 session」時才
+/// 要求這個標頭——找不到有效 session 的情況（登入、passkey 登入、session 剛
+/// 好過期需要刷新……）一律放行，交給下游真正的 handler 用它自己的邏輯回應
+/// 「未登入/401」，CSRF 檢查不搶在它前面用一個容易誤導的 403 蓋過去。
+/// `/admin/api/logout` 另外在 `csrf::is_exempt_path` 固定豁免：即使 session
+/// 有效也不要求 token，確保使用者在任何情況下都能登出（跟
+/// `reject_blacklisted_ip_middleware` 對登出端點的一貫處理方式相同）。
+///
+/// token = HMAC-SHA256(行程密鑰, account_id)——綁在帳號而非單一 access/refresh
+/// token 上，背景靜默刷新（`/admin/api/session/refresh` 換發新 access token）
+/// 不會讓頁面上已經嵌入的 `data-csrf` 失效，使用者不需要整頁重新整理。
+///
+/// 範圍刻意只到 `/admin/api/*`，不含 `/admin/stock-api/*`：StockGenie
+/// 側車（`stock.rs`）是獨立前端（`stockgenie/static/index.html`），刻意跳過
+/// `inject_theme`／`session-security.js` 等整套面板資產（見 `stock_page_html`
+/// 與 `STOCK_SECURITY_HEADERS_V1` 的說明），沒有管道能拿到 `data-csrf`；把它
+/// 一併納入會直接打斷現有功能。這段既有的 Origin／Sec-Fetch-Site 比對不變，
+/// 新增的顯式 token 檢查就不擴及這個子路由。
 async fn admin_same_origin_middleware(
+    State(state): State<AdminWebState>,
     headers: HeaderMap,
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -4410,15 +4521,28 @@ async fn admin_same_origin_middleware(
         || method == Method::PUT
         || method == Method::PATCH
         || method == Method::DELETE;
-    let same_origin_api = request.uri().path().starts_with("/admin/api/")
-        || request.uri().path().starts_with("/admin/stock-api/");
-    if mutating && same_origin_api && !same_origin_request(&headers)
-    {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "cross-origin request rejected" })),
-        )
-            .into_response();
+    let path = request.uri().path();
+    let is_admin_api = path.starts_with("/admin/api/");
+    let same_origin_api = is_admin_api || path.starts_with("/admin/stock-api/");
+    if mutating && same_origin_api {
+        if !same_origin_request(&headers) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "cross-origin request rejected" })),
+            )
+                .into_response();
+        }
+        if is_admin_api && !csrf::is_exempt_path(path) {
+            if let Some(session) = state.authorize_any_from_cookies(&headers).await {
+                if !csrf::request_has_valid_token(&headers, &session.account_id) {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "missing or invalid csrf token" })),
+                    )
+                        .into_response();
+                }
+            }
+        }
     }
     next.run(request).await
 }
@@ -4926,10 +5050,16 @@ fn session_login_response(
             .into_response(),
         &tokens.access,
         request_headers,
+        tokens.access_max_age,
     );
     // Refresh cookie is always set alongside the access cookie (bootstrap too,
     // so the mandatory password-change flow can keep refreshing).
-    let response = append_refresh_cookie(response, &tokens.refresh, request_headers);
+    let response = append_refresh_cookie(
+        response,
+        &tokens.refresh,
+        request_headers,
+        tokens.refresh_max_age,
+    );
 
     // A bootstrap login authenticates with the upstream Tronclass password and
     // is restricted to changing the Dashboard password. It must not also hand
@@ -5114,6 +5244,137 @@ fn unauthorized_response() -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // TKU_SHORT_SESSION_V1：163.13.0.0/16 判定要精準（整個 /16，不多不少），
+    // 相鄰網段（163.12.x.x／163.14.x.x）不能被誤判，IPv4-mapped IPv6 也要認得出來。
+    #[test]
+    fn tku_campus_ip_matches_only_163_13_slash_16() {
+        assert!(is_tku_campus_ip("163.13.0.1"));
+        assert!(is_tku_campus_ip("163.13.255.254"));
+        assert!(is_tku_campus_ip("  163.13.45.67  ")); // 前後空白要能容忍
+        assert!(is_tku_campus_ip("::ffff:163.13.1.1")); // IPv4-mapped IPv6
+        assert!(!is_tku_campus_ip("163.12.255.255")); // 相鄰網段：東吳大學
+        assert!(!is_tku_campus_ip("163.14.0.1")); // 相鄰網段：東吳大學
+        assert!(!is_tku_campus_ip("8.8.8.8"));
+        assert!(!is_tku_campus_ip(""));
+        assert!(!is_tku_campus_ip("not-an-ip"));
+        assert!(!is_tku_campus_ip("unknown"));
+    }
+
+    #[tokio::test]
+    async fn session_from_tku_ip_gets_one_hour_ttl_others_keep_default() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+
+        // 來源 IP 在淡江網段：access/refresh 都應該被壓到 1 小時左右（而非預設
+        // 12 小時／7 天）。用寬鬆的時間窗（55~65 分鐘）避免測試本身的執行耗時
+        // 造成偶發性失敗。
+        let tku_tokens = state
+            .create_session_with(NewSession {
+                account_id: "tku-user".to_string(),
+                is_admin: false,
+                is_viewer: false,
+                must_change_password: false,
+                origin: SessionOrigin {
+                    ip: "163.13.22.33".to_string(),
+                    user_agent: String::new(),
+                    first_login_at: 0,
+                },
+            })
+            .await;
+        let session = state
+            .authorize_any(&tku_tokens.access)
+            .await
+            .expect("session should exist right after creation");
+        let remaining = session
+            .expires_at
+            .saturating_duration_since(Instant::now());
+        assert!(
+            remaining >= Duration::from_secs(55 * 60) && remaining <= Duration::from_secs(65 * 60),
+            "TKU-sourced session must expire in ~1 hour, got {:?}",
+            remaining
+        );
+
+        // TKU_SHORT_SESSION_COOKIE_SYNC_V1：第二十輪只改了伺服器端判定，漏了
+        // 讓瀏覽器實際收到的 Set-Cookie 也跟著變短，導致使用者用學校電腦登入
+        // 後在 DevTools 看到的 Max-Age 仍是舊的 12 小時／7 天。這裡直接驗證
+        // (1) SessionTokens 帶的 max_age 欄位本身就是 ~1 小時，
+        // (2) 把它餵進 append_session_cookie／append_refresh_cookie 後，實際
+        // 組出來的 Set-Cookie 標頭字面上就含有這個秒數——避免同樣的「伺服器端
+        // 邏輯改了、但送給瀏覽器的字串沒跟著改」再次發生。
+        assert!(
+            tku_tokens.access_max_age >= 55 * 60 && tku_tokens.access_max_age <= 65 * 60,
+            "TKU session's access_max_age field must be ~1 hour, got {}",
+            tku_tokens.access_max_age
+        );
+        assert!(
+            tku_tokens.refresh_max_age >= 55 * 60 && tku_tokens.refresh_max_age <= 65 * 60,
+            "TKU session's refresh_max_age field must be ~1 hour, got {}",
+            tku_tokens.refresh_max_age
+        );
+        let tku_cookie_response = append_session_cookie(
+            axum::response::Response::new(axum::body::Body::empty()),
+            &tku_tokens.access,
+            &HeaderMap::new(),
+            tku_tokens.access_max_age,
+        );
+        let tku_set_cookie = tku_cookie_response
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .map(|v| v.to_str().unwrap_or("").to_string())
+            .find(|c| c.contains(&tku_tokens.access))
+            .expect("Set-Cookie for the TKU access token must be present");
+        assert!(
+            !tku_set_cookie.contains("Max-Age=43200") && !tku_set_cookie.contains("Max-Age=12"),
+            "TKU access cookie must NOT still declare the old 12-hour Max-Age, got {tku_set_cookie:?}"
+        );
+        let expected_max_age = format!("Max-Age={}", tku_tokens.access_max_age);
+        assert!(
+            tku_set_cookie.contains(&expected_max_age),
+            "TKU access cookie's Set-Cookie header must literally contain {expected_max_age:?}, got {tku_set_cookie:?}"
+        );
+
+        // 其他來源 IP 不受影響，維持原本 12 小時效期。
+        let other_tokens = state
+            .create_session_with(NewSession {
+                account_id: "other-user".to_string(),
+                is_admin: false,
+                is_viewer: false,
+                must_change_password: false,
+                origin: SessionOrigin {
+                    ip: "1.2.3.4".to_string(),
+                    user_agent: String::new(),
+                    first_login_at: 0,
+                },
+            })
+            .await;
+        let other_session = state
+            .authorize_any(&other_tokens.access)
+            .await
+            .expect("session should exist right after creation");
+        let other_remaining = other_session
+            .expires_at
+            .saturating_duration_since(Instant::now());
+        assert!(
+            other_remaining > Duration::from_secs(11 * 60 * 60),
+            "non-TKU session must keep the default ~12 hour TTL, got {:?}",
+            other_remaining
+        );
+        // 非淡江來源的 cookie 欄位也要維持原本的 12 小時／7 天，不能被誤連動
+        // 壓短（這是驗證「只有 TKU 網段才變短」沒有被改壞成「全部都變短」）。
+        assert!(
+            other_tokens.access_max_age > 11 * 60 * 60,
+            "non-TKU access_max_age must keep the default ~12 hour TTL, got {}",
+            other_tokens.access_max_age
+        );
+        assert!(
+            other_tokens.refresh_max_age > 6 * 24 * 60 * 60,
+            "non-TKU refresh_max_age must keep the default ~7 day TTL, got {}",
+            other_tokens.refresh_max_age
+        );
+    }
 
     #[tokio::test]
     async fn tc_go_with_only_refresh_cookie_rotates_instead_of_401() {
@@ -5812,6 +6073,47 @@ mod tests {
         let tokens = state
             .create_session("csrf-user".to_string(), true, false)
             .await;
+        // CSRF_TOKEN_V1: the explicit token layer is independent of Origin/
+        // Sec-Fetch-Site; it must also be present or this request now gets
+        // rejected by `csrf::request_has_valid_token` before reaching the
+        // handler. Derive it exactly the way the server would when rendering
+        // an authenticated page (`pages::auth_attrs` → `csrf::token_for_account`).
+        let csrf_token = csrf::token_for_account("csrf-user");
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/admin/api/action")
+                    .header(
+                        header::COOKIE,
+                        format!("{SECURE_SESSION_COOKIE}={}", tokens.access),
+                    )
+                    .header("origin", "https://dashboard.jasoncloudserver.me")
+                    .header("host", "dashboard.jasoncloudserver.me")
+                    .header("x-forwarded-proto", "https")
+                    .header("sec-fetch-site", "same-origin")
+                    .header("x-csrf-token", csrf_token)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"action":"stop"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // Must NOT be the CSRF rejection; the request reaches the handler.
+        assert_ne!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn csrf_same_origin_mutating_request_without_explicit_token_is_forbidden() {
+        // CSRF_TOKEN_V1: Origin/Sec-Fetch-Site alone is no longer sufficient
+        // for a non-exempt /admin/api/* write — the explicit token is required.
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let tokens = state
+            .create_session("csrf-user".to_string(), true, false)
+            .await;
         let app = build_admin_router(state);
         let response = app
             .oneshot(
@@ -5832,7 +6134,33 @@ mod tests {
             )
             .await
             .unwrap();
-        // Must NOT be the CSRF rejection; the request reaches the handler.
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn csrf_exempt_login_path_needs_no_explicit_token() {
+        // /admin/api/login happens before any session/token exists, so it must
+        // stay reachable (it will fail for other reasons — bad credentials —
+        // but must not be rejected by the CSRF layer itself).
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+        let app = build_admin_router(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/admin/api/login")
+                    .header("origin", "https://dashboard.jasoncloudserver.me")
+                    .header("host", "dashboard.jasoncloudserver.me")
+                    .header("x-forwarded-proto", "https")
+                    .header("sec-fetch-site", "same-origin")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"username":"nobody","password":"wrong"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_ne!(response.status(), StatusCode::FORBIDDEN);
     }
 

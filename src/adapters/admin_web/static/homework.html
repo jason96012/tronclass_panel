@@ -2539,6 +2539,14 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 </script>
 <style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){#backDashboard,.hw-back{display:none!important}}
 </style>
+<style id="nav-clearance-v2">
+  /* NAV_BOTTOM_CLEARANCE_V2：比照總覽(dashboard.html)的做法，直接在頁面自己的
+     <style> 裡寫死 main 的底部留白，不依賴 mobile-nav.js 動態注入的 <style>
+     （該注入在部分環境可能因 CSP nonce 等因素失效），確保底部導覽列不擋內容。 */
+  @media(max-width:820px){
+    main{padding-bottom:calc(190px + env(safe-area-inset-bottom,0px))!important}
+  }
+</style>
 <script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
 </body>
 </html>

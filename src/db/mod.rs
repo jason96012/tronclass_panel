@@ -108,6 +108,11 @@ pub use activity::{ActivityEventInput, ActivityEventRow};
 pub use blacklist::IpBlacklistRow;
 #[allow(unused_imports)]
 pub use geo_access_requests::{GeoAccessRequestRow, GEO_ACCESS_ALLOW_SECONDS, GEO_ACCESS_NOTIFY_MUTED_KEY};
+// MaterialEventInput 有外部呼叫端（files.rs／activity.rs 測試／mod.rs 的 material_tx），
+// 不會觸發警告；MaterialEventRow 目前只在 materials.rs 內部用到（list_material_events
+// 的回傳型別），從未經由 `crate::db::MaterialEventRow` 這條路徑被 by-name 引用——跟上面
+// 幾行一樣，保留 re-export 是為了維持對外 API 路徑一致，不是遺漏，所以明示 allow。
+#[allow(unused_imports)]
 pub use materials::{MaterialEventInput, MaterialEventRow};
 // ROLLCALL_STATS_V1（fix66）：點名統計。函式與列型別在 API 層直接使用；兩個統計結構
 // （RollcallCourseStat／RollcallSenderStat）目前只有本模組內部在建構與序列化時用到值，

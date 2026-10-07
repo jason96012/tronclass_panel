@@ -162,6 +162,7 @@ pub(super) async fn admin_action_handler(
         action_name.as_str(),
         "add_account"
             | "start_monitor"
+            | "restart_monitor"
             | "set_admin"
             | "unset_admin"
             | "set_viewer"
@@ -498,6 +499,93 @@ pub(super) async fn handle_admin_account_action(
                     (
                         StatusCode::BAD_REQUEST,
                         Json(json!({ "error": format!("啟動監控失敗：{reason}") })),
+                    )
+                        .into_response()
+                }
+            }
+        }
+        // MANUAL_RESPAWN_V1：跟「啟動監控」不同——這支是給「帳號明明在跑，但卡住了
+        // （例如某次點名流程卡在等待輸入，遲遲沒有結果）」的情境用。直接重用看門狗
+        // （MONITOR_WATCHDOG_V1）本來就有、已經過正式驗證的 `respawn_account`：
+        // 中止舊的監控循環（含卡住的那次點名流程）、清掉登錄簿裡的舊狀態，
+        // 再重新登入、起一條全新的循環。新循環第一輪就會重新向學校問一次目前有哪些
+        // 點名，若原本那筆仍是「未簽到」，會從頭當成新的一次點名重新執行——不需要
+        // 額外邏輯，這是監控迴圈本來就有的行為（每輪都重新偵測）。
+        // 跟「啟動監控」（`spawn_account`，只給完全沒有循環在跑的帳號用）的差別：
+        // 這支在呼叫前一定先中止舊循環，對「循環還活著但卡住」的情況是安全的；
+        // 若是對一個根本沒有循環在跑的帳號呼叫，效果等同於「啟動監控」。
+        "restart_monitor" => {
+            let target = action
+                .account_id
+                .or(action.id)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if target.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "account_id is required" })),
+                )
+                    .into_response();
+            }
+            let Some(spawner) = state.monitor_spawner.as_ref() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "此執行環境沒有監控 runtime，請重啟服務" })),
+                )
+                    .into_response();
+            };
+            match spawner.respawn_account(&target).await {
+                Ok(started) => {
+                    super::status::invalidate_admin_status_cache().await;
+                    // RESTART_MONITOR_AUTO_FORCE_V1：respawn_account 只負責中止舊流程、
+                    // 重新登入、起一條新循環——新循環一開始仍會先走 `startup_delay_secs`
+                    // 的啟動延遲，接著在迴圈裡等「排程時間到」或「收到強制觸發」才會真的
+                    // 去問學校有哪些點名，不會「登入完就立刻查一次」。使用者在前端按
+                    // 「重啟監控」是因為帳號卡住了，期待的是等同「立即檢查全部」那種馬上
+                    // 查一次的效果，而不是重啟完還要再等排程或下一次輪詢間隔。
+                    // 這裡直接對剛起好的新循環送一次 force_poll 訊號（Notify 沒人在等時
+                    // 會存一個許可，新循環跑完啟動延遲、進到等待觸發的 select 時就會立刻
+                    // 消費掉、馬上觸發一次檢查，不用等排程或輪詢間隔）。
+                    if let Some(account) = state.accounts.find(&target) {
+                        account.force_poll_tx.notify_one();
+                    }
+                    crate::logs::record_audit(
+                        "web",
+                        &session.account_id,
+                        "restart_monitor",
+                        Some(target.as_str()),
+                        Some("restarted"),
+                        format!("Web 管理頁：手動重啟帳號 {} 的監控循環（含中止卡住的流程），並已觸發一次立即檢查", started.account_id),
+                    );
+                    let who = if started.user_name.trim().is_empty() {
+                        String::new()
+                    } else {
+                        format!("（{}）", started.user_name.trim())
+                    };
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "ok": true,
+                            "affected": 1,
+                            "monitor_started": true,
+                            "message": format!("已中止帳號 {target}{who} 卡住的流程並重新登入，已觸發立即檢查。"),
+                        })),
+                    )
+                        .into_response()
+                }
+                Err(reason) => {
+                    crate::logs::record_audit(
+                        "web",
+                        &session.account_id,
+                        "restart_monitor",
+                        Some(target.as_str()),
+                        Some("failed"),
+                        format!("Web 管理頁：重啟帳號 {target} 的監控失敗：{reason}"),
+                    );
+                    (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("重啟監控失敗：{reason}") })),
                     )
                         .into_response()
                 }

@@ -159,3 +159,82 @@ html body .animated-login-card-inner .animated-login-field > input{
 @media(max-width:820px){
   .list.capped{max-height:min(64vh,440px)}
 }
+
+/* STUCK_ACCOUNT_RESTART_V1：「重啟監控」原本只在帳號分頁的操作欄，但真正會用到它
+ * 的時機是在「點名」分頁看「目前偵測到點名」時發現某個帳號一直卡住（數字碼／QR Code
+ * 都還沒過期卻一直沒送出）。改成直接長在每個帳號旁邊，看到誰卡住就按誰，不用切分頁
+ * 回頭去帳號列表裡找同一個帳號。 */
+.item-accounts{
+  display:flex;flex-direction:column;gap:6px;
+  margin-top:8px;padding-top:8px;
+  border-top:1px dashed var(--line2);
+}
+.item-account-row{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
+}
+.item-account-row .pill{flex:0 0 auto}
+.item-account-row button{
+  min-height:30px;padding:0 10px;font-size:12.5px;
+}
+
+/* DETECTED_CARD_BUTTON_ALIGN_V1：「目前偵測到點名」卡片原本「開啟點名頁」自己一個
+ * 按鈕孤零零黏在卡片最下面、靠左，跟上面每個帳號列右側的「重啟監控」按鈕完全對不齊，
+ * 兩顆按鈕一左一右，視覺上像卡片排版亂掉。這裡加一個靠右對齊的 footer，讓「開啟點名頁」
+ * 跟上面「重啟監控」同樣貼右邊，形成一直排對齊的「右側操作欄」，視覺上一致、不會亂跳。 */
+.item-footer{
+  display:flex;justify-content:flex-end;
+  margin-top:10px;
+}
+.item-footer .button{margin:0}
+
+/* ROLLCALL_MOBILE_REORDER_V1：手機版把「目前偵測到點名」移到「出席統計」上面
+ * ——偵測到的點名是當下要處理的事，統計是回顧用的資料，手機螢幕小，應該先看
+ * 當下要處理的事。桌機版維持原本排版（上：統計全寬；下：偵測到點名／點名結果
+ * 並排），只有 900px 以下的手機排版改變順序。用 #view-rollcall.active 的 ID
+ * 選擇器蓋過 dashboard.css 既有的 .view.active{display:block}（ID 優先權較高，
+ * 不需要 !important，也不會動到其他分頁的 .view.active）。 */
+#view-rollcall.active{
+  display:grid;
+  gap:14px;
+  grid-template-columns:1fr 1fr;
+  grid-template-areas:
+    "stats stats"
+    "detected results";
+}
+#view-rollcall .rc-stats{grid-area:stats;margin:0}
+#view-rollcall .rc-detected{grid-area:detected;margin:0}
+#view-rollcall .rc-results{grid-area:results;margin:0}
+@media(max-width:900px){
+  #view-rollcall.active{
+    grid-template-columns:1fr;
+    grid-template-areas:
+      "detected"
+      "stats"
+      "results";
+  }
+}
+
+/* ACCOUNTS_TABLE_COURSE_OVERFLOW_V1：帳號分頁表格的「最後成功」「近期點名」兩欄是
+ * 課程名稱，長度不固定。表格是預設的 auto table layout（沒有設 table-layout:fixed），
+ * 欄寬會跟著「這一欄裡最寬的那個儲存格」自動撐開——遇到長課程名稱，整張表（含帳號、
+ * 操作按鈕那些欄）都會被擠壓變形。用內層 span 的 max-width + overflow:hidden +
+ * text-overflow:ellipsis 把超長文字截斷顯示「...」，撐開的來源被限制住了，表格就不會
+ * 再跑版；title 屬性讓使用者 hover 還是看得到完整課程名。 */
+.accounts-table .cell-ellipsis{
+  display:inline-block;
+  max-width:220px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  vertical-align:middle;
+}
+@media(max-width:900px){
+  .accounts-table .cell-ellipsis{max-width:140px}
+}
+
+/* TKU_NOTICE_BEFORE_ONBOARDING_V1：淡江網段提示要在新手導覽「前面」——主要是靠
+ * dashboard-onboarding.js 的 autoTick() 判斷 window.__tkuNoticeOpen 延後開導覽
+ * （時間序上先後顯示，不會疊在一起）。這裡的 z-index 是防呆：萬一使用者手動按
+ * 頂欄「?」在淡江提示還開著時硬開導覽，淡江提示的 z-index 要蓋過
+ * .ob-layer（dashboard-components.css 裡是 2147483000），不能被導覽蓋住。 */
+#tkuNoticeModal{z-index:2147483100}
