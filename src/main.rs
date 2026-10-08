@@ -43,6 +43,8 @@ mod detection_schedule;
 mod holidays;
 mod homework_cache;
 mod homework_reminders;
+// HOSTING_IP_BLOCK_V1：判定來源 IP 是否屬於雲端／VPS／機房代管商（全站封鎖用）。
+mod hosting_ip;
 mod logs;
 mod metrics_history;
 mod monitor;

@@ -508,6 +508,94 @@ pub(super) async fn admin_geo_restrict_set_handler(
     }
 }
 
+/// HOSTING_IP_BLOCK_V1：讀取「封鎖雲端／VPS機房 IP」開關目前狀態，與
+/// `admin_geo_restrict_get_handler` 同一種風格、不需要額外參數（沒有「本國
+/// 清單」這種概念，是或否而已）。
+pub(super) async fn admin_hosting_restrict_get_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let enabled = super::hosting_ip_block_enabled(&state).await;
+    (StatusCode::OK, Json(json!({ "enabled": enabled }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminHostingRestrictRequest {
+    enabled: bool,
+}
+
+/// HOSTING_IP_BLOCK_V1：切換「封鎖雲端／VPS機房 IP」開關。
+pub(super) async fn admin_hosting_restrict_set_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminHostingRestrictRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let value = if request.enabled { "1" } else { "0" };
+    match state
+        .accounts_db
+        .set_security_setting(crate::db::HOSTING_IP_BLOCK_KEY, value, &session.account_id)
+        .await
+    {
+        Ok(()) => {
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "hosting_ip_block_toggle",
+                None,
+                None,
+                if request.enabled {
+                    "Web 管理頁開啟「封鎖雲端／VPS機房 IP」"
+                } else {
+                    "Web 管理頁關閉「封鎖雲端／VPS機房 IP」"
+                },
+            );
+            let _ = state
+                .accounts_db
+                .record_activity_event(crate::db::ActivityEventInput {
+                    kind: "security".to_string(),
+                    actor: session.account_id.clone(),
+                    action: "hosting_ip_block_toggle".to_string(),
+                    account_id: String::new(),
+                    path: String::new(),
+                    result: "success".to_string(),
+                    details: format!(
+                        "封鎖雲端／VPS機房 IP：{}",
+                        if request.enabled { "開啟" } else { "關閉" }
+                    ),
+                    ip: String::new(),
+                    user_agent: String::new(),
+                })
+                .await;
+            (
+                StatusCode::OK,
+                Json(json!({ "ok": true, "enabled": request.enabled })),
+            )
+                .into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("更新「封鎖雲端／VPS機房 IP」開關失敗：{error}") })),
+        )
+            .into_response(),
+    }
+}
+
 /// ADMIN_GEO_RESTRICT_V1：訪客在 `geo_blocked.html` 按「聯絡管理員」打的端點。
 /// **刻意不檢查 session**——會被這層擋下的人，定義上就是登入不了的人，若要求
 /// 先登入就等於這顆按鈕永遠按不到。安全性靠三點保證，不是「要不要登入」：

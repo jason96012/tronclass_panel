@@ -136,11 +136,21 @@
         <input id="geoToggle" type="checkbox" aria-label="僅限台灣 IP 存取管理後台">
       </div>
     </section>
+    <section class="card geo-card">
+      <div class="card-head"><strong>封鎖雲端／VPS機房 IP</strong><span class="summary" id="hostingState">載入中...</span></div>
+      <div class="geo-switch">
+        <div>
+          <b>雲端主機／VPS 出口 IP 一律擋下（全站）</b>
+          <div class="hint" id="hostingHint">開啟時，判定為雲端主機、VPS 或機房代管商出口的連線（例如 AWS、Google Cloud、Azure 或其他 VPS 業者，不限特定幾家）一律看到拒絕存取頁面；範圍是整個網站，不是只有 /admin。查不出來源資訊時（服務逾時等）一律放行，不會因此錯擋真人。</div>
+        </div>
+        <input id="hostingToggle" type="checkbox" aria-label="封鎖雲端／VPS機房 IP">
+      </div>
+    </section>
     <section class="card geo-requests-card">
       <div class="card-head">
         <div class="card-head-copy">
-          <strong>國外存取申請</strong>
-          <span class="card-note">被「僅限台灣 IP」擋下的訪客按了「聯絡管理員」才會出現在這裡；同一筆 Discord 也會收到通知與按鈕，兩邊處理一筆即可。按「暫時放行」只對這個 IP 生效，不是關掉整個限制。短時間內出現太多不同來源 IP 的申請時，會自動暫停逐筆通知，改成只提醒一次，避免洗版；按下方「清空並恢復通知」後才會再逐筆通知。</span>
+          <strong>存取放行申請</strong>
+          <span class="card-note">被「僅限台灣 IP」或「封鎖雲端／VPS機房 IP」擋下的訪客按了「聯絡管理員」才會出現在這裡（兩種擋法共用同一份待處理清單）；同一筆 Discord 也會收到通知與按鈕，兩邊處理一筆即可。按「暫時放行」只對這個 IP 生效，不是關掉整個限制。短時間內出現太多不同來源 IP 的申請時，會自動暫停逐筆通知，改成只提醒一次，避免洗版；按下方「清空並恢復通知」後才會再逐筆通知。</span>
         </div>
         <div class="card-actions">
           <span class="summary" id="geoRequestsSummary">載入中...</span>
@@ -329,6 +339,34 @@
         .catch(function(error){target.checked=!next;toast(error.message||String(error),true)})
         .then(function(){geoBusy=false;target.disabled=false});
     });
+    // HOSTING_IP_BLOCK_V1：封鎖雲端／VPS機房 IP 開關，與上面「僅限台灣 IP」
+    // 開關同一種寫法，只是另一支 API、沒有「本國清單」這個概念。
+    var hostingBusy=false;
+    function renderHostingState(enabled){
+      var stateEl=q('hostingState');
+      stateEl.textContent=enabled?'已開啟':'已關閉';
+      stateEl.className='summary state '+(enabled?'on':'off');
+      q('hostingToggle').checked=!!enabled;
+    }
+    function loadHostingRestrict(){
+      return api('/admin/api/hosting-restrict').then(function(body){renderHostingState(!!body.enabled)})
+        .catch(function(error){q('hostingState').textContent='載入失敗';toast(error.message||String(error),true)});
+    }
+    q('hostingToggle').addEventListener('change',function(){
+      if(hostingBusy){return}
+      var target=q('hostingToggle');
+      var next=target.checked;
+      if(next&&!confirm('確定開啟「封鎖雲端／VPS機房 IP」？\n\n開啟後，全站（不限 /admin）會擋下判定為雲端主機／VPS 出口的連線。誤擋時可用「聯絡管理員」申請暫時放行，與「僅限台灣 IP」共用同一套放行流程。')){
+        target.checked=!next;
+        return;
+      }
+      hostingBusy=true;
+      target.disabled=true;
+      api('/admin/api/hosting-restrict/set',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:next})})
+        .then(function(body){toast(next?'已開啟「封鎖雲端／VPS機房 IP」':'已關閉「封鎖雲端／VPS機房 IP」');renderHostingState(!!body.enabled)})
+        .catch(function(error){target.checked=!next;toast(error.message||String(error),true)})
+        .then(function(){hostingBusy=false;target.disabled=false});
+    });
     // ADMIN_GEO_RESTRICT_V1：待處理的國外存取申請（Discord 按鈕的網頁版備援）。
     var geoRequestBusy=false;
     function renderGeoRequests(items,muted){
@@ -389,6 +427,7 @@
         .then(function(){geoRequestBusy=false});
     });
     loadGeoRestrict();
+    loadHostingRestrict();
     loadGeoRequests();
     q('reload').addEventListener('click',loadAll);
     // 複製 IP、展開／收合「顯示更多」（三份清單共用同一個委派監聽）。

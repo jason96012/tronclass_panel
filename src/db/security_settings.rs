@@ -1,7 +1,8 @@
 //! ADMIN_GEO_RESTRICT_V1：全站共用、與單一帳號無關的安全性開關（key/value）。
 //!
-//! 目前唯一用途：「僅限台灣 IP 存取 /admin」開關
-//! （鍵＝[`GEO_RESTRICT_ADMIN_KEY`]）。日後若有其他全站性的安全開關，
+//! 目前用途：「僅限台灣 IP 存取 /admin」開關（鍵＝[`GEO_RESTRICT_ADMIN_KEY`]），
+//! 以及 HOSTING_IP_BLOCK_V1「封鎖雲端／VPS機房 IP」開關
+//! （鍵＝[`HOSTING_IP_BLOCK_KEY`]）。日後若有其他全站性的安全開關，
 //! 可以沿用同一張 `security_settings` 表，不必每個開關都另開一張表。
 //!
 //! 這裡只提供最基本的讀寫；「讀不到鍵時的預設值」與「讀取失敗時要不要
@@ -15,6 +16,12 @@ use super::AccountsDb;
 
 /// 「僅限台灣 IP 存取 /admin」開關的鍵名。值＝`"1"`（開）或 `"0"`（關）。
 pub const GEO_RESTRICT_ADMIN_KEY: &str = "geo_restrict_admin_enabled";
+
+/// HOSTING_IP_BLOCK_V1：「封鎖雲端／VPS機房出口 IP」開關的鍵名（全站套用，
+/// 不限 /admin）。值＝`"1"`（開）或 `"0"`（關）；鍵不存在時由呼叫端決定
+/// 預設值（目前政策：與 `GEO_RESTRICT_ADMIN_KEY` 一致，鍵不存在＝預設開啟，
+/// 讀取失敗＝fail-open 視為關閉）。
+pub const HOSTING_IP_BLOCK_KEY: &str = "hosting_ip_block_enabled";
 
 impl AccountsDb {
     /// 讀取一個全站安全性開關的原始值；鍵不存在回 `None`（由呼叫端決定預設值）。

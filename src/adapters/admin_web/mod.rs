@@ -130,7 +130,7 @@ mod logs;
 mod mock;
 mod pwa;
 mod utils;
-use self::pages::{load_runtime_theme, ADMIN_BLOCKED_HTML, ADMIN_GEO_BLOCKED_HTML};
+use self::pages::{load_runtime_theme, ADMIN_BLOCKED_HTML, ADMIN_GEO_BLOCKED_HTML, ADMIN_HOSTING_BLOCKED_HTML};
 use self::utils::*;
 
 const PW_SALT: &[u8] = b"tronclass-rollcall-admin-web-password-hash-v2";
@@ -685,6 +685,123 @@ async fn reject_foreign_admin_ip_middleware(
         return geo_blocked_browser_response(&geo);
     }
     geo_blocked_json_response()
+}
+
+// ── HOSTING_IP_BLOCK_V1：全站封鎖雲端／VPS機房出口 IP ─────────────────────
+//
+// 需求原文：「國外 IP 擋得到，那像 AWS／Google Cloud 這種雲端／VPS 機房的 IP
+// 能不能也自動擋掉，不要讓它進到我的伺服器」。與使用者確認過的三項範圍：
+// 1. 套用範圍＝**全站**，比照 `waf_firewall_middleware`（WAF 本身沒有任何路徑
+//    豁免，連 `/pub/*` 都會被檢查）——不是只保護 `/admin`。因此這裡刻意
+//    **不**比照 ADMIN_GEO_RESTRICT_V1 把 `/pub/*` 排除在外；若之後發現有
+//    正常使用情境被誤擋（例如有人用公司 VPN／雲端主機看分享連結），再回頭
+//    加例外即可。
+// 2. 涵蓋商家＝「所有 VPS／機房代管商」，不只三大雲——改用 ip-api.com 的
+//    `hosting` 欄位（見 `crate::hosting_ip` 模組文件），不是只列 AWS/GCP/Azure
+//    官方 IP 段。
+// 3. 誤擋的 bypass 機制＝沿用既有「聯絡管理員」流程，不另開一套：共用
+//    ADMIN_GEO_RESTRICT_V1 的 `geo_access_requests` 表與
+//    `/admin/api/geo-restrict/request-access` + `/admin/api/geo-restrict/
+//    access-status` 兩支端點（這兩支端點本來就只認 IP，不管「被擋的原因是
+//    地區還是機房」），管理員在 Discord／`/admin/blacklist` 核准一次，兩邊
+//    （地區限制與機房限制）都會對這個 IP 放行 4 小時，不需要學兩套操作。
+//
+// `/admin/oidc/*` 仍然排除：很多機構的 OIDC 身分提供者本身就架在雲端
+// （Azure AD、Google 等），擋掉等於直接打斷所有人的第三方登入，這點比
+// ADMIN_GEO_RESTRICT_V1 排除它的理由（server-to-server 呼叫可能來自國外）
+// 更直接——OIDC 的伺服器對伺服器呼叫幾乎必然來自雲端 IP。
+
+fn hosting_blocked_browser_response(info: &crate::hosting_ip::HostingInfo) -> Response {
+    let page = ADMIN_HOSTING_BLOCKED_HTML.replace("__HOSTING_LOCATION__", &geo_escape_html(&info.label()));
+    let mut response = (StatusCode::FORBIDDEN, Html(page)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+fn hosting_blocked_json_response() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": "access_denied_hosting" })),
+    )
+        .into_response()
+}
+
+/// 讀取「封鎖雲端／VPS機房 IP」開關的生效值；預設值／失敗時的保守方向與
+/// `geo_restrict_admin_enabled` 完全一致（見其文件註解），不重複贅述。
+async fn hosting_ip_block_enabled(state: &AdminWebState) -> bool {
+    match state
+        .accounts_db
+        .get_security_setting(crate::db::HOSTING_IP_BLOCK_KEY)
+        .await
+    {
+        Ok(Some(value)) => value.trim() == "1",
+        Ok(None) => true,
+        Err(error) => {
+            warn!(error = %error, "讀取「封鎖雲端／VPS機房 IP」開關失敗，暫不擋機房 IP");
+            false
+        }
+    }
+}
+
+async fn reject_hosting_ip_middleware(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = request.uri().path();
+    if path.starts_with("/admin/static/")
+        || path.starts_with("/admin/pwa/")
+        || path.starts_with("/apple-touch-icon")
+        || path.starts_with("/favicon.")
+        || path == "/healthz"
+        || path == "/admin/api/logout"
+        || path == "/admin/logout"
+        || path.starts_with("/admin/oidc/")
+        // HOSTING_IP_BLOCK_V1：沿用 ADMIN_GEO_RESTRICT_V1 既有的「聯絡管理員」
+        // 與輪詢端點（見本節開頭說明）——被擋的人才能回報／查詢自己是否已
+        // 被放行，否則連申請放行的入口都被這層自己擋住。
+        || path == "/admin/api/geo-restrict/request-access"
+        || path == "/admin/api/geo-restrict/access-status"
+    {
+        return next.run(request).await;
+    }
+    if !hosting_ip_block_enabled(&state).await {
+        return next.run(request).await;
+    }
+    let peer = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let trusted = crate::trusted_ip::trusted_from_global_config();
+    let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
+    // IP 解析不出來、或區網／私有位址：不是這層該處理的問題，直接放行
+    // （道理同 `reject_foreign_admin_ip_middleware`）。
+    if ip == "unknown" || blacklist::is_private_or_local_ip(&ip) {
+        return next.run(request).await;
+    }
+    // 共用既有「國外存取」暫時放行表：不管被擋原因是地區還是機房 IP，
+    // 管理員核准一次、時限內兩邊都放行，見本節開頭第 3 點。
+    match state.accounts_db.geo_access_is_ip_allowed(&ip).await {
+        Ok(true) => return next.run(request).await,
+        Ok(false) => {}
+        Err(error) => warn!(error = %error, "查詢暫時放行狀態失敗，退回正常機房 IP 判斷"),
+    }
+    let info = match crate::hosting_ip::lookup(&ip).await {
+        Some(info) => info,
+        // 查詢失敗／逾時：fail-open，不擋（與 `crate::hosting_ip` 模組文件中
+        // 說明的政策一致）。
+        None => return next.run(request).await,
+    };
+    if !info.is_hosting {
+        return next.run(request).await;
+    }
+    if !path.starts_with("/admin/api/") && request_prefers_html(&headers) {
+        return hosting_blocked_browser_response(&info);
+    }
+    hosting_blocked_json_response()
 }
 
 struct SecurityWatch {
@@ -2809,6 +2926,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
     let blacklist_guard_state = state.clone();
     let geo_guard_state = state.clone();
     let waf_guard_state = state.clone();
+    let hosting_guard_state = state.clone();
     let same_origin_guard_state = state.clone();
     Router::new()
         // SEO_LANDING_V1（fix60）：`/` 依身分分流——已登入照舊 302 到 `/admin`，
@@ -3287,6 +3405,19 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             post(blacklist::admin_geo_restrict_set_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
+        // HOSTING_IP_BLOCK_V1：「封鎖雲端／VPS機房 IP」開關，與僅限台灣 IP 開關
+        // 同一種風格（GET 讀、POST 寫），放在黑名單頁一起管理。被擋訪客的
+        // 「聯絡管理員」與輪詢共用上面 `/admin/api/geo-restrict/*` 既有端點，
+        // 不另外開一組，所以這裡只需要開關本身的兩支路由。
+        .route(
+            "/admin/api/hosting-restrict",
+            get(blacklist::admin_hosting_restrict_get_handler),
+        )
+        .route(
+            "/admin/api/hosting-restrict/set",
+            post(blacklist::admin_hosting_restrict_set_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         // ADMIN_GEO_RESTRICT_V1：被擋下的訪客按「聯絡管理員」——這條刻意不需要
         // session（見 handler 文件註解），已在 `reject_foreign_admin_ip_
         // middleware` 的豁免清單排除，否則被擋的人連這支都連不到。
@@ -3698,6 +3829,14 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             waf_guard_state,
             waf::waf_firewall_middleware,
+        ))
+        // HOSTING_IP_BLOCK_V1：刻意放在 WAF「之外」（layer 疊加順序下，後加的
+        // layer 較外層、較早執行）——已知是雲端／VPS機房出口的 IP 直接擋下，
+        // 連 WAF 的特徵比對都不必跑，語意上與 WAF 同屬「site-wide 第一線防禦」，
+        // 緊鄰擺放。
+        .layer(axum::middleware::from_fn_with_state(
+            hosting_guard_state,
+            reject_hosting_ip_middleware,
         ))
         // HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): outermost admin layer, so every
         // middleware and handler below sees forwarded headers only when they

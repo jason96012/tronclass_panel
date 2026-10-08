@@ -49,8 +49,11 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use super::{notify_admins_security_alert, security_now_label, AdminWebState};
-use crate::adapters::events::SecurityAlertEvent;
+// WAF_AUTO_BLOCK_SILENT_V1：WAF 自動封鎖已改成不再透過 notify_admins_security_alert
+// 推播 Discord／Web Push（原因見下方 waf_firewall_middleware 內的註解），
+// 這裡不再需要 security_now_label／SecurityAlertEvent，只保留寫黑名單與活動日誌
+// 需要用到的型別。
+use super::AdminWebState;
 use crate::db::ActivityEventInput;
 
 /// WAF 全域滑動窗口時間跨度（60 秒）。
@@ -887,12 +890,11 @@ pub async fn waf_firewall_middleware(
                 let alert_desc = threat_desc.clone();
                 let path_for_log = raw_path.clone();
                 let ua_for_log = user_agent.clone();
-                let state_clone = state.clone();
 
                 tokio::spawn(async move {
                     // 自動將惡意攻擊者 IP 寫入永久黑名單；只有「新建立」的封鎖
-                    // 才留稽核軌跡與發告警（INSERT OR IGNORE 回傳是否新列），
-                    // 與上面的 already_banned 併用可擋掉併發下的重複告警。
+                    // 才留稽核軌跡（INSERT OR IGNORE 回傳是否新列），
+                    // 與上面的 already_banned 併用可擋掉併發下的重複寫入。
                     if let Ok(true) = db
                         .block_ip_with_failure_count(
                             &block_ip,
@@ -917,22 +919,14 @@ pub async fn waf_firewall_middleware(
                             })
                             .await;
 
-                        // 發送最高危險等級管理員即時資安通報
-                        notify_admins_security_alert(
-                            &state_clone,
-                            SecurityAlertEvent {
-                                username: "WAF-Military-Shield".to_string(),
-                                ip: block_ip,
-                                user_failures: 0,
-                                ip_failures: 1,
-                                timestamp: security_now_label(),
-                                ip_is_blacklisted: true,
-                                account_id: String::new(),
-                                allow_owner_unblock: false,
-                                login_locked: false,
-                            },
-                        )
-                        .await;
+                        // WAF_AUTO_BLOCK_SILENT_V1：這裡以前每次自動封鎖都會額外發一則
+                        // Discord／Web Push 安全告警。但 WAF 本來就是「全自動」防線——
+                        // 全網掃描器（例如 Palo Alto Networks Cortex Xpanse 這類資安研究
+                        // 用途的善意全網掃描，幾乎任何對外服務都會定期被掃到，並非針對性
+                        // 攻擊）每天都會打到好幾次，每次都跳通知等於不斷打擾管理員，
+                        // 但其實不需要他採取任何動作（已經自動擋下了）。改成不再主動推播，
+                        // 只保留上面寫進 ip_blacklist／activity_events 的紀錄——
+                        // 要查的話去 /admin/blacklist 頁面看得到完整列表與封鎖原因。
                     }
                 });
             }

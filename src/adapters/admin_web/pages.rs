@@ -168,6 +168,10 @@ pub(super) const ADMIN_BLOCKED_HTML: &str = include_str!("static/blocked.html");
 // 兩個不同頁面——這個是「國外 IP 被擋」專用，文案不談黑名單，避免使用者誤以為
 // 自己的帳號出了問題。
 pub(super) const ADMIN_GEO_BLOCKED_HTML: &str = include_str!("static/geo_blocked.html");
+// HOSTING_IP_BLOCK_V1：被判定為雲端／VPS機房出口 IP 時顯示的拒絕頁面，
+// 結構／JS 複製自 ADMIN_GEO_BLOCKED_HTML（同一套「聯絡管理員」＋輪詢邏輯），
+// 只改標題與文案，不重寫 JS。
+pub(super) const ADMIN_HOSTING_BLOCKED_HTML: &str = include_str!("static/hosting_blocked.html");
 pub(super) const ADMIN_HOMEWORK_HTML: &str = include_str!("static/homework.html");
 pub(super) const ADMIN_FILES_HTML: &str = include_str!("static/files.html");
 pub(super) const ADMIN_SETTINGS_HTML: &str = include_str!("static/settings.html");

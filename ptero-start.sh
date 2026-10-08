@@ -52,9 +52,23 @@ export CARGO_INCREMENTAL=1
 #   CARGO_AUTO_UPDATE_INTERVAL_SECS 兩次 cargo update 間至少間隔多久（預設 24 小時）。
 #   CARGO_AUTO_UPDATE_MAX_FAILURES 這次更新造成連續編譯失敗達此次數就自動回滾
 #                                   Cargo.lock 到更新前的版本（預設 3 次）。
+#
+# CARGO_AUTO_UPDATE_NIGHT_ONLY_V1：`cargo update` 本身不會中斷服務，但一旦真的
+# 拉到新版本、Cargo.lock 內容變了，下一輪 watchdog 的熱重編（hot_rebuild_if_needed）
+# 就會去編譯並在編完後把正在跑的服務程序短暫重啟一次換上新 binary——這段重啟
+# 如果剛好發生在上課時間，會打斷正在監控、正在點名的帳號。改成只在「晚上沒有人
+# 在上課」的時段才真的去跑 cargo update：不在時段內時，每輪 watchdog（預設 15 秒）
+# 只是很便宜地比對一下目前的小時數，到點了才會真的觸發，不會因此延後 24 小時基準。
+#   CARGO_AUTO_UPDATE_REQUIRE_NIGHT=0     關閉夜間限制，恢復「到時間就更新」的舊行為。
+#   CARGO_AUTO_UPDATE_WINDOW_START_HOUR   夜間時段開始的小時數，24 小時制（預設 2，凌晨 2 點）。
+#   CARGO_AUTO_UPDATE_WINDOW_END_HOUR     夜間時段結束的小時數，24 小時制（預設 6，清晨 6 點）。
+#   以容器系統時區為準（本專案其餘排課／休息日邏輯也是用系統本地時間，這裡保持一致）。
 export CARGO_AUTO_UPDATE="${CARGO_AUTO_UPDATE:-1}"
 export CARGO_AUTO_UPDATE_INTERVAL_SECS="${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400}"
 export CARGO_AUTO_UPDATE_MAX_FAILURES="${CARGO_AUTO_UPDATE_MAX_FAILURES:-3}"
+export CARGO_AUTO_UPDATE_REQUIRE_NIGHT="${CARGO_AUTO_UPDATE_REQUIRE_NIGHT:-1}"
+export CARGO_AUTO_UPDATE_WINDOW_START_HOUR="${CARGO_AUTO_UPDATE_WINDOW_START_HOUR:-2}"
+export CARGO_AUTO_UPDATE_WINDOW_END_HOUR="${CARGO_AUTO_UPDATE_WINDOW_END_HOUR:-6}"
 
 mkdir -p config logs run
 
@@ -1106,6 +1120,24 @@ src_hash() {
   [[ -n "$h" ]] && printf '%s' "$h" || printf 'empty'
 }
 
+# CARGO_AUTO_UPDATE_NIGHT_ONLY_V1：「現在是不是晚上沒人上課的時段」——用容器
+# 系統本地時間的小時數判斷，跟專案其餘排課／休息日邏輯一致。支援時段跨過午夜
+# （例如 START=22、END=6 代表晚上 10 點到隔天早上 6 點）：
+#   START <= END（例如 2～6）：hour 落在 [START, END) 之間才算夜間。
+#   START >  END（例如 22～6）：hour >= START 或 hour < END 才算夜間。
+in_cargo_auto_update_window() {
+  local h start end
+  h="$(date +%H)"
+  h=$((10#$h))
+  start="${CARGO_AUTO_UPDATE_WINDOW_START_HOUR:-2}"
+  end="${CARGO_AUTO_UPDATE_WINDOW_END_HOUR:-6}"
+  if (( start <= end )); then
+    (( h >= start && h < end ))
+  else
+    (( h >= start || h < end ))
+  fi
+}
+
 # ─── CARGO_AUTO_UPDATE_V1：定期背景跑 cargo update，自動跟上上游安全性修補 ──
 # 只在 Cargo.toml 允許的 semver 範圍內移動版本（不會跳 major、不會破壞既有
 # 版本限制），等同於請人定期手動跑一次 `cargo update`。真的更新到東西時，
@@ -1122,6 +1154,12 @@ cargo_auto_update_if_due() {
   last="$(cat logs/cargo-auto-update.last 2>/dev/null || echo 0)"
   [[ "$last" =~ ^[0-9]+$ ]] || last=0
   if (( now - last < ${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400} )); then
+    return 1
+  fi
+  # CARGO_AUTO_UPDATE_NIGHT_ONLY_V1：時間到了但還不是夜間時段——先不更新 `last`，
+  # 讓下一輪 watchdog（預設 15 秒後）再檢查一次，一進入夜間時段就會立刻觸發，
+  # 不會因為這次「檢查但沒動手」而把 24 小時基準往後延。
+  if [[ "${CARGO_AUTO_UPDATE_REQUIRE_NIGHT:-1}" == "1" ]] && ! in_cargo_auto_update_window; then
     return 1
   fi
   printf '%s\n' "$now" > logs/cargo-auto-update.last
@@ -1273,7 +1311,11 @@ run_bin() {
       echo "[ptero-start] 熱重編監控：已關閉（HOT_REBUILD=0）"
     fi
     if [[ "${CARGO_AUTO_UPDATE:-1}" == "1" ]]; then
-      echo "[ptero-start] cargo update 自動更新：已啟用（每 ${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400}s 檢查一次依賴套件，連續編譯失敗 ${CARGO_AUTO_UPDATE_MAX_FAILURES:-3} 次會自動回滾）"
+      if [[ "${CARGO_AUTO_UPDATE_REQUIRE_NIGHT:-1}" == "1" ]]; then
+        echo "[ptero-start] cargo update 自動更新：已啟用（每 ${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400}s 到期檢查一次，但只會在夜間 ${CARGO_AUTO_UPDATE_WINDOW_START_HOUR:-2}:00-${CARGO_AUTO_UPDATE_WINDOW_END_HOUR:-6}:00 這段沒人上課的時段真的更新＋重編，連續編譯失敗 ${CARGO_AUTO_UPDATE_MAX_FAILURES:-3} 次會自動回滾）"
+      else
+        echo "[ptero-start] cargo update 自動更新：已啟用（每 ${CARGO_AUTO_UPDATE_INTERVAL_SECS:-86400}s 檢查一次依賴套件，未限制時段，連續編譯失敗 ${CARGO_AUTO_UPDATE_MAX_FAILURES:-3} 次會自動回滾）"
+      fi
     else
       echo "[ptero-start] cargo update 自動更新：已關閉（CARGO_AUTO_UPDATE=0）"
     fi

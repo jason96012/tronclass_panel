@@ -16,8 +16,8 @@
 //! - [`sessions`]    Dashboard 登入 session
 //! - [`homework`]    作業截止提醒去重與快照
 //! - [`rollcalls`]   點名送出紀錄（出席統計與送出者查詢的來源）
-//! - [`security_settings`] 全站性安全開關（與單一帳號無關；目前只有
-//!   「僅限台灣 IP 存取 /admin」）
+//! - [`security_settings`] 全站性安全開關（與單一帳號無關；目前有
+//!   「僅限台灣 IP 存取 /admin」與「封鎖雲端／VPS機房 IP」兩個）
 //!
 //! 對外仍以 `crate::db::AccountsDb` 與既有型別使用，公開 API 不變；所有型別
 //! 透過下方的 `pub use` 再匯出，維持 `crate::db::Xxx` 路徑。
@@ -132,7 +132,7 @@ pub use preferences::{
 // RADAR_PANEL_V1（fix70）：雷達設定列（面板 API 只用欄位，不具名引用型別）。
 #[allow(unused_imports)]
 pub use radar::RadarPreferenceRow;
-pub use security_settings::GEO_RESTRICT_ADMIN_KEY;
+pub use security_settings::{GEO_RESTRICT_ADMIN_KEY, HOSTING_IP_BLOCK_KEY};
 // HOMEWORK_LADDER_V1：提醒引擎（homework_reminders）與通知頁 API 共用的預設階梯。
 pub(crate) use preferences::{
     DEFAULT_HOMEWORK_LADDER_HOURS, HOMEWORK_LADDER_MAX_HOURS, HOMEWORK_LADDER_MAX_STAGES,
