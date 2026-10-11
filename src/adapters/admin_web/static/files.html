@@ -2,7 +2,7 @@
 <html lang="zh-Hant">
 <head>
 <!-- SUBPAGE_FETCH_SHARED_V1：子頁唯一的 window.fetch 包裝（cookie 認證、剝 token、401→refresh 重試）；取代原 SUBPAGE_TOKEN_BOOT_V1 內聯區塊 -->
-<script src="/admin/static/subpage-fetch.js?v=20260909subfetch"></script>
+<script src="/admin/static/subpage-fetch.js"></script>
 
 <style id="REMOVE_UGLY_LOGIN_V1">
   html{visibility:hidden!important}
@@ -2382,7 +2382,7 @@
     // WORKER_SRC_ONCE_V1（fix52）：workerSrc 只需設定一次（每次預覽都重設等於讓
     // PDF.js 重新比對 worker 位址）。
     if (!_pdfWorkerReady){
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js';
       _pdfWorkerReady = true;
     }
     // DETACHED_BUFFER_GUARD_V1（fix52）：PDF.js 會把傳入的 ArrayBuffer 轉移（detach）給

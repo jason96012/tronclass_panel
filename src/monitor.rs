@@ -337,6 +337,52 @@ impl MonitorContext {
     }
 }
 
+// ─── GRACEFUL_SHUTDOWN_V2：關閉旗標、進行中批次計數、panic 訊息 ───────────
+
+static SHUTTING_DOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ACTIVE_BATCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// 服務是否已進入關閉流程。
+pub fn shutdown_requested() -> bool {
+    SHUTTING_DOWN.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn request_shutdown() {
+    SHUTTING_DOWN.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 目前正在執行的簽到批次數量。
+pub fn active_batch_count() -> usize {
+    ACTIVE_BATCHES.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// 進入批次時建立，離開（包含中止、early return）時自動減少計數。
+struct BatchGuard;
+
+impl BatchGuard {
+    fn enter() -> Self {
+        ACTIVE_BATCHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        BatchGuard
+    }
+}
+
+impl Drop for BatchGuard {
+    fn drop(&mut self) {
+        ACTIVE_BATCHES.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// 取出 panic 的文字內容（&str 或 String；其他型別顯示為未知）。
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        return (*text).to_string();
+    }
+    if let Some(text) = payload.downcast_ref::<String>() {
+        return text.clone();
+    }
+    "未知的 panic 內容".to_string()
+}
+
 // ─── 執行期熱新增帳號 ─────────────────────────────────────────────────────────
 
 // ACCOUNT_HOT_ADD_V1
@@ -366,6 +412,8 @@ pub struct MonitorSpawner {
     /// ACCOUNT_HOT_ADD_FEEDBACK_V1：每個帳號最近一次熱啟動失敗的原因，
     /// 讓 Web 狀態頁／健康檢查能持續顯示「為什麼還沒在監控」，而不是只閃一次 toast。
     last_errors: Arc<std::sync::Mutex<HashMap<String, String>>>,
+    /// GRACEFUL_SHUTDOWN_V2：背景登入／重試任務的中止把手（關閉時一併中止）。
+    startup_tasks: Arc<std::sync::Mutex<Vec<tokio::task::AbortHandle>>>,
 }
 
 impl MonitorSpawner {
@@ -387,6 +435,7 @@ impl MonitorSpawner {
             force_cascade,
             registry,
             last_errors: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            startup_tasks: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -439,6 +488,76 @@ impl MonitorSpawner {
         self.spawn_account(&account_id).await
     }
 
+    /// SET_PASSWORD_VERIFY_V1：用「新密碼」實際登入學校一次，成功才回 Ok（不寫入任何東西）。
+    /// 候選帳號的 session_cookie 必須清空：`AuthClient::new` 若看到可用的舊 cookie 會直接通過，
+    /// 那樣就沒有驗證到新密碼。
+    pub async fn verify_candidate_password(
+        &self,
+        raw: &crate::account::RawAccountConfig,
+        new_password: &str,
+    ) -> std::result::Result<(), String> {
+        let mut candidate = raw.clone();
+        candidate.password = new_password.to_string();
+        candidate.session_cookie = String::new();
+        let mut resolved = AccountsFile {
+            accounts: vec![candidate],
+        }
+        .resolve(&self.global_config)
+        .map_err(|e| format!("帳號設定無效：{}", report_chain_text(&e)))?;
+        let Some(account) = resolved.pop() else {
+            return Err("帳號無法解析為可登入的設定".to_string());
+        };
+        crate::auth::AuthClient::new(&account)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("學校登入失敗：{}", report_chain_text(&e)))
+    }
+
+    /// GRACEFUL_SHUTDOWN_V2：登記一個背景登入／重試任務，關閉時會被中止。
+    pub fn track_startup_task(&self, handle: tokio::task::AbortHandle) {
+        self.startup_tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(handle);
+    }
+
+    /// GRACEFUL_SHUTDOWN_V2：服務關閉時呼叫（主程序在收到關閉信號後、中止 Web／Discord 前）。
+    /// 1. 設定關閉旗標：之後不再啟動新帳號、不再開始新的簽到批次。
+    /// 2. 中止尚未完成的背景登入與重試任務。
+    /// 3. 最多等待 `grace`，讓已經在送出的簽到批次完成（避免送到一半被切斷）。
+    /// 4. 中止所有監控循環。數字／QR 等待中的批次不會被等完，這是有意的：它們最長 3 小時。
+    pub async fn shutdown_monitors(&self, grace: Duration) {
+        request_shutdown();
+        {
+            let tasks = self
+                .startup_tasks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            for handle in tasks.iter() {
+                handle.abort();
+            }
+        }
+
+        let deadline = Instant::now() + grace;
+        while active_batch_count() > 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        let unfinished = active_batch_count();
+        if unfinished > 0 {
+            warn!(unfinished, "關閉等待逾時，仍有簽到批次未完成，將中止（結果可能未送出）");
+        }
+
+        let accounts = self.registry.snapshot();
+        let mut aborted = 0usize;
+        for account in accounts.iter() {
+            if let Some(handle) = account.take_loop_abort() {
+                handle.abort();
+                aborted += 1;
+            }
+        }
+        info!(aborted, "監控循環已中止");
+    }
+
     /// MONITOR_WATCHDOG_V1：共用登錄簿（看門狗掃描心跳用）。
     pub fn registry(&self) -> &AccountRegistry {
         &self.registry
@@ -468,6 +587,9 @@ impl MonitorSpawner {
     }
 
     async fn spawn_account_inner(&self, account_id: &str) -> std::result::Result<HotAddedMonitor, String> {
+        if shutdown_requested() {
+            return Err("服務關閉中，不啟動新的監控".to_string());
+        }
         if account_id.is_empty() {
             return Err("帳號 id 不可為空".to_string());
         }
@@ -528,7 +650,30 @@ impl MonitorSpawner {
         let request_account_for_abort = ctx.request_account.clone();
         let request_account_for_crash = ctx.request_account.clone();
         let handle = tokio::spawn(async move {
-            match run_monitor_loop(ctx).await {
+            // PANIC_RESPAWN_FAST_V2：循環 panic 時立即標記為崩潰（看門狗約 30 秒內重生），
+            // 並寫入系統日誌。舊行為：panic 後沒有任何標記，要等心跳逾時（5～30 分鐘）才被發現。
+            let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+                run_monitor_loop(ctx),
+            ))
+            .await;
+            let outcome = match outcome {
+                Ok(result) => result,
+                Err(payload) => {
+                    let detail = panic_message(payload.as_ref());
+                    error!(account = %task_account_id, panic = %detail, "監控循環 panic，立即標記為崩潰");
+                    crate::logs::record_system(
+                        "ERROR",
+                        "monitor",
+                        format!("帳號 {task_account_id} 的監控循環 panic：{detail}；看門狗將立即重生"),
+                        None,
+                    );
+                    if let Some(request_account) = request_account_for_crash.as_ref() {
+                        request_account.mark_loop_crashed();
+                    }
+                    return;
+                }
+            };
+            match outcome {
                 Ok(()) => warn!(account = %task_account_id, "熱啟動的監控循環提前正常結束"),
                 Err(e) => {
                     error!(account = %task_account_id, error = %e, "熱啟動的監控循環異常結束");
@@ -1167,6 +1312,13 @@ async fn do_poll_and_attend(
     }
 
     // ── 執行批次簽到 ──────────────────────────────────────────────────────────
+    // GRACEFUL_SHUTDOWN_V2：關閉中不開始新的批次（待簽到項目保留，下次啟動再處理）；
+    // 進行中的批次計入計數，關閉時會等待它們完成。
+    if shutdown_requested() {
+        info!("服務關閉中，不開始新的簽到批次");
+        return Ok(BatchSummary::default());
+    }
+    let _batch_guard = BatchGuard::enter();
     let messenger_ref = ctx.messenger.as_ref().map(|b| b.as_ref());
 
     let outcomes = process_rollcall_batch(

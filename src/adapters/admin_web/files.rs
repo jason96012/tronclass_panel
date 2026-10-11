@@ -1376,7 +1376,7 @@ const SHARE_PAGE: &str = r#"<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
-<link rel="stylesheet" href="/pub/static/css/share.css?v=sharev6">
+<link rel="stylesheet" href="/pub/static/css/share.css">
 <meta id="share-ext" content="__EXTATTR__">
 <meta id="share-raw" content="__RAWATTR__">
 <meta id="share-office" content="__OFFICEATTR__">
@@ -1385,8 +1385,8 @@ __SCRIPTS__
 <body>
 <header><span class="t">__TITLE__</span><a class="dl" href="__DLATTR__" download="__TITLE__">下載</a></header>
 <div id="stage"><div class="msg">載入中…</div></div>
-<script src="/pub/static/js/pdf.min.js?v=sharev6"></script>
-<script src="/pub/static/js/share-preview.js?v=sharev6"></script>
+<script src="/pub/static/js/pdf.min.js"></script>
+<script src="/pub/static/js/share-preview.js"></script>
 </body>
 </html>"#;
 
@@ -1460,7 +1460,7 @@ pub(super) async fn public_share_preview_handler(
     let office_src = format!("/pub/office?path={}&exp={embed_exp}&sig={embed_sig}", pct(&rel_str));
     let is_modern_office = ["docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf"].contains(&ext.as_str());
     let scripts = if is_modern_office {
-        "<script src=\"/pub/static/js/jszip.min.js?v=sharev6\"></script>\n<script src=\"/pub/static/js/office-view.js?v=sharev7\"></script>"
+        "<script src=\"/pub/static/js/jszip.min.js\"></script>\n<script src=\"/pub/static/js/office-view.js\"></script>"
     } else {
         ""
     };
@@ -1478,6 +1478,8 @@ pub(super) async fn public_share_preview_handler(
         .replace("__RAWATTR__", &esc_attr(&raw_url))
         .replace("__OFFICEATTR__", &esc_attr(&office_src))
         .replace("__DLATTR__", &esc_attr(&dl_url));
+    // ASSET_VERSION_AUTO_V1：分享頁直接由 Rust 回傳，這裡也要統一改寫 /pub/static/... 版號。
+    let page = super::asset_versions::rewrite_asset_versions(&page).into_owned();
     tracing::info!(path = %path, ext = %ext, raw_url = %raw_url, office_src = %office_src, "pub share page served");
     let mut res = Response::new(page.into());
     *res.status_mut() = StatusCode::OK;

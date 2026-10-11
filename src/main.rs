@@ -577,6 +577,52 @@ fn write_init_file(path: &PathBuf, content: &str, force: bool) -> std::io::Resul
 
 // ─── 帳號管理指令執行 ─────────────────────────────────────────────────────────
 
+/// LOGIN_BEFORE_HTTP_V1：啟動所有帳號的監控（登入在背景進行，不阻斷 HTTP 服務）。
+///
+/// - 每個帳號一個背景任務，依序錯開 `STAGGER` 秒，避免同時對學校端發出大量登入。
+/// - 每次嘗試都走 `MonitorSpawner::spawn_account`（讀 DB → 解析 → 登入 → 登錄 → 啟動循環）。
+///   設定無效、密碼錯誤、學校暫時不可用，都只會排定下一次重試，不影響其他帳號與後台。
+/// - 重試退避：60 秒起、每次加倍、上限 30 分鐘（避免對學校端連續嘗試錯誤密碼而觸發鎖定）。
+/// - 帳號已在監控中（例如管理員已手動啟動）時自動停止。
+fn spawn_account_startups(spawner: monitor::MonitorSpawner, account_ids: Vec<String>) {
+    const STAGGER: std::time::Duration = std::time::Duration::from_secs(2);
+    const FIRST_RETRY: std::time::Duration = std::time::Duration::from_secs(60);
+    const MAX_RETRY: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    for (index, account_id) in account_ids.into_iter().enumerate() {
+        let spawner = spawner.clone();
+        let tracker = spawner.clone();
+        let first_wait = STAGGER * (index as u32);
+        let handle = tokio::spawn(async move {
+            let mut wait = first_wait;
+            let mut backoff = FIRST_RETRY;
+            loop {
+                tokio::time::sleep(wait).await;
+                if spawner.is_active(&account_id) {
+                    break;
+                }
+                match spawner.spawn_account(&account_id).await {
+                    Ok(started) => {
+                        info!(account = %started.account_id, "帳號已開始監控");
+                        break;
+                    }
+                    Err(reason) => {
+                        warn!(
+                            account = %account_id,
+                            retry_in_secs = backoff.as_secs(),
+                            error = %reason,
+                            "帳號啟動失敗，稍後背景重試"
+                        );
+                        wait = backoff;
+                        backoff = (backoff * 2).min(MAX_RETRY);
+                    }
+                }
+            }
+        });
+        // GRACEFUL_SHUTDOWN_V2：登記背景登入任務，關閉時一併中止。
+        tracker.track_startup_task(handle.abort_handle());
+    }
+}
+
 async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
     use account::RawAccountConfig;
 
@@ -770,22 +816,32 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
             }
         }
         AccountCmd::Reencrypt => {
-            let accounts = db.list().await?;
-            if accounts.is_empty() {
-                println!("（沒有帳號）");
-            } else {
-                let mut upgraded = 0usize;
-                for account in &accounts {
-                    // RawAccountConfig 已在讀出時解密成明文；重新寫入（upsert）
-                    // 會走加密路徑，把 password 與 session_cookie 加密存回。
-                    if db.upsert(account).await.is_ok() {
-                        upgraded += 1;
-                        println!("🔄 已重新加密：{}", account.id);
-                    } else {
-                        eprintln!("⚠️ 重新加密失敗：{}", account.id);
-                    }
-                }
-                println!("✅ 完成：{upgraded}/{} 個帳號已重新寫入（啟用 at-rest 加密）", accounts.len());
+            // REENCRYPT_CLI_SAFE_V2：舊版是 list()（解不開→空字串）→ upsert() 寫回，
+            // 會把無法解開的密文永久清空。改為 rotate_all_secrets：只處理密文欄位，
+            // 無法解開的值原樣保留並列出，請營運者補 TRONCLASS_MASTER_KEY_OLD 後再跑。
+            if !crate::secret_encryption::is_encryption_enabled() {
+                eprintln!("❌ 未設定有效的 TRONCLASS_MASTER_KEY（需 64 個 hex 字元），無法重新加密。");
+                eprintln!("   產生新 key：openssl rand -hex 32");
+                std::process::exit(1);
+            }
+            let report = db.rotate_all_secrets(false).await?;
+            println!(
+                "✅ 完成：共 {} 個帳號；新加密 {}；升級舊信封 {}；已是最新 {}；寫回 {}；寫入失敗 {}",
+                report.total,
+                report.encrypted_plaintext,
+                report.rewrapped,
+                report.already_current,
+                report.updated,
+                report.write_failed.len()
+            );
+            for id in &report.undecryptable_password {
+                eprintln!("⚠️ 密碼無法解開（原密文已保留）：{id}");
+            }
+            for id in &report.undecryptable_cookie {
+                eprintln!("⚠️ session cookie 無法解開（原密文已保留，重登即可重建）：{id}");
+            }
+            for line in &report.write_failed {
+                eprintln!("⚠️ 寫入失敗：{line}");
             }
         }
         // SECRET_ROTATE_CLI_V1
@@ -1105,12 +1161,44 @@ async fn main() -> Result<()> {
         return Err(e);
     }
 
-    let accounts = match accounts_db.resolve(&config).await {
-        Ok(accounts) => accounts,
-        Err(e) => {
-            error!(error = %e, "帳號設定驗證失敗");
-            eprintln!("\n❌ 帳號設定驗證失敗：{e}");
-            return Err(e);
+    // LOGIN_FAILURE_NONFATAL_V1：正式啟動時逐帳號解析——單一帳號設定錯誤（密碼為空、
+    // 無法解開的加密密碼、provider 不存在…）只記錄並由背景重試，不讓整個服務（含 Admin
+    // 後台，也就是管理員修正問題的唯一途徑）跟著退出。`--validate` 仍維持嚴格檢查。
+    let (accounts, account_failures) = if validate_only {
+        match accounts_db.resolve(&config).await {
+            Ok(accounts) => (accounts, Vec::new()),
+            Err(e) => {
+                error!(error = %e, "帳號設定驗證失敗");
+                eprintln!("\n❌ 帳號設定驗證失敗：{e}");
+                return Err(e);
+            }
+        }
+    } else {
+        match accounts_db.resolve_tolerant(&config).await {
+            Ok((accounts, failures)) => {
+                if accounts.is_empty() && failures.is_empty() {
+                    let e = miette::miette!("accounts database must contain at least one enabled non-viewer account");
+                    error!(error = %e, "帳號設定驗證失敗");
+                    eprintln!("\n❌ 帳號設定驗證失敗：{e}");
+                    return Err(e);
+                }
+                for (id, reason) in &failures {
+                    error!(account = %id, error = %reason, "帳號設定無效，已略過（不阻斷服務），將於背景重試");
+                    eprintln!("\n⚠️ 帳號 `{id}` 設定無效，已略過：{reason}");
+                    logs::record_system(
+                        "ERROR",
+                        "account",
+                        format!("帳號 {id} 設定無效已略過：{reason}；修正後可於後台重新啟動"),
+                        None,
+                    );
+                }
+                (accounts, failures)
+            }
+            Err(e) => {
+                error!(error = %e, "帳號設定驗證失敗");
+                eprintln!("\n❌ 帳號設定驗證失敗：{e}");
+                return Err(e);
+            }
         }
     };
 
@@ -1118,17 +1206,24 @@ async fn main() -> Result<()> {
     // 當 master key 已啟用時，把既有（可能為明文的）帳號憑證重新寫入以加密。
     // 每次啟動只做一次，成本低（帳號數通常不多），確保「下載 .db 不會看到
     // 明文密碼」。讀出時已解密成明文，寫回時會走加密路徑。
+    // AT_REST_AUTO_REENCRYPT_V2：改走 rotate_all_secrets（密文層級處理）。
+    // 舊版是 list()→upsert()：無法解開的密文會被解成空字串再寫回，永久清空憑證。
+    // 新版無法解開的值原樣保留，並在日誌中列出帳號，等營運者補 TRONCLASS_MASTER_KEY_OLD。
     if !validate_only && crate::secret_encryption::is_encryption_enabled() {
-        match accounts_db.list().await {
-            Ok(raw_accounts) => {
-                let mut upgraded = 0usize;
-                for account in &raw_accounts {
-                    if accounts_db.upsert(account).await.is_ok() {
-                        upgraded += 1;
-                    }
+        match accounts_db.rotate_all_secrets(false).await {
+            Ok(report) => {
+                if report.updated > 0 {
+                    info!(updated = report.updated, "啟動時已將既有帳號憑證重新寫入（at-rest 加密）");
                 }
-                if upgraded > 0 {
-                    info!(upgraded, "啟動時已將既有帳號憑證重新寫入（at-rest 加密）");
+                if !report.undecryptable_password.is_empty() || !report.undecryptable_cookie.is_empty() {
+                    error!(
+                        password_accounts = ?report.undecryptable_password,
+                        cookie_accounts = ?report.undecryptable_cookie,
+                        "部分帳號的加密憑證無法以目前／舊 master key 解開，已保留原密文未改寫；請檢查 TRONCLASS_MASTER_KEY_OLD 或於後台重新儲存該帳號密碼"
+                    );
+                }
+                if !report.write_failed.is_empty() {
+                    warn!(failed = ?report.write_failed, "部分帳號的加密憑證寫回失敗");
                 }
             }
             Err(e) => {
@@ -1350,52 +1445,13 @@ async fn main() -> Result<()> {
         None
     };
 
-    let mut contexts = Vec::with_capacity(accounts.len());
-    for account in accounts {
-        let account = Arc::new(account);
-        let ctx = match monitor::MonitorContext::new(
-            Arc::clone(&config),
-            Arc::clone(&account),
-            accounts_db.clone(),
-            adapter_hub.as_ref().map(Arc::clone),
-            interactive_adapter,
-            scanner_registry.as_ref().map(Arc::clone),
-        )
-        .await
-        {
-            Ok(ctx) => ctx,
-            Err(e) => {
-                error!(account = %account.id, error = %e, "監控器初始化失敗");
-                eprintln!("\n❌ 帳號 `{}` 初始化失敗：{e}", account.id);
-                return Err(e);
-            }
-        };
-        contexts.push(ctx);
-    }
-
-    // 任一帳號被使用者手動 /force 並偵測到點名時，通知其他帳號立即一起檢查。
-    let force_cascade_peers = contexts
-        .iter()
-        .filter_map(|ctx| {
-            ctx.request_account
-                .as_ref()
-                .map(|request| (ctx.account.id.clone(), Arc::clone(&request.force_poll_tx)))
-        })
-        .collect::<Vec<_>>();
-    let force_cascade = Arc::new(monitor::ForceCascade::new(force_cascade_peers));
-    for ctx in &mut contexts {
-        ctx.force_cascade = Some(Arc::clone(&force_cascade));
-    }
-
-    // ── 5. 啟動 Webhook 伺服器（背景任務） ───────────────────────────────────
-    // ACCOUNT_HOT_ADD_V1：Web／LINE／Discord 共用同一份可執行期追加的 runtime 帳號登錄簿，
-    // 搭配 MonitorSpawner 讓新增帳號後不必重啟服務即可開始監控。
-    let webhook_accounts = adapters::requests::AccountRegistry::new(
-        contexts
-            .iter()
-            .filter_map(|ctx| ctx.request_account.clone())
-            .collect::<Vec<_>>(),
-    );
+    // ── 4b. 監控器改為背景啟動（LOGIN_BEFORE_HTTP_V1）──────────────────────
+    // 舊行為：這裡依序「同步登入」所有帳號，Admin 後台／LINE webhook／掃碼頁／Discord
+    // 必須等全部登入結束才會啟動；學校端慢或卡住時，後台完全打不開。
+    // 新行為：先建好空的登錄簿、cascade 與 spawner（不登入），HTTP 服務立即啟動，
+    // 帳號登入由背景任務逐一進行（見 spawn_account_startups）。
+    let force_cascade = Arc::new(monitor::ForceCascade::new(Vec::new()));
+    let webhook_accounts = adapters::requests::AccountRegistry::new(Vec::new());
     let monitor_spawner = monitor::MonitorSpawner::new(
         Arc::clone(&config),
         accounts_db.clone(),
@@ -1405,6 +1461,12 @@ async fn main() -> Result<()> {
         Arc::clone(&force_cascade),
         webhook_accounts.clone(),
     );
+
+    // 所有需要啟動的帳號：設定有效者＋設定無效者（後者每次重試都會重新檢查 DB）。
+    let mut startup_ids: Vec<String> = accounts.iter().map(|a| a.id.clone()).collect();
+    startup_ids.extend(account_failures.iter().map(|(id, _)| id.clone()));
+    let accounts_total = startup_ids.len();
+    spawn_account_startups(monitor_spawner.clone(), startup_ids);
 
     let admin_web_state = if config.adapters.admin_web.enabled {
         let default_poll_interval_secs = config
@@ -1514,6 +1576,23 @@ async fn main() -> Result<()> {
         None
     };
 
+    // ADMIN_ALWAYS_SERVED_V1：Admin 後台只掛在 LINE webhook／掃碼伺服器上。兩者都沒啟動時
+    // （例如 LINE 未啟用且未設定 public_base_url），改由獨立的後台伺服器提供，確保管理員仍能進後台。
+    let _admin_only_handle = match admin_web_state.as_ref() {
+        Some(state) if webhook_handle.is_none() && scanner_handle.is_none() => {
+            let port = config.adapters.line_bot.webhook_port;
+            let bind_addr = config.adapters.line_bot.webhook_bind_addr.clone();
+            warn!(bind_addr = %bind_addr, port = port, "LINE webhook 與掃碼伺服器皆未啟動，改由獨立的 Admin 後台伺服器提供服務");
+            let state = state.clone();
+            Some(tokio::spawn(async move {
+                if let Err(e) = adapters::scanner::start_admin_only_server(state, &bind_addr, port).await {
+                    error!(error = %e, "Admin 後台伺服器異常退出");
+                }
+            }))
+        }
+        _ => None,
+    };
+
     let discord_handle = if let Some(bot) = discord_bot.as_ref() {
         let request_state = adapters::requests::RequestState::new_with_binding(
             Arc::clone(bot) as Arc<dyn adapters::events::AdapterMessenger>,
@@ -1588,6 +1667,9 @@ async fn main() -> Result<()> {
         }
     });
 
+    // HOLIDAYS_REMOTE_V1：假日行事曆每日自動更新（背景，不阻塞啟動）。
+    let holiday_refresh_handle = holidays::spawn_remote_refresh();
+
     // ── 6. 設定優雅關閉 ───────────────────────────────────────────────────────
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let shutdown_notify_clone = Arc::clone(&shutdown_notify);
@@ -1599,30 +1681,12 @@ async fn main() -> Result<()> {
     });
 
     // ── 7. 進入主監控循環（帶優雅關閉） ──────────────────────────────────────
-    info!(account_count = contexts.len(), "🚀 開始監控簽到...");
+    info!(account_count = accounts_total, "🚀 開始監控簽到（登入於背景進行）...");
 
-    let mut monitor_tasks = tokio::task::JoinSet::new();
-    for ctx in contexts {
-        let account_id = ctx.account.id.clone();
-        // MONITOR_WATCHDOG_V1：把任務把手掛到 request_account，看門狗判定卡死時可中止再重生。
-        let request_account = ctx.request_account.clone();
-        let request_account_for_crash = ctx.request_account.clone();
-        let handle = monitor_tasks.spawn(async move {
-            match monitor::run_monitor_loop(ctx).await {
-                Ok(()) => Ok(account_id),
-                Err(e) => {
-                    // MONITOR_WATCHDOG_V1：標記已崩潰 → 看門狗 30 秒內重生。
-                    if let Some(request_account) = request_account_for_crash.as_ref() {
-                        request_account.mark_loop_crashed();
-                    }
-                    Err((account_id, e.to_string()))
-                }
-            }
-        });
-        if let Some(request_account) = request_account {
-            request_account.set_loop_abort(handle);
-        }
-    }
+    // 監控循環已由 MonitorSpawner 在背景啟動（見 spawn_account_startups），
+    // 不再掛在這個 JoinSet 上；保留 JoinSet 只為了沿用下方的關閉流程。
+    let mut monitor_tasks: tokio::task::JoinSet<std::result::Result<String, (String, String)>> =
+        tokio::task::JoinSet::new();
 
     // MONITOR_WATCHDOG_V1：啟動看門狗（每 30 秒掃心跳；卡死 → 中止 + 重生 + 通知管理員）。
     let watchdog_handle = {
@@ -1654,6 +1718,18 @@ async fn main() -> Result<()> {
             // （舊行為：return Err → 整個面板／Bot 一起退出，等 Pterodactyl 重啟）。
             // 任務已在結束前呼叫 mark_loop_crashed()，看門狗會在下一輪掃描（30 秒內）
             // 重新登入並重生該帳號，並通知管理員；其他帳號與 Web／Discord 不受影響。
+            // PANIC_ISOLATION_V1：單一監控任務 panic 不再拖垮整個服務（舊行為：return Err → 全部退出）。
+            // panic 時 JoinError 不含帳號 id，且心跳不再更新；看門狗會依 stale 判定中止並重生該帳號。
+            Some(Some(Err(join_err))) => {
+                error!(error = %join_err, "監控循環任務 panic，服務繼續運行，交由看門狗依心跳重生");
+                logs::record_system(
+                    "ERROR",
+                    "monitor",
+                    format!("監控循環任務 panic：{join_err}；看門狗將依心跳自動重生"),
+                    None,
+                );
+                continue;
+            }
             Some(Some(Ok(Err((account_id, err))))) => {
                 error!(account = %account_id, error = %err, "監控循環異常結束，交由看門狗重生");
                 logs::record_system(
@@ -1686,20 +1762,14 @@ async fn main() -> Result<()> {
             Some(Ok(Ok(account_id))) => {
                 warn!(account = %account_id, "監控循環提前正常結束");
             }
+            // NO_EXIT_ON_MONITOR_FAILURE_V1：上方迴圈已把所有監控任務的結束情況
+            // 以 `continue` 交給看門狗，這裡理論上不會再到達。保留為只記錄、不退出，
+            // 避免日後有人重新引入「單一帳號失敗 → 整個服務（含後台）退出」的路徑。
             Some(Ok(Err((account_id, err)))) => {
-                error!(account = %account_id, error = %err, "監控循環異常結束");
-                monitor_tasks.abort_all();
-                watchdog_handle.abort();
-                return Err(miette::miette!(
-                    "account `{}` monitor failed: {}",
-                    account_id,
-                    err
-                ));
+                error!(account = %account_id, error = %err, "監控循環異常結束（不退出服務）");
             }
             Some(Err(join_err)) => {
-                monitor_tasks.abort_all();
-                watchdog_handle.abort();
-                return Err(miette::miette!("monitor task join failed: {}", join_err));
+                error!(error = %join_err, "監控任務 join 失敗（不退出服務）");
             }
             None => {}
         }
@@ -1708,8 +1778,14 @@ async fn main() -> Result<()> {
     // ── 8. 清理資源 ───────────────────────────────────────────────────────────
     info!("清理資源...");
 
-    monitor_tasks.abort_all();
+    // GRACEFUL_SHUTDOWN_V2：先停看門狗（不再重生），再通知監控層停止啟動與新批次、
+    // 最多等 20 秒讓送出中的簽到完成，最後中止所有監控循環。
     watchdog_handle.abort();
+    monitor_spawner
+        .shutdown_monitors(std::time::Duration::from_secs(20))
+        .await;
+    monitor_tasks.abort_all();
+    holiday_refresh_handle.abort();
 
     if let Some(handle) = webhook_handle {
         handle.abort();

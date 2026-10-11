@@ -662,7 +662,10 @@ impl DiscordRuntime {
             "qr" => {
                 let qr_data = string_option(&command, "data").unwrap_or_default();
                 requests::execute_command(
-                    RequestCommand::QrCode(qr_data),
+                    RequestCommand::QrCode {
+                        data: qr_data,
+                        rollcall_id: string_option(&command, "id").and_then(|raw| requests::parse_rollcall_id(&raw)),
+                    },
                     &reply_token,
                     &self.requests,
                     &user_id,
@@ -672,7 +675,10 @@ impl DiscordRuntime {
             "num" => {
                 let code = string_option(&command, "code").unwrap_or_default();
                 requests::execute_command(
-                    RequestCommand::NumberCode(code),
+                    RequestCommand::NumberCode {
+                        code,
+                        rollcall_id: string_option(&command, "id").and_then(|raw| requests::parse_rollcall_id(&raw)),
+                    },
                     &reply_token,
                     &self.requests,
                     &user_id,
@@ -776,6 +782,7 @@ impl DiscordRuntime {
             requests::execute_command(
                 RequestCommand::NumberAutoLookup {
                     account_id: Some(account_id.to_string()),
+                    rollcall_id: None,
                 },
                 &reply_token,
                 &self.requests,
@@ -1456,6 +1463,14 @@ fn discord_commands() -> Vec<CreateCommand> {
                 .required(true)
                 .min_length(1)
                 .max_length(4000),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "id",
+                    "點名 ID（多個點名同時等待時必填，例如 123）",
+                )
+                .required(false),
             ),
         CreateCommand::new("num")
             .description("送出數字點名 4 位數（手動送出，不受自動讀碼 15%）")
@@ -1468,6 +1483,14 @@ fn discord_commands() -> Vec<CreateCommand> {
                 .required(true)
                 .min_length(4)
                 .max_length(4),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "id",
+                    "點名 ID（多個點名同時等待時必填，例如 123）",
+                )
+                .required(false),
             ),
         CreateCommand::new("request-account")
             .description("申請新增帳號（請在 bot 私訊使用，需管理員核准）")
@@ -1885,8 +1908,8 @@ fn discord_text_audit_action(content: &str) -> Option<&'static str> {
         RequestCommand::Stop => Some("text_stop"),
         RequestCommand::Start => Some("text_start"),
         RequestCommand::ReAuth => Some("text_reauth"),
-        RequestCommand::QrCode(_) => Some("text_qr"),
-        RequestCommand::NumberCode(_) => Some("text_num"),
+        RequestCommand::QrCode { .. } => Some("text_qr"),
+        RequestCommand::NumberCode { .. } => Some("text_num"),
         RequestCommand::NumberAutoLookup { .. } => Some("text_number_auto_lookup"),
         RequestCommand::Help => Some("text_help"),
         RequestCommand::Unknown(_) => None,

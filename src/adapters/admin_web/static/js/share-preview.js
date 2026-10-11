@@ -31,7 +31,7 @@
   // PDFJS_PREVIEW_V1: 與雲端硬碟同款，PDF.js 逐頁渲染成 canvas（不靠瀏覽器外掛/Range）。
   function renderPdf(buf) {
     if (!window.pdfjsLib) { fail('PDF 引擎未載入'); return; }
-    try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/pub/static/js/pdf.worker.min.js?v=sharev5'; } catch (_) {}
+    try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/pub/static/js/pdf.worker.min.js'; } catch (_) {}
     stage.innerHTML = '<div class="msg">PDF 渲染中…</div>';
     window.pdfjsLib.getDocument({ data: buf }).promise.then(function (pdf) {
       var wrap = document.createElement('div');

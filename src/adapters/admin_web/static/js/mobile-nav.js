@@ -14,7 +14,7 @@
   if (!document.querySelector('link[href^="/admin/static/mobile-navigation.css"]')) {
     var link = document.createElement('link');
     link.rel = 'stylesheet';
-    link.href = '/admin/static/mobile-navigation.css?v=mnav2';
+    link.href = '/admin/static/mobile-navigation.css';
     document.head.appendChild(link);
   }
   // 各頁舊底欄（課表頁 ttMobileNavV2 等）讓位給共用導覽列；body 預留空間。

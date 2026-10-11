@@ -2,6 +2,10 @@
 //!
 //! - 週六、週日一律視為休息日。
 //! - 內建臺灣行政院人事行政總處核定的放假日（目前收錄 2026、2027 年，含補假日）。
+//! - HOLIDAYS_REMOTE_V1：內建資料之外，每 24 小時從 TaiwanCalendar（行政院人事行政總處資料的
+//!   社群鏡像，可由 `TRONCLASS_HOLIDAY_SOURCE_URL` 改寫、設為空字串則停用）抓取「今年」與「明年」，
+//!   寫入 `config/holidays_remote.json`（只含平日國定假日與補班日）。內建已涵蓋的日期不重複採用；
+//!   遠端的補班日優先於週末。抓取失敗或來源尚未公布時沿用上一次資料；明年仍未涵蓋時每天寫 WARN。
 //! - SEMESTER_BREAK_V1：內建寒暑假區間（依淡江大學 115 學年度行事曆），
 //!   開學日前、學期結束後（寒假／暑假）整段不自動輪詢；開學日（開始上課日）當天恢復。
 //! - `config/holidays.json` 可額外增減：
@@ -22,9 +26,10 @@
 //! 晨間摘要沿用同一份判定。
 
 use chrono::{Datelike, NaiveDate, Weekday};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 /// 內建國定假日（含補假、連假中的週間日）。日期格式 YYYY-MM-DD。
 /// 來源：行政院人事行政總處《政府行政機關辦公日曆表》115（2026）、116（2027）年。
@@ -133,6 +138,13 @@ struct OverrideCache {
     /// 已解析的自訂停課區間（含頭尾）。
     breaks: Vec<(NaiveDate, NaiveDate)>,
     disable_builtin_breaks: bool,
+    /// HOLIDAYS_REMOTE_V1：遠端行事曆的平日國定假日（日期 → 名稱）。
+    remote_holidays: HashMap<NaiveDate, String>,
+    /// HOLIDAYS_REMOTE_V1：遠端行事曆的補班日（週末但要上班）。
+    remote_workdays: HashSet<NaiveDate>,
+    /// HOLIDAYS_REMOTE_V1：遠端檔已涵蓋的年份。
+    remote_years: Vec<i32>,
+    remote_fetched_at: String,
 }
 
 /// SEMESTER_BREAK_V1：`date` 是否落在內建寒暑假內；回傳區間名稱。
@@ -199,6 +211,19 @@ fn with_overrides<R>(f: impl FnOnce(&OverrideCache) -> R) -> R {
             })
             .collect();
         guard.disable_builtin_breaks = parsed.disable_builtin_breaks;
+        let remote = read_remote_file();
+        guard.remote_holidays = remote
+            .holidays
+            .iter()
+            .filter_map(|d| {
+                NaiveDate::parse_from_str(d.date.trim(), "%Y-%m-%d")
+                    .ok()
+                    .map(|date| (date, d.name.clone()))
+            })
+            .collect();
+        guard.remote_workdays = parse_dates(&remote.workdays);
+        guard.remote_years = remote.years.clone();
+        guard.remote_fetched_at = remote.fetched_at.clone();
         guard.loaded_at = Some(Instant::now());
     }
     f(&guard)
@@ -280,10 +305,18 @@ pub fn rest_day_reason(date: NaiveDate) -> Option<&'static str> {
         if o.extra.contains(&date) {
             return Some("自訂假日");
         }
+        // HOLIDAYS_REMOTE_V1：遠端補班日優先於週末（與內建資料一致，補班日視為上課）。
+        if o.remote_workdays.contains(&date) {
+            return None;
+        }
         if matches!(date.weekday(), Weekday::Sat | Weekday::Sun) {
             return Some("週末");
         }
         if builtin().contains(&date) {
+            return Some("國定假日");
+        }
+        // HOLIDAYS_REMOTE_V1：內建未涵蓋的年度，改用遠端行事曆的國定假日。
+        if o.remote_holidays.contains_key(&date) {
             return Some("國定假日");
         }
         // SEMESTER_BREAK_V1
@@ -311,11 +344,30 @@ pub fn calendar_snapshot(today: NaiveDate) -> serde_json::Value {
         Some(today)
     };
 
-    // 內建國定假日（含名稱）
-    let holidays: Vec<serde_json::Value> = BUILTIN_HOLIDAYS
+    // 內建國定假日（含名稱），再加上遠端行事曆中內建未涵蓋的國定假日（HOLIDAYS_REMOTE_V1）。
+    let mut holidays: Vec<serde_json::Value> = BUILTIN_HOLIDAYS
         .iter()
         .map(|(date, name)| json!({ "date": date, "name": name }))
         .collect();
+    let (remote_days, remote_fetched_at, remote_years) = with_overrides(|o| {
+        let mut days: Vec<(NaiveDate, String)> = o
+            .remote_holidays
+            .iter()
+            .map(|(d, n)| (*d, n.clone()))
+            .collect();
+        days.sort();
+        (days, o.remote_fetched_at.clone(), o.remote_years.clone())
+    });
+    for (date, name) in remote_days {
+        if !builtin().contains(&date) {
+            holidays.push(json!({
+                "date": date.format("%Y-%m-%d").to_string(),
+                "name": name,
+                "source": "remote",
+            }));
+        }
+    }
+    holidays.sort_by(|a, b| a["date"].as_str().cmp(&b["date"].as_str()));
 
     // 寒暑假（內建 + 自訂）
     let (extra, workdays, custom_breaks, disable_builtin_breaks) = with_overrides(|o| {
@@ -357,7 +409,9 @@ pub fn calendar_snapshot(today: NaiveDate) -> serde_json::Value {
     for _ in 0..430 {
         let reason = rest_day_reason(cursor);
         let label = match reason {
-            Some("國定假日") => builtin_holiday_name(cursor).map(str::to_string),
+            Some("國定假日") => builtin_holiday_name(cursor)
+                .map(str::to_string)
+                .or_else(|| with_overrides(|o| o.remote_holidays.get(&cursor).cloned())),
             _ => None,
         };
         days.push(json!([
@@ -384,8 +438,250 @@ pub fn calendar_snapshot(today: NaiveDate) -> serde_json::Value {
             "workdays": workdays.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect::<Vec<_>>(),
             "disable_builtin_breaks": disable_builtin_breaks,
         },
+        "remote": {
+            "file": REMOTE_FILE,
+            "source": source_base(),
+            "years": remote_years,
+            "fetched_at": remote_fetched_at,
+            "refresh_interval_secs": REMOTE_REFRESH_INTERVAL.as_secs(),
+        },
         "reload_interval_secs": OVERRIDE_RELOAD_INTERVAL.as_secs(),
         "days": days,
+    })
+}
+
+// ─── HOLIDAYS_REMOTE_V1：自動讀取官方行事曆 ───────────────────────────────
+
+/// 遠端行事曆來源（TaiwanCalendar：依行政院人事行政總處公布資料整理，每年一個 JSON 檔）。
+/// 環境變數 `TRONCLASS_HOLIDAY_SOURCE_URL` 可改來源；設為空字串則停用遠端讀取（離線部署）。
+const REMOTE_SOURCE_ENV: &str = "TRONCLASS_HOLIDAY_SOURCE_URL";
+const DEFAULT_REMOTE_SOURCE: &str = "https://cdn.jsdelivr.net/gh/ruyut/TaiwanCalendar/data";
+/// 正規化後的遠端資料快取檔（只含平日國定假日與補班日）。
+const REMOTE_FILE: &str = "config/holidays_remote.json";
+const REMOTE_REFRESH_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const REMOTE_HTTP_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+struct RemoteCalendar {
+    #[serde(default)]
+    fetched_at: String,
+    #[serde(default)]
+    years: Vec<i32>,
+    #[serde(default)]
+    holidays: Vec<RemoteDay>,
+    #[serde(default)]
+    workdays: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct RemoteDay {
+    date: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// 來源單日格式：`{"date":"20270101","week":"五","isHoliday":true,"description":"開國紀念日"}`。
+#[derive(Debug, serde::Deserialize)]
+struct SourceDay {
+    date: String,
+    #[serde(rename = "isHoliday", default)]
+    is_holiday: bool,
+    #[serde(default)]
+    description: String,
+}
+
+fn read_remote_file() -> RemoteCalendar {
+    std::fs::read_to_string(REMOTE_FILE)
+        .ok()
+        .and_then(|text| serde_json::from_str::<RemoteCalendar>(&text).ok())
+        .unwrap_or_default()
+}
+
+fn source_base() -> Option<String> {
+    match std::env::var(REMOTE_SOURCE_ENV) {
+        Ok(raw) => {
+            let trimmed = raw.trim().trim_end_matches('/');
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        Err(_) => Some(DEFAULT_REMOTE_SOURCE.to_string()),
+    }
+}
+
+fn year_of(date: &str) -> i32 {
+    date.get(..4).and_then(|y| y.parse::<i32>().ok()).unwrap_or(0)
+}
+
+/// 解析來源年度檔：平日國定假日（isHoliday 且非週末）與週末補班日（非假日但為週末）。
+/// 格式不符或筆數明顯不足時回傳錯誤，呼叫端不會寫檔。
+fn parse_source_year(body: &str) -> Result<(Vec<RemoteDay>, Vec<String>), String> {
+    let days: Vec<SourceDay> =
+        serde_json::from_str(body).map_err(|e| format!("格式錯誤：{e}"))?;
+    if days.len() < 300 {
+        return Err(format!("筆數異常（{} 筆）", days.len()));
+    }
+    let mut holidays = Vec::new();
+    let mut workdays = Vec::new();
+    for day in days {
+        let Ok(date) = NaiveDate::parse_from_str(day.date.trim(), "%Y%m%d") else {
+            continue;
+        };
+        let weekend = matches!(date.weekday(), Weekday::Sat | Weekday::Sun);
+        let key = date.format("%Y-%m-%d").to_string();
+        if day.is_holiday && !weekend {
+            holidays.push(RemoteDay {
+                date: key,
+                name: day.description.trim().to_string(),
+            });
+        } else if !day.is_holiday && weekend {
+            workdays.push(key);
+        }
+    }
+    Ok((holidays, workdays))
+}
+
+/// 內建＋遠端能涵蓋的年份（用來提早警告「明年沒有假日資料」）。
+pub fn covered_years() -> Vec<i32> {
+    let mut years: Vec<i32> = BUILTIN_HOLIDAYS
+        .iter()
+        .map(|(date, _)| year_of(date))
+        .collect();
+    years.extend(with_overrides(|o| o.remote_years.clone()));
+    years.sort();
+    years.dedup();
+    years
+}
+
+/// 抓單一年度檔。`Ok(None)` 代表來源尚未公布該年（HTTP 404）。
+async fn fetch_source_year(
+    client: &reqwest::Client,
+    base: &str,
+    year: i32,
+) -> Result<Option<(Vec<RemoteDay>, Vec<String>)>, String> {
+    let url = format!("{base}/{year}.json");
+    let response = client
+        .get(url.as_str())
+        .send()
+        .await
+        .map_err(|e| format!("連線失敗：{e}"))?;
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("讀取失敗：{e}"))?;
+    parse_source_year(&body).map(Some)
+}
+
+/// HOLIDAYS_REMOTE_V1：抓取今年與明年的官方行事曆，寫入 `config/holidays_remote.json`。
+/// - 單一年度失敗或尚未公布：保留該年度上一次成功的資料。
+/// - 全部失敗：不改寫檔案，回傳錯誤。
+/// 成功後清除覆寫快取，下一次判定就會套用新資料。回傳遠端國定假日筆數。
+pub async fn refresh_remote_calendar() -> Result<usize, String> {
+    let base = source_base().ok_or_else(|| "已停用（環境變數為空）".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(REMOTE_HTTP_TIMEOUT)
+        .connect_timeout(Duration::from_secs(5))
+        .user_agent("TronclassPanel/1.0 (holiday-calendar)")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let this_year = chrono::Local::now().year();
+    let previous = read_remote_file();
+
+    let mut fetched_years: Vec<i32> = Vec::new();
+    let mut new_holidays: Vec<RemoteDay> = Vec::new();
+    let mut new_workdays: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for year in [this_year, this_year + 1] {
+        match fetch_source_year(&client, &base, year).await {
+            Ok(Some((holidays, workdays))) => {
+                fetched_years.push(year);
+                new_holidays.extend(holidays);
+                new_workdays.extend(workdays);
+            }
+            Ok(None) => info!(year, "假日行事曆：來源尚未公布該年度，沿用既有資料"),
+            Err(e) => failures.push(format!("{year}: {e}")),
+        }
+    }
+    if fetched_years.is_empty() {
+        let reason = if failures.is_empty() {
+            "來源尚未公布任何年度".to_string()
+        } else {
+            failures.join("；")
+        };
+        return Err(format!("沒有可用的年度資料：{reason}"));
+    }
+
+    // 沒有成功抓到的年度，保留上一次的資料。
+    let keep = |year: i32| !fetched_years.contains(&year);
+    let mut holidays: Vec<RemoteDay> = previous
+        .holidays
+        .into_iter()
+        .filter(|d| keep(year_of(&d.date)))
+        .collect();
+    holidays.extend(new_holidays);
+    holidays.sort_by(|a, b| a.date.cmp(&b.date));
+    let mut workdays: Vec<String> = previous
+        .workdays
+        .into_iter()
+        .filter(|d| keep(year_of(d)))
+        .collect();
+    workdays.extend(new_workdays);
+    workdays.sort();
+    let mut years: Vec<i32> = previous.years.into_iter().filter(|y| keep(*y)).collect();
+    years.extend(fetched_years.iter().copied());
+    years.sort();
+    years.dedup();
+
+    let total_holidays = holidays.len();
+    let file = RemoteCalendar {
+        fetched_at: chrono::Local::now()
+            .format("%Y-%m-%dT%H:%M:%S%:z")
+            .to_string(),
+        years,
+        holidays,
+        workdays,
+    };
+    let text =
+        serde_json::to_string_pretty(&file).map_err(|e| format!("序列化失敗：{e}"))?;
+    crate::atomic_write::write_atomic(REMOTE_FILE, text)
+        .map_err(|e| format!("寫入失敗：{e}"))?;
+    // 讓下一次 with_overrides 重新讀檔。
+    if let Some(cache) = OVERRIDES.get() {
+        cache.lock().unwrap_or_else(|p| p.into_inner()).loaded_at = None;
+    }
+
+    if !failures.is_empty() {
+        warn!(failures = %failures.join("；"), "假日行事曆部分年度讀取失敗，已保留上一次資料");
+    }
+    let next_year = this_year + 1;
+    if !covered_years().contains(&next_year) {
+        warn!(
+            year = next_year,
+            "假日資料尚未涵蓋明年；請確認來源是否已公布，或在 config/holidays.json 補上"
+        );
+    }
+    Ok(total_holidays)
+}
+
+/// HOLIDAYS_REMOTE_V1：背景任務，啟動後立即抓一次，之後每 24 小時一次。
+/// 不阻塞啟動；失敗時繼續使用內建資料與上一次的快取。
+pub fn spawn_remote_refresh() -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        if source_base().is_none() {
+            info!("假日行事曆遠端讀取已停用（TRONCLASS_HOLIDAY_SOURCE_URL 為空），僅使用內建資料與 config/holidays.json");
+            return;
+        }
+        loop {
+            match refresh_remote_calendar().await {
+                Ok(n) => info!(holidays = n, "假日行事曆已更新（遠端）"),
+                Err(e) => warn!(error = %e, "假日行事曆更新失敗，沿用上一次資料與內建資料"),
+            }
+            tokio::time::sleep(REMOTE_REFRESH_INTERVAL).await;
+        }
     })
 }
 
@@ -449,6 +745,37 @@ mod tests {
         assert_eq!(snap["next_working_day"], "2026-09-14");
         assert!(snap["days"].as_array().map(|a| a.len() >= 400).unwrap_or(false));
         assert!(snap["holidays"].as_array().map(|a| !a.is_empty()).unwrap_or(false));
+    }
+
+    #[test]
+    fn remote_year_parses_holidays_and_makeup_workdays() {
+        let mut items = Vec::new();
+        let mut d = NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        for _ in 0..365 {
+            let weekend = matches!(d.weekday(), Weekday::Sat | Weekday::Sun);
+            let key = d.format("%Y%m%d").to_string();
+            let (is_holiday, desc) = if key == "20270101" {
+                (true, "開國紀念日")
+            } else if key == "20270104" {
+                (true, "測試國定假日")
+            } else if key == "20270109" {
+                (false, "")
+            } else {
+                (weekend, "")
+            };
+            items.push(serde_json::json!({
+                "date": key,
+                "week": "",
+                "isHoliday": is_holiday,
+                "description": desc,
+            }));
+            d = d.succ_opt().unwrap();
+        }
+        let body = serde_json::Value::Array(items).to_string();
+        let (holidays, workdays) = parse_source_year(&body).expect("parse");
+        let names: Vec<&str> = holidays.iter().map(|h| h.date.as_str()).collect();
+        assert_eq!(names, vec!["2027-01-01", "2027-01-04"]);
+        assert_eq!(workdays, vec!["2027-01-09".to_string()]);
     }
 
     #[test]

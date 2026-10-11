@@ -31,60 +31,62 @@
   // X-CSRF-Token header exactly once, no matter how many layers of fetch
   // wrapping a given page stacks on top of this one. The server side of this
   // check lives in admin_same_origin_middleware / csrf.rs.
+  // CSRF_SHARED_HELPERS_V2：fetch 與 XHR 兩層包裝共用同一組判定與 token 來源，
+  // 避免兩份程式碼日後走樣。token 來自 <html data-csrf>（pages.rs auth_attrs 注入）。
+  var CSRF_HEADER = 'X-CSRF-Token';
+  var CSRF_MUTATING_METHODS = { POST: 1, PUT: 1, PATCH: 1, DELETE: 1 };
+
+  function csrfTokenValue() {
+    try {
+      return document.documentElement.getAttribute('data-csrf') || '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // 範圍與伺服器端 admin_same_origin_middleware／csrf.rs 完全一致：同源、/admin/api/*、
+  // 非 GET。/admin/stock-api/* 是 StockGenie 自有前端、不載入本檔，刻意不包。
+  function csrfNeedsHeader(url, method) {
+    if (!CSRF_MUTATING_METHODS[String(method || 'GET').toUpperCase()]) return false;
+    try {
+      var resolved = new URL(url, window.location.href);
+      if (resolved.origin !== window.location.origin) return false;
+      return resolved.pathname.indexOf('/admin/api/') === 0;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // CSRF_TOKEN_V1 / CSRF_FETCH_GUARD_V2：包 window.fetch。
+  // 支援兩種呼叫形式：fetch(字串網址, init) 與 fetch(Request 物件[, init])。
+  // 已由呼叫端自行設定 X-CSRF-Token 時不覆寫，避免值被重複附加。
   (function installCsrfFetchGuard() {
-    var CSRF_HEADER = 'X-CSRF-Token';
-    var MUTATING_METHODS = { POST: 1, PUT: 1, PATCH: 1, DELETE: 1 };
     var preCsrfFetch = window.fetch;
     if (typeof preCsrfFetch !== 'function') return;
 
-    function csrfTokenValue() {
-      try {
-        return document.documentElement.getAttribute('data-csrf') || '';
-      } catch (_) {
-        return '';
-      }
-    }
-
-    function needsCsrfHeader(url, method) {
-      if (!MUTATING_METHODS[String(method || 'GET').toUpperCase()]) return false;
-      try {
-        var resolved = new URL(url, window.location.href);
-        if (resolved.origin !== window.location.origin) return false;
-        // Matches the server-side enforcement scope exactly (see
-        // admin_same_origin_middleware / csrf.rs): /admin/stock-api/* is the
-        // StockGenie sidecar's own isolated frontend, never loads this
-        // script, and is intentionally not covered by the explicit token.
-        return resolved.pathname.indexOf('/admin/api/') === 0;
-      } catch (_) {
-        return false;
-      }
+    function withToken(headers) {
+      var next = new Headers(headers || undefined);
+      next.set(CSRF_HEADER, csrfTokenValue());
+      return next;
     }
 
     window.fetch = function (input, init) {
       try {
-        // Only the common (and, in this codebase, exclusive) call shape —
-        // fetch(stringUrl, { method, ... }) — is handled. A Request object
-        // as the first argument is passed through untouched rather than
-        // risked being rebuilt (streaming bodies/FormData could be mangled);
-        // worst case that one call gets a 403 from the server-side check,
-        // which is a visible, debuggable failure rather than a corrupted
-        // request body.
-        if (typeof input === 'string') {
-          var method = (init && init.method) || 'GET';
-          if (needsCsrfHeader(input, method)) {
-            var token = csrfTokenValue();
-            if (token) {
-              var nextInit = init ? Object.assign({}, init) : {};
-              var h = nextInit.headers;
-              if (h instanceof Headers) {
-                h.set(CSRF_HEADER, token);
-              } else if (Array.isArray(h)) {
-                nextInit.headers = h.concat([[CSRF_HEADER, token]]);
+        var isRequest = typeof Request === 'function' && input instanceof Request;
+        if (typeof input === 'string' || isRequest) {
+          var url = isRequest ? input.url : input;
+          var method = (init && init.method) || (isRequest ? input.method : 'GET');
+          if (csrfNeedsHeader(url, method) && csrfTokenValue()) {
+            var existing = new Headers((init && init.headers) || (isRequest ? input.headers : undefined));
+            if (!existing.has(CSRF_HEADER)) {
+              if (isRequest && !(init && init.headers)) {
+                // 重建 Request 會沿用原本的 body；原物件的 body 之後視為已使用。
+                input = new Request(input, { headers: withToken(input.headers) });
               } else {
-                nextInit.headers = Object.assign({}, h || {});
-                nextInit.headers[CSRF_HEADER] = token;
+                init = Object.assign({}, init || {}, {
+                  headers: withToken((init && init.headers) || undefined),
+                });
               }
-              init = nextInit;
             }
           }
         }
@@ -92,6 +94,50 @@
         // Never let CSRF header injection break a real request.
       }
       return preCsrfFetch.call(window, input, init);
+    };
+  })();
+
+  // CSRF_XHR_GUARD_V1：包 XMLHttpRequest（檔案上傳、作業繳交、附件下載用 XHR 以取得進度事件）。
+  // 記下 open() 的方法與網址；send() 前若呼叫端沒有自行設定 X-CSRF-Token，就依同一套規則補上。
+  (function installCsrfXhrGuard() {
+    if (typeof XMLHttpRequest !== 'function') return;
+    var proto = XMLHttpRequest.prototype;
+    var nativeOpen = proto.open;
+    var nativeSend = proto.send;
+    var nativeSetRequestHeader = proto.setRequestHeader;
+
+    proto.open = function (method, url) {
+      try {
+        this.__csrfMethod = String(method || 'GET');
+        this.__csrfUrl = String(url || '');
+        this.__csrfHeaderSet = false;
+      } catch (_) {}
+      return nativeOpen.apply(this, arguments);
+    };
+
+    proto.setRequestHeader = function (name) {
+      try {
+        if (String(name).toLowerCase() === CSRF_HEADER.toLowerCase()) {
+          this.__csrfHeaderSet = true;
+        }
+      } catch (_) {}
+      return nativeSetRequestHeader.apply(this, arguments);
+    };
+
+    proto.send = function () {
+      try {
+        // 最多設定一次：setRequestHeader 同名會附加第二個值（"a, b"）。
+        if (!this.__csrfHeaderSet && csrfNeedsHeader(this.__csrfUrl, this.__csrfMethod)) {
+          var token = csrfTokenValue();
+          if (token) {
+            nativeSetRequestHeader.call(this, CSRF_HEADER, token);
+            this.__csrfHeaderSet = true;
+          }
+        }
+      } catch (_) {
+        // Never let CSRF header injection break a real request.
+      }
+      return nativeSend.apply(this, arguments);
     };
   })();
 

@@ -134,6 +134,12 @@ impl StoreSecret {
             None => {
                 // MASTER_KEY_ROTATION_V1：未設 key 但值是加密信封＝一定解不開。
                 // DECRYPT_FAIL_NO_SUBMIT_V1：回空字串（非密文），登入入口阻止送出。
+                // PLAINTEXT_PASSTHROUGH_V2：未啟用 at-rest 加密的部署（DB 內是明文）必須原樣回傳。
+                // 舊版這裡把「所有」值都清成空字串，導致未設 key 時每個帳號都讀不到密碼，
+                // 登入失敗，進而讓啟動流程退出（見 main.rs 的 LOGIN_FAILURE_NONFATAL_V1）。
+                if !is_envelope(stored) {
+                    return StoreSecret(stored.to_string());
+                }
                 if is_envelope(stored) {
                     static WARNED_NO_KEY: once_cell::sync::OnceCell<()> =
                         once_cell::sync::OnceCell::new();

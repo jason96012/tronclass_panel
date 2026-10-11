@@ -283,9 +283,9 @@ static BUILD_ID: Lazy<String> = Lazy::new(|| {
 });
 
 static ASSET_URL_RE: Lazy<Regex> = Lazy::new(|| {
-    // 對 /admin/static/ 路徑（含現有 ?v=…）做全域改寫；路徑字元集不含
+    // 對 /admin/static/ 與 /pub/static/ 路徑（含現有 ?v=… 或 ?sv=…，故可重複套用）做全域改寫；路徑字元集不含
     // `?`，貪婪匹配自然停在 query 之前，引號／括號外的文字不受影響。
-    Regex::new(r"(/admin/static/[A-Za-z0-9._\-/]+)(\?v=[A-Za-z0-9._\-]+)?")
+    Regex::new(r"(/(?:admin|pub)/static/[A-Za-z0-9._\-/]+)(\?(?:v|sv)=[A-Za-z0-9._\-]+)?")
         .expect("ASSET_VERSION_AUTO_V1 regex must compile")
 });
 
@@ -300,7 +300,8 @@ pub(super) fn build_id() -> &'static str {
 /// 沒有任何參照時回傳借用（零配置）；`?sv=` 前綴與舊 `?v=` 區別，
 /// 看回應就能確認改寫已生效。
 pub(super) fn rewrite_asset_versions(input: &str) -> Cow<'_, str> {
-    if !input.contains("/admin/static/") {
+    // 快速路徑：兩種前綴都不存在時零配置回傳（/pub/static 也必須改寫，見 ASSET_VERSION_AUTO_V1）。
+    if !input.contains("/admin/static/") && !input.contains("/pub/static/") {
         return Cow::Borrowed(input);
     }
     let replacement = format!("$1?sv={}", *BUILD_ID);
@@ -315,5 +316,16 @@ mod tests {
         let _ = &*super::ASSET_URL_RE;
         let out = super::rewrite_asset_versions("<a href=\"/admin/static/x.js?v=1\">");
         assert!(out.contains("/admin/static/x.js?sv="));
+    }
+
+    /// ASSET_VERSION_AUTO_V1：/pub/static 也要改寫；已有 ?sv= 再次套用時不會疊加（冪等）。
+    #[test]
+    fn pub_static_is_rewritten_and_idempotent() {
+        let once = super::rewrite_asset_versions("<script src=\"/pub/static/js/pdf.worker.min.js\"></script>");
+        assert!(once.contains("/pub/static/js/pdf.worker.min.js?sv="), "{once}");
+        let twice = super::rewrite_asset_versions(&once);
+        assert_eq!(once, twice);
+        let stale = super::rewrite_asset_versions("/pub/static/js/x.js?v=sharev5");
+        assert!(stale.starts_with("/pub/static/js/x.js?sv=") && !stale.contains("sharev5"), "{stale}");
     }
 }

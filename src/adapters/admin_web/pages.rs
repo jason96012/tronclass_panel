@@ -223,7 +223,14 @@ fn stamp_asset_urls(html: &str) -> String {
     out
 }
 
+/// ASSET_VERSION_AUTO_V1：所有注入後的 HTML 一律統一改寫 /admin|pub/static 版號，
+/// 不依賴呼叫端是否再經過 html_page_response（那只是第二道保險，改寫冪等）。
 pub(super) fn inject_theme(html: &str) -> String {
+    let out = inject_theme_raw(html);
+    super::asset_versions::rewrite_asset_versions(&out).into_owned()
+}
+
+fn inject_theme_raw(html: &str) -> String {
     // FAST_PAGE_LOAD_V1: preload + put CSS at the start of <head> so parsing
     // the large inline dashboard scripts does not delay theme.css.
     //
@@ -259,11 +266,11 @@ pub(super) fn inject_theme(html: &str) -> String {
         r#"<meta name="mobile-web-app-capable" content="yes">"#,
         r#"<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">"#,
         r#"<meta name="apple-mobile-web-app-title" content="Tronclass">"#,
-        r#"<script src="/admin/static/app-settings.js?v=20260902settings10"></script>"#,
-        r#"<link rel="preload" href="/admin/static/theme.css?v=20260821fast" as="style">"#,
-        r#"<link rel="preload" href="/admin/static/js/dompurify.min.js?v=20260826dompurify3414" as="script">"#,
-        r#"<script src="/admin/static/js/dompurify.min.js?v=20260826dompurify3414"></script>"#,
-        r#"<script src="/admin/static/js/trusted-types-init.js?v=20260823trustedtypes"></script>"#,
+        r#"<script src="/admin/static/app-settings.js"></script>"#,
+        r#"<link rel="preload" href="/admin/static/theme.css" as="style">"#,
+        r#"<link rel="preload" href="/admin/static/js/dompurify.min.js" as="script">"#,
+        r#"<script src="/admin/static/js/dompurify.min.js"></script>"#,
+        r#"<script src="/admin/static/js/trusted-types-init.js"></script>"#,
         // TT_INLINE_GUARD_V1（fix29）＋TT_FRAME_GUARD_V1（fix37）：2026-09-14 實測
         // /admin/homework 回報「Failed to set innerHTML … requires 'TrustedHTML'
         // assignment」——外部 trusted-types-init.js 因任何原因未執行（快取損毀、
@@ -301,28 +308,28 @@ scanFrames();
 try{var mo=new MutationObserver(function(records){for(var i=0;i<records.length;i++){var added=records[i].addedNodes;for(var j=0;j<added.length;j++){var node=added[j];if(node&&node.tagName==='IFRAME'){install(node.contentWindow)}}}});mo.observe(document.documentElement||document,{childList:true,subtree:true});setTimeout(function(){try{mo.disconnect()}catch(_){}},60000)}catch(_){}
 })();</script>"#,
 
-        r#"<link rel="preload" href="/admin/static/session-security.js?v=20260829nopwbtn" as="script">"#,
-        r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js?v=20260829nopwbtn"></script>"#,
-        r#"<link rel="stylesheet" href="/admin/static/theme.css?v=20260821fast">"#,
-        r#"<script defer src="/admin/static/web-push.js?v=20260825push"></script>"#,
-        r#"<script defer src="/admin/static/live-events.js?v=20260908live"></script>"#,
+        r#"<link rel="preload" href="/admin/static/session-security.js" as="script">"#,
+        r#"<script id="sessionSecurityHardeningV1" src="/admin/static/session-security.js"></script>"#,
+        r#"<link rel="stylesheet" href="/admin/static/theme.css">"#,
+        r#"<script defer src="/admin/static/web-push.js"></script>"#,
+        r#"<script defer src="/admin/static/live-events.js"></script>"#,
         // CLIENT_ERROR_REPORT_V1：前端錯誤回報（defer；未登入頁由 login_page_response 剝掉）。
-        r#"<script defer src="/admin/static/client-log.js?v=20260909clientlog"></script>"#,
+        r#"<script defer src="/admin/static/client-log.js"></script>"#,
         // URL_SAFETY_SHARED_V1：同源 http(s) 網址驗證的共用正本（原本 dashboard.html／
         // health.html／dashboard-live-alerts.js／rollcall-pending-fab.js 各自抄一份）。
         // 排在下面兩支共用模組之前，兩者都會用到它。
-        r#"<script defer src="/admin/static/url-safety.js?v=20261005urlsafety1"></script>"#,
+        r#"<script defer src="/admin/static/url-safety.js"></script>"#,
         // ROLLCALL_DETECT_SHARED_V1：三份一模一樣（其實已經悄悄分岔）的「偵測到點名／
         // 算未送出人數」判斷邏輯（dashboard.html、rollcall-pending-fab.js、health.html
         // 各自一份）收成這支共用模組。必須排在下面 rollcall-pending-fab.js「之前」——
         // defer 腳本保證照文件順序依序執行，fab.js 會直接呼叫這支模組的函式。
-        r#"<script defer src="/admin/static/rollcall-detect.js?v=20261005detect1"></script>"#,
+        r#"<script defer src="/admin/static/rollcall-detect.js"></script>"#,
         // ROLLCALL_PENDING_FAB_V1：使用者要求「不管在哪個頁面只要有點名就要顯示」，所以
         // 跟 live-events.js／client-log.js 一樣掛在全站共用層，每個 admin 頁都會載入
         // （未登入頁由 login_page_response 剝掉，邏輯跟 live-events.js 一致）。
         // ROLLCALL_FAB_STUCK_FETCH_FIX_V1：版號 fab1→fab2，避免瀏覽器/CDN 快取舊版（有卡死
         // inFlight 那個 bug 的版本）——不改版號的話，部署新檔案後使用者端可能還是吃到舊快取。
-        r#"<script defer src="/admin/static/rollcall-pending-fab.js?v=20261005fab2"></script>"#,
+        r#"<script defer src="/admin/static/rollcall-pending-fab.js"></script>"#,
         r#"<style id="appSettingsDynamicCss">
 html[data-app-settings][data-theme="dark"]{color-scheme:dark!important}
 html[data-app-settings][data-theme="light"]{color-scheme:light!important}
@@ -502,6 +509,11 @@ pub(super) async fn admin_shares_page_handler(
 //   promise 快取避免重複。pdf.worker.min.js（~1.08MB）本來就只在渲染 PDF 時才抓，
 //   維持不變。此變更可讓 files 頁冷啟動減少約 485KB 的同步下載與解析。
 pub(super) fn inject_files_office_assets(html: &str) -> String {
+    let out = inject_files_office_assets_raw(html);
+    super::asset_versions::rewrite_asset_versions(&out).into_owned()
+}
+
+fn inject_files_office_assets_raw(html: &str) -> String {
     // 版本號必須隨內容更新：static_assets.rs 對靜態檔下
     // `max-age=604800, immutable`，不換 query string 瀏覽器會沿用舊檔一週。
     const FILELIB_LOADER: &str = r#"<script id="tronLazyFileLibV1">
@@ -523,9 +535,9 @@ pub(super) fn inject_files_office_assets(html: &str) -> String {
     if (loaded[name]) return Promise.resolve();
     if (loaded.__p && loaded.__p[name]) return loaded.__p[name];
     var urls = {
-      pdf:     ['/admin/static/js/pdf.min.js?v=pdfjs1'],
-      office:  ['/admin/static/js/jszip.min.js?v=officeview6','/admin/static/js/office-view.js?v=officeview11'],
-      qrcode:  ['/admin/static/js/qrcode.min.js?v=qrshare1']
+      pdf:     ['/admin/static/js/pdf.min.js'],
+      office:  ['/admin/static/js/jszip.min.js','/admin/static/js/office-view.js'],
+      qrcode:  ['/admin/static/js/qrcode.min.js']
     };
     var list = urls[name];
     if (!list) return Promise.resolve();

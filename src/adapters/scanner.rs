@@ -1502,6 +1502,34 @@ pub async fn start_scanner_server_with_admin(
     .wrap_err("Scanner server error")
 }
 
+/// ADMIN_ALWAYS_SERVED_V1：沒有 LINE webhook、也沒有掃碼伺服器時（例如未設定 public_base_url），
+/// Admin 後台仍必須有 HTTP 監聽；否則管理員連後台都進不去、無法修正帳號問題。
+/// 只掛 admin_web 路由（與掃碼伺服器合併時用的是同一個 `build_admin_router`）。
+pub async fn start_admin_only_server(admin_web: AdminWebState, bind_addr: &str, port: u16) -> Result<()> {
+    let app = admin_web::build_admin_router(admin_web);
+    let ip = bind_addr
+        .trim()
+        .parse::<std::net::IpAddr>()
+        .into_diagnostic()
+        .wrap_err_with(|| format!("無效的 admin bind address: `{bind_addr}`"))?;
+    let addr = std::net::SocketAddr::new(ip, port);
+
+    info!(bind_addr = %bind_addr, port = port, "Admin 後台伺服器（獨立模式）啟動：http://{}", addr);
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .into_diagnostic()
+        .wrap_err_with(|| format!("Failed to bind admin server to port {port}"))?;
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await
+    .into_diagnostic()
+    .wrap_err("Admin server error")
+}
+
 async fn scanner_jsqr_handler() -> Response {
     (
         [

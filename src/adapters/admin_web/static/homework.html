@@ -1940,7 +1940,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       return;
     }
     try {
-      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js?v=pdfjs1';
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = '/admin/static/js/pdf.worker.min.js';
       const doc = await window.pdfjsLib.getDocument({ data: data, isEvalSupported: false }).promise;
       body.textContent = '';
       const wrap = document.createElement('div');
@@ -2547,6 +2547,6 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     main{padding-bottom:calc(132px + env(safe-area-inset-bottom,0px))!important}
   }
 </style>
-<script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>
+<script src="/admin/static/js/mobile-nav.js"></script>
 </body>
 </html>

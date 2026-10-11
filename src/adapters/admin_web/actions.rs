@@ -163,6 +163,7 @@ pub(super) async fn admin_action_handler(
         "add_account"
             | "start_monitor"
             | "restart_monitor"
+            | "set_password"
             | "set_admin"
             | "unset_admin"
             | "set_viewer"
@@ -590,6 +591,140 @@ pub(super) async fn handle_admin_account_action(
                         .into_response()
                 }
             }
+        }
+        // SET_PASSWORD_VERIFY_V1：網頁改 Tronclass 密碼（只改本系統保存的密碼，不動學校端）。
+        // 順序：先用新密碼實際登入學校驗證 → 成功才加密寫入 → 重啟監控讓新密碼生效。
+        "set_password" => {
+            let target = action
+                .account_id
+                .or(action.id)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let new_password = action.password.unwrap_or_default();
+            if target.is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "account_id is required" })),
+                )
+                    .into_response();
+            }
+            if new_password.trim().is_empty() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "新密碼不可為空" })),
+                )
+                    .into_response();
+            }
+            let Some(spawner) = state.monitor_spawner.as_ref() else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "此執行環境沒有監控 runtime，無法驗證新密碼，未做任何變更" })),
+                )
+                    .into_response();
+            };
+            let raw = match state.accounts_db.get(&target).await {
+                Ok(Some(raw)) => raw,
+                Ok(None) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("找不到帳號 {target}") })),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+                    )
+                        .into_response();
+                }
+            };
+            if raw.is_viewer {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "檢視者不登入學校系統，沒有學校密碼可改" })),
+                )
+                    .into_response();
+            }
+
+            // 1) 先用新密碼實際登入學校；失敗就不寫入，避免存進錯誤密碼。
+            if let Err(reason) = spawner.verify_candidate_password(&raw, &new_password).await {
+                crate::logs::record_audit(
+                    "web",
+                    &session.account_id,
+                    "set_password",
+                    Some(target.as_str()),
+                    Some("rejected"),
+                    "Web 管理頁：新密碼未通過學校登入驗證，未儲存（密碼內容未記錄）",
+                );
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": format!("新密碼未通過學校登入驗證，未儲存。{reason}") })),
+                )
+                    .into_response();
+            }
+
+            // 2) 驗證成功 → 加密寫入。
+            match state.accounts_db.set_password(&target, &new_password).await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("找不到帳號 {target}") })),
+                    )
+                        .into_response();
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": format!("儲存新密碼失敗：{e}") })),
+                    )
+                        .into_response();
+                }
+            }
+
+            // 3) 重啟監控讓新密碼生效；停用中的帳號不啟動。
+            let mut monitor_started = false;
+            let mut warning: Option<String> = None;
+            if raw.enabled {
+                match spawner.respawn_account(&target).await {
+                    Ok(_) => {
+                        monitor_started = true;
+                        if let Some(account) = state.accounts.find(&target) {
+                            account.force_poll_tx.notify_one();
+                        }
+                    }
+                    Err(reason) => {
+                        warning = Some(format!("密碼已儲存，但重新啟動監控失敗：{reason}"));
+                    }
+                }
+            }
+            super::status::invalidate_admin_status_cache().await;
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "set_password",
+                Some(target.as_str()),
+                Some("saved"),
+                "Web 管理頁：已用新密碼登入學校驗證並加密儲存（密碼內容未記錄）",
+            );
+            let message = match &warning {
+                Some(w) => format!("密碼已更新。{w}"),
+                None if monitor_started => format!("密碼已驗證並儲存，帳號 {target} 已用新密碼重新開始監控。"),
+                None => format!("密碼已驗證並儲存（帳號 {target} 目前停用，未啟動監控）。"),
+            };
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "affected": 1,
+                    "monitor_started": monitor_started,
+                    "message": message,
+                    "warning": warning,
+                })),
+            )
+                .into_response()
         }
         "reset_password" => {
             let Some(account_id) = action

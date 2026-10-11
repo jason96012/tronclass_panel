@@ -211,4 +211,26 @@ impl AccountsFile {
 
         Ok(resolved)
     }
+
+    /// LOGIN_FAILURE_NONFATAL_V1：逐帳號解析，單一帳號的設定錯誤（密碼為空、provider 不存在、
+    /// 無法解開的加密密碼…）不阻斷整個服務。回傳 `(可監控的帳號, [(帳號 id, 原因)])`。
+    /// 停用與檢視者帳號略過，規則與 [`AccountsFile::resolve`] 相同。
+    /// 只用於啟動與熱啟動；`--validate` 仍走嚴格的 `resolve`，方便營運者一次看到所有錯誤。
+    pub fn resolve_tolerant(&self, app: &AppConfig) -> (Vec<AccountConfig>, Vec<(String, String)>) {
+        let mut resolved = Vec::new();
+        let mut failures = Vec::new();
+        for account in &self.accounts {
+            if !account.enabled || account.is_viewer {
+                continue;
+            }
+            let single = AccountsFile {
+                accounts: vec![account.clone()],
+            };
+            match single.resolve(app) {
+                Ok(mut found) => resolved.append(&mut found),
+                Err(e) => failures.push((account.id.clone(), format!("{e}"))),
+            }
+        }
+        (resolved, failures)
+    }
 }

@@ -14,6 +14,7 @@ pub mod radar;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -24,7 +25,8 @@ use crate::adapters::events::{
 };
 use crate::adapters::requests::{
     NumberCodeInput, NumberCodeReceiver, NumberCodeSender, QrCodeReceiver, QrCodeSender,
-    RadarPointReceiver, RadarPointSender,
+    create_number_code_channel, create_qrcode_channel, create_radar_point_channel,
+    register_rollcall_input, RadarPointReceiver, RadarPointSender, RollcallInputSender,
 };
 use crate::adapters::scanner::QrScannerRegistry;
 use crate::api::{
@@ -1984,45 +1986,96 @@ pub async fn process_rollcall_batch(
         pending.len()
     );
 
-    for (i, rollcall) in pending.into_iter().enumerate() {
+    // ROLLCALL_PARALLEL_V1：每個點名各自一組輸入通道（數字／QR／雷達），並登記到路由表，
+    // 讓 Discord／LINE 指令（依點名 ID 指定）與網頁輸入都送到正確的點名；點名之間平行處理。
+    // 舊行為是 for 迴圈依序處理：數字／QR 最長 3 小時的等待會阻塞同帳號其他點名。
+    let isolate_inputs = number_tx.is_some() || qr_tx.is_some() || radar_tx.is_some();
+    let account_id = config.id.clone();
+    let mut running = FuturesUnordered::new();
+    for (index, rollcall) in pending.into_iter().enumerate() {
         let rollcall_id = rollcall.rollcall_id;
+        let attendance = rollcall.attendance_type();
         debug!(
-            idx = i + 1,
+            idx = index + 1,
             rollcall_id = rollcall_id,
-            "處理第 {} 個 rollcall",
-            i + 1
+            "加入平行處理的 rollcall"
         );
 
-        let outcome = process_rollcall(
-            Arc::clone(&api),
-            rollcall,
-            config,
-            account_label,
-            messenger,
-            Arc::clone(&adapter_target),
-            Arc::clone(&status),
-            number_rx.clone(),
-            number_tx.clone(),
-            qr_rx.clone(),
-            qr_tx.clone(),
-            radar_rx.clone(),
-            radar_tx.clone(),
-            scanner_registry.clone(),
-        )
-        .await;
+        let (rc_number_tx, rc_number_rx, rc_qr_tx, rc_qr_rx, rc_radar_tx, rc_radar_rx) =
+            if isolate_inputs {
+                let (n_tx, n_rx) = create_number_code_channel(8);
+                let (q_tx, q_rx) = create_qrcode_channel(4);
+                let (r_tx, r_rx) = create_radar_point_channel(8);
+                (Some(n_tx), Some(n_rx), Some(q_tx), Some(q_rx), Some(r_tx), Some(r_rx))
+            } else {
+                (
+                    number_tx.clone(),
+                    number_rx.clone(),
+                    qr_tx.clone(),
+                    qr_rx.clone(),
+                    radar_tx.clone(),
+                    radar_rx.clone(),
+                )
+            };
 
-        // 若發生致命錯誤（session 過期），立即停止批次
-        if outcome.result.is_fatal() {
+        // 只登記與點名類型相符的輸入；點名結束（包含被取消）時 guard 會自動移除登記。
+        let input_guard = match attendance {
+            AttendanceType::Number => rc_number_tx.clone().map(|tx| {
+                register_rollcall_input(&account_id, rollcall_id, RollcallInputSender::Number(tx))
+            }),
+            AttendanceType::QrCode => rc_qr_tx.clone().map(|tx| {
+                register_rollcall_input(&account_id, rollcall_id, RollcallInputSender::Qr(tx))
+            }),
+            _ => None,
+        };
+
+        let api = Arc::clone(&api);
+        let adapter_target = Arc::clone(&adapter_target);
+        let status = Arc::clone(&status);
+        let scanner_registry = scanner_registry.clone();
+        running.push(async move {
+            let _input_guard = input_guard;
+            let outcome = process_rollcall(
+                api,
+                rollcall,
+                config,
+                account_label,
+                messenger,
+                adapter_target,
+                status,
+                rc_number_rx,
+                rc_number_tx,
+                rc_qr_rx,
+                rc_qr_tx,
+                rc_radar_rx,
+                rc_radar_tx,
+                scanner_registry,
+            )
+            .await;
+            (index, rollcall_id, outcome)
+        });
+    }
+
+    let mut results: Vec<(usize, u64, RollcallOutcome)> = Vec::new();
+    while let Some((index, rollcall_id, outcome)) = running.next().await {
+        let fatal = outcome.result.is_fatal();
+        results.push((index, rollcall_id, outcome));
+        // 致命錯誤（session 過期）是整個帳號的問題：取消其餘仍在等待的點名。
+        if fatal {
             error!(
                 rollcall_id = rollcall_id,
-                "批次處理遇到致命錯誤，停止處理剩餘 rollcall"
+                "批次處理遇到致命錯誤，取消其餘 rollcall"
             );
-            outcomes.push(outcome);
             break;
         }
-
-        outcomes.push(outcome);
     }
+    // 取消尚未完成的點名（它們的輸入登記會隨 guard 一起移除）。
+    drop(running);
+    results.sort_by_key(|(index, _, _)| *index);
+    outcomes = results
+        .into_iter()
+        .map(|(_, _, outcome)| outcome)
+        .collect();
 
     // 統計結果
     let success_count = outcomes.iter().filter(|o| o.is_success()).count();

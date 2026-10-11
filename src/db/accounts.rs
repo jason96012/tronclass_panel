@@ -348,6 +348,20 @@ impl AccountsDb {
         Ok(())
     }
 
+    /// SET_PASSWORD_VERIFY_V1：只更新儲存的學校密碼（加密寫入），不動其他欄位。回傳是否找到帳號。
+    pub async fn set_password(&self, id: &str, password: &str) -> Result<bool> {
+        let stored = crate::secret_encryption::StoreSecret::new(password)
+            .store_value_with_purpose("accounts.password");
+        let result = sqlx::query("UPDATE accounts SET password = ? WHERE id = ?")
+            .bind(&stored)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err_with(|| format!("更新帳號 `{id}` 密碼失敗"))?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// 刪除帳號，回傳是否找到並刪除。
     pub async fn delete(&self, id: &str) -> Result<bool> {
         let _ = self.delete_dashboard_sessions_by_account(id).await;
@@ -647,5 +661,37 @@ mod tests {
                 account_id: "acc1".to_string()
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod set_password_tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[tokio::test]
+    async fn set_password_changes_only_password_and_reports_missing_account() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let account = RawAccountConfig {
+            id: "acc1".to_string(),
+            provider: "fju".to_string(),
+            username: "student".to_string(),
+            password: "old-pass".to_string(),
+            enabled: true,
+            line_user_id: "Uline".to_string(),
+            discord_user_id: "100".to_string(),
+            session_cookie: String::new(),
+            is_admin: false,
+            is_viewer: false,
+            dashboard_password_hash: String::new(),
+        };
+        db.upsert(&account).await.unwrap();
+
+        assert!(db.set_password("acc1", "new-pass").await.unwrap());
+        let row = db.get("acc1").await.unwrap().unwrap();
+        assert_eq!(row.password, "new-pass");
+        assert_eq!(row.discord_user_id, "100");
+        assert!(!db.set_password("missing", "x").await.unwrap());
     }
 }

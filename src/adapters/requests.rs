@@ -117,6 +117,176 @@ pub fn create_radar_point_channel(buffer: usize) -> (RadarPointSender, RadarPoin
     (tx, Arc::new(Mutex::new(rx)))
 }
 
+// ─── ROLLCALL_INPUT_ROUTING_V1：每個點名各自的輸入通道 ─────────────────────
+//
+// 每個進行中的點名（帳號 + 點名 ID）在自己的 mpsc 通道上等待輸入；這裡登記它的送出端。
+// Discord／LINE 指令依點名 ID 選目標；網頁掃碼頁本來就帶 rollcall_id，直接用該點名自己的 sender。
+// 規則（不猜）：
+// - 指令指定 ID → 送到該點名（同 ID 的所有帳號都送）；該點名沒有在等待 → 回覆錯誤。
+// - 沒指定 ID → 只有一個點名在等待時送它；有多個時回覆請使用者指定，不送。
+
+/// 一個點名正在等待的輸入通道（數字碼或 QR）。
+#[derive(Clone, Debug)]
+pub enum RollcallInputSender {
+    Number(NumberCodeSender),
+    Qr(QrCodeSender),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RollcallInputKind {
+    Number,
+    Qr,
+}
+
+impl RollcallInputSender {
+    fn kind(&self) -> RollcallInputKind {
+        match self {
+            RollcallInputSender::Number(_) => RollcallInputKind::Number,
+            RollcallInputSender::Qr(_) => RollcallInputKind::Qr,
+        }
+    }
+}
+
+type RollcallInputKey = (String, u64);
+
+static ROLLCALL_INPUTS: once_cell::sync::Lazy<
+    std::sync::Mutex<HashMap<RollcallInputKey, RollcallInputSender>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// 點名存活期間持有；離開（正常結束或被取消）時自動移除登記。
+#[must_use = "dropping the guard unregisters the rollcall input"]
+pub struct RollcallInputGuard {
+    key: RollcallInputKey,
+}
+
+impl Drop for RollcallInputGuard {
+    fn drop(&mut self) {
+        let mut map = ROLLCALL_INPUTS.lock().unwrap_or_else(|p| p.into_inner());
+        map.remove(&self.key);
+    }
+}
+
+/// 登記一個點名的輸入送出端。回傳的 guard 必須跟著點名的生命週期持有。
+pub fn register_rollcall_input(
+    account_id: &str,
+    rollcall_id: u64,
+    sender: RollcallInputSender,
+) -> RollcallInputGuard {
+    let key: RollcallInputKey = (account_id.to_string(), rollcall_id);
+    let mut map = ROLLCALL_INPUTS.lock().unwrap_or_else(|p| p.into_inner());
+    map.insert(key.clone(), sender);
+    RollcallInputGuard { key }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RollcallRouteError {
+    /// 沒有任何點名在等待這種輸入。
+    NoneWaiting,
+    /// 指定的點名目前沒有在等待這種輸入。
+    NotWaiting(u64),
+    /// 多個點名同時等待，且沒有指定 ID（列出等待中的 ID）。
+    Ambiguous(Vec<u64>),
+}
+
+/// 依指令選出要送入的點名。回傳 (點名 ID, sender) 清單；同 ID 的多個帳號會全部列出。
+pub fn route_rollcall_input(
+    account_ids: &[String],
+    kind: RollcallInputKind,
+    explicit: Option<u64>,
+) -> std::result::Result<Vec<(u64, RollcallInputSender)>, RollcallRouteError> {
+    let mut candidates: Vec<(u64, RollcallInputSender)> = {
+        let map = ROLLCALL_INPUTS.lock().unwrap_or_else(|p| p.into_inner());
+        map.iter()
+            .filter(|((account, _), sender)| {
+                sender.kind() == kind && account_ids.iter().any(|id| id == account)
+            })
+            .map(|((_, rollcall_id), sender)| (*rollcall_id, sender.clone()))
+            .collect()
+    };
+    candidates.sort_by_key(|(rollcall_id, _)| *rollcall_id);
+
+    if let Some(id) = explicit {
+        let picked: Vec<(u64, RollcallInputSender)> = candidates
+            .into_iter()
+            .filter(|(rollcall_id, _)| *rollcall_id == id)
+            .collect();
+        return if picked.is_empty() {
+            Err(RollcallRouteError::NotWaiting(id))
+        } else {
+            Ok(picked)
+        };
+    }
+
+    let mut ids: Vec<u64> = candidates.iter().map(|(rollcall_id, _)| *rollcall_id).collect();
+    ids.dedup();
+    // 明確指定原則（使用者決定）：未指定 ID 一律不路由，即使只有一個點名在等待。
+    match ids.len() {
+        0 => Err(RollcallRouteError::NoneWaiting),
+        _ => Err(RollcallRouteError::Ambiguous(ids)),
+    }
+}
+
+/// 路由失敗時給使用者看的訊息。`what` 例如「數字點名碼」。
+pub fn route_error_text(err: &RollcallRouteError, what: &str) -> String {
+    match err {
+        RollcallRouteError::NoneWaiting => format!("目前沒有等待{what}的點名。"),
+        RollcallRouteError::NotWaiting(id) => format!("點名 #{id} 目前沒有在等待{what}。"),
+        RollcallRouteError::Ambiguous(ids) if ids.len() == 1 => format!(
+            "目前有一個點名在等待{what}：#{}。請指定點名 ID，例如在指令後面加上 #{}。",
+            ids[0], ids[0]
+        ),
+        RollcallRouteError::Ambiguous(ids) => {
+            let list = ids
+                .iter()
+                .map(|id| format!("#{id}"))
+                .collect::<Vec<_>>()
+                .join("、");
+            let example = ids.first().copied().unwrap_or_default();
+            format!(
+                "目前有多個點名在等待{what}：{list}。請指定要送到哪一個，例如在指令後面加上 #{example}。"
+            )
+        }
+    }
+}
+
+/// 解析點名 ID：`#123`、`id:123` 或純數字。
+pub fn parse_rollcall_id(raw: &str) -> Option<u64> {
+    let trimmed = raw.trim();
+    let digits = trimmed
+        .strip_prefix('#')
+        .or_else(|| trimmed.strip_prefix("id:"))
+        .or_else(|| trimmed.strip_prefix("ID:"))
+        .unwrap_or(trimmed);
+    if digits.is_empty() || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u64>().ok()
+}
+
+/// 指令可在最前或最後帶一個點名 ID（`#123` 或 `id:123`），先拆掉再解析內容。
+fn split_rollcall_target(text: &str) -> (Option<u64>, &str) {
+    let trimmed = text.trim();
+    if let Some((first, rest)) = trimmed.split_once(char::is_whitespace) {
+        if let Some(id) = parse_rollcall_id_token(first) {
+            return (Some(id), rest.trim());
+        }
+    }
+    if let Some((rest, last)) = trimmed.rsplit_once(char::is_whitespace) {
+        if let Some(id) = parse_rollcall_id_token(last) {
+            return (Some(id), rest.trim());
+        }
+    }
+    (None, trimmed)
+}
+
+fn parse_rollcall_id_token(token: &str) -> Option<u64> {
+    if token.starts_with('#') || token.starts_with("id:") || token.starts_with("ID:") {
+        parse_rollcall_id(token)
+    } else {
+        None
+    }
+}
+
 /// Adapter message/request converted from a platform webhook event.
 #[derive(Debug, Clone)]
 pub struct AdapterRequest {
@@ -164,9 +334,10 @@ pub enum RequestCommand {
     Stop,
     Start,
     ReAuth,
-    QrCode(String),
-    NumberCode(String),
-    NumberAutoLookup { account_id: Option<String> },
+    /// `rollcall_id` 為 None 時，只有唯一等待中的點名才會收到。
+    QrCode { data: String, rollcall_id: Option<u64> },
+    NumberCode { code: String, rollcall_id: Option<u64> },
+    NumberAutoLookup { account_id: Option<String>, rollcall_id: Option<u64> },
     Help,
     Unknown(String),
 }
@@ -174,13 +345,17 @@ pub enum RequestCommand {
 impl RequestCommand {
     pub fn parse(text: &str) -> Self {
         let text = text.trim();
+        let (rollcall_id, text) = split_rollcall_target(text);
 
         if Self::looks_like_qr_code(text) {
-            return RequestCommand::QrCode(text.to_string());
+            return RequestCommand::QrCode {
+                data: text.to_string(),
+                rollcall_id,
+            };
         }
 
         if let Some(code) = Self::parse_number_code(text) {
-            return RequestCommand::NumberCode(code);
+            return RequestCommand::NumberCode { code, rollcall_id };
         }
 
         match text.to_lowercase().as_str() {
@@ -246,12 +421,12 @@ impl std::fmt::Display for RequestCommand {
             RequestCommand::Stop => write!(f, "Stop"),
             RequestCommand::Start => write!(f, "Start"),
             RequestCommand::ReAuth => write!(f, "ReAuth"),
-            RequestCommand::QrCode(data) => {
+            RequestCommand::QrCode { data, .. } => {
                 // REDIRECT_UTF8_SLICE_V1：QR data 可能含任意 UTF-8，改用字元截斷。
                 write!(f, "QrCode({}...)", crate::text_utils::truncate_chars(data, 20))
             }
-            RequestCommand::NumberCode(code) => write!(f, "NumberCode({code})"),
-            RequestCommand::NumberAutoLookup { account_id } => {
+            RequestCommand::NumberCode { code, .. } => write!(f, "NumberCode({code})"),
+            RequestCommand::NumberAutoLookup { account_id, .. } => {
                 write!(
                     f,
                     "NumberAutoLookup({})",
@@ -716,7 +891,7 @@ pub async fn execute_command(
 
             reply_if_possible(reply_token, state, OutboundMessage::ReauthTriggered).await?;
         }
-        RequestCommand::QrCode(qr_data) => {
+        RequestCommand::QrCode { data: qr_data, rollcall_id } => {
             info!(data_len = qr_data.len(), "收到 QR code 資料");
             let account = if is_admin {
                 if state.accounts.len() == 1 {
@@ -738,19 +913,45 @@ pub async fn execute_command(
                 return Ok(());
             };
 
-            match account.requests.qr_tx.send(qr_data.clone()).await {
-                Ok(_) => {
-                    debug!("QR code 資料已傳送到簽到模組");
-                    reply_if_possible(reply_token, state, OutboundMessage::QrAccepted).await?;
+            let picked = match route_rollcall_input(
+                std::slice::from_ref(&account.account_id),
+                RollcallInputKind::Qr,
+                rollcall_id,
+            ) {
+                Ok(picked) => picked,
+                Err(err) => {
+                    reply_if_possible(
+                        reply_token,
+                        state,
+                        OutboundMessage::Text(route_error_text(&err, "QR Code 簽到")),
+                    )
+                    .await?;
+                    return Ok(());
                 }
-                Err(e) => {
-                    warn!(error = %e, "QR code 傳送失敗（通道可能已關閉或沒有等待中的簽到）");
-                    reply_if_possible(reply_token, state, OutboundMessage::QrNoPendingRequest)
-                        .await?;
+            };
+            let mut accepted = false;
+            for (picked_id, sender) in picked {
+                if let RollcallInputSender::Qr(tx) = sender {
+                    match tx.send(qr_data.clone()).await {
+                        Ok(_) => {
+                            accepted = true;
+                            debug!(rollcall_id = picked_id, "QR code 資料已傳送到簽到模組");
+                        }
+                        Err(e) => warn!(
+                            rollcall_id = picked_id,
+                            error = %e,
+                            "QR code 傳送失敗（通道可能已關閉或沒有等待中的簽到）"
+                        ),
+                    }
                 }
             }
+            if accepted {
+                reply_if_possible(reply_token, state, OutboundMessage::QrAccepted).await?;
+            } else {
+                reply_if_possible(reply_token, state, OutboundMessage::QrNoPendingRequest).await?;
+            }
         }
-        RequestCommand::NumberCode(code) => {
+        RequestCommand::NumberCode { code, rollcall_id } => {
             if !is_valid_number_code(&code) {
                 reply_if_possible(
                     reply_token,
@@ -776,43 +977,52 @@ pub async fn execute_command(
                 }
             };
 
+            let account_ids: Vec<String> = targets.iter().map(|a| a.account_id.clone()).collect();
+            let picked = match route_rollcall_input(&account_ids, RollcallInputKind::Number, rollcall_id) {
+                Ok(picked) => picked,
+                Err(err) => {
+                    reply_if_possible(
+                        reply_token,
+                        state,
+                        OutboundMessage::Text(route_error_text(&err, "數字點名碼")),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
             let mut sent = 0usize;
-            for account in targets {
-                match account
-                    .requests
-                    .number_tx
-                    .send(NumberCodeInput::Code(code.clone()))
-                    .await
-                {
-                    Ok(_) => sent += 1,
-                    Err(e) => warn!(
-                        account = %account.account_id,
-                        error = %e,
-                        "數字點名碼傳送失敗（通道可能已關閉）"
-                    ),
+            for (picked_id, sender) in picked {
+                if let RollcallInputSender::Number(tx) = sender {
+                    match tx.send(NumberCodeInput::Code(code.clone())).await {
+                        Ok(_) => sent += 1,
+                        Err(e) => warn!(
+                            rollcall_id = picked_id,
+                            error = %e,
+                            "數字點名碼傳送失敗（通道可能已關閉）"
+                        ),
+                    }
                 }
             }
-
             if sent == 0 {
                 reply_if_possible(
                     reply_token,
                     state,
-                    OutboundMessage::Text("目前沒有可接收數字點名碼的帳號。".to_string()),
+                    OutboundMessage::Text("目前沒有可接收數字點名碼的點名。".to_string()),
                 )
                 .await?;
             } else {
-                info!(code = %code, targets = sent, "數字點名碼已傳送到等待中的帳號");
+                info!(code = %code, rollcall_id = ?rollcall_id, targets = sent, "數字點名碼已傳送到等待中的點名");
                 reply_if_possible(
                     reply_token,
                     state,
                     OutboundMessage::Text(format!(
-                        "已收到數字點名碼 `{code}`，送出給 {sent} 個帳號等待流程。"
+                        "已收到數字點名碼 `{code}`，送出給 {sent} 個等待中的點名。"
                     )),
                 )
                 .await?;
             }
         }
-        RequestCommand::NumberAutoLookup { account_id } => {
+        RequestCommand::NumberAutoLookup { account_id, rollcall_id } => {
             let targets: Vec<RequestAccountState> = if let Some(account_id) = account_id {
                 let Some(account) = state.accounts.find(&account_id) else {
                     reply_if_possible(
@@ -847,20 +1057,30 @@ pub async fn execute_command(
                 }
             };
 
+            let account_ids: Vec<String> = targets.iter().map(|a| a.account_id.clone()).collect();
+            let picked = match route_rollcall_input(&account_ids, RollcallInputKind::Number, rollcall_id) {
+                Ok(picked) => picked,
+                Err(err) => {
+                    reply_if_possible(
+                        reply_token,
+                        state,
+                        OutboundMessage::Text(route_error_text(&err, "數字點名碼")),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            };
             let mut sent = 0usize;
-            for account in targets {
-                match account
-                    .requests
-                    .number_tx
-                    .send(NumberCodeInput::AutoLookup)
-                    .await
-                {
-                    Ok(_) => sent += 1,
-                    Err(e) => warn!(
-                        account = %account.account_id,
-                        error = %e,
-                        "自動讀取數字點名碼請求傳送失敗（通道可能已關閉）"
-                    ),
+            for (picked_id, sender) in picked {
+                if let RollcallInputSender::Number(tx) = sender {
+                    match tx.send(NumberCodeInput::AutoLookup).await {
+                        Ok(_) => sent += 1,
+                        Err(e) => warn!(
+                            rollcall_id = picked_id,
+                            error = %e,
+                            "自動讀取數字點名碼請求傳送失敗（通道可能已關閉）"
+                        ),
+                    }
                 }
             }
 
@@ -868,7 +1088,7 @@ pub async fn execute_command(
                 reply_token,
                 state,
                 OutboundMessage::Text(format!(
-                    "已選擇自動讀取數字點名碼，送出給 {sent} 個帳號等待流程。"
+                    "已選擇自動讀取數字點名碼，送出給 {sent} 個等待中的點名。"
                 )),
             )
             .await?;
@@ -1088,7 +1308,7 @@ mod tests {
     fn test_parse_command_qr_code_p_param() {
         assert!(matches!(
             RequestCommand::parse("0~12345!3~mydata!4~67890"),
-            RequestCommand::QrCode(_)
+            RequestCommand::QrCode { .. }
         ));
     }
 
@@ -1096,15 +1316,15 @@ mod tests {
     fn test_parse_command_number_code() {
         assert_eq!(
             RequestCommand::parse("/num 1234"),
-            RequestCommand::NumberCode("1234".to_string())
+            RequestCommand::NumberCode { code: "1234".to_string(), rollcall_id: None }
         );
         assert_eq!(
             RequestCommand::parse("/num code:1234"),
-            RequestCommand::NumberCode("1234".to_string())
+            RequestCommand::NumberCode { code: "1234".to_string(), rollcall_id: None }
         );
         assert_eq!(
             RequestCommand::parse("5678"),
-            RequestCommand::NumberCode("5678".to_string())
+            RequestCommand::NumberCode { code: "5678".to_string(), rollcall_id: None }
         );
         assert!(matches!(
             RequestCommand::parse("12345"),
@@ -1140,7 +1360,7 @@ mod tests {
         let state = make_state(vec![account]);
 
         execute_command(
-            RequestCommand::QrCode("0~100!3~secret_data!4~42".to_string()),
+            RequestCommand::QrCode { data: "0~100!3~secret_data!4~42".to_string(), rollcall_id: None },
             "",
             &state,
             "Uadmin123",
@@ -1170,7 +1390,7 @@ mod tests {
         let state = make_state(vec![account]);
 
         execute_command(
-            RequestCommand::NumberCode("1234".to_string()),
+            RequestCommand::NumberCode { code: "1234".to_string(), rollcall_id: None },
             "",
             &state,
             "Uuser1",
@@ -1273,5 +1493,78 @@ mod tests {
         tx.send("qr_1".to_string()).await.unwrap();
         let result = tx.try_send("qr_2".to_string());
         assert!(result.is_err(), "Channel 滿時 try_send 應失敗");
+    }
+}
+
+#[cfg(test)]
+mod rollcall_routing_tests {
+    use super::*;
+
+    #[test]
+    fn parse_accepts_rollcall_target_before_or_after() {
+        assert_eq!(
+            RequestCommand::parse("#123 1234"),
+            RequestCommand::NumberCode {
+                code: "1234".to_string(),
+                rollcall_id: Some(123)
+            }
+        );
+        assert_eq!(
+            RequestCommand::parse("/number code:1234 id:9"),
+            RequestCommand::NumberCode {
+                code: "1234".to_string(),
+                rollcall_id: Some(9)
+            }
+        );
+        assert_eq!(
+            RequestCommand::parse("1234"),
+            RequestCommand::NumberCode {
+                code: "1234".to_string(),
+                rollcall_id: None
+            }
+        );
+    }
+
+    #[test]
+    fn parse_rollcall_id_accepts_only_digits() {
+        assert_eq!(parse_rollcall_id("#42"), Some(42));
+        assert_eq!(parse_rollcall_id("id:7"), Some(7));
+        assert_eq!(parse_rollcall_id("#x"), None);
+        assert_eq!(parse_rollcall_id(""), None);
+    }
+
+    #[tokio::test]
+    async fn routing_requires_id_when_ambiguous_and_unregisters_on_drop() {
+        let (tx_a, _rx_a) = create_number_code_channel(2);
+        let (tx_b, _rx_b) = create_number_code_channel(2);
+        let guard_a = register_rollcall_input("acc-route-test", 100, RollcallInputSender::Number(tx_a));
+        let _guard_b = register_rollcall_input("acc-route-test", 200, RollcallInputSender::Number(tx_b));
+        let ids = vec!["acc-route-test".to_string()];
+
+        assert_eq!(
+            route_rollcall_input(&ids, RollcallInputKind::Number, None).err(),
+            Some(RollcallRouteError::Ambiguous(vec![100, 200]))
+        );
+        let picked = route_rollcall_input(&ids, RollcallInputKind::Number, Some(200));
+        assert_eq!(picked.map(|p| p.len()).ok(), Some(1));
+        assert_eq!(
+            route_rollcall_input(&ids, RollcallInputKind::Number, Some(999)).err(),
+            Some(RollcallRouteError::NotWaiting(999))
+        );
+        assert_eq!(
+            route_rollcall_input(&ids, RollcallInputKind::Qr, None).err(),
+            Some(RollcallRouteError::NoneWaiting)
+        );
+
+        drop(guard_a);
+        // 明確指定：即使只剩一個等待中的點名，未指定 ID 仍必須拒絕。
+        assert_eq!(
+            route_rollcall_input(&ids, RollcallInputKind::Number, None).err(),
+            Some(RollcallRouteError::Ambiguous(vec![200]))
+        );
+        assert_eq!(
+            route_rollcall_input(&ids, RollcallInputKind::Number, Some(200)).map(|p| p.len()).ok(),
+            Some(1)
+        );
     }
 }

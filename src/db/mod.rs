@@ -237,6 +237,15 @@ impl AccountsDb {
         let raw = self.list().await?;
         AccountsFile { accounts: raw }.resolve(app)
     }
+
+    /// LOGIN_FAILURE_NONFATAL_V1：啟動用的寬鬆版解析，回傳 `(可監控帳號, 失敗清單)`。
+    pub async fn resolve_tolerant(
+        &self,
+        app: &AppConfig,
+    ) -> Result<(Vec<AccountConfig>, Vec<(String, String)>)> {
+        let raw = self.list().await?;
+        Ok(AccountsFile { accounts: raw }.resolve_tolerant(app))
+    }
 }
 
 // ─── 共用 helper ─────────────────────────────────────────────────────────────

@@ -13,8 +13,8 @@
      dashboard-login-card.js（主題切換／粒子背景／浮動標籤）與 passkeyFriendlyErrorsV1 都是從
      dashboard.html 原封不動搬過來的，視覺與行為不變。
      共用資產（theme.css、app-settings.js、session-security.js…）由 inject_theme() 注入。 -->
-<link rel="stylesheet" href="/admin/static/dashboard.css?v=20260822b">
-<link rel="stylesheet" href="/admin/static/dashboard-late-fixes.css?v=20260826a">
+<link rel="stylesheet" href="/admin/static/dashboard.css">
+<link rel="stylesheet" href="/admin/static/dashboard-late-fixes.css">
 <style id="animatedLoginStaticStyleV1">
   body.animated-login-active{overflow-x:hidden}
   body.animated-login-active #loginCard,
@@ -136,7 +136,7 @@
 <section id="loginCard" class="login-card" data-animated-login-installed="1"><div class="animated-login-card-inner"><div class="animated-login-logo">D</div><div class="animated-login-header"><h1>歡迎回來</h1><p>登入 Tronclass Dashboard，使用與 Tronclass 帳密分離的網站憑證。</p></div><form class="animated-login-form" id="animatedLoginForm"><div class="animated-login-field"><input id="loginUsername" autocomplete="username" required><label for="loginUsername">帳號 ID / 學號</label></div><div class="animated-login-field"><input id="loginPassword" autocomplete="current-password" type="password" required><label for="loginPassword">密碼</label><button id="toggleLoginPassword" class="animated-toggle-password" type="button" aria-label="顯示密碼">👁</button></div><div class="animated-login-options"><label><input id="rememberPassword" type="checkbox"> 記住帳號</label><span class="animated-secure-note">Cloudflare HTTPS</span></div><button id="loginBtn" class="animated-login-submit" type="submit">登入</button><div class="animated-login-row"><button id="passkeyLoginBtn" class="animated-passkey-btn" type="button">使用通行密鑰登入</button></div><div id="loginMsg" class="animated-login-message">請先登入。</div></form><div class="animated-login-separator"><span>安全登入</span></div><div class="animated-login-help"><div class="animated-login-chip">首次登入請用 Tronclass 密碼，接著必須設定新的 Dashboard 密碼。</div><div class="animated-login-chip">Passkey：直接按「使用通行密鑰登入」即可（免輸帳號）。</div></div></div></section>
 </main>
 <div id="toast" class="toast"></div>
-<script src="/admin/static/js/dashboard-login-card.js?v=loginpage1"></script>
+<script src="/admin/static/js/dashboard-login-card.js"></script>
 <script id="passkeyFriendlyErrorsV1">
 (function(){
   'use strict';
