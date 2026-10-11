@@ -715,19 +715,33 @@ body.dashboard-password-change-required header {
 
 
 /* DESKTOP_SIZE_ALWAYS_THEME_V1 */
-html.tron-auth-ok body main,
-html.dash-auth-ok body main,
-html.tron-auth-pending body main,
-body.logged-in main,
-body.auth-ok main{
-  display:block !important;
-  align-items:stretch !important;
-  justify-content:flex-start !important;
-  width:min(1400px,100%) !important;
-  max-width:1400px !important;
-  margin-left:auto !important;
-  margin-right:auto !important;
-  padding:16px 20px 32px !important;
+/* MOBILE_NAV_PADDING_SPECIFICITY_FIX_V1：這條規則原本就叫「DESKTOP」，但從未被
+   包進 @media，於是在手機寬度一樣套用——`body.auth-ok main`（class+元素，
+   specificity 0,1,2）比 `mobile-nav.js`／各頁「NAV_BOTTOM_CLEARANCE_V2」那段
+   `main{padding-bottom:...!important}`（純元素選擇器，specificity 0,0,1）更
+   specific，兩者都有 !important 時由 specificity 較高的這條勝出，把底部留白從
+   190px 壓成這裡寫死的 32px——不夠蓋過手機版固定在底部的導覽列，捲到頁尾時
+   最後一段文字／按鈕會被導覽列擋住（已用截圖＋無頭瀏覽器實測重現：
+   /admin/settings 頁尾「以上外觀偏好…」那段文字確實被蓋住，且這是全站手機版
+   共用的 CSS，並非 settings 頁單獨的問題，所有登入後、手機寬度的頁面都受影響，
+   只是各頁最後內容距離頁尾的距離不同，不一定每頁都剛好蓋到看得出來）。
+   改為限定在桌面寬度（>820px，與全站既有的手機/桌面斷點一致）才套用，手機版
+   交給各頁自己的 `<main>` 留白規則，不再有這條高 specificity 的規則介入。 */
+@media (min-width:821px){
+  html.tron-auth-ok body main,
+  html.dash-auth-ok body main,
+  html.tron-auth-pending body main,
+  body.logged-in main,
+  body.auth-ok main{
+    display:block !important;
+    align-items:stretch !important;
+    justify-content:flex-start !important;
+    width:min(1400px,100%) !important;
+    max-width:1400px !important;
+    margin-left:auto !important;
+    margin-right:auto !important;
+    padding:16px 20px 32px !important;
+  }
 }
 @media (min-width:821px){
   .tabs{display:flex !important;visibility:visible !important}

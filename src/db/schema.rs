@@ -750,6 +750,33 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 rollcall_events 資料表失敗")?;
 
+    // ROLLCALL_EVENTS_INDEX_V1：這張表只會一直長大（每次點名送出都新增一筆，
+    // 唯一的清除方式是 `record_rollcall_event` 裡每 50 筆觸發一次的
+    // `DELETE ... WHERE timestamp < ?` 保留窗清理），但原本完全沒有索引——
+    // `list_rollcall_events` 的兩種查法
+    // （`account_id = ? AND timestamp >= ?` 以及單獨 `timestamp >= ?`）、加上
+    // 清除時的 `timestamp < ?`，長期下來都要整表掃描，筆數一多就會越來越慢。
+    // 分別建兩個索引：`timestamp` 單獨一個（服務「只給時間範圍、不分帳號」的
+    // 查詢與清除），`(account_id, timestamp)` 一個（服務「指定帳號＋時間範圍」
+    // 的查詢，帳號在前可以直接用索引縮小範圍再比對時間）。寫入量遠小於讀取量
+    // （一次點名送出一筆），多一個索引的寫入成本可以忽略。
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_rollcall_events_timestamp
+         ON rollcall_events(timestamp)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 rollcall_events timestamp index 失敗")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_rollcall_events_account_timestamp
+         ON rollcall_events(account_id, timestamp)",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 rollcall_events account_id+timestamp index 失敗")?;
+
     ensure_table_column(pool, "rollcall_events", "class_total", "INTEGER NOT NULL DEFAULT 0").await?;
     ensure_table_column(pool, "rollcall_events", "class_signed", "INTEGER NOT NULL DEFAULT 0").await?;
     // ATT_STATS_AUTO_MANUAL_V1：這一筆是不是「大家都沒按按鈕，系統因為班上

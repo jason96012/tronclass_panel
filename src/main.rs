@@ -1561,6 +1561,33 @@ async fn main() -> Result<()> {
         });
     }
 
+    // HOSTING_IP_LOCAL_FALLBACK_V1：啟動時先抓一次 AWS／Google Cloud 官方
+    // IP 範圍，之後重抓一次，讓「封鎖雲端／VPS機房 IP」功能在
+    // ip-api.com 被限流／掛掉時，至少這兩家流量最大的雲端商還擋得住
+    // （完整說明見 `hosting_ip` 模組文件）。抓取失敗只記 warn，不影響啟動
+    // ——這層本來就是「有的話錦上添花」的備援，不是必要路徑。
+    //
+    // HOSTING_IP_LOCAL_FALLBACK_RETRY_V1：重抓間隔不是固定 12 小時——如果
+    // 剛部署的那一次（或任何一次）抓取剛好失敗（服務剛啟動網路還沒穩定、
+    // AWS／GCP 那端暫時不可用等），在「還沒成功抓到過一次」之前，改成每
+    // 5 分鐘就重試一次；一旦成功過一次（`has_local_cloud_ranges()` 回傳
+    // true），才切回正常的 12 小時排程。避免「萬一第一次就衰到抓失敗，
+    // 整整 12 小時這層保護等於沒作用」的情況。
+    tokio::spawn(async move {
+        const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+        const STEADY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
+        hosting_ip::refresh_known_cloud_ranges().await;
+        loop {
+            let wait = if hosting_ip::has_local_cloud_ranges() {
+                STEADY_INTERVAL
+            } else {
+                RETRY_INTERVAL
+            };
+            tokio::time::sleep(wait).await;
+            hosting_ip::refresh_known_cloud_ranges().await;
+        }
+    });
+
     // ── 6. 設定優雅關閉 ───────────────────────────────────────────────────────
     let shutdown_notify = Arc::new(tokio::sync::Notify::new());
     let shutdown_notify_clone = Arc::clone(&shutdown_notify);

@@ -127,7 +127,7 @@ html[data-theme="dark"] .day.holiday{color:#fca5a5}html[data-theme="dark"] .day.
 @media(max-width:1100px){.months{grid-template-columns:repeat(2,1fr)}}
 /* 手機 */
 @media(max-width:820px){
-  .shell{width:min(100%,calc(100% - 24px));padding:calc(14px + env(safe-area-inset-top,0px)) 0 calc(190px + env(safe-area-inset-bottom))}
+  .shell{width:min(100%,calc(100% - 24px));padding:calc(14px + env(safe-area-inset-top,0px)) 0 calc(132px + env(safe-area-inset-bottom))}
   /* MOBILE_SAFE_TOP_V1: 預留 PWA black-translucent 狀態列高度 */
   .top{margin-bottom:14px}.top a{min-height:40px;padding:0 13px;font-size:13px}
   .hero{grid-template-columns:1fr;padding:20px 17px;border-radius:19px;margin-bottom:12px;gap:14px}.hero h1{font-size:26px}.hero p{font-size:14px;line-height:1.65}
@@ -167,7 +167,7 @@ html[data-theme="dark"] .day.holiday{color:#fca5a5}html[data-theme="dark"] .day.
     <div>
       <div class="eyebrow">REST DAY / SEMESTER BREAK</div>
       <h1>休息日與寒暑假</h1>
-      <p>週六、週日、臺灣國定假日與寒暑假整天不做自動輪詢，開學日自動恢復偵測；手動「立即檢查」與重新登入不受影響。本頁資料和監控主迴圈、晨間摘要共用同一套判定。</p>
+      <p>週六、週日、臺灣國定假日與寒暑假整天不做自動輪詢，也不會送出上課前提醒，開學日自動恢復偵測；手動「立即檢查」與重新登入不受影響。本頁資料和監控主迴圈、晨間摘要、上課提醒共用同一套判定。</p>
     </div>
     <div class="today">
       <div class="k">今天 <span id="todayDate">-</span></div>

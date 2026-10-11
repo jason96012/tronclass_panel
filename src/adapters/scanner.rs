@@ -1243,6 +1243,87 @@ pub(crate) fn tool_permissions_policy_for_path(path: &str) -> &'static str {
     }
 }
 
+// TOOL_RATE_LIMIT_V1：公開掃碼／報數／雷達點名頁與 LINE webhook，是獨立於
+// admin_web 的另一個 Axum server（見 `main.rs` 的 `start_webhook_server` /
+// `start_scanner_server_with_admin`），不會套到 admin_web 那邊的
+// `waf::waf_firewall_middleware`（全站 L7 流量限制）——本來就是兩個分開的
+// 中介層堆疊，`waf` 模組本身也沒有 `pub`，這裡沒辦法直接共用它的限速器型別。
+// 這裡補一層最基本、只攔「明顯洪水」的防護，刻意不是拿來卡正常教室用量：
+// 教室 wifi／電信 NAT 背後常常是幾十個學生共用同一個對外 IP，`/scanner/status`
+// 這類狀態輪詢端點本來就是前端每 1.5 秒打一次（見 `scanner.html`），50 人的
+// 班級尖峰同時在線輪詢，換算下來這個 IP 一分鐘就有兩千多次請求——門檻訂得
+// 跟 admin_web 的 WAF（240 次/分鐘，給的是單一登入帳號用的面板）一樣低，
+// 反而會把整班學生一起擋在外面。這裡抓一個遠高於正常教室尖峰用量、但仍能
+// 攔住真正惡意洪水／壓力測試等級流量的門檻。
+const TOOL_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+const TOOL_RATE_LIMIT_MAX_REQUESTS: usize = 4000;
+const TOOL_RATE_LIMIT_MAX_IPS: usize = 20_000;
+
+struct ToolRateLimiter {
+    attempts: Mutex<HashMap<String, Vec<Instant>>>,
+}
+
+impl ToolRateLimiter {
+    fn new() -> Self {
+        Self {
+            attempts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// 回傳 `true` 表示放行；`false` 表示這個 IP 在時間窗內已經超過上限。
+    async fn check_limit(&self, ip: &str) -> bool {
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        let window_start = now.checked_sub(TOOL_RATE_LIMIT_WINDOW).unwrap_or(now);
+
+        let entry = map.entry(ip.to_string()).or_default();
+        entry.retain(|t| *t > window_start);
+
+        if entry.len() >= TOOL_RATE_LIMIT_MAX_REQUESTS {
+            return false;
+        }
+
+        entry.push(now);
+
+        // 定期或容量滿時清理過期 IP，避免長時間運作下 HashMap 無限長大。
+        if map.len() > TOOL_RATE_LIMIT_MAX_IPS {
+            map.retain(|_, v| {
+                v.retain(|t| *t > window_start);
+                !v.is_empty()
+            });
+        }
+        true
+    }
+}
+
+static TOOL_RATE_LIMITER: once_cell::sync::Lazy<ToolRateLimiter> =
+    once_cell::sync::Lazy::new(ToolRateLimiter::new);
+
+/// TOOL_RATE_LIMIT_V1 中介層：套在 `/scanner`、`/number`、`/radar`、LINE webhook
+/// 這些公開路由上（見 `build_scanner_router_with_admin` 與
+/// `line::webhook::build_router`），不套用在合併進來的 `admin_web` 路由（那邊已經
+/// 有自己的 WAF）。用 [`crate::trusted_ip::ClientIp`] 取得真實來源 IP——跟 WAF
+/// 共用同一份信任代理清單設定，行為一致。
+pub(crate) async fn tool_rate_limit_middleware(
+    crate::trusted_ip::ClientIp(ip): crate::trusted_ip::ClientIp,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !TOOL_RATE_LIMITER.check_limit(&ip).await {
+        warn!(
+            ip = %ip,
+            path = %request.uri().path(),
+            "🛡️ 公開掃碼／報數／雷達／LINE webhook 伺服器：單一 IP 短時間請求量過高，暫時擋下"
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "too many requests" })),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
 pub(crate) async fn tool_security_headers_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -1343,6 +1424,9 @@ pub fn build_scanner_router_with_admin(
         .layer(axum::middleware::from_fn(
             no_compression_for_scanner_binary_assets_middleware,
         ))
+        // TOOL_RATE_LIMIT_V1：刻意放最外層（最後加的 `.layer()` 最先看到請求），
+        // 真正洪水等級的流量在壓縮、標頭處理之前就擋掉。
+        .layer(axum::middleware::from_fn(tool_rate_limit_middleware))
         .with_state(ScannerHttpState::new(scanner));
 
     if let Some(admin_web) = admin_web {

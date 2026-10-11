@@ -139,7 +139,7 @@
     /* 頁面底部留出導覽列空間（NAV_BOTTOM_CLEARANCE_V2：與「總覽」dashboard.html
        以及 mobile-nav.js 注入規則一致，統一採用 150px，避免各頁留白不一致）。 */
     main {
-      padding-bottom:calc(190px + env(safe-area-inset-bottom,0px)) !important;
+      padding-bottom:calc(132px + env(safe-area-inset-bottom,0px)) !important;
     }
 
     html.mobile-nav-final-auth body #mobileNavFinalV2,

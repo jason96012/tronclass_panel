@@ -416,9 +416,32 @@ pub fn rewrap_stored(stored: &str) -> Option<String> {
 }
 
 /// STORE_ENVELOPE_AAD_V1（fix128）：同上，但以指定用途寫 v3。
+///
+/// PERF_SKIP_NOOP_REWRAP_V1：補上 `needs_rewrap` 短路檢查，與
+/// `rotate_stored_with_purpose`（SECRET_ROTATE_CLI_V1 手動輪替指令）行為對齊。
+/// 原本這裡沒有這層檢查：由於 AES-GCM 每次加密都會換一個新的隨機 nonce，就算
+/// key 完全沒換過，「解密→用目前 key 重新加密」產生的密文字串也一定跟原本不同，
+/// 導致呼叫端（`accounts.rs::rewrap_row_secrets`，`list()` 每次列出帳號都會跑
+/// 一輪）誤判成「有變化」而寫回資料庫——等於每次 `list()`（後台多處頁面、健康
+/// 檢查等共用的高頻函式）都要對全部帳號的 password／session_cookie 各做一次
+/// AES-GCM 解密＋加密＋一次 UPDATE，即使從未真的換過 master key。這與本檔上方
+/// `rewrap_row_secrets` 的文件註解「每個帳號只需重寫一次，完成後不再產生寫入」
+/// 矛盾，屬於遺漏檢查造成的無謂浪費，故補齊。
+///
+/// 取捨說明（已與使用者確認、知情選擇本做法）：`needs_rewrap` 只檢查「最外層
+/// 信封的 key id 是否等於目前 key」，無法分辨「外層 key id 已正確、但內部其實
+/// 疊了舊版 bug 留下的雙重加密污染」這種少見情況（對應
+/// `double_encryption_unwraps_but_rewrap_skips_when_outer_key_current` 測試模擬
+/// 的歷史情境）。加上此檢查後，若還有這類歷史污染
+/// 資料殘留，會不再被這個背景讀取路徑自動清乾淨。經確認目前資料庫應已不存在
+/// 這類污染（清理機制已跑過夠多輪），且手動輪替指令 `rotate_stored_with_purpose`
+/// 本來就已經是相同的短路邏輯，故此處對齊是合理取捨，而非單純疏漏。
 pub fn rewrap_stored_with_purpose(stored: &str, purpose: &str) -> Option<String> {
     let current = master_key()?;
     if !is_envelope(stored) {
+        return None;
+    }
+    if !needs_rewrap(stored) {
         return None;
     }
     let plaintext = decrypt_layered(stored, current, purpose)?;
@@ -553,7 +576,7 @@ mod tests {
     }
 
     #[test]
-    fn double_encryption_unwraps_and_cleans() {
+    fn double_encryption_unwraps_but_rewrap_skips_when_outer_key_current() {
         std::env::set_var("TRONCLASS_MASTER_KEY", hex::encode([10u8; 32]));
         std::env::set_var("TRONCLASS_MASTER_KEY_OLD", hex::encode([9u8; 32]));
         let cur = [10u8; 32];
@@ -562,14 +585,18 @@ mod tests {
         let inner = build_v1("real-password", [9u8; 32]).unwrap();
         let polluted = encrypt_with_key(&inner, cur, "").unwrap();
 
-        // 多層解開：讀取時直接得到真實明文
+        // 多層解開：讀取時（StoreSecret::from_stored）直接得到真實明文，
+        // 不受下面 PERF_SKIP_NOOP_REWRAP_V1 的影響。
         assert_eq!(StoreSecret::from_stored(&polluted).as_str(), "real-password");
 
-        // rewrap 後寫回乾淨的單層 v3，且仍解出真實明文
-        let cleaned = rewrap_stored(&polluted).unwrap();
-        assert!(cleaned.starts_with("enc:v3:"));
-        assert_eq!(StoreSecret::from_stored(&cleaned).as_str(), "real-password");
-        // 三層也應解開（上限 4 層）
+        // PERF_SKIP_NOOP_REWRAP_V1（已與使用者確認、知情接受的取捨）：
+        // polluted 的最外層就是用目前 key 加密的，needs_rewrap 只看外層 key id，
+        // 判斷「不需要」，所以 rewrap_stored 現在回 None（呼叫端保留原值、不寫
+        // 回）。這代表這類歷史雙重加密污染若還殘留，不會再被這條背景讀取路徑
+        // 自動清乾淨；但讀取本身（上面的 assert）仍完全正確，不受影響。
+        assert!(rewrap_stored(&polluted).is_none());
+
+        // 三層也應解開（上限 4 層）——同樣只驗證「讀」不受影響。
         let triple = encrypt_with_key(&polluted, cur, "").unwrap();
         assert_eq!(StoreSecret::from_stored(&triple).as_str(), "real-password");
 

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Datelike, Local, Timelike, Weekday};
+use chrono::{Datelike, Local, NaiveTime, Timelike, Weekday};
 use tracing::{debug, info, warn};
 
 use crate::adapters::events::{AdapterMessenger, ClassReminderEvent, OutboundMessage};
@@ -9,6 +9,19 @@ use crate::db::{AccountsDb, ClassReminderDueRow};
 
 pub(crate) const CHECK_INTERVAL_SECS: u64 = 60;
 const SENT_RETENTION_DAYS: i64 = 21;
+
+/// CLASS_REMINDER_NIGHT_PAUSE_V1：23:00（含）到隔天 06:00（不含）之間幾乎不可能
+/// 有課，暫停逐分鐘查詢。即使剛好有極端早的課（例如 06:10 開始、提前 180 分鐘
+/// 提醒＝02:10 就該提醒），暫停期間錯過的提醒也不會真的消失：`run_once` 原本就
+/// 有「只要還沒超過上課時間，晚一點檢查到一樣會補送」的邏輯（見下方
+/// `now_minutes > start_minutes` 判斷），06:00 恢復查詢時會立刻補發，不會漏掉。
+const NIGHT_PAUSE_START_SECS: u32 = 23 * 60 * 60;
+const NIGHT_PAUSE_END_SECS: u32 = 6 * 60 * 60;
+
+fn is_night_pause(now: NaiveTime) -> bool {
+    let seconds = now.num_seconds_from_midnight();
+    seconds >= NIGHT_PAUSE_START_SECS || seconds < NIGHT_PAUSE_END_SECS
+}
 
 pub fn start_class_reminder_scheduler(
     accounts_db: AccountsDb,
@@ -18,8 +31,27 @@ pub fn start_class_reminder_scheduler(
         info!("上課前 Discord 提醒排程器已啟動");
         let mut ticker = tokio::time::interval(Duration::from_secs(CHECK_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // CLASS_REMINDER_NIGHT_PAUSE_V1：進入夜間窗只記一筆 log，其餘每分鐘的
+        // tick 靜默跳過，避免洗版；離開夜間窗時重置旗標，下次進入時再記一筆。
+        let mut night_logged = false;
         loop {
             ticker.tick().await;
+            let now_time = Local::now().time();
+            if is_night_pause(now_time) {
+                if !night_logged {
+                    info!("深夜時段（23:00-06:00）：暫停上課提醒查詢，06:00 後自動恢復");
+                    night_logged = true;
+                }
+                // UPDATE_TIMES_PAGE_V1：夜間跳過也記一筆，「資料更新時間」頁才不會把
+                // 這段時間顯示成排程卡住。
+                crate::update_times::record_global(
+                    crate::update_times::KIND_CLASS_REMINDER_CHECK,
+                    true,
+                    "深夜時段，暫停查詢".to_string(),
+                );
+                continue;
+            }
+            night_logged = false;
             if let Err(e) = run_once(&accounts_db, Arc::clone(&discord)).await {
                 warn!(error = %e, "上課前 Discord 提醒排程器執行失敗");
             }
@@ -32,6 +64,21 @@ async fn run_once(
     discord: Arc<dyn AdapterMessenger>,
 ) -> miette::Result<()> {
     let now = Local::now();
+
+    // REST_DAY_NO_CLASS_REMINDER_V1：放假日（週末、內建國定假日、寒暑假，或管理員
+    // 在「休息日與寒暑假」頁面手動設定的休息日／強制上課日）不提醒上課。判定邏輯
+    // 直接沿用 `crate::holidays::is_rest_day`，與監控輪詢（REST_DAY_NO_POLL_V1）、
+    // 晨間摘要（DIGEST_REST_DAY_V1）共用同一套休息日判定，不會各說各話——例如
+    // 國定假日剛好落在星期一，當天不會再收到那堂課的上課提醒。
+    if crate::holidays::is_rest_day(now.date_naive()) {
+        crate::update_times::record_global(
+            crate::update_times::KIND_CLASS_REMINDER_CHECK,
+            true,
+            "今天是休息日，略過上課提醒".to_string(),
+        );
+        return Ok(());
+    }
+
     let weekday = weekday_key(now.weekday());
     let now_minutes = now.hour() as i64 * 60 + now.minute() as i64;
 

@@ -83,6 +83,12 @@ pub fn build_router(state: LineWebhookState, webhook_path: &str) -> Router {
         .route("/radar/submit", post(radar_submit_handler))
         .layer(TraceLayer::new_for_http())
         .layer(axum::middleware::from_fn(tool_security_headers_middleware))
+        // TOOL_RATE_LIMIT_V1（見 `scanner.rs` 同名常數/中介層的說明）：這個
+        // server 跟 admin_web 的 WAF 是分開的中介層堆疊，補上最基本的洪水防護。
+        // 刻意放最外層，真正洪水等級的流量在其他處理之前就擋掉。
+        .layer(axum::middleware::from_fn(
+            crate::adapters::scanner::tool_rate_limit_middleware,
+        ))
         .with_state(state);
 
     if let Some(admin_web) = admin_web {

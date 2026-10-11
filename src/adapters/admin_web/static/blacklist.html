@@ -160,6 +160,18 @@
       <div class="hint" id="geoRequestsMutedHint" hidden>通知目前已暫停：短時間內出現太多不同來源 IP 的申請。清單裡的申請仍可個別處理；按「清空並恢復通知」會把目前待處理的申請全部標成忽略並恢復逐筆通知。</div>
       <div id="geoRequestsContent"><div class="empty">載入中...</div></div>
     </section>
+    <section class="card recent-card">
+      <div class="card-head">
+        <div class="card-head-copy">
+          <strong>最近被雲端／VPS機房 IP 擋下</strong>
+          <span class="card-note">「封鎖雲端／VPS機房 IP」實際攔下的連線，最新的在最前面；僅供查看攔截效果，重新啟動服務後會歸零，不是正式稽核紀錄（正式操作紀錄仍在「日誌」頁）。開關關閉時這裡自然不會再有新資料。</span>
+        </div>
+        <div class="card-actions">
+          <span class="summary" id="hostingBlocksSummary">載入中...</span>
+        </div>
+      </div>
+      <div id="hostingBlocksContent"><div class="empty">載入中...</div></div>
+    </section>
     <section class="card">
       <div class="card-head"><strong>已封鎖的 IP</strong><span class="summary" id="summary">載入中...</span></div>
       <div id="content"><div class="empty">載入中...</div></div>
@@ -191,8 +203,9 @@
     var loading=false;
     // BLACKLIST_LIST_COLLAPSE_V1：三份清單各自的「展開／收合」狀態，以及完整
     // 資料快取（展開/收合時直接用快取重畫，不必重新打 API）。
-    var expanded={blacklist:false,recent:false,geoRequests:false};
+    var expanded={blacklist:false,recent:false,geoRequests:false,hostingBlocks:false};
     var blacklistItems=[];
+    var hostingBlockItems=[];
     var geoRequestItems=[];
     var geoRequestsMuted=false;
     function showMoreControl(key,total,shownCount){
@@ -300,14 +313,35 @@
         .then(function(body){renderRecent(body.items||[])})
         .catch(function(error){q('recentSummary').textContent='';q('recentContent').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'});
     }
+    // HOSTING_IP_RECENT_BLOCKS_V1：「最近被雲端／VPS機房 IP 擋下」——資料來自
+    // 伺服器記憶體裡的環狀緩衝區（見 hosting_ip 模組文件），純展示用途。
+    function renderHostingBlocks(items){
+      var rows=(items||[]).slice(0,200);
+      hostingBlockItems=rows;
+      q('hostingBlocksSummary').textContent=rows.length+' 筆';
+      if(!rows.length){q('hostingBlocksContent').innerHTML='<div class="empty">目前還沒有攔到雲端／VPS機房 IP（或開關未開啟）。</div>';return}
+      var visible=expanded.hostingBlocks?rows:rows.slice(0,5);
+      q('hostingBlocksContent').innerHTML='<div class="recent-table-wrap"><table class="recent-table"><thead><tr><th>時間</th><th>IP 位址</th><th>路徑</th><th>判定來源</th></tr></thead><tbody>'+visible.map(function(row){
+        return '<tr>'
+          +'<td data-label="時間">'+esc(row.time||fmtTime(row.timestamp))+'</td>'
+          +'<td class="ip" data-label="IP 位址"><span class="ip-cell">'+esc(row.ip||'-')+'<button class="copy-ip" type="button" data-copy="'+esc(row.ip||'')+'" title="複製 IP">複製</button></span></td>'
+          +'<td class="muted" data-label="路徑">'+esc(row.path||'-')+'</td>'
+          +'<td class="location" data-label="判定來源">'+esc(row.source||'未知來源')+'</td>'
+          +'</tr>'}).join('')+'</tbody></table></div>'+showMoreControl('hostingBlocks',rows.length,visible.length);
+    }
+    function loadHostingBlocks(){
+      return api('/admin/api/hosting-restrict/recent-blocks?limit=200')
+        .then(function(body){renderHostingBlocks(body.items||[])})
+        .catch(function(error){q('hostingBlocksSummary').textContent='';q('hostingBlocksContent').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'});
+    }
     function loadAll(){
       var btn=q('reload');
       if(loading)return;
       loading=true;
       if(btn){btn.disabled=true;btn.textContent='更新中…'}
       var done=function(){loading=false;if(btn){btn.disabled=false;btn.textContent='重新整理'}};
-      // 三支 API 平行抓；黑名單先回來就先畫（下方表格的按鈕狀態會跟著更新）。
-      Promise.all([load(),loadRecent(),loadGeoRequests()]).then(done,done);
+      // 四支 API 平行抓；黑名單先回來就先畫（下方表格的按鈕狀態會跟著更新）。
+      Promise.all([load(),loadRecent(),loadGeoRequests(),loadHostingBlocks()]).then(done,done);
     }
     // ADMIN_GEO_RESTRICT_V1：僅限台灣 IP 存取開關。
     var geoBusy=false;
@@ -429,6 +463,7 @@
     loadGeoRestrict();
     loadHostingRestrict();
     loadGeoRequests();
+    loadHostingBlocks();
     q('reload').addEventListener('click',loadAll);
     // 複製 IP、展開／收合「顯示更多」（三份清單共用同一個委派監聽）。
     document.addEventListener('click',function(event){
@@ -441,6 +476,7 @@
         if(key==='blacklist')render(blacklistItems);
         else if(key==='recent')renderRecent(recentItems);
         else if(key==='geoRequests')renderGeoRequests(geoRequestItems,geoRequestsMuted);
+        else if(key==='hostingBlocks')renderHostingBlocks(hostingBlockItems);
       }
     });
     q('content').addEventListener('click',function(event){
@@ -498,7 +534,7 @@
      <style> 裡寫死 main 的底部留白，不依賴 mobile-nav.js 動態注入的 <style>
      （該注入在部分環境可能因 CSP nonce 等因素失效），確保底部導覽列不擋內容。 */
   @media(max-width:820px){
-    main{padding-bottom:calc(190px + env(safe-area-inset-bottom,0px))!important}
+    main{padding-bottom:calc(132px + env(safe-area-inset-bottom,0px))!important}
   }
 </style>
 <script src="/admin/static/js/mobile-nav.js?v=mnav8"></script>

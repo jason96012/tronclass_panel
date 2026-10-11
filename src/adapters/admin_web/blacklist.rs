@@ -465,6 +465,9 @@ pub(super) async fn admin_geo_restrict_set_handler(
         .await
     {
         Ok(()) => {
+            // SECURITY_SETTING_CACHE_V1：立刻清快取，下一個請求就看得到新值，
+            // 不必被動等 10 秒 TTL 過期。
+            super::invalidate_security_toggle_cache(crate::db::GEO_RESTRICT_ADMIN_KEY).await;
             crate::logs::record_audit(
                 "web",
                 &session.account_id,
@@ -553,6 +556,9 @@ pub(super) async fn admin_hosting_restrict_set_handler(
         .await
     {
         Ok(()) => {
+            // SECURITY_SETTING_CACHE_V1：立刻清快取，下一個請求就看得到新值，
+            // 不必被動等 10 秒 TTL 過期。
+            super::invalidate_security_toggle_cache(crate::db::HOSTING_IP_BLOCK_KEY).await;
             crate::logs::record_audit(
                 "web",
                 &session.account_id,
@@ -594,6 +600,39 @@ pub(super) async fn admin_hosting_restrict_set_handler(
         )
             .into_response(),
     }
+}
+
+/// HOSTING_IP_RECENT_BLOCKS_V1：黑名單頁「最近被雲端／VPS機房 IP 擋下」清單，
+/// 比照 `admin_blacklist_recent_logins_handler` 的風格，但資料來源是
+/// `crate::hosting_ip` 模組內的記憶體環狀緩衝區，不是 `activity_events`
+/// （原因見該模組文件 HOSTING_IP_RECENT_BLOCKS_V1 一節）。純展示用途、
+/// 重啟後會清空，不是正式稽核紀錄。
+pub(super) async fn admin_hosting_recent_blocks_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminBlacklistRecentQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let limit = query.limit.unwrap_or(100).clamp(1, 200) as usize;
+    let items: Vec<Value> = crate::hosting_ip::recent_blocks(limit)
+        .into_iter()
+        .map(|row| {
+            json!({
+                "time": row.time,
+                "timestamp": row.timestamp,
+                "ip": row.ip,
+                "path": row.path,
+                "source": row.source,
+            })
+        })
+        .collect();
+    (StatusCode::OK, Json(json!({ "items": items }))).into_response()
 }
 
 /// ADMIN_GEO_RESTRICT_V1：訪客在 `geo_blocked.html` 按「聯絡管理員」打的端點。

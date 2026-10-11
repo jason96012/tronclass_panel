@@ -42,7 +42,7 @@
     '@media(max-width:820px){' +
     'html{scroll-padding-bottom:calc(96px + env(safe-area-inset-bottom,0px))}' +
     'body{height:auto!important;min-height:100%!important;padding-bottom:calc(112px + env(safe-area-inset-bottom,0px))!important}' +
-    'main,.page,.wrap,.shell{padding-bottom:calc(190px + env(safe-area-inset-bottom,0px))!important}' +
+    'main,.page,.wrap,.shell{padding-bottom:calc(132px + env(safe-area-inset-bottom,0px))!important}' +
     '}' +
     /* 更多面板在矮螢幕可自行捲動，尾端不會被螢幕底緣吃掉 */
     '#mobileMoreFinalV2 .sheet{max-height:calc(100vh - 130px);max-height:calc(100dvh - 130px);overflow:auto}' +

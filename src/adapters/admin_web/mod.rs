@@ -494,6 +494,21 @@ async fn reject_blacklisted_ip_middleware(
         // 存取權限，跟上面幾個豁免路徑是同一種考量。
         || path == "/admin/api/blacklist/status"
         || path == "/admin/logout"
+        // BLACKLIST_CONTACT_ADMIN_GAP_FIX_V1：這支中介層跑在 `reject_hosting_ip_
+        // middleware`／`reject_foreign_admin_ip_middleware` 之後（見本檔案組裝
+        // router 的 `.layer()` 疊加順序），三層共用同一個 `/admin/api/*` 範圍。
+        // 那兩層都已經豁免「聯絡管理員」與輪詢這兩支端點（道理見它們各自的
+        // 註解），但這層當初沒有一起加——於是出現一個組合漏洞：某個訪客被
+        // `hosting_blocked.html`／`geo_blocked.html` 擋下，**同時**他的來源 IP
+        // 又剛好也在這份黑名單裡（例如 iCloud 私密轉寄的出口 IP 是很多不同
+        // 使用者共用的一小撮 Akamai／Cloudflare IP，容易因為別人的行為被列入
+        // 黑名單），他按下「聯絡管理員」送出的請求會被這層攔下來回
+        // `access_denied`，前端顯示「傳送失敗」——事實上請求根本沒送到，連
+        // 管理員的待處理清單都看不到這筆。這兩支端點本身不授予任何存取權限
+        // （只是新增一筆待處理申請／查詢是否已放行），與上面兩層排除它們的
+        // 理由完全相同，這裡補上同樣的豁免。
+        || path == "/admin/api/geo-restrict/request-access"
+        || path == "/admin/api/geo-restrict/access-status"
     {
         return next.run(request).await;
     }
@@ -529,6 +544,51 @@ async fn reject_blacklisted_ip_middleware(
 // * `/homework`——雖然不是 `/admin` 開頭，但只是 `/admin/homework` 的別名、同一
 //   支 handler，視同管理後台的一部分一併納管。
 
+/// SECURITY_SETTING_CACHE_V1：「僅限台灣 IP」與「封鎖雲端／VPS機房 IP」這兩個
+/// 開關，分別掛在全 /admin 與全站的中介層上——等於每一個進來的請求都會各自
+/// 查一次 `security_settings` 表。這兩個開關平常只有管理員在 `/admin/blacklist`
+/// 頁手動切換時才會變，頻率極低，卻因為掛在熱路徑上被查得最頻繁，尤其是這個
+/// 中介層本來就是為了擋「大量自動化掃描流量」而存在，流量越大、這類可以快取
+/// 掉的 DB 往返反而越可觀，本末倒置。
+///
+/// 做法：短 TTL（10 秒）記憶體快取，key 是設定鍵名（兩者都是 `&'static str`
+/// 常數，不會動態產生，用它們本身當 key 不需要額外配置一份字串）。更重要的是
+/// 「寫入」那一刻（`admin_geo_restrict_set_handler` / `admin_hosting_restrict_
+/// set_handler`）會主動呼叫 [`invalidate_security_toggle_cache`] 清掉對應的
+/// 快取項目——管理員按下開關，下一個請求就看得到新值，不必被動等 10 秒 TTL
+/// 過期，避免「我明明已經關掉了，怎麼還被擋」這種困惑。
+const SECURITY_SETTING_CACHE_TTL: Duration = Duration::from_secs(10);
+
+static SECURITY_SETTING_CACHE: once_cell::sync::Lazy<Mutex<HashMap<&'static str, (Instant, bool)>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+/// 讀快取；命中且還沒過 TTL 才回傳 `Some`，否則 `None`（呼叫端自己查 DB，
+/// 查完後再呼叫 [`store_security_toggle_cache`] 寫回去——這裡刻意不負責
+/// 查詢本身，兩個呼叫端的「查不到／查詢失敗時要怎麼辦」政策並不相同，
+/// 硬塞進同一支共用函式只會讓邏輯變難讀，不值得為了省幾行重複程式碼）。
+async fn cached_security_toggle(key: &str) -> Option<bool> {
+    let cache = SECURITY_SETTING_CACHE.lock().await;
+    cache.get(key).and_then(|(at, value)| {
+        if Instant::now().saturating_duration_since(*at) < SECURITY_SETTING_CACHE_TTL {
+            Some(*value)
+        } else {
+            None
+        }
+    })
+}
+
+async fn store_security_toggle_cache(key: &'static str, value: bool) {
+    let mut cache = SECURITY_SETTING_CACHE.lock().await;
+    cache.insert(key, (Instant::now(), value));
+}
+
+/// 寫入開關後立刻呼叫，清掉快取——見上方模組註解。沒有這個 key 的快取項目時
+/// `remove` 本來就是沒事發生，呼叫端不需要先判斷快取是否存在。
+async fn invalidate_security_toggle_cache(key: &str) {
+    let mut cache = SECURITY_SETTING_CACHE.lock().await;
+    cache.remove(key);
+}
+
 /// 讀取「僅限台灣 IP 存取 /admin」開關的生效值。
 ///
 /// 兩種「不確定」情況，刻意採不同的保守方向（都已與使用者確認過）：
@@ -538,7 +598,10 @@ async fn reject_blacklisted_ip_middleware(
 ///   與既有 `ip_is_blacklisted` 讀取失敗時「暫不拒絕請求」同一套保守原則：
 ///   安全性開關本身壞掉，不該連帶把整個台灣的使用者一起鎖在外面。
 async fn geo_restrict_admin_enabled(state: &AdminWebState) -> bool {
-    match state
+    if let Some(cached) = cached_security_toggle(crate::db::GEO_RESTRICT_ADMIN_KEY).await {
+        return cached;
+    }
+    let value = match state
         .accounts_db
         .get_security_setting(crate::db::GEO_RESTRICT_ADMIN_KEY)
         .await
@@ -549,7 +612,9 @@ async fn geo_restrict_admin_enabled(state: &AdminWebState) -> bool {
             warn!(error = %error, "讀取「僅限台灣 IP 存取」開關失敗，暫不擋國外 IP");
             false
         }
-    }
+    };
+    store_security_toggle_cache(crate::db::GEO_RESTRICT_ADMIN_KEY, value).await;
+    value
 }
 
 /// 設定檔 `adapters.admin_web.login_home_countries` 當「本國」清單用；
@@ -731,7 +796,12 @@ fn hosting_blocked_json_response() -> Response {
 /// 讀取「封鎖雲端／VPS機房 IP」開關的生效值；預設值／失敗時的保守方向與
 /// `geo_restrict_admin_enabled` 完全一致（見其文件註解），不重複贅述。
 async fn hosting_ip_block_enabled(state: &AdminWebState) -> bool {
-    match state
+    // SECURITY_SETTING_CACHE_V1：這支掛在全站中介層上，短 TTL 快取見
+    // `cached_security_toggle` 模組註解。
+    if let Some(cached) = cached_security_toggle(crate::db::HOSTING_IP_BLOCK_KEY).await {
+        return cached;
+    }
+    let value = match state
         .accounts_db
         .get_security_setting(crate::db::HOSTING_IP_BLOCK_KEY)
         .await
@@ -742,7 +812,9 @@ async fn hosting_ip_block_enabled(state: &AdminWebState) -> bool {
             warn!(error = %error, "讀取「封鎖雲端／VPS機房 IP」開關失敗，暫不擋機房 IP");
             false
         }
-    }
+    };
+    store_security_toggle_cache(crate::db::HOSTING_IP_BLOCK_KEY, value).await;
+    value
 }
 
 async fn reject_hosting_ip_middleware(
@@ -798,6 +870,9 @@ async fn reject_hosting_ip_middleware(
     if !info.is_hosting {
         return next.run(request).await;
     }
+    // HOSTING_IP_RECENT_BLOCKS_V1：只在真的要擋下來的這一刻記一筆，放行的
+    // 請求（上面已經 return 的那些分支）不記，見 `hosting_ip` 模組文件。
+    crate::hosting_ip::record_block(&ip, path, &info.label());
     if !path.starts_with("/admin/api/") && request_prefers_html(&headers) {
         return hosting_blocked_browser_response(&info);
     }
@@ -3418,6 +3493,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             post(blacklist::admin_hosting_restrict_set_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
+        // HOSTING_IP_RECENT_BLOCKS_V1：「最近被雲端／VPS機房 IP 擋下」清單，
+        // 讓管理員能實際看到這個功能有沒有在擋東西（見 `hosting_ip` 模組文件）。
+        .route(
+            "/admin/api/hosting-restrict/recent-blocks",
+            get(blacklist::admin_hosting_recent_blocks_handler),
+        )
         // ADMIN_GEO_RESTRICT_V1：被擋下的訪客按「聯絡管理員」——這條刻意不需要
         // session（見 handler 文件註解），已在 `reject_foreign_admin_ip_
         // middleware` 的豁免清單排除，否則被擋的人連這支都連不到。
@@ -5512,6 +5593,91 @@ mod tests {
             other_tokens.refresh_max_age > 6 * 24 * 60 * 60,
             "non-TKU refresh_max_age must keep the default ~7 day TTL, got {}",
             other_tokens.refresh_max_age
+        );
+    }
+
+    /// TKU_SHORT_SESSION_ROTATE_CAP_V1：第三十六輪使用者要求補上的邊界測試——
+    /// 專門驗證「淡江 session 過了 1 小時之後，就算手上還拿著 refresh token，
+    /// 也沒辦法再換出一組新的」，不只是驗證核發當下的長度（上面那條測試只驗證
+    /// 這件事）。做法：核發一組 TKU session 之後，直接把 DB 裡那筆
+    /// `refresh_expires_at` 往回撥到「已經過期」，模擬「真的等了 1 小時以上」，
+    /// 再呼叫 `rotate_session`——因為 TKU session 的 access／refresh 本來就是
+    /// 同一秒到期（見上面那條測試與 `create_session_with` 的註解），這個情境
+    /// 對應的正是「access 剛好過期、前端自動觸發 refresh」那一刻，這裡要確認
+    /// 這個自動 refresh 必定失敗，不會變成「默默換到一組新的 1 小時」。
+    #[tokio::test]
+    async fn tku_session_cannot_be_renewed_past_one_hour_via_rotate() {
+        let file = NamedTempFile::new().unwrap();
+        let db = AccountsDb::open(file.path()).await.unwrap();
+        let state = AdminWebState::new("", AccountRegistry::default(), db, None, None, 10);
+
+        let tku_tokens = state
+            .create_session_with(NewSession {
+                account_id: "tku-user".to_string(),
+                is_admin: false,
+                is_viewer: false,
+                must_change_password: false,
+                origin: SessionOrigin {
+                    ip: "163.13.22.33".to_string(),
+                    user_agent: String::new(),
+                    first_login_at: 0,
+                },
+            })
+            .await;
+
+        // 核發當下，refresh 應該還能正常換出新 token（這是「還沒到 1 小時」
+        // 的對照組，確認下面的失敗不是因為別的原因）。
+        let still_valid = state.rotate_session(&tku_tokens.refresh, None).await;
+        assert!(
+            still_valid.is_some(),
+            "剛核發、還沒過期的 TKU refresh token 應該能正常換出新 token"
+        );
+        // 上面這次 rotate 已經把舊 refresh 輪換掉了；改用輪換後拿到的新
+        // refresh token 繼續後面的「模擬過期」驗證，道理跟使用者在瀏覽器裡
+        // 連續用同一條 session 是一樣的（只是中間多轉了一手）。
+        let tokens = still_valid.unwrap();
+
+        // 直接把 DB 裡這筆 session 的 refresh_expires_at 往回撥到已經過期
+        // （比照使用者「真的等了超過 1 小時」），而不是真的在測試裡 sleep
+        // 一小時。`refresh_token` 欄位存的是雜湊鍵（SESSION_TOKEN_HASH_V1），
+        // 用 `session_lookup_key` 算出同一把鍵才查得到。
+        let expired_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
+            - 10;
+        let updated = sqlx::query(
+            "UPDATE dashboard_sessions SET refresh_expires_at = ? WHERE refresh_token = ?",
+        )
+        .bind(expired_unix)
+        .bind(crate::db::session_lookup_key(&tokens.refresh))
+        .execute(&state.accounts_db.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            updated.rows_affected(),
+            1,
+            "測試前置作業應該要能找到剛才核發的那一筆 session"
+        );
+
+        // 真正要驗證的行為：refresh 已過期，rotate 必須失敗，不能换出新 token
+        // ——這就是「access 過期、前端自動 refresh」那一刻在 TKU 網段下的真實
+        // 結果，確保不會被背景機制暗中續命。
+        assert!(
+            state.rotate_session(&tokens.refresh, None).await.is_none(),
+            "TKU session 過期後，用同一顆 refresh token 不應該還能換出新 session"
+        );
+
+        // 失敗的那次 rotate 應該順手把這筆過期的 session 刪掉（既有行為，
+        // 這裡一併確認沒有改壞），而不是留著讓它可以被重複嘗試。
+        assert!(
+            state
+                .accounts_db
+                .get_dashboard_session_by_refresh(&tokens.refresh)
+                .await
+                .unwrap()
+                .is_none(),
+            "過期且 rotate 失敗的 session 應該已經從資料庫移除"
         );
     }
 

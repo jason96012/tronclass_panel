@@ -39,6 +39,42 @@ use self::radar::{attempt_radar_rollcall, radar_channel_has_point, RadarResult};
 
 // ─── 簽到執行結果 ─────────────────────────────────────────────────────────────
 
+// NOTIFY_LATENCY_GUARD_V1：下面「發送開始通知」那段 Discord 推播是在
+// `process_rollcall`──也就是實際判讀／送出簽到──的流程正中間同步 `.await`。
+// Discord 官方 API 偶爾會因為單一 bot 短時間內要推播給很多人（例如一堂課
+// 十幾個帳號幾乎同時偵測到同一場雷達／自助簽到）觸發速率限制，serenity 的
+// HTTP 層會自動等 `Retry-After` 到期再重送——如果卡住個幾秒，簽到視窗本來
+// 就短的雷達／自助簽到，會被這通「通知還沒發完」的等待硬生生吃掉寶貴的
+// 簽到時間。這裡設一個保底逾時：通知最多等這麼久，逾時就放棄那一次通知、
+// 繼續往下走正式簽到流程——通知是錦上添花，簽到本身才是這個專案的核心任務，
+// 優先序不能顛倒。
+const DETECTED_NOTIFY_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// NOTIFY_LATENCY_GUARD_V1：本檔案所有「簽到流程中途插播」的 Discord／LINE
+/// 通知統一經由這裡發送——原本每個呼叫點各自寫一次
+/// `bot.push_to_account_or_admin(...).await`（有些甚至用 `let _ =` 整個吞掉
+/// 錯誤），逾時／錯誤處理不統一，也完全沒有逾時保護。集中成一個函式：
+/// ① 套用 [`DETECTED_NOTIFY_TIMEOUT`] 逾時保底；② 統一記錄錯誤／逾時 log
+/// （`context_label` 只給 log 用，方便事後分辨是哪一種通知）；③ 呼叫端不再需要
+/// 自己判斷要不要印警告，少了「有的分支忘記印、有的吞掉」這種不一致。
+async fn send_rollcall_notice(
+    bot: &dyn AdapterMessenger,
+    target: &AdapterAccountTarget,
+    msg: &OutboundMessage,
+    context_label: &str,
+) {
+    match tokio::time::timeout(DETECTED_NOTIFY_TIMEOUT, bot.push_to_account_or_admin(target, msg))
+        .await
+    {
+        Ok(Err(e)) => warn!(error = %e, "{}失敗", context_label),
+        Err(_) => warn!(
+            "{}逾時（{:?}），放棄這次通知、繼續處理簽到",
+            context_label, DETECTED_NOTIFY_TIMEOUT
+        ),
+        Ok(Ok(())) => {}
+    }
+}
+
 /// 單次 rollcall 的最終執行結果
 #[derive(Debug, Clone)]
 pub struct RollcallOutcome {
@@ -266,9 +302,7 @@ pub async fn process_rollcall(
                 attendance_type: attendance_type.to_string(),
             });
             let target = adapter_target.lock().await.clone();
-            if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
-                warn!(error = %e, "發送開始通知失敗");
-            }
+            send_rollcall_notice(bot, &target, &msg, "發送開始通知").await;
         }
     }
 
@@ -342,9 +376,7 @@ pub async fn process_rollcall(
                 course = rollcall.course_title,
                 kind = attendance_type
             ));
-            if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
-                warn!(error = %e, "發送「點名已送出」即時通知失敗");
-            }
+            send_rollcall_notice(bot, &target, &msg, "發送「點名已送出」即時通知").await;
         }
         crate::web_push_notifications::notify_rollcall_submitted(
             account_label,
@@ -377,9 +409,7 @@ pub async fn process_rollcall(
             elapsed_ms,
         });
         let target = adapter_target.lock().await.clone();
-        if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
-            warn!(error = %e, "發送 Line 結果通知失敗");
-        }
+        send_rollcall_notice(bot, &target, &msg, "發送 Line 結果通知").await;
     }
     // ROLLCALL_FINISH_PUSH_V1：點名結果同步推到手機 Web Push
     //（偏好鍵 rollcall_finished，可在通知設定頁關閉）。
@@ -599,9 +629,7 @@ async fn handle_number_rollcall(
                 .unwrap_or_default(),
             timeout_secs: 2700,
         });
-        if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
-            warn!(error = %e, "發送數字點名碼請求通知失敗");
-        }
+        send_rollcall_notice(bot, &target, &msg, "發送數字點名碼請求通知").await;
     }
 
     let started_waiting = tokio::time::Instant::now();
@@ -719,18 +747,14 @@ async fn handle_number_rollcall(
                                 if result.is_success() {
                                     if let Some(bot) = messenger {
                                         let target = adapter_target.lock().await.clone();
-                                        let _ = bot
-                                            .push_to_account_or_admin(
-                                                &target,
-                                                &OutboundMessage::Text(format!(
-                                                    "🌐 班上已有 {}/{} 人點名成功（{}%，超過 {}%），系統自動讀取數字點名碼並送出。",
-                                                    progress.completed,
-                                                    progress.total,
-                                                    progress.percent_rounded(),
-                                                    AUTO_SUBMIT_PERCENT
-                                                )),
-                                            )
-                                            .await;
+                                        let msg = OutboundMessage::Text(format!(
+                                            "🌐 班上已有 {}/{} 人點名成功（{}%，超過 {}%），系統自動讀取數字點名碼並送出。",
+                                            progress.completed,
+                                            progress.total,
+                                            progress.percent_rounded(),
+                                            AUTO_SUBMIT_PERCENT
+                                        ));
+                                        send_rollcall_notice(bot, &target, &msg, "發送自動讀碼送出通知").await;
                                     }
                                 }
                                 // ATT_STATS_AUTO_MANUAL_V1：這條路徑是「等不到手動
@@ -1122,14 +1146,10 @@ async fn notify_number_auto_miss(
     warn!(detail = %detail, "自動偵測數字碼失敗，不再重試，改通知使用者手動輸入");
     if let Some(bot) = messenger {
         let target = adapter_target.lock().await.clone();
-        let _ = bot
-            .push_to_account_or_admin(
-                &target,
-                &OutboundMessage::Text(format!(
-                    "⚠️ 自動偵測不到數字點名碼（{detail}），不再重試。請在輸入頁輸入 4 位數字，或用 `/num code:1234`。"
-                )),
-            )
-            .await;
+        let msg = OutboundMessage::Text(format!(
+            "⚠️ 自動偵測不到數字點名碼（{detail}），不再重試。請在輸入頁輸入 4 位數字，或用 `/num code:1234`。"
+        ));
+        send_rollcall_notice(bot, &target, &msg, "發送數字碼自動偵測失敗通知").await;
     }
 }
 
@@ -1173,9 +1193,7 @@ async fn send_input_reminder(
             remaining_secs,
         });
         let target = adapter_target.lock().await.clone();
-        if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
-            warn!(error = %e, "發送點名催促通知失敗");
-        }
+        send_rollcall_notice(bot, &target, &msg, "發送點名催促通知").await;
     }
 }
 
@@ -1291,9 +1309,7 @@ async fn handle_radar_rollcall(
             rollcall.rollcall_id,
             page
         ));
-        if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
-            warn!(error = %e, "發送雷達點名頁通知失敗");
-        }
+        send_rollcall_notice(bot, &target, &msg, "發送雷達點名頁通知").await;
     }
 
     // CLASS_COUNT_HEADER_V1 + AUTO_SUBMIT 15% 閘門：
@@ -1432,18 +1448,14 @@ async fn handle_radar_rollcall(
                     format!("\n🎯 打開頁面按「🧮 系統演算」再送一次：{input_url}")
                 };
                 let target = adapter_target.lock().await.clone();
-                let _ = bot
-                    .push_to_account_or_admin(
-                        &target,
-                        &OutboundMessage::Text(format!(
-                            "🌐 班上已有 {}/{} 人點名成功（{}%，超過 {}%），但雷達簽到還沒過{last_distance}。{tail}",
-                            progress.completed,
-                            progress.total,
-                            progress.percent_rounded(),
-                            AUTO_SUBMIT_PERCENT
-                        )),
-                    )
-                    .await;
+                let msg = OutboundMessage::Text(format!(
+                    "🌐 班上已有 {}/{} 人點名成功（{}%，超過 {}%），但雷達簽到還沒過{last_distance}。{tail}",
+                    progress.completed,
+                    progress.total,
+                    progress.percent_rounded(),
+                    AUTO_SUBMIT_PERCENT
+                ));
+                send_rollcall_notice(bot, &target, &msg, "發送雷達重試未過通知").await;
             }
         }
     }
@@ -1638,9 +1650,7 @@ async fn handle_qrcode_rollcall(
 
         if !scanner_already_submitted {
             let target = adapter_target.lock().await.clone();
-            if let Err(e) = bot.push_to_account_or_admin(&target, &msg).await {
-                warn!(error = %e, "發送 QR Code 請求通知失敗");
-            }
+            send_rollcall_notice(bot, &target, &msg, "發送 QR Code 請求通知").await;
         }
     } else {
         // 沒有 Line Bot，只能記錄日誌
@@ -1789,17 +1799,13 @@ async fn handle_qrcode_rollcall(
                             );
                             if let Some(bot) = messenger {
                                 let target = adapter_target.lock().await.clone();
-                                let _ = bot
-                                    .push_to_account_or_admin(
-                                        &target,
-                                        &OutboundMessage::Text(format!(
-                                            "🔥 班上已有 {}/{} 人點名成功（{}%），但 QR 內容只能靠掃碼取得——請立刻開掃碼頁：{scan_url}",
-                                            progress.completed,
-                                            progress.total,
-                                            progress.percent_rounded()
-                                        )),
-                                    )
-                                    .await;
+                                let msg = OutboundMessage::Text(format!(
+                                    "🔥 班上已有 {}/{} 人點名成功（{}%），但 QR 內容只能靠掃碼取得——請立刻開掃碼頁：{scan_url}",
+                                    progress.completed,
+                                    progress.total,
+                                    progress.percent_rounded()
+                                ));
+                                send_rollcall_notice(bot, &target, &msg, "發送 QR 催促通知").await;
                             }
                         }
                     }
