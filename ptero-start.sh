@@ -838,6 +838,17 @@ if [[ -f config/filebrowser.enable || "${FILEBROWSER_ENABLE:-0}" == "1" ]]; then
   echo "[ptero-start] Dashboard 教材 → ${TRONCLASS_MATERIALS_DIR}，雲端按鈕 ${TRONCLASS_MATERIALS_FRONTEND_URL}（mode=${TRONCLASS_MATERIALS_FRONTEND_MODE}）"
 fi
 
+# ── HIYORI_SHOP_V1：日和選物所靜態站（shop.jasoncloudserver.me → 127.0.0.1:26200）──
+# 純靜態網站，由 ./shop-static-server.sh 啟動（沿用 ./caddy，與面板 binary 完全無關）。
+# 移除商店：把這段與 watchdog_loop 裡的 shop_static_watchdog 那行刪掉即可。
+# 網站檔案更新：shop-static-server.sh stop → 換掉 shop/* → shop-static-server.sh start
+if [[ -f ./shop-static-server.sh ]]; then
+  source ./shop-static-server.sh
+  shop_static_start
+else
+  echo "[shop] 找不到 ./shop-static-server.sh，略過商店靜態站（shop.jasoncloudserver.me 會 502）"
+fi
+
 # 監控由本啟動程序建立的背景服務。Pterodactyl 只會監控啟動腳本的
 # 前景程序，因此不能只依靠 nohup；任何 connector/代理死亡都要自動拉起。
 rotate_one_log() {
@@ -1259,6 +1270,8 @@ watchdog_loop() {
     rotate_logs
     watchdog_start_tunnel
     watchdog_start_stockgenie
+    # HIYORI_SHOP_V1：商店靜態站（26200）健康檢查，掛掉自動重啟
+    if declare -F shop_static_watchdog >/dev/null 2>&1; then shop_static_watchdog; fi
     cargo_auto_update_if_due || true
     if hot_rebuild_if_needed "$bin"; then
       kill "$child" 2>/dev/null || true
