@@ -1933,6 +1933,22 @@ async fn handle_qrcode_rollcall(
 
 // ─── 批次處理 ─────────────────────────────────────────────────────────────────
 
+// ROLLCALL_FORCE_RESET_V1：管理員按「強制結束並重新偵測」時，所有進行中的批次都會收到這個訊號，
+// 丟棄尚未完成的點名等待（QR／數字／雷達），清掉它們的登記，然後由監控循環立即重新偵測一次。
+// 用 watch 而不是 Notify：每個批次開始時 subscribe，只會看到「開始之後」的重設，且不會遺失。
+static ROLLCALL_RESET: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> =
+    std::sync::OnceLock::new();
+
+fn rollcall_reset_sender() -> &'static tokio::sync::watch::Sender<u64> {
+    ROLLCALL_RESET.get_or_init(|| tokio::sync::watch::channel(0u64).0)
+}
+
+/// 通知所有進行中的批次結束目前的點名等待（不會登出、不會重新登入）。
+/// 呼叫端應另外對各帳號送出 force_poll，讓循環立刻重新偵測。
+pub fn request_rollcall_reset() {
+    rollcall_reset_sender().send_modify(|generation| *generation = generation.wrapping_add(1));
+}
+
 /// 批次處理多個 rollcall
 ///
 /// 對傳入的 rollcall 列表，依序（或並發）執行簽到。
@@ -1991,6 +2007,8 @@ pub async fn process_rollcall_batch(
     // 舊行為是 for 迴圈依序處理：數字／QR 最長 3 小時的等待會阻塞同帳號其他點名。
     let isolate_inputs = number_tx.is_some() || qr_tx.is_some() || radar_tx.is_some();
     let account_id = config.id.clone();
+    let all_rollcall_ids: Vec<u64> = pending.iter().map(|rc| rc.rollcall_id).collect();
+    let mut reset_rx = rollcall_reset_sender().subscribe();
     let mut running = FuturesUnordered::new();
     for (index, rollcall) in pending.into_iter().enumerate() {
         let rollcall_id = rollcall.rollcall_id;
@@ -2057,20 +2075,48 @@ pub async fn process_rollcall_batch(
     }
 
     let mut results: Vec<(usize, u64, RollcallOutcome)> = Vec::new();
-    while let Some((index, rollcall_id, outcome)) = running.next().await {
-        let fatal = outcome.result.is_fatal();
-        results.push((index, rollcall_id, outcome));
-        // 致命錯誤（session 過期）是整個帳號的問題：取消其餘仍在等待的點名。
-        if fatal {
-            error!(
-                rollcall_id = rollcall_id,
-                "批次處理遇到致命錯誤，取消其餘 rollcall"
-            );
-            break;
+    let mut reset_requested = false;
+    loop {
+        tokio::select! {
+            next = running.next() => {
+                let Some((index, rollcall_id, outcome)) = next else { break };
+                let fatal = outcome.result.is_fatal();
+                results.push((index, rollcall_id, outcome));
+                // 致命錯誤（session 過期）是整個帳號的問題：取消其餘仍在等待的點名。
+                if fatal {
+                    error!(
+                        rollcall_id = rollcall_id,
+                        "批次處理遇到致命錯誤，取消其餘 rollcall"
+                    );
+                    break;
+                }
+            }
+            Ok(()) = reset_rx.changed() => {
+                reset_requested = true;
+                break;
+            }
         }
     }
     // 取消尚未完成的點名（它們的輸入登記會隨 guard 一起移除）。
     drop(running);
+    if reset_requested {
+        let finished: std::collections::HashSet<u64> =
+            results.iter().map(|(_, rollcall_id, _)| *rollcall_id).collect();
+        let mut dropped = 0usize;
+        if let Some(registry) = scanner_registry.as_ref() {
+            for rollcall_id in all_rollcall_ids.iter().filter(|id| !finished.contains(id)) {
+                registry
+                    .reset_account_pending(&config.provider, *rollcall_id, &config.id)
+                    .await;
+                dropped += 1;
+            }
+        }
+        info!(
+            account = %account_id,
+            dropped = dropped,
+            "管理員強制結束點名：已取消進行中的等待，準備重新偵測"
+        );
+    }
     results.sort_by_key(|(index, _, _)| *index);
     outcomes = results
         .into_iter()

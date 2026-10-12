@@ -161,7 +161,7 @@ async fn get_client(
         Err(e) => {
             return Err((
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("Tronclass 登入失敗：{e}") })),
+                Json(json!({ "error": super::public_error("Tronclass 登入失敗：", &e) })),
             )
                 .into_response());
         }
@@ -643,7 +643,7 @@ pub(super) async fn admin_bulletin_attachment_handler(
             .unwrap_or_else(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("建立 304 回應失敗：{e}") })),
+                    Json(json!({ "error": super::public_error("建立 304 回應失敗：", &e) })),
                 )
                     .into_response()
             });

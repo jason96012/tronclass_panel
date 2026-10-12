@@ -1356,11 +1356,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_qrcode_command_sends_to_channel() {
-        let (account, mut qr_rx) = make_account("acc1", "Uuser1");
+        // 明確指定原則：QR 必須帶點名 ID，且該點名已登記為等待中，才會送達。
+        let (account, _unused_qr_rx) = make_account("acc-qr-test", "Uuser1");
         let state = make_state(vec![account]);
+        let (qr_tx, mut qr_rx) = tokio::sync::mpsc::channel(10);
+        let _guard = register_rollcall_input("acc-qr-test", 77, RollcallInputSender::Qr(qr_tx));
 
+        // 未指定 ID：即使只有一個等待中的點名也不送達。
         execute_command(
             RequestCommand::QrCode { data: "0~100!3~secret_data!4~42".to_string(), rollcall_id: None },
+            "",
+            &state,
+            "Uadmin123",
+        )
+        .await
+        .unwrap();
+        assert!(qr_rx.try_recv().is_err(), "未指定點名 ID 不應送達");
+
+        execute_command(
+            RequestCommand::QrCode { data: "0~100!3~secret_data!4~42".to_string(), rollcall_id: Some(77) },
             "",
             &state,
             "Uadmin123",
@@ -1380,17 +1394,34 @@ mod tests {
         let (number_tx, mut number_rx) = tokio::sync::mpsc::channel(10);
         let (radar_tx, _radar_rx) = create_radar_point_channel(10);
         let account = RequestAccountState::new(
-            "acc1",
+            "acc-num-test",
             "Uuser1",
             qr_tx,
-            number_tx,
+            number_tx.clone(),
             radar_tx,
-            make_test_status("acc1", true),
+            make_test_status("acc-num-test", true),
         );
         let state = make_state(vec![account]);
+        // 明確指定原則：數字點名碼必須指定點名 ID，且該點名已登記為等待中。
+        let _guard = register_rollcall_input(
+            "acc-num-test",
+            78,
+            RollcallInputSender::Number(number_tx),
+        );
 
+        // 未指定 ID：不送達。
         execute_command(
             RequestCommand::NumberCode { code: "1234".to_string(), rollcall_id: None },
+            "",
+            &state,
+            "Uuser1",
+        )
+        .await
+        .unwrap();
+        assert!(number_rx.try_recv().is_err(), "未指定點名 ID 不應送達");
+
+        execute_command(
+            RequestCommand::NumberCode { code: "1234".to_string(), rollcall_id: Some(78) },
             "",
             &state,
             "Uuser1",

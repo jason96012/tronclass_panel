@@ -475,7 +475,7 @@ async fn run_import(
         Ok(v) => v,
         Err(e) => {
             report.ok = false;
-            report.errors.push(format!("取得課程清單失敗：{e}"));
+            report.errors.push(super::public_error("取得課程清單失敗：", &e));
             job_update("取得課程清單失敗", 0, 0, &report);
             error!(%base_url, error = %e, "教材匯入：取得課程清單 /api/my-courses 失敗");
             return report;
@@ -1379,6 +1379,16 @@ async fn download_file(
                 continue;
             }
         }
+        // SSRF_FETCH_GUARD_V1：上游回傳的網址若指向本機或 metadata 位址，直接跳過（重新導向由 client 政策再檢查）。
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if crate::api::is_blocked_fetch_url(&parsed)
+                || crate::api::resolves_to_blocked_address(&parsed).await
+            {
+                last_err = format!("位址不允許（{url}）");
+                debug!(url = %url, "教材匯入：位址指向本機或 link-local，已跳過");
+                continue;
+            }
+        }
         debug!(url = %url, "教材匯入：嘗試下載位址");
         let req = client
             .get(url)
@@ -1410,7 +1420,7 @@ async fn download_file(
         let mut out = match tokio::fs::File::create(&tmp).await {
             Ok(file) => file,
             Err(e) => {
-                last_err = format!("建立暫存檔失敗：{e}");
+                last_err = super::public_error("建立暫存檔失敗：", &e);
                 warn!(url = %url, error = %last_err, "教材匯入：建立暫存檔失敗，跳過此位址");
                 continue;
             }
@@ -1437,14 +1447,14 @@ async fn download_file(
                         break;
                     }
                     if let Err(e) = out.write_all(&chunk).await {
-                        stream_err = Some(format!("寫入暫存檔失敗：{e}"));
+                        stream_err = Some(super::public_error("寫入暫存檔失敗：", &e));
                         break;
                     }
                     written = written.saturating_add(chunk.len() as u64);
                 }
                 Ok(None) => break,
                 Err(e) => {
-                    stream_err = Some(format!("讀取回應失敗：{e}"));
+                    stream_err = Some(super::public_error("讀取回應失敗：", &e));
                     break;
                 }
             }
@@ -1465,7 +1475,7 @@ async fn download_file(
         }
         if let Err(e) = tokio::fs::rename(&tmp, dest).await {
             let _ = tokio::fs::remove_file(&tmp).await;
-            last_err = format!("rename 失敗：{e}");
+            last_err = super::public_error("rename 失敗：", &e);
             warn!(url = %url, error = %last_err, "教材匯入：rename 失敗");
             continue;
         }
@@ -1477,6 +1487,13 @@ async fn download_file(
 
 /// 抓取 JSON(帶 session cookie 的 client 已含 cookie jar)。
 async fn fetch_json(client: &reqwest::Client, url: &str) -> Result<Value, String> {
+    if let Ok(parsed) = reqwest::Url::parse(url) {
+        if crate::api::is_blocked_fetch_url(&parsed)
+            || crate::api::resolves_to_blocked_address(&parsed).await
+        {
+            return Err(format!("位址不允許（{url}）"));
+        }
+    }
     let resp = client
         .get(url)
         .header(reqwest::header::ACCEPT, "application/json")

@@ -124,7 +124,7 @@ pub(super) async fn config_handler(
         .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("讀取推播狀態失敗：{error}")})),
+            Json(json!({"error": super::public_error("讀取推播狀態失敗：", &error)})),
         )
             .into_response(),
     }
@@ -152,7 +152,7 @@ pub(super) async fn overview_handler(
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("讀取帳號清單失敗：{error}")})),
+                Json(json!({"error": super::public_error("讀取帳號清單失敗：", &error)})),
             )
                 .into_response()
         }
@@ -162,7 +162,7 @@ pub(super) async fn overview_handler(
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": format!("讀取綁定總覽失敗：{error}")})),
+                Json(json!({"error": super::public_error("讀取綁定總覽失敗：", &error)})),
             )
                 .into_response()
         }
@@ -274,7 +274,7 @@ pub(super) async fn subscribe_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("儲存推播訂閱失敗：{error}")})),
+            Json(json!({"error": super::public_error("儲存推播訂閱失敗：", &error)})),
         )
             .into_response(),
     }
@@ -320,7 +320,7 @@ pub(super) async fn rotate_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("更新推播訂閱失敗：{error}")})),
+            Json(json!({"error": super::public_error("更新推播訂閱失敗：", &error)})),
         )
             .into_response(),
     }
@@ -344,7 +344,7 @@ pub(super) async fn unsubscribe_handler(
         Ok(deleted) => Json(json!({"ok": true, "deleted": deleted})).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("刪除推播訂閱失敗：{error}")})),
+            Json(json!({"error": super::public_error("刪除推播訂閱失敗：", &error)})),
         )
             .into_response(),
     }
@@ -374,7 +374,7 @@ pub(super) async fn test_handler(
             return Json(json!({
                 "ok": false,
                 "sent": 0,
-                "error": format!("讀取推播訂閱失敗：{error}")
+                "error": super::public_error("讀取推播訂閱失敗：", &error)
             }))
             .into_response()
         }

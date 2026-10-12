@@ -266,6 +266,58 @@ impl QrScannerRegistry {
         }
     }
 
+    /// ROLLCALL_FORCE_RESET_V1：強制結束點名時，清掉某帳號在這個點名上的三種登記（QR／數字／雷達）。
+    /// 與 `unregister_*` 不同：若該點名已沒有等待中的帳號，同時清掉上一輪已送出的 payload／輸入／座標，
+    /// 否則新一輪登記會把舊值再補送給新帳號。已成功的帳號（completed）保留，頁面完成人數不歸零。
+    pub async fn reset_account_pending(&self, provider: &str, rollcall_id: u64, account_id: &str) {
+        {
+            let key = PendingQrKey::new(provider, rollcall_id);
+            let mut inner = self.inner.lock().await;
+            let mut remove_entry = false;
+            if let Some(entry) = inner.get_mut(&key) {
+                entry.accounts.remove(account_id);
+                if entry.accounts.is_empty() {
+                    entry.used = false;
+                    entry.submitted_qr_data = None;
+                    remove_entry = entry.completed_accounts.is_empty();
+                }
+            }
+            if remove_entry {
+                inner.remove(&key);
+            }
+        }
+        {
+            let key = PendingNumberKey::new(provider, rollcall_id);
+            let mut inner = self.number_inner.lock().await;
+            let mut remove_entry = false;
+            if let Some(entry) = inner.get_mut(&key) {
+                entry.accounts.remove(account_id);
+                if entry.accounts.is_empty() {
+                    entry.submitted_input = None;
+                    remove_entry = entry.completed_accounts.is_empty();
+                }
+            }
+            if remove_entry {
+                inner.remove(&key);
+            }
+        }
+        {
+            let key = PendingNumberKey::new(provider, rollcall_id);
+            let mut inner = self.radar_inner.lock().await;
+            let mut remove_entry = false;
+            if let Some(entry) = inner.get_mut(&key) {
+                entry.accounts.remove(account_id);
+                if entry.accounts.is_empty() {
+                    entry.submitted_point = None;
+                    remove_entry = entry.completed_accounts.is_empty();
+                }
+            }
+            if remove_entry {
+                inner.remove(&key);
+            }
+        }
+    }
+
     /// Mark one account as successfully attended for scanner status display.
     pub async fn mark_completed(&self, provider: &str, rollcall_id: u64, account_id: &str) {
         let key = PendingQrKey::new(provider, rollcall_id);
@@ -2096,6 +2148,43 @@ mod tests {
         let number = tool_permissions_policy_for_path("/number");
         assert!(!number.contains("camera=(self)"));
         assert!(!number.contains("geolocation=(self)"));
+    }
+
+    #[tokio::test]
+    async fn reset_account_pending_clears_stale_submission_so_new_round_does_not_replay() {
+        let registry = registry();
+        let (tx_a, mut rx_a) = mpsc::channel(4);
+        registry
+            .register_pending("fju", 42, "acc-a", tx_a, Duration::from_secs(60))
+            .await
+            .unwrap();
+        // 第一輪：掃到的 payload 已送出（used=true、submitted_qr_data 有值）。
+        let token = registry.inner.lock().await[&PendingQrKey::new("fju", 42)]
+            .token
+            .clone();
+        registry
+            .submit(ScannerSubmission {
+                provider: "fju".to_string(),
+                rollcall_id: 42,
+                account_id: "acc-a".to_string(),
+                token: token.clone(),
+                qr_data: "old-payload".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(rx_a.recv().await.as_deref(), Some("old-payload"));
+
+        // 強制結束：清掉 acc-a 的登記與舊 payload。
+        registry.reset_account_pending("fju", 42, "acc-a").await;
+
+        // 新一輪重新登記：不應再拿到舊 payload。
+        let (tx_a2, mut rx_a2) = mpsc::channel(4);
+        let link = registry
+            .register_pending("fju", 42, "acc-a", tx_a2, Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert!(!link.already_submitted);
+        assert!(rx_a2.try_recv().is_err());
     }
 
     #[tokio::test]

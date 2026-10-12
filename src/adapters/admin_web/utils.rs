@@ -652,7 +652,7 @@ pub(super) async fn run_health_command(program: &str, args: &[&str]) -> String {
                 format!("exit {}: {}", output.status, stderr)
             }
         }
-        Ok(Err(e)) => format!("command failed: {e}"),
+        Ok(Err(e)) => super::public_error("command failed: ", &e),
         Err(_) => "command timeout".to_string(),
     }
 }

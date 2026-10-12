@@ -412,6 +412,12 @@ pub struct AdminWebConfig {
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
 
+    /// M4（安全審查）：後台與 LINE webhook／掃碼伺服器共用 `line_bot.webhook_bind_addr`。
+    /// 設為非 loopback 位址時，後台會直接暴露在網路上；預設 `false` 時 validate 會拒絕啟動。
+    /// 只有明確需要（例如內網直連、無 Tunnel）才設為 `true`，並會在啟動時記 WARN。
+    #[serde(default)]
+    pub allow_public_admin: bool,
+
     /// LOGIN_GEO_ALERT_V1：視為「本國」的國家代碼（ISO 3166-1 alpha-2）。
     /// 從這些國家的新 IP 登入只記錄、不通知；境外／Tor／查不到國家才通知。
     /// 預設 `["TW"]`。設成空陣列 = 恢復「任何新 IP 都通知」的舊行為。
@@ -449,6 +455,7 @@ impl Default for AdminWebConfig {
             enabled: false,
             access_token: String::new(),
             trusted_proxies: Vec::new(),
+            allow_public_admin: false,
             login_home_countries: default_login_home_countries(),
             csp_style_attr_mode: default_csp_style_attr_mode(),
         }
@@ -1009,6 +1016,25 @@ pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         {
             return Err(miette::miette!(
                 "adapters.line_bot.webhook_bind_addr 必須是有效的 IP 位址（建議 Cloudflare Tunnel 使用 127.0.0.1）"
+            ));
+        }
+        // M4：後台與 webhook／掃碼伺服器共用同一個綁定位址。非 loopback 會把後台暴露出去，
+        // 除非營運者明確設定 allow_public_admin = true。
+        let bind_is_loopback = self
+            .adapters
+            .line_bot
+            .webhook_bind_addr
+            .trim()
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+        if self.adapters.admin_web.enabled
+            && !bind_is_loopback
+            && !self.adapters.admin_web.allow_public_admin
+        {
+            return Err(miette::miette!(
+                "adapters.line_bot.webhook_bind_addr 為非 loopback（{}），而管理後台與它共用同一個埠。若確定要公開，請設定 adapters.admin_web.allow_public_admin = true；否則請改回 127.0.0.1 並用 Cloudflare Tunnel 轉進來",
+                self.adapters.line_bot.webhook_bind_addr.trim()
             ));
         }
 

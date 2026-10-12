@@ -195,6 +195,14 @@ const REFRESH_TOKEN_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// 只要這個 session 的來源 IP 落在此網段，每次重新核發 token 都會套用這個短效期。
 const TKU_SHORT_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_SESSIONS: usize = 500;
+/// ERROR_DETAIL_HIDDEN_V1：回給瀏覽器的錯誤只保留操作名稱；內部細節（資料庫、路徑、上游回應）
+/// 寫進伺服器日誌，不外洩給前端。
+pub(crate) fn public_error(context: &str, detail: &dyn std::fmt::Display) -> String {
+    tracing::warn!(context = %context, error = %detail, "API 錯誤（細節未回傳給瀏覽器）");
+    let label = context.trim_end_matches(|c: char| c == '：' || c == ':' || c == ' ');
+    format!("{label}，請查看伺服器日誌")
+}
+
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
 const IP_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
@@ -2189,7 +2197,13 @@ impl AdminWebState {
                 let mut guard = sessions_clone.write().await;
                 for row in existing {
                     let remaining_secs = (row.expires_at - now_unix).max(0) as u64;
-                    if remaining_secs > 0 {
+                    // REVOKE_ORDER_V1：撤銷是先刪 DB 再取鎖移除記憶體；這裡在鎖內確認列仍在，
+                    // 否則「讀列表 → 撤銷 → 寫回記憶體」會復活已登出的 session。
+                    let still_valid = accounts_db_clone
+                        .dashboard_session_key_exists(&row.token)
+                        .await
+                        .unwrap_or(false);
+                    if remaining_secs > 0 && still_valid {
                         guard.insert(
                             row.token,
                             AdminSession {
@@ -2448,6 +2462,10 @@ impl AdminWebState {
                     expires_at: Instant::now() + Duration::from_secs(remaining_secs),
                 };
                 let mut sessions = self.sessions.write().await;
+                // REVOKE_ORDER_V1：鎖內再確認列仍在。若讀取與撤銷並行，這裡不可把已撤銷的 session 寫回記憶體。
+                if !matches!(self.accounts_db.get_dashboard_session(token).await, Ok(Some(_))) {
+                    return None;
+                }
                 sessions.insert(lookup_key.clone(), session.clone());
                 return Some(session);
             } else {
@@ -2483,8 +2501,7 @@ impl AdminWebState {
     }
 
     async fn revoke_sessions_for_account(&self, account_id: &str) {
-        let mut sessions = self.sessions.write().await;
-        sessions.retain(|_, session| session.account_id != account_id);
+        // REVOKE_ORDER_V1：先刪 DB、再移除記憶體（理由見 revoke_session）。
         if let Err(e) = self
             .accounts_db
             .delete_dashboard_sessions_by_account(account_id)
@@ -2492,6 +2509,8 @@ impl AdminWebState {
         {
             warn!(error = %e, "從資料庫刪除帳號 Dashboard sessions 失敗");
         }
+        let mut sessions = self.sessions.write().await;
+        sessions.retain(|_, session| session.account_id != account_id);
     }
 
     /// 相容包裝：不帶來源資訊、非 viewer（測試與 refresh 輪換以外的舊呼叫點）。
@@ -2902,17 +2921,19 @@ impl AdminWebState {
     async fn revoke_session(&self, token: &str) {
         let token_trimmed = token.trim();
         let key = crate::db::session_lookup_key(token_trimmed);
-        self.sessions.write().await.remove(&key);
+        // REVOKE_ORDER_V1：先刪 DB、再移除記憶體。反過來的話，寫回記憶體的一方
+        // （開機水合、DB 回填）可能在兩步之間讀到還沒刪的列，把已撤銷的 session 復活。
         if let Err(e) = self.accounts_db.delete_dashboard_session(token_trimmed).await {
             warn!(error = %e, "從資料庫刪除 Dashboard session 失敗");
         }
+        self.sessions.write().await.remove(&key);
     }
 
     /// SESSION_TOKEN_HASH_V1：刪「DB 散列鍵」路徑——給已持有 `row.token`（散列
     /// 值）的呼叫端（登入裝置管理、rotate 延遲清理），全程零明文處理。
     async fn revoke_session_by_hashed_key(&self, key: &str) {
         let key_trimmed = key.trim();
-        self.sessions.write().await.remove(key_trimmed);
+        // REVOKE_ORDER_V1：先刪 DB、再移除記憶體（理由見 revoke_session）。
         if let Err(e) = self
             .accounts_db
             .delete_dashboard_session_hashed_key(key_trimmed)
@@ -2920,6 +2941,7 @@ impl AdminWebState {
         {
             warn!(error = %e, "依散列鍵刪除 Dashboard session 失敗");
         }
+        self.sessions.write().await.remove(key_trimmed);
     }
 
     /// Password changes invalidate every Dashboard session for the account.

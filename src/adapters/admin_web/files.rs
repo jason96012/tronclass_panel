@@ -186,7 +186,7 @@ fn absorb_upload_chunk(buffer: &mut Vec<u8>, chunk: &[u8], max: usize, flushed: 
 fn upload_write_error(e: std::io::Error) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(json!({ "error": format!("寫入暫存檔失敗：{e}") })),
+        Json(json!({ "error": super::public_error("寫入暫存檔失敗：", &e) })),
     )
         .into_response()
 }
@@ -324,14 +324,14 @@ async fn cached_materials_list(root: PathBuf) -> std::result::Result<MaterialsLi
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("教材列表背景掃描失敗：{e}") })),
+                Json(json!({ "error": super::public_error("教材列表背景掃描失敗：", &e) })),
             )
                 .into_response()
         })?
         .map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取教材列表失敗：{e}") })),
+                Json(json!({ "error": super::public_error("讀取教材列表失敗：", &e) })),
             )
                 .into_response()
         })?;
@@ -774,7 +774,7 @@ pub(super) async fn admin_files_list_handler(
     if let Err(e) = std::fs::create_dir_all(&root) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("建立 materials 目錄失敗：{e}") })),
+            Json(json!({ "error": super::public_error("建立 materials 目錄失敗：", &e) })),
         )
             .into_response();
     }
@@ -1608,7 +1608,7 @@ pub(super) async fn admin_files_upload_handler(
     if let Err(e) = tokio::fs::create_dir_all(&root).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("建立 materials 目錄失敗：{e}") })),
+            Json(json!({ "error": super::public_error("建立 materials 目錄失敗：", &e) })),
         )
             .into_response();
     }
@@ -1630,7 +1630,7 @@ pub(super) async fn admin_files_upload_handler(
             Err(e) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("讀取 multipart 失敗：{e}") })),
+                    Json(json!({ "error": super::public_error("讀取 multipart 失敗：", &e) })),
                 )
                     .into_response();
             }
@@ -1663,7 +1663,7 @@ pub(super) async fn admin_files_upload_handler(
                     Err(e) => {
                         return (
                             StatusCode::BAD_REQUEST,
-                            Json(json!({ "error": format!("讀取資料夾欄位失敗：{e}") })),
+                            Json(json!({ "error": super::public_error("讀取資料夾欄位失敗：", &e) })),
                         )
                             .into_response();
                     }
@@ -1767,7 +1767,7 @@ pub(super) async fn admin_files_upload_handler(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("建立暫存檔失敗：{e}") })),
+                    Json(json!({ "error": super::public_error("建立暫存檔失敗：", &e) })),
                 )
                     .into_response();
             }
@@ -1786,7 +1786,7 @@ pub(super) async fn admin_files_upload_handler(
                     let _ = tokio::fs::remove_file(&temp_path).await;
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": format!("讀取上傳檔案失敗：{e}") })),
+                        Json(json!({ "error": super::public_error("讀取上傳檔案失敗：", &e) })),
                     )
                         .into_response();
                 }
@@ -1831,7 +1831,7 @@ pub(super) async fn admin_files_upload_handler(
             let _ = tokio::fs::remove_file(&temp_path).await;
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("寫入暫存檔失敗：{e}") })),
+                Json(json!({ "error": super::public_error("寫入暫存檔失敗：", &e) })),
             )
                 .into_response();
         }
@@ -1983,7 +1983,7 @@ pub(super) async fn admin_files_delete_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("刪除失敗：{e}") })),
+            Json(json!({ "error": super::public_error("刪除失敗：", &e) })),
         )
             .into_response(),
     }
@@ -2060,7 +2060,7 @@ pub(super) async fn admin_files_rmdir_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("刪除資料夾失敗：{e}") })),
+            Json(json!({ "error": super::public_error("刪除資料夾失敗：", &e) })),
         )
             .into_response(),
     }
@@ -2126,7 +2126,7 @@ pub(super) async fn admin_files_mkdir_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("建立資料夾失敗：{e}") })),
+            Json(json!({ "error": super::public_error("建立資料夾失敗：", &e) })),
         )
             .into_response(),
     }
@@ -2157,7 +2157,7 @@ pub(super) async fn admin_files_history_handler(
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("讀取教材操作紀錄失敗：{e}") })),
+            Json(json!({ "error": super::public_error("讀取教材操作紀錄失敗：", &e) })),
         )
             .into_response(),
     }

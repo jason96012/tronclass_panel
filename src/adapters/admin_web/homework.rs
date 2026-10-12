@@ -122,7 +122,7 @@ pub(super) async fn admin_homework_test_notification_handler(
             }
             Err(error) => {
                 warn!(account = %account_id, %error, "測試通知發送失敗");
-                skipped.push(format!("Discord / LINE 發送失敗：{error}"));
+                skipped.push(super::public_error("Discord / LINE 發送失敗：", &error));
             }
         }
     } else {
@@ -145,13 +145,13 @@ pub(super) async fn admin_homework_test_notification_handler(
             .await
             {
                 warn!(account = %account_id, %error, "測試 Web Push 發送失敗");
-                skipped.push(format!("手機推播發送失敗：{error}"));
+                skipped.push(super::public_error("手機推播發送失敗：", &error));
             } else {
                 channels.push(format!("手機推播（{count} 台裝置）"));
             }
         }
         Ok(_) => skipped.push("手機推播：尚未在此裝置訂閱".to_string()),
-        Err(error) => skipped.push(format!("手機推播：讀取訂閱失敗：{error}")),
+        Err(error) => skipped.push(super::public_error("手機推播：讀取訂閱失敗：", &error)),
     }
 
     info!(
@@ -532,7 +532,7 @@ pub(super) async fn admin_homework_list_handler(
                     "items": Vec::<crate::api::todos::TronclassTodoItem>::new(),
                     "user_completed": user_completed,
                     "iclass_base": iclass_base,
-                    "warning": format!("{e}"),
+                    "warning": super::public_error("", &e),
                 })),
             )
                 .into_response()
@@ -594,7 +594,7 @@ pub(super) async fn admin_homework_detail_handler(
             warn!(account = %target.raw.id, %error, "作業詳情：取得 iClass client 失敗");
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("無法連線學校系統：{error}") })),
+                Json(json!({ "error": super::public_error("無法連線學校系統：", &error) })),
             )
                 .into_response();
         }
@@ -665,7 +665,7 @@ pub(super) async fn admin_homework_detail_handler(
                     "ok": false,
                     "account_id": target.raw.id,
                     "iclass_url": deep_link,
-                    "error": format!("讀取作業內容失敗：{error}"),
+                    "error": super::public_error("讀取作業內容失敗：", &error),
                 })),
             )
                 .into_response()
@@ -867,7 +867,7 @@ async fn homework_file_response(
             warn!(account = %target.raw.id, %error, "讀取作業檔案：取得 iClass client 失敗");
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("無法連線學校系統：{error}") })),
+                Json(json!({ "error": super::public_error("無法連線學校系統：", &error) })),
             )
                 .into_response();
         }
@@ -985,6 +985,15 @@ pub(super) async fn stream_iclass_upload(
     let mut saw_page = false;
 
     for url in urls {
+        // SSRF_FETCH_GUARD_V1：上游網址指向本機或 metadata 位址時跳過。
+        if let Ok(parsed) = reqwest::Url::parse(url) {
+            if crate::api::is_blocked_fetch_url(&parsed)
+                || crate::api::resolves_to_blocked_address(&parsed).await
+            {
+                last_error = format!("位址不允許（{url}）");
+                continue;
+            }
+        }
         let mut upstream_request = client
             .get(url)
             .timeout(std::time::Duration::from_secs(600))
@@ -1245,7 +1254,7 @@ pub(super) async fn admin_homework_complete_handler(
             .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("標記作業狀態失敗：{error}") })),
+            Json(json!({ "error": super::public_error("標記作業狀態失敗：", &error) })),
         )
             .into_response(),
     }
@@ -1348,7 +1357,7 @@ async fn parse_homework_submit_form(
         let mut field = match multipart.next_field().await {
             Ok(Some(field)) => field,
             Ok(None) => break,
-            Err(e) => return Err(format!("讀取 multipart 失敗：{e}")),
+            Err(e) => return Err(super::public_error("讀取 multipart 失敗：", &e)),
         };
         field_count = field_count.saturating_add(1);
         if field_count > HOMEWORK_SUBMIT_MAX_FIELDS {
@@ -1491,7 +1500,7 @@ async fn prepare_submit_api(
 ) -> std::result::Result<(crate::api::ApiClient, Option<crate::api::todos::HomeworkDetail>), String> {
     let api = iclass_api_for_account(&target.account, &state.accounts_db)
         .await
-        .map_err(|error| format!("無法連線學校系統：{error}"))?;
+        .map_err(|error| super::public_error("無法連線學校系統：", &error))?;
 
     // 回傳型別是 `HomeworkDetail`（`item` 是強型別 `TronclassTodoItem`）——小組作業
     // 旗標就掛在 detail 上（`submit_by_group`），不是從 `item` 撈 JSON 欄位。
@@ -1501,14 +1510,14 @@ async fn prepare_submit_api(
             info!(account = %target.raw.id, "作業繳交：session 已失效，重新登入後重試");
             let fresh = iclass_api_after_relogin(&target.account, &state.accounts_db)
                 .await
-                .map_err(|error| format!("重新登入學校系統失敗：{error}"))?;
+                .map_err(|error| super::public_error("重新登入學校系統失敗：", &error))?;
             let detail = fresh
                 .get_homework_detail(course_id, item_id)
                 .await
-                .map_err(|error| format!("讀取作業資料失敗：{error}"))?;
+                .map_err(|error| super::public_error("讀取作業資料失敗：", &error))?;
             Ok((fresh, detail))
         }
-        Err(error) => Err(format!("讀取作業資料失敗：{error}")),
+        Err(error) => Err(super::public_error("讀取作業資料失敗：", &error)),
     }
 }
 
@@ -1812,7 +1821,7 @@ pub(super) async fn admin_homework_submission_handler(
             warn!(account = %target.raw.id, %error, "讀取繳交狀態：取得 iClass client 失敗");
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "ok": false, "error": format!("無法連線學校系統：{error}") })),
+                Json(json!({ "ok": false, "error": super::public_error("無法連線學校系統：", &error) })),
             )
                 .into_response();
         }
@@ -1835,7 +1844,7 @@ pub(super) async fn admin_homework_submission_handler(
             warn!(account = %target.raw.id, %error, "讀取繳交狀態：profile 失敗");
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "ok": false, "error": format!("讀取帳號資料失敗：{error}") })),
+                Json(json!({ "ok": false, "error": super::public_error("讀取帳號資料失敗：", &error) })),
             )
                 .into_response();
         }
@@ -1861,7 +1870,7 @@ pub(super) async fn admin_homework_submission_handler(
                             StatusCode::BAD_GATEWAY,
                             Json(json!({
                                 "ok": false,
-                                "error": format!("讀取繳交狀態失敗：{error}"),
+                                "error": super::public_error("讀取繳交狀態失敗：", &error),
                             })),
                         )
                             .into_response();
@@ -1883,7 +1892,7 @@ pub(super) async fn admin_homework_submission_handler(
             warn!(account = %target.raw.id, item_id, %error, "讀取繳交狀態失敗");
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "ok": false, "error": format!("讀取繳交狀態失敗：{error}") })),
+                Json(json!({ "ok": false, "error": super::public_error("讀取繳交狀態失敗：", &error) })),
             )
                 .into_response();
         }

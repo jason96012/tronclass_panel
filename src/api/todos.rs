@@ -1441,7 +1441,13 @@ pub fn is_safe_upload_url(raw: &str) -> bool {
     let Some(host) = parsed.host_str() else {
         return false;
     };
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    // UPLOAD_URL_IPV6_BRACKET_V1：url::Url::host_str() 對 IPv6 會保留方括號（"[::1]"），
+    // 不去掉就 parse 不成 IpAddr，會落入「一般網域」而放行 → 內網 IPv6 可繞過。
+    let host = host
+        .trim_end_matches('.')
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
     if host.is_empty() || host == "localhost" || host.ends_with(".localhost") {
         return false;
     }
@@ -1458,8 +1464,13 @@ pub fn is_safe_upload_url(raw: &str) -> bool {
         }
         Ok(std::net::IpAddr::V6(v6)) => {
             let segments = v6.segments();
+            // IPv4 映射位址（::ffff:127.0.0.1）依 IPv4 規則判斷。
+            let mapped_internal = v6.to_ipv4_mapped().is_some_and(|v4| {
+                v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
+            });
             !(v6.is_loopback()
                 || v6.is_unspecified()
+                || mapped_internal
                 // fc00::/7 unique-local
                 || (segments[0] & 0xfe00) == 0xfc00
                 // fe80::/10 link-local
@@ -1767,6 +1778,8 @@ mod homework_submit_tests {
             "https://[::1]/put",
             "https://[fd00::1]/put",
             "https://[fe80::1]/put",
+            "https://[::ffff:10.0.0.1]/put",
+            "https://[::ffff:127.0.0.1]/put",
         ] {
             assert!(!is_safe_upload_url(bad), "應擋下：{bad}");
         }

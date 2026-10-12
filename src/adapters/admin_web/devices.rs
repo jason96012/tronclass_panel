@@ -141,7 +141,7 @@ pub(super) async fn list_handler(
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取登入裝置失敗：{error}") })),
+                Json(json!({ "error": super::public_error("讀取登入裝置失敗：", &error) })),
             )
                 .into_response();
         }

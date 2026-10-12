@@ -1114,7 +1114,7 @@ pub(super) async fn admin_mock_qr_svg_handler(
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("QR generate failed: {e}") })),
+                Json(json!({ "error": super::public_error("QR generate failed: ", &e) })),
             )
                 .into_response();
         }

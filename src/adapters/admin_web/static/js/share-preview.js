@@ -53,10 +53,10 @@
   }
   if (!RAW) { fail('預覽位址不合法'); return; }
   report('load', 'ext=' + EXT);
-  if (IMAGE.indexOf(EXT) >= 0) stage.innerHTML = '<img src="' + RAW + '" alt="">';
-  else if (VIDEO.indexOf(EXT) >= 0) stage.innerHTML = '<video src="' + RAW + '" controls autoplay playsinline></video>';
-  else if (AUDIO.indexOf(EXT) >= 0) stage.innerHTML = '<audio src="' + RAW + '" controls autoplay></audio>';
-  else if (EXT === 'pdf') stage.innerHTML = '<iframe src="' + RAW + '"></iframe>';
+  if (IMAGE.indexOf(EXT) >= 0) stage.innerHTML = '<img src="' + esc(RAW) + '" alt="">';
+  else if (VIDEO.indexOf(EXT) >= 0) stage.innerHTML = '<video src="' + esc(RAW) + '" controls autoplay playsinline></video>';
+  else if (AUDIO.indexOf(EXT) >= 0) stage.innerHTML = '<audio src="' + esc(RAW) + '" controls autoplay></audio>';
+  else if (EXT === 'pdf') stage.innerHTML = '<iframe src="' + esc(RAW) + '"></iframe>';
   else if (TEXT.indexOf(EXT) >= 0) {
     fetch(RAW, { cache: 'no-store' }).then(function (r) { if (!r.ok) throw 0; return r.text(); })
       .then(function (t) { var p = document.createElement('pre'); p.textContent = t; stage.innerHTML = ''; stage.appendChild(p); })

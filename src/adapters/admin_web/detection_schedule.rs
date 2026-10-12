@@ -122,7 +122,7 @@ pub(super) async fn get_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
-                    "error": format!("讀取偵測設定失敗：{error}")
+                    "error": super::public_error("讀取偵測設定失敗：", &error)
                 })),
             )
                 .into_response()
@@ -138,7 +138,7 @@ pub(super) async fn get_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
-                    "error": format!("讀取課表失敗：{error}")
+                    "error": super::public_error("讀取課表失敗：", &error)
                 })),
             )
                 .into_response()
@@ -191,7 +191,7 @@ pub(super) async fn update_handler(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({
-                "error": format!("儲存偵測設定失敗：{error}")
+                "error": super::public_error("儲存偵測設定失敗：", &error)
             })),
         )
             .into_response();

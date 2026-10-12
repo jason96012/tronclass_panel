@@ -3624,7 +3624,7 @@ fn workspace_write(account: &str, name: &str, content: &str) -> Result<String, S
             "工作區已經有 {AGENT_MAX_FILES} 個檔案，請先刪掉一些"
         ));
     }
-    std::fs::create_dir_all(&dir).map_err(|e| format!("建立工作區失敗：{e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| super::public_error("建立工作區失敗：", &e))?;
     let path = dir.join(&name);
     // ATOMIC_WRITE_V1：AI 工作區檔案也走原子寫入，避免模型寫到一半失敗留下半截檔。
     crate::atomic_write::write_atomic(&path, content).map_err(|e| format!("寫入「{name}」失敗：{e}"))?;
@@ -3868,7 +3868,7 @@ fn run_tool(account: &str, name: &str, args: &Value) -> (String, String, bool) {
             let expr = arg_str("expr");
             match calc_eval(&expr) {
                 Ok(value) => (format!("{expr} = {value}"), true),
-                Err(e) => (format!("算不出來：{e}"), false),
+                Err(e) => (super::public_error("算不出來：", &e), false),
             }
         }
         "now" => (

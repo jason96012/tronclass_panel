@@ -210,7 +210,7 @@ pub(super) async fn submit(origin: &str) -> Result<IndexNowOutcome, String> {
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("連線 IndexNow 失敗：{e}"))?;
+        .map_err(|e| super::public_error("連線 IndexNow 失敗：", &e))?;
 
     // 同步向 Bing 官方專屬端點發送通知（靜默記錄，不阻塞主流程）
     let bing_payload = payload.clone();

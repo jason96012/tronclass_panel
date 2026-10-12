@@ -144,9 +144,70 @@ pub fn build_http_client(cookie_jar: Arc<Jar>, timeout_secs: u64) -> reqwest::Re
         .cookie_provider(cookie_jar)
         .default_headers(default_headers)
         .timeout(Duration::from_secs(timeout_secs))
-        .redirect(reqwest::redirect::Policy::limited(10))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            // SSRF_REDIRECT_GUARD_V1：重新導向最多 10 次，且不跟隨到 loopback／link-local 等位址。
+            if attempt.previous().len() >= 10 {
+                return attempt.error("too many redirects");
+            }
+            if is_blocked_fetch_url(attempt.url()) {
+                return attempt.error("redirect to a blocked address");
+            }
+            attempt.follow()
+        }))
         .use_rustls_tls()
         .build()
+}
+
+/// SSRF_FETCH_GUARD_V1：拒絕以 IP 字面量或 localhost 指向本機、link-local（含雲端 metadata
+/// 169.254.169.254）、unspecified、multicast 的目標。校內私有 IP 不在此列，因為教材檔案埠可能位於校內。
+/// 注意：只檢查字面量；網域名稱解析到這些位址的情況（DNS rebinding）未涵蓋，列為剩餘風險。
+pub(crate) fn is_blocked_fetch_url(url: &reqwest::Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => is_blocked_ip(std::net::IpAddr::V4(ip)),
+        Some(url::Host::Ipv6(ip)) => is_blocked_ip(std::net::IpAddr::V6(ip)),
+        Some(url::Host::Domain(domain)) => {
+            let d = domain.to_ascii_lowercase();
+            d == "localhost" || d.ends_with(".localhost")
+        }
+        None => true,
+    }
+}
+
+/// 單一 IP 是否屬於不允許抓取的位址類別（見 `is_blocked_fetch_url`）。
+pub(crate) fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_broadcast()
+        }
+        std::net::IpAddr::V6(ip) => {
+            let first = ip.segments()[0];
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || (first & 0xffc0) == 0xfe80
+                || ip.to_ipv4_mapped().is_some_and(|v4| {
+                    v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
+                })
+        }
+    }
+}
+
+/// SSRF_DNS_GUARD_V1：網域名稱解析後是否落在被封鎖的位址。
+/// 解析失敗時回 `false`（交給後續的請求自行失敗）。這只能降低風險，不能杜絕 TOCTOU：
+/// 下載時 DNS 可能再次改變；重新導向的目標也不在此檢查範圍（重新導向政策是同步的）。
+pub(crate) async fn resolves_to_blocked_address(url: &reqwest::Url) -> bool {
+    let Some(url::Host::Domain(domain)) = url.host() else {
+        return false;
+    };
+    let port = url.port_or_known_default().unwrap_or(443);
+    match tokio::net::lookup_host((domain, port)).await {
+        Ok(addrs) => addrs.into_iter().any(|addr| is_blocked_ip(addr.ip())),
+        Err(_) => false,
+    }
 }
 
 // ─── 輔助函式 ─────────────────────────────────────────────────────────────────
@@ -431,5 +492,33 @@ mod tests {
         assert_eq!(school_block_retry_after(&detail), Some(30));
         assert_eq!(school_block_retry_after("沒有寫秒數"), None);
         assert_eq!(school_block_retry_after("學校要求等 0 秒"), None);
+    }
+}
+
+#[cfg(test)]
+mod ssrf_guard_tests {
+    use super::is_blocked_fetch_url;
+
+    fn blocked(raw: &str) -> bool {
+        is_blocked_fetch_url(&reqwest::Url::parse(raw).expect("test url"))
+    }
+
+    #[test]
+    fn blocks_loopback_link_local_and_metadata() {
+        assert!(blocked("http://127.0.0.1:8080/x"));
+        assert!(blocked("http://169.254.169.254/latest/meta-data/"));
+        assert!(blocked("http://0.0.0.0/"));
+        assert!(blocked("http://[::1]/"));
+        assert!(blocked("http://[fe80::1]/"));
+        assert!(blocked("http://[::ffff:127.0.0.1]/"));
+        assert!(blocked("http://localhost/"));
+        assert!(blocked("http://api.localhost/"));
+    }
+
+    #[test]
+    fn allows_public_and_campus_addresses() {
+        assert!(!blocked("https://lms.example.edu.tw/api/uploads/1/preview"));
+        assert!(!blocked("http://140.1.2.3:8085/download/abc"));
+        assert!(!blocked("http://10.0.0.5/file"));
     }
 }

@@ -150,7 +150,7 @@ pub(super) async fn admin_passkey_register_start_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
+                Json(json!({ "error": super::public_error("database error: ", &e) })),
             )
                 .into_response();
         }
@@ -176,7 +176,7 @@ pub(super) async fn admin_passkey_register_start_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
+                Json(json!({ "error": super::public_error("database error: ", &e) })),
             )
                 .into_response();
         }
@@ -271,7 +271,7 @@ pub(super) async fn admin_passkey_register_finish_handler(
         Err(e) => {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": format!("passkey registration verify failed: {e}") })),
+                Json(json!({ "error": super::public_error("passkey registration verify failed: ", &e) })),
             )
                 .into_response();
         }
@@ -523,7 +523,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
                     Err(e) => {
                         return (
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({ "error": format!("database error: {e}") })),
+                            Json(json!({ "error": super::public_error("database error: ", &e) })),
                         )
                             .into_response();
                     }
@@ -537,7 +537,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("database error: {e}") })),
+                    Json(json!({ "error": super::public_error("database error: ", &e) })),
                 )
                     .into_response();
             }
@@ -552,7 +552,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
             Err(e) => {
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": format!("database error: {e}") })),
+                    Json(json!({ "error": super::public_error("database error: ", &e) })),
                 )
                     .into_response();
             }
@@ -607,7 +607,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
             .await;
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": format!("passkey verify failed: {e}") })),
+                Json(json!({ "error": super::public_error("passkey verify failed: ", &e) })),
             )
                 .into_response();
         }
@@ -630,7 +630,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
+                Json(json!({ "error": super::public_error("database error: ", &e) })),
             )
                 .into_response();
         }

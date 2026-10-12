@@ -204,7 +204,8 @@ impl AuthFlow for FjuAuthFlow {
             let session_cookie = require_cookie(cookie_jar, &base_url_parsed, "session")
                 .into_diagnostic()
                 .wrap_err("FJU: 登入後未找到 session cookie")?;
-            debug!(session = %session_cookie, "FJU: session cookie 取得成功");
+            // LOG_NO_COOKIE_VALUE_V1：session 值不寫入日誌。
+            debug!(session_len = session_cookie.len(), "FJU: session cookie 取得成功（值已隱藏）");
 
             let user_name = verify_session_with_client(client, base_url)
                 .await

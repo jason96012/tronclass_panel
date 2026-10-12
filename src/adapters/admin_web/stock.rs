@@ -452,7 +452,7 @@ async fn start_stock_sidecar() -> Result<(), String> {
                 ));
             }
             Ok(None) => {}
-            Err(e) => return Err(format!("無法確認智選行程：{e}")),
+            Err(e) => return Err(super::public_error("無法確認智選行程：", &e)),
         }
         if wait_sidecar_health().await {
             tokio::spawn(async move {
@@ -599,7 +599,7 @@ pub(super) async fn admin_stock_api_proxy(
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("http client: {e}") })),
+                Json(json!({ "error": super::public_error("http client: ", &e) })),
             )
                 .into_response();
         }
@@ -619,7 +619,7 @@ pub(super) async fn admin_stock_api_proxy(
             SIDECAR_READY.store(false, Ordering::SeqCst);
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("智選服務連線失敗：{e}") })),
+                Json(json!({ "error": super::public_error("智選服務連線失敗：", &e) })),
             )
                 .into_response();
         }
@@ -636,7 +636,7 @@ pub(super) async fn admin_stock_api_proxy(
         Err(e) => {
             return (
                 StatusCode::BAD_GATEWAY,
-                Json(json!({ "error": format!("智選回應讀取失敗：{e}") })),
+                Json(json!({ "error": super::public_error("智選回應讀取失敗：", &e) })),
             )
                 .into_response();
         }

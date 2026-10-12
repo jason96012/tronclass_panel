@@ -594,6 +594,19 @@ impl DiscordRuntime {
         );
         match command.data.name.as_str() {
             "add-account" => {
+                // L2（安全審查）：密碼是斜線指令參數，會出現在公共頻道。與 /request-account 一致，只允許私訊。
+                if command.guild_id.is_some() {
+                    reply_interaction(
+                        ctx,
+                        &command,
+                        OutboundMessage::Text(
+                            "請在 bot DM 使用 /add-account，避免帳密出現在公共 channel。".to_string(),
+                        ),
+                        true,
+                    )
+                    .await?;
+                    return Ok(());
+                }
                 self.ensure_admin_interaction(ctx, &command).await?;
                 let provider = string_option(&command, "provider").unwrap_or_default();
                 let username = string_option(&command, "username").unwrap_or_default();

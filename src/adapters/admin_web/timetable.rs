@@ -291,7 +291,7 @@ pub(super) async fn admin_timetable_list_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("timetable database error: {e}") })),
+            Json(json!({ "error": super::public_error("timetable database error: ", &e) })),
         )
             .into_response(),
     }
@@ -400,7 +400,7 @@ pub(super) async fn admin_timetable_import_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("import timetable failed: {e}") })),
+            Json(json!({ "error": super::public_error("import timetable failed: ", &e) })),
         )
             .into_response(),
     }
@@ -453,7 +453,7 @@ pub(super) async fn admin_timetable_clear_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("clear timetable failed: {e}") })),
+            Json(json!({ "error": super::public_error("clear timetable failed: ", &e) })),
         )
             .into_response(),
     }
@@ -478,7 +478,7 @@ pub(super) async fn admin_timetable_templates_list_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("template database error: {e}") })),
+            Json(json!({ "error": super::public_error("template database error: ", &e) })),
         )
             .into_response(),
     }
@@ -553,7 +553,7 @@ pub(super) async fn admin_timetable_template_save_handler(
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("serialize template failed: {e}") })),
+                Json(json!({ "error": super::public_error("serialize template failed: ", &e) })),
             )
                 .into_response();
         }
@@ -582,7 +582,7 @@ pub(super) async fn admin_timetable_template_save_handler(
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save template failed: {e}") })),
+            Json(json!({ "error": super::public_error("save template failed: ", &e) })),
         )
             .into_response(),
     }
@@ -629,7 +629,7 @@ pub(super) async fn admin_timetable_template_apply_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("template database error: {e}") })),
+                Json(json!({ "error": super::public_error("template database error: ", &e) })),
             )
                 .into_response();
         }
@@ -653,7 +653,7 @@ pub(super) async fn admin_timetable_template_apply_handler(
             Err(e) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("template parse failed: {e}") })),
+                    Json(json!({ "error": super::public_error("template parse failed: ", &e) })),
                 )
                     .into_response();
             }
@@ -667,7 +667,7 @@ pub(super) async fn admin_timetable_template_apply_handler(
         Ok(count) => (StatusCode::OK, Json(json!({ "ok": true, "account_id": target, "template": template.name, "count": count }))).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("apply template failed: {e}") })),
+            Json(json!({ "error": super::public_error("apply template failed: ", &e) })),
         )
             .into_response(),
     }
@@ -710,7 +710,7 @@ async fn resolve_account_for_sync(
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+                Json(json!({ "error": super::public_error("讀取帳號失敗：", &e) })),
             )
                 .into_response());
         }
@@ -783,7 +783,7 @@ pub(super) async fn admin_timetable_sync_status_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取同步狀態失敗：{e}") })),
+                Json(json!({ "error": super::public_error("讀取同步狀態失敗：", &e) })),
             )
                 .into_response();
         }
@@ -882,7 +882,7 @@ pub(super) async fn admin_timetable_sync_toggle_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("更新同步開關失敗：{e}") })),
+            Json(json!({ "error": super::public_error("更新同步開關失敗：", &e) })),
         )
             .into_response(),
     }
@@ -956,7 +956,7 @@ pub(super) async fn admin_timetable_sync_run_handler(
         // 422 屬於 4xx，代理不會攔截，前端就能顯示我們清洗過的真實原因。
         Err(e) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(json!({ "error": format!("{e}") })),
+            Json(json!({ "error": super::public_error("", &e) })),
         )
             .into_response(),
     }

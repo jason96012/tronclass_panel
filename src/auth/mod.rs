@@ -43,6 +43,13 @@ pub enum AuthError {
     ProfileVerifyFailed,
 }
 
+/// B1（安全審查）：學校明確回報「帳號或密碼錯誤」。這種錯誤重試不會成功，
+/// 只會增加學校端的失敗紀錄並可能觸發鎖定（KB R-13），所以背景重試必須停止。
+/// 判斷依據是錯誤訊息文字（TKU 的 SSO 頁面判斷、FJU 的 CAS 錯誤訊息）。
+pub fn is_credential_error_text(text: &str) -> bool {
+    text.contains("帳號或密碼錯誤")
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSession {
     pub user_name: String,
@@ -147,7 +154,15 @@ impl AuthClient {
 
         use reqwest::cookie::CookieStore;
         if let Some(h) = self.cookie_jar.cookies(&url) {
-            debug!("目前 Cookie 為：{}", h.to_str().unwrap_or("<non-utf8>"));
+            // LOG_NO_COOKIE_VALUE_V1：debug 日誌不可含 cookie 值（session 等同登入憑證）。只記數量與名稱。
+            let names: Vec<&str> = h
+                .to_str()
+                .unwrap_or("")
+                .split(';')
+                .filter_map(|pair| pair.split('=').next().map(str::trim))
+                .filter(|name| !name.is_empty())
+                .collect();
+            debug!(cookie_names = ?names, "目前 Cookie 名稱（值已隱藏）");
         }
 
         let profile = self.verify_session().await.map_err(|e| {

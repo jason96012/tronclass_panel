@@ -173,6 +173,7 @@ pub(super) async fn admin_action_handler(
             | "runtime_settings"
             | "digest_settings"
             | "indexnow_submit"
+            | "reset_rollcalls"
     ) {
         if !session.is_admin {
             return unauthorized_response();
@@ -263,6 +264,27 @@ pub(super) async fn handle_admin_account_action(
     action: AdminActionRequest,
 ) -> Response {
     match action_name {
+        "reset_rollcalls" => {
+            // ROLLCALL_FORCE_RESET_V1：先結束所有帳號進行中的點名等待，再讓每個帳號立刻重新偵測一次。
+            // 順序不可對調：重設訊號必須先於喚醒，循環重新輪詢時才不會又撞上舊的等待。
+            crate::rollcalls::request_rollcall_reset();
+            let accounts = state.accounts.all();
+            for account in &accounts {
+                account.force_poll_tx.notify_one();
+            }
+            super::status::invalidate_admin_status_cache().await;
+            info!(
+                actor = %session.account_id,
+                accounts = accounts.len(),
+                "管理員強制結束所有點名並重新偵測"
+            );
+            Json(json!({
+                "ok": true,
+                "accounts": accounts.len(),
+                "message": format!("已強制結束所有點名，{} 個帳號重新偵測中", accounts.len()),
+            }))
+            .into_response()
+        }
         "add_account" => {
             let id = action
                 .id
@@ -342,7 +364,7 @@ pub(super) async fn handle_admin_account_action(
             if let Err(e) = state.accounts_db.insert(&account).await {
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("新增帳號失敗：{e}") })),
+                    Json(json!({ "error": super::public_error("新增帳號失敗：", &e) })),
                 )
                     .into_response();
             }
@@ -635,7 +657,7 @@ pub(super) async fn handle_admin_account_action(
                 Err(e) => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+                        Json(json!({ "error": super::public_error("讀取帳號失敗：", &e) })),
                     )
                         .into_response();
                 }
@@ -678,7 +700,7 @@ pub(super) async fn handle_admin_account_action(
                 Err(e) => {
                     return (
                         StatusCode::BAD_REQUEST,
-                        Json(json!({ "error": format!("儲存新密碼失敗：{e}") })),
+                        Json(json!({ "error": super::public_error("儲存新密碼失敗：", &e) })),
                     )
                         .into_response();
                 }
@@ -764,7 +786,7 @@ pub(super) async fn handle_admin_account_action(
                     .into_response(),
                 Err(e) => (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("重製密碼失敗：{e}") })),
+                    Json(json!({ "error": super::public_error("重製密碼失敗：", &e) })),
                 )
                     .into_response(),
             }
@@ -832,7 +854,7 @@ pub(super) async fn handle_admin_account_action(
                     .into_response(),
                 Err(e) => (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("更新檢視者失敗：{e}") })),
+                    Json(json!({ "error": super::public_error("更新檢視者失敗：", &e) })),
                 )
                     .into_response(),
             }
@@ -877,7 +899,7 @@ pub(super) async fn handle_admin_account_action(
                     .into_response(),
                 Err(e) => (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("更新管理員失敗：{e}") })),
+                    Json(json!({ "error": super::public_error("更新管理員失敗：", &e) })),
                 )
                     .into_response(),
             }
@@ -907,7 +929,7 @@ pub(super) async fn handle_admin_account_action(
                 }
                 Err(error) => (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("{error}") })),
+                    Json(json!({ "error": super::public_error("", &error) })),
                 )
                     .into_response(),
             }
@@ -922,7 +944,7 @@ pub(super) async fn handle_admin_account_action(
                     .into_response(),
                 Err(error) => (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": format!("{error}") })),
+                    Json(json!({ "error": super::public_error("", &error) })),
                 )
                     .into_response(),
             }
@@ -970,7 +992,7 @@ pub(super) async fn handle_admin_account_action(
                 Ok(()) => None,
                 Err(error) => {
                     tracing::warn!(error = %error, "執行期設定寫檔失敗（這次的設定重啟後不會保留）");
-                    Some(format!("{error}"))
+                    Some(super::public_error("", &error))
                 }
             };
             super::status::invalidate_admin_status_cache().await;
@@ -1015,7 +1037,7 @@ pub(super) async fn handle_admin_account_action(
                 }
                 Err(error) => (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "ok": false, "error": format!("IndexNow 提交失敗：{error}") })),
+                    Json(json!({ "ok": false, "error": super::public_error("IndexNow 提交失敗：", &error) })),
                 )
                     .into_response(),
             }
@@ -1089,7 +1111,7 @@ async fn handle_set_binding(
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+                Json(json!({ "error": super::public_error("讀取帳號失敗：", &e) })),
             )
                 .into_response();
         }
@@ -1100,7 +1122,7 @@ async fn handle_set_binding(
         if let Err(e) = state.accounts_db.set_discord_user_id(target_id, value).await {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("更新 Discord 綁定失敗：{e}") })),
+                Json(json!({ "error": super::public_error("更新 Discord 綁定失敗：", &e) })),
             )
                 .into_response();
         }
@@ -1112,7 +1134,7 @@ async fn handle_set_binding(
         if let Err(e) = state.accounts_db.set_line_user_id(target_id, value).await {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": format!("更新 LINE 綁定失敗：{e}") })),
+                Json(json!({ "error": super::public_error("更新 LINE 綁定失敗：", &e) })),
             )
                 .into_response();
         }

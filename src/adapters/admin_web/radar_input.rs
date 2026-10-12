@@ -478,7 +478,7 @@ pub(super) async fn post_handler(
             {
                 return error_response(
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    &format!("儲存面板座標失敗：{error}"),
+                    &super::public_error("儲存面板座標失敗：", &error),
                 );
             }
             radar_settings::set(

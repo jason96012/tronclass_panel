@@ -172,7 +172,7 @@ pub(super) async fn admin_status_admin_flags_cached(
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("database error: {e}") })),
+                Json(json!({ "error": super::public_error("database error: ", &e) })),
             )
                 .into_response());
         }

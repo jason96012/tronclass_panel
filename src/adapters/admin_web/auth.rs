@@ -11,6 +11,7 @@ pub(super) struct AdminActivityQuery {
 }
 
 #[derive(Debug, Deserialize)]
+#[cfg_attr(test, derive(serde::Serialize))]
 pub(super) struct AdminLoginRequest {
     pub(super) username: String,
     pub(super) password: String,

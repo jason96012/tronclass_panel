@@ -36,7 +36,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -198,9 +198,18 @@ pub enum WafThreat {
     OversizedRequest(String),
     /// 危險 HTTP 方法
     DangerousMethod(String),
+    /// 請求本體（JSON／表單）含高信心攻擊特徵（WAF_BODY_SCAN_V1）
+    BodyPayload(String),
 }
 
 impl WafThreat {
+    /// WAF_AUTOBAN_NARROW_V1：是否允許寫入永久黑名單。
+    /// UA 類與中段副檔名類誤判率高（WAF 審查 W3／W2），命中時仍回 403，但不封鎖 IP，
+    /// 避免一次誤判變成永久鎖定。其餘攻擊特徵維持原本的自動封鎖。
+    pub fn allows_auto_ban(&self) -> bool {
+        !matches!(self, Self::MaliciousUserAgent(_) | Self::WebshellMasquerade(_))
+    }
+
     pub fn description(&self) -> String {
         match self {
             Self::HoneypotProbe(p) => format!("探測高危弱點/蜜罐路徑: {p}"),
@@ -220,6 +229,7 @@ impl WafThreat {
             Self::BypassHeader(h) => format!("WAF 繞過偽造標頭: {h}"),
             Self::OversizedRequest(s) => format!("請求超長/緩衝區異常: {s}"),
             Self::DangerousMethod(m) => format!("危險 HTTP 方法: {m}"),
+            Self::BodyPayload(p) => format!("請求本體攻擊載荷（JSON／表單）: {p}"),
         }
     }
 
@@ -268,6 +278,107 @@ impl WafThreat {
             _ => {}
         }
     }
+}
+
+/// WAF_BODY_SCAN_V1：本體掃描的單次上限。超過就回 413（不掃描、不放行），
+/// 否則填充到上限之後就能繞過檢查。AI 聊天附件（base64）與 tc_proxy 是本系統最大的 JSON 本體來源。
+const WAF_BODY_SCAN_MAX_BYTES: usize = 32 * 1024 * 1024;
+
+/// 本體掃描的高信心特徵。刻意只取少數：完整的 URL 規則（例如 `sleep(`、`powershell`）
+/// 會把程式碼與教材內容誤判，因此不套用到本體。
+const WAF_BODY_PATTERNS: &[&str] = &[
+    "<script", "<\\/script", "javascript:", "vbscript:", "onerror=", "onload=", "onmouseover=",
+    "<iframe", "<svg/onload", "${jndi:", "<!entity", "<!doctype", "__proto__", "constructor.prototype",
+    "union select", "union all select", "' or '1'='1", "' or 1=1", "into outfile", "into dumpfile",
+];
+
+/// 本體是否需要掃描：只看會被 handler 解析成文字的 POST／PUT／PATCH 內容。multipart 上傳不掃描。
+fn waf_body_needs_scan(method: &Method, headers: &HeaderMap) -> bool {
+    if !(*method == Method::POST || *method == Method::PUT || *method == Method::PATCH) {
+        return false;
+    }
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    ct.starts_with("application/json")
+        || ct.starts_with("application/x-www-form-urlencoded")
+        || ct.starts_with("text/")
+}
+
+/// 掃描本體。表單先做 URL 解碼；JSON 把 \uXXXX 的尖括號與引號跳脫還原（JSON 解析後才會變成 HTML）。
+fn inspect_waf_body(body: &str, is_form: bool) -> Option<WafThreat> {
+    let mut text = if is_form {
+        recursive_url_decode(body.to_string())
+    } else {
+        body.to_string()
+    };
+    if !is_form && text.contains("\\u00") {
+        text = text
+            .replace("\\u003c", "<")
+            .replace("\\u003C", "<")
+            .replace("\\u003e", ">")
+            .replace("\\u003E", ">")
+            .replace("\\u0027", "'")
+            .replace("\\u0022", "\"");
+    }
+    let lower = text.to_ascii_lowercase();
+    for &pat in WAF_BODY_PATTERNS {
+        if lower.contains(pat) {
+            return Some(WafThreat::BodyPayload(pat.to_string()));
+        }
+    }
+    None
+}
+
+/// 本體命中後的自動封鎖（使用者決定：本體命中也封 IP）。與 URL 威脅使用同一組黑名單與稽核欄位，
+/// 只跳過本機／私網 IP，並且已封鎖者不重複寫入（同 WAF_BAN_DEDUP_V1 的考量）。
+async fn ban_for_body_threat(
+    state: &AdminWebState,
+    ip: &str,
+    threat_desc: String,
+    path: String,
+    user_agent: String,
+) {
+    if is_local_or_trusted_ip(ip) || ip == "unknown" {
+        return;
+    }
+    let ban_key = crate::trusted_ip::blacklist_group_key(ip);
+    if state
+        .accounts_db
+        .is_ip_blacklisted(&ban_key)
+        .await
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let db = state.accounts_db.clone();
+    tokio::spawn(async move {
+        if let Ok(true) = db
+            .block_ip_with_failure_count(
+                &ban_key,
+                "system:waf-firewall-max",
+                &format!("最高級 WAF 防火牆自動封鎖（本體攻擊特徵）: {threat_desc}"),
+                1,
+            )
+            .await
+        {
+            let _ = db
+                .record_activity_event(ActivityEventInput {
+                    kind: "security".to_string(),
+                    actor: "system:waf-firewall-max".to_string(),
+                    action: "waf_threat_blocked".to_string(),
+                    account_id: "unknown".to_string(),
+                    path,
+                    result: "blocked".to_string(),
+                    details: format!("最高級 WAF 攔截本體攻擊並自動封鎖: {threat_desc}"),
+                    ip: ban_key.clone(),
+                    user_agent,
+                })
+                .await;
+        }
+    });
 }
 
 /// 判定 IP 是否為本地回送或私有網路（私網不列入自動黑名單封鎖，避免內部維護被誤擋）。
@@ -590,8 +701,11 @@ pub fn inspect_waf_threat(uri: &Uri, method: &Method, headers: &HeaderMap) -> Op
     let dangerous_middle_exts = [
         ".php.", ".phtml.", ".phar.", ".jsp.", ".asp.", ".aspx.", ".cgi.", ".pl.", ".py.", ".sh.", ".bat."
     ];
+    // WAF_MIDEXT_PATH_ONLY_V1：只比對 path 部分。分享／預覽連結把檔名放在 query
+    // （/pub/share?path=…），若比對整個 target，像 hw3.py.zip 這類正常檔名會被誤判。
+    let decoded_path = decoded_target.split('?').next().unwrap_or("");
     for &d_ext in &dangerous_middle_exts {
-        if lower_path.contains(d_ext) || decoded_target.contains(d_ext) {
+        if lower_path.contains(d_ext) || decoded_path.contains(d_ext) {
             return Some(WafThreat::WebshellMasquerade(raw_path.to_string()));
         }
     }
@@ -827,11 +941,36 @@ pub fn inspect_waf_threat(uri: &Uri, method: &Method, headers: &HeaderMap) -> Op
     None
 }
 
+/// WAF_PRIVATE_PROXY_WARN_V1：只警告一次（避免每個請求都刷 log）。
+static WAF_PRIVATE_PEER_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// 私網（非 loopback）peer 會被 `is_local_or_trusted_ip` 整體豁免限速與自動封鎖。
+/// 若它其實是反向代理，而 `trusted_proxies` 沒有設定，所有外部請求都會被當成代理的私網 IP，
+/// 防護會靜默失效（WAF 審查 W5）。這裡只記一次 WARN，不改變豁免行為。
+fn warn_private_peer_without_trusted_proxies(peer: Option<std::net::IpAddr>) {
+    let Some(peer) = peer.map(crate::trusted_ip::canonicalize_ip) else { return };
+    if peer.is_loopback() || !is_local_or_trusted_ip(&peer.to_string()) {
+        return;
+    }
+    if WAF_PRIVATE_PEER_WARNED.load(Ordering::Relaxed) {
+        return;
+    }
+    let proxies_configured = crate::config::try_get_config()
+        .map(|cfg| !cfg.adapters.admin_web.trusted_proxies.is_empty())
+        .unwrap_or(false);
+    if !proxies_configured && !WAF_PRIVATE_PEER_WARNED.swap(true, Ordering::Relaxed) {
+        warn!(
+            "🛡️ [WAF] 請求來自私網 IP（{}），但 trusted_proxies 未設定。若它是反向代理，所有外部請求都會被視為私網而豁免限速與自動封鎖；請在 config.toml 的 adapters.admin_web.trusted_proxies 明確列出代理。",
+            peer
+        );
+    }
+}
+
 /// WAF 防火牆核心中介層。
 pub async fn waf_firewall_middleware(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     let peer = request
@@ -846,6 +985,7 @@ pub async fn waf_firewall_middleware(
     // 「代理自己的 IP」，真實攻擊者洗成別人；更糟的是自動封鎖會把**代理本身**
     // 關進黑名單 → 全站對所有人斷線。
     let trusted = crate::trusted_ip::trusted_from_global_config();
+    warn_private_peer_without_trusted_proxies(peer);
     let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
     let uri = request.uri().clone();
     let method = request.method().clone();
@@ -870,7 +1010,7 @@ pub async fn waf_firewall_middleware(
 
         // 非本機/私網 IP 自動觸發自動黑名單封鎖與安全告警
         let is_local = is_local_or_trusted_ip(&ip) || ip == "unknown";
-        if !is_local {
+        if !is_local && threat.allows_auto_ban() {
             // WAF_BAN_DEDUP_V1：黑名單中介層在 WAF **之後**才跑，因此已被封鎖的
             // IP 之後的每個請求仍會走到這裡。若不看「是否已封鎖」就照單全收地
             // spawn，攻擊者拿著已封鎖的 IP 對蜜罐路徑狂打，就能造成：
@@ -978,6 +1118,57 @@ pub async fn waf_firewall_middleware(
             HeaderValue::from_static("60"),
         );
         return response;
+    }
+
+    // 3. 請求本體檢查（WAF_BODY_SCAN_V1）。命中只回 403，不寫入黑名單：
+    // 本體是使用者輸入（貼程式碼、教材），誤判率高於 URL，不應變成永久封鎖。
+    if waf_body_needs_scan(&method, &headers) {
+        let (parts, body) = request.into_parts();
+        let bytes = match axum::body::to_bytes(body, WAF_BODY_SCAN_MAX_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Json(json!({
+                        "error": "payload_too_large",
+                        "message": "WAF: 請求本體超過檢查上限，已拒絕"
+                    })),
+                )
+                    .into_response();
+            }
+        };
+        let is_form = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_ascii_lowercase().starts_with("application/x-www-form-urlencoded"))
+            .unwrap_or(false);
+        if let Some(threat) = inspect_waf_body(&String::from_utf8_lossy(&bytes), is_form) {
+            threat.record_telemetry();
+            // 只記錄命中的特徵字串，不記錄本體內容。
+            warn!(
+                ip = %ip,
+                path = %raw_path,
+                threat = %threat.description(),
+                "🛡️ [最高級 WAF 防火牆] 請求本體含攻擊特徵，已攔截並自動封鎖 IP"
+            );
+            ban_for_body_threat(
+                &state,
+                &ip,
+                threat.description(),
+                raw_path.clone(),
+                user_agent.clone(),
+            )
+            .await;
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({
+                    "error": "waf_access_denied",
+                    "message": "WAF: 請求內容含攻擊特徵，已被攔截"
+                })),
+            )
+                .into_response();
+        }
+        request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     }
 
     // 安全校驗通過，放行至下游處理器

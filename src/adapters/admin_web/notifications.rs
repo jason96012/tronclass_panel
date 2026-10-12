@@ -164,7 +164,7 @@ pub(super) async fn admin_notification_preferences_get_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("notification database error: {e}") })),
+                Json(json!({ "error": super::public_error("notification database error: ", &e) })),
             )
                 .into_response();
         }
@@ -184,7 +184,7 @@ pub(super) async fn admin_notification_preferences_get_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("notification database error: {e}") })),
+                Json(json!({ "error": super::public_error("notification database error: ", &e) })),
             )
                 .into_response();
         }
@@ -306,7 +306,7 @@ pub(super) async fn admin_notification_preferences_update_handler(
     {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save notification preference failed: {e}") })),
+            Json(json!({ "error": super::public_error("save notification preference failed: ", &e) })),
         )
             .into_response();
     }
@@ -395,7 +395,7 @@ pub(super) async fn admin_homework_ladder_get_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("homework ladder database error: {e}") })),
+            Json(json!({ "error": super::public_error("homework ladder database error: ", &e) })),
         )
             .into_response(),
     }
@@ -487,7 +487,7 @@ pub(super) async fn admin_homework_ladder_update_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save homework ladder failed: {e}") })),
+            Json(json!({ "error": super::public_error("save homework ladder failed: ", &e) })),
         )
             .into_response(),
     }

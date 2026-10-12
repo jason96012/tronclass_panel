@@ -334,6 +334,7 @@ async fn alert_admins(accounts_db: &AccountsDb, fail: &FailState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Timelike;
 
     fn course(yr: &str, sem: &str, code: &str, seq: &str, name: &str, grade: &str, credits: u32) -> CreditCourseRow {
         CreditCourseRow {
@@ -394,7 +395,7 @@ mod tests {
         // 24 個月內應出現不只一個同步日（28^-23 的巧合在實務上不可能；
         // 若真的全同，代表雜湊使用方式有誤，測試會抓出來）。
         let days: std::collections::HashSet<u32> = (0..24)
-            .map(|i| monthly_sync_day("tku-main", 2026 + i / 12, i % 12 + 1))
+            .map(|i| monthly_sync_day("tku-main", 2026 + i / 12, (i % 12 + 1) as u32))
             .collect();
         assert!(days.len() >= 2, "24 個月的同步日全相同：{days:?}");
     }

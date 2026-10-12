@@ -110,7 +110,7 @@ pub(super) async fn admin_class_reminder_get_handler(
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("class reminder database error: {e}") })),
+            Json(json!({ "error": super::public_error("class reminder database error: ", &e) })),
         )
             .into_response(),
     }
@@ -172,7 +172,7 @@ pub(super) async fn admin_class_reminder_update_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save class reminder failed: {e}") })),
+            Json(json!({ "error": super::public_error("save class reminder failed: ", &e) })),
         )
             .into_response(),
     }

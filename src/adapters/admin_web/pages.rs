@@ -276,12 +276,16 @@ fn inject_theme_raw(html: &str) -> String {
         // assignment」——外部 trusted-types-init.js 因任何原因未執行（快取損毀、
         // 網路中斷、瀏覽器擴充攔截…）時頁面沒有 default policy，所有 innerHTML
         // 整頁掛掉。這段 inline（隨 HTML 本體到達、經 html_page_response 以
-        // sha256 雜湊放行）在外部腳本缺席時建立 pass-through policy（與 files.html、
-        // shares-admin.js 的 identity policy 先例一致；createScriptURL 保留
-        // same-origin 檢查）。外部腳本正常時 defaultPolicy 已存在，本段不動作。
+        // sha256 雜湊放行）在外部腳本缺席時建立 default policy。M1 修正（2026-10-11
+        // 安全審查）：不再 pass-through，改用與 trusted-types-init.js 相同的
+        // TT_MIN_SANITIZER_V1 白名單消毒器（ttSan／ttClean），因為這段程式在
+        // 外部腳本缺席時是唯一的 policy，原樣放行等於 fail-open。createScriptURL
+        // 保留 same-origin 檢查。外部腳本正常時 defaultPolicy 已存在，本段不動作。
+        // 兩處消毒邏輯需保持一致；修改任一處請同步另一處（static 測試：/tmp 腳本，
+        // 或 KB security/ 報告 M1 節）。
         //
         // ⚠️ 順序不可調換：本段必須排在 trusted-types-init.js「之後」。提早執行會
-        // 先建出 pass-through policy，trusted-types-init.js 看到 defaultPolicy 已
+        // 先建出 default policy（inline 版消毒器），trusted-types-init.js 看到 defaultPolicy 已
         // 存在就 return——DOMPurify 消�生效。（static_check §19 會驗順序。）
         //
         // fix37（WebKit 回報）：客戶端錯誤「TypeError: This assignment requires a
@@ -300,7 +304,13 @@ fn inject_theme_raw(html: &str) -> String {
         //      MutationObserver 監看新增者；跨域 frame 取用 trustedTypes 會拋
         //      錯，已包在 try 內；不影響面板自身寫入路徑）。
         r#"<script id="TT_INLINE_GUARD_V1">(function(){
-function install(cw){try{if(!cw||!cw.trustedTypes||cw.trustedTypes.defaultPolicy)return;cw.trustedTypes.createPolicy('default',{createHTML:function(s){return String(s)},createScriptURL:function(s){var u=new URL(String(s),location.origin);if(u.origin!==location.origin)throw new TypeError('Untrusted script URL blocked');return u.href}})}catch(_){}}
+var ttInS=false;
+var TT_DROP={script:1,iframe:1,frame:1,frameset:1,object:1,embed:1,applet:1,base:1,link:1,meta:1,style:1,noscript:1,xml:1,foreignobject:1,animate:1,animatemotion:1,animatetransform:1,set:1,use:1};
+var TT_URLA={href:1,src:1,'xlink:href':1,action:1,formaction:1,data:1,poster:1,background:1,codebase:1};
+function ttAttrOk(tag,a){var n=a.name.toLowerCase(),v=a.value.replace(/[\u0000-\u0020\u007f-\u009f]/g,'').toLowerCase();if(n.indexOf('on')===0||n==='srcdoc')return false;if(TT_URLA[n]){if(/^(javascript|vbscript):/.test(v))return false;if(v.indexOf('data:')===0&&!(tag==='img'&&n==='src'&&/^data:image\/(png|jpe?g|gif|webp);/.test(v)))return false}if(n==='style'&&/expression\(|javascript:|vbscript:|@import|behavior:|-moz-binding/.test(v))return false;return true}
+function ttClean(p){var ks=Array.prototype.slice.call(p.childNodes);for(var i=0;i<ks.length;i++){var c=ks[i];if(c.nodeType!==1){if(c.nodeType!==3)p.removeChild(c);continue}var t=String(c.localName||c.nodeName).toLowerCase();if(TT_DROP[t]){p.removeChild(c);continue}var as=Array.prototype.slice.call(c.attributes);for(var j=0;j<as.length;j++){if(!ttAttrOk(t,as[j]))c.removeAttributeNode(as[j])}if(t==='template'&&c.content)ttClean(c.content);ttClean(c)}}
+function ttSan(h){var d=document.implementation.createHTMLDocument(''),b=d.createElement('div'),row=/^\s*<tr(?:\s|>)/i.test(h);ttInS=true;try{b.innerHTML=row?'<table><tbody>'+h+'</tbody></table>':h}finally{ttInS=false}var r=row?b.querySelector('tbody'):b;if(!r)return '';ttClean(r);return r.innerHTML}
+function install(cw){try{if(!cw||!cw.trustedTypes||cw.trustedTypes.defaultPolicy)return;cw.trustedTypes.createPolicy('default',{createHTML:function(s){return ttInS?String(s):ttSan(String(s))},createScriptURL:function(s){var u=new URL(String(s),location.origin);if(u.origin!==location.origin)throw new TypeError('Untrusted script URL blocked');return u.href}})}catch(_){}}
 install(window);
 try{window.__ttGuardV1=window.trustedTypes?(window.trustedTypes.defaultPolicy?'present':'missing'):'unsupported'}catch(_){}
 function scanFrames(){try{var list=document.querySelectorAll('iframe');for(var i=0;i<list.length;i++){install(list[i].contentWindow)}}catch(_){}}

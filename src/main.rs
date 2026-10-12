@@ -606,6 +606,16 @@ fn spawn_account_startups(spawner: monitor::MonitorSpawner, account_ids: Vec<Str
                         break;
                     }
                     Err(reason) => {
+                        // B1：學校明確回報帳密錯誤時，重試不會成功，只會累積學校端的失敗紀錄。
+                        // 停止背景重試；使用者在後台改密碼後，set_password 會呼叫 respawn_account 重新啟動。
+                        if reason.starts_with(monitor::CREDENTIAL_ERROR_PREFIX) {
+                            warn!(
+                                account = %account_id,
+                                error = %reason,
+                                "學校回報帳號或密碼錯誤，已停止背景自動重試（請在後台更新密碼）"
+                            );
+                            break;
+                        }
                         warn!(
                             account = %account_id,
                             retry_in_secs = backoff.as_secs(),
@@ -1467,6 +1477,18 @@ async fn main() -> Result<()> {
     startup_ids.extend(account_failures.iter().map(|(id, _)| id.clone()));
     let accounts_total = startup_ids.len();
     spawn_account_startups(monitor_spawner.clone(), startup_ids);
+
+    // M4：營運者明確允許後台綁定非 loopback 位址時，啟動時留下警告（config.validate 已擋掉未授權的情況）。
+    if config.adapters.admin_web.enabled && config.adapters.admin_web.allow_public_admin {
+        let bind_addr = config.adapters.line_bot.webhook_bind_addr.trim();
+        let is_loopback = bind_addr
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false);
+        if !is_loopback {
+            warn!(bind_addr = %bind_addr, "後台綁定在非 loopback 位址（allow_public_admin = true）；請確認防火牆與 HTTPS 已就緒");
+        }
+    }
 
     let admin_web_state = if config.adapters.admin_web.enabled {
         let default_poll_interval_secs = config

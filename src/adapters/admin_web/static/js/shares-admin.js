@@ -1,17 +1,12 @@
 // shares-admin.js — 分享連結管理頁前端（管理員）。
 // TRUSTED_TYPES_V1: 後台 CSP 為 require-trusted-types-for 'script' + trusted-types default dompurify，
-// 直接 el.innerHTML=... 會拋錯。這裡建立允許清單內的 'default' policy 來安全寫入 HTML。
+// innerHTML 字串會經過頁面既有的 default policy（trusted-types-init.js 或 pages.rs 的 inline 守衛，
+// 皆為消毒型，見 M1）。本檔不再自建 identity policy：那會把已消毒的 default 覆寫成原樣放行。
 (function () {
   'use strict';
 
-  var TT = null;
-  try {
-    if (window.trustedTypes) {
-      TT = trustedTypes.createPolicy('default', { createHTML: function (s) { return s; } });
-    }
-  } catch (e) { TT = null; }
   function setHTML(el, html) {
-    if (TT) { el.innerHTML = TT.createHTML(html); } else { el.innerHTML = html; }
+    el.innerHTML = html;
   }
 
   function esc(s) {

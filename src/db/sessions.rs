@@ -245,6 +245,20 @@ impl AccountsDb {
         Ok(result.rows_affected() > 0)
     }
 
+    /// REVOKE_ORDER_V1：以「DB 列內的散列鍵」確認列是否仍存在。開機水合寫回記憶體前，
+    /// 在記憶體寫鎖內再確認一次，避免把「已被撤銷（已刪 DB 列）」的 session 復活。
+    pub async fn dashboard_session_key_exists(&self, key: &str) -> Result<bool> {
+        let found = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM dashboard_sessions WHERE token = ? LIMIT 1",
+        )
+        .bind(key.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("查詢 dashboard_session 是否存在失敗")?;
+        Ok(found.is_some())
+    }
+
     /// SESSION_TOKEN_HASH_V1（fix125）：以「DB 列內的散列鍵」刪除——給已經
     /// 拿到 `row.token`（散列值而非明文）的呼叫端用（rotate 延遲刪除／
     /// 登入裝置撤銷），在這裡不再二次散列。

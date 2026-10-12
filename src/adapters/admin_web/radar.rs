@@ -209,7 +209,7 @@ pub(super) async fn get_handler(
         Err(error) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("讀取點名紀錄失敗：{error}"),
+                &super::public_error("讀取點名紀錄失敗：", &error),
             )
         }
     };
@@ -219,7 +219,7 @@ pub(super) async fn get_handler(
         Err(error) => {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("讀取帳號清單失敗：{error}"),
+                &super::public_error("讀取帳號清單失敗：", &error),
             )
         }
     };
@@ -328,7 +328,7 @@ pub(super) async fn post_handler(
         if let Err(error) = state.accounts_db.clear_radar_preference(&provider).await {
             return error_response(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &format!("清除雷達設定失敗：{error}"),
+                &super::public_error("清除雷達設定失敗：", &error),
             );
         }
         crate::radar_settings::clear(&provider).await;
@@ -396,7 +396,7 @@ pub(super) async fn post_handler(
     {
         return error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &format!("儲存雷達設定失敗：{error}"),
+            &super::public_error("儲存雷達設定失敗：", &error),
         );
     }
 

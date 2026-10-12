@@ -81,7 +81,7 @@ pub(super) async fn get_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("digest preference database error: {e}") })),
+            Json(json!({ "error": super::public_error("digest preference database error: ", &e) })),
         )
             .into_response(),
     }
@@ -132,7 +132,7 @@ pub(super) async fn update_handler(
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("save digest preference failed: {e}") })),
+            Json(json!({ "error": super::public_error("save digest preference failed: ", &e) })),
         )
             .into_response(),
     }

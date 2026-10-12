@@ -400,6 +400,9 @@ pub struct HotAddedMonitor {
     pub user_name: String,
 }
 
+/// B1：`spawn_account` 回傳的錯誤若以此開頭，代表「學校回報帳密錯誤」，背景啟動重試必須停止。
+pub(crate) const CREDENTIAL_ERROR_PREFIX: &str = "[憑證錯誤]";
+
 #[derive(Clone)]
 pub struct MonitorSpawner {
     global_config: Arc<AppConfig>,
@@ -630,7 +633,14 @@ impl MonitorSpawner {
             self.scanner_registry.as_ref().map(Arc::clone),
         )
         .await
-        .map_err(|e| format!("登入失敗：{}", report_chain_text(&e)))?;
+        .map_err(|e| {
+            let text = report_chain_text(&e);
+            if crate::auth::is_credential_error_text(&text) {
+                format!("{CREDENTIAL_ERROR_PREFIX}登入失敗：{text}")
+            } else {
+                format!("登入失敗：{text}")
+            }
+        })?;
         ctx.force_cascade = Some(Arc::clone(&self.force_cascade));
 
         let user_name = ctx.status.lock().await.user_name.clone();

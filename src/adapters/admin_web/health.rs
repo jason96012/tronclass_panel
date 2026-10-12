@@ -829,7 +829,7 @@ async fn run_quick_check_command(program: &str, args: &[&str]) -> String {
                 format!("command failed: {}: {}", output.status, stderr)
             }
         }
-        Ok(Err(e)) => format!("command failed: {e}"),
+        Ok(Err(e)) => super::public_error("command failed: ", &e),
         Err(_) => "command timeout".to_string(),
     }
 }

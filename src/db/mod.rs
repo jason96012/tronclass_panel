@@ -325,12 +325,24 @@ async fn apply_sqlite_runtime_pragmas(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
+/// L4（安全審查）：表名與欄名會被拼進 SQL（pragma_table_info、ALTER TABLE 無法參數化），
+/// 只允許 ASCII 字母、數字與底線；目前所有呼叫端都是寫死的字面值，這層是防止日後誤傳入外部輸入。
+fn check_sql_identifier(value: &str) -> Result<()> {
+    if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        Ok(())
+    } else {
+        Err(miette::miette!("不合法的 SQL 識別字：`{value}`"))
+    }
+}
+
 pub(crate) async fn ensure_table_column(
     pool: &SqlitePool,
     table: &str,
     column: &str,
     definition: &str,
 ) -> Result<()> {
+    check_sql_identifier(table)?;
+    check_sql_identifier(column)?;
     let sql = format!("SELECT name FROM pragma_table_info('{table}')");
     let rows = sqlx::query_as::<_, (String,)>(&sql)
         .fetch_all(pool)
@@ -354,6 +366,7 @@ pub(crate) async fn ensure_table_column(
 }
 
 pub(crate) async fn ensure_column(pool: &SqlitePool, column: &str, definition: &str) -> Result<()> {
+    check_sql_identifier(column)?;
     let rows = sqlx::query_as::<_, (String,)>("SELECT name FROM pragma_table_info('accounts')")
         .fetch_all(pool)
         .await

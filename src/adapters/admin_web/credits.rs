@@ -72,7 +72,7 @@ async fn resolve_account_for_credits(
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取帳號失敗：{e}") })),
+                Json(json!({ "error": super::public_error("讀取帳號失敗：", &e) })),
             )
                 .into_response());
         }
@@ -179,7 +179,7 @@ pub(super) async fn admin_credits_report_handler(
             .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("讀取學分報告失敗：{e}") })),
+            Json(json!({ "error": super::public_error("讀取學分報告失敗：", &e) })),
         )
             .into_response(),
     }
@@ -241,7 +241,7 @@ pub(super) async fn admin_credits_sync_run_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("建立學分查詢 HTTP client 失敗：{e}") })),
+                Json(json!({ "error": super::public_error("建立學分查詢 HTTP client 失敗：", &e) })),
             )
                 .into_response();
         }
@@ -260,7 +260,7 @@ pub(super) async fn admin_credits_sync_run_handler(
             // 沿用課表同步的 NO_5XX_FOR_UPSTREAM_FAILURE_V1：422 而非 5xx。
             return (
                 StatusCode::UNPROCESSABLE_ENTITY,
-                Json(json!({ "error": format!("學分查詢失敗：{e}") })),
+                Json(json!({ "error": super::public_error("學分查詢失敗：", &e) })),
             )
                 .into_response();
         }
@@ -291,7 +291,7 @@ pub(super) async fn admin_credits_sync_run_handler(
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("序列化學分報告失敗：{e}") })),
+                Json(json!({ "error": super::public_error("序列化學分報告失敗：", &e) })),
             )
                 .into_response();
         }
@@ -311,7 +311,7 @@ pub(super) async fn admin_credits_sync_run_handler(
     {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("儲存學分報告失敗：{e}") })),
+            Json(json!({ "error": super::public_error("儲存學分報告失敗：", &e) })),
         )
             .into_response();
     }

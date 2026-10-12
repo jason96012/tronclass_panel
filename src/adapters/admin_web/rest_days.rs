@@ -145,7 +145,7 @@ pub(super) async fn update_handler(
     if let Err(error) = crate::holidays::set_day_override_range(range_from, range_to, mode) {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("寫入 config/holidays.json 失敗：{error}") })),
+            Json(json!({ "error": super::public_error("寫入 config/holidays.json 失敗：", &error) })),
         )
             .into_response();
     }

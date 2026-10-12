@@ -162,7 +162,7 @@ pub(super) async fn admin_blacklist_list_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("讀取 IP 黑名單失敗：{error}") })),
+            Json(json!({ "error": super::public_error("讀取 IP 黑名單失敗：", &error) })),
         )
             .into_response(),
     }
@@ -191,7 +191,7 @@ pub(super) async fn admin_blacklist_recent_logins_handler(
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("讀取登入事件失敗：{error}") })),
+                Json(json!({ "error": super::public_error("讀取登入事件失敗：", &error) })),
             )
                 .into_response();
         }
@@ -324,7 +324,7 @@ pub(super) async fn admin_blacklist_block_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("封鎖 IP 失敗：{error}") })),
+            Json(json!({ "error": super::public_error("封鎖 IP 失敗：", &error) })),
         )
             .into_response(),
     }
@@ -368,7 +368,7 @@ pub(super) async fn admin_blacklist_unblock_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("解除 IP 封鎖失敗：{error}") })),
+            Json(json!({ "error": super::public_error("解除 IP 封鎖失敗：", &error) })),
         )
             .into_response(),
     }
@@ -505,7 +505,7 @@ pub(super) async fn admin_geo_restrict_set_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("更新「僅限台灣 IP 存取」開關失敗：{error}") })),
+            Json(json!({ "error": super::public_error("更新「僅限台灣 IP 存取」開關失敗：", &error) })),
         )
             .into_response(),
     }
@@ -596,7 +596,7 @@ pub(super) async fn admin_hosting_restrict_set_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("更新「封鎖雲端／VPS機房 IP」開關失敗：{error}") })),
+            Json(json!({ "error": super::public_error("更新「封鎖雲端／VPS機房 IP」開關失敗：", &error) })),
         )
             .into_response(),
     }
@@ -877,7 +877,7 @@ pub(super) async fn admin_geo_access_pending_handler(
         }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("讀取待處理申請失敗：{error}") })),
+            Json(json!({ "error": super::public_error("讀取待處理申請失敗：", &error) })),
         )
             .into_response(),
     }
@@ -932,7 +932,7 @@ pub(super) async fn admin_geo_access_approve_handler(
             .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("核准失敗：{error}") })),
+            Json(json!({ "error": super::public_error("核准失敗：", &error) })),
         )
             .into_response(),
     }
@@ -974,7 +974,7 @@ pub(super) async fn admin_geo_access_dismiss_handler(
             .into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": format!("忽略失敗：{error}") })),
+            Json(json!({ "error": super::public_error("忽略失敗：", &error) })),
         )
             .into_response(),
     }
@@ -1004,7 +1004,7 @@ pub(super) async fn admin_geo_access_clear_all_handler(
         Err(error) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": format!("清空失敗：{error}") })),
+                Json(json!({ "error": super::public_error("清空失敗：", &error) })),
             )
                 .into_response();
         }

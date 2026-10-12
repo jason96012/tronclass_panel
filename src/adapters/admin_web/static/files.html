@@ -2761,11 +2761,10 @@
     await openShareModal(link);
   }
 
-  // TRUSTED_TYPES_V1: 後台 CSP require-trusted-types-for 'script'，innerHTML 需經
-  // 允許清單內的 'default' policy，否則拋錯。
-  var __TT = null;
-  try { if (window.trustedTypes) __TT = trustedTypes.createPolicy('default', { createHTML: function(s){return s;} }); } catch (e) { __TT = null; }
-  function setHTMLSafe(el, html) { if (__TT) el.innerHTML = __TT.createHTML(html); else el.innerHTML = html; }
+  // TRUSTED_TYPES_V1: 後台 CSP require-trusted-types-for 'script'，innerHTML 字串會經過
+  // 頁面既有的 default policy（消毒型，見 M1）。本頁不再自建 identity policy：
+  // 重複建立 'default' 會失敗，若成功則會覆寫消毒器。
+  function setHTMLSafe(el, html) { el.innerHTML = html; }
 
   async function openShareModal(link){
     const old = document.getElementById('share-modal'); if (old) old.remove();
