@@ -710,6 +710,23 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .into_diagnostic()
     .wrap_err("初始化 login_locks 資料表失敗")?;
 
+    // ACCOUNT_SUSPEND_V1：帳號暫時停權（只擋後台登入／session，到期自動解除）。
+    // 每個帳號最多一列；`until` 為 Unix 秒。過期列不刪也不影響判斷（以 until > now 為準）。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS account_suspensions (
+            account_id TEXT PRIMARY KEY NOT NULL,
+            until INTEGER NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 account_suspensions 資料表失敗")?;
+
+
     // CREDITS_EMIS_V1：學分／成績報告快照（手動同步）。
     // 報告是一份整體 JSON（含畢業門檻、歷年成績、必修清單、通識學門），
     // 沒有需要單列查詢的欄位，因此直接存 JSON 文字即可。

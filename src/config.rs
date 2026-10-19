@@ -76,8 +76,7 @@ pub struct AppConfig {
     /// 日誌設定
     pub logging: LoggingConfig,
     /// 監控設定
-    pub monitor: MonitorConfig,
-}
+    pub monitor: MonitorConfig,}
 
 // ─── 子設定結構 ───────────────────────────────────────────────────────────────
 
@@ -117,6 +116,7 @@ impl Default for ProviderConfig {
                 default_coords: default_coords(),
                 accuracy: default_accuracy(),
                 altitude: 0,
+                scan_timeout_secs: default_scan_timeout(),
             },
             brute_force: BruteForceConfig {
                 concurrency: default_concurrency(),
@@ -208,6 +208,10 @@ pub struct RadarConfig {
     /// 海拔高度
     #[serde(default)]
     pub altitude: i32,
+    /// 雷達點名等待座標的逾時（秒）。獨立於 QR 的 `qrcode.scan_timeout_secs`；
+    /// 未設定時預設與 QR 相同（60 秒），既有設定檔行為不變。
+    #[serde(default = "default_scan_timeout")]
+    pub scan_timeout_secs: u64,
 }
 
 /// 數字爆破設定
@@ -830,7 +834,7 @@ fn default_min_concurrency() -> usize {
 fn default_scanner_base_url() -> String {
     "https://elearn2.fju.edu.tw/scanner-jumper".to_string()
 }
-fn default_scan_timeout() -> u64 {
+pub(crate) fn default_scan_timeout() -> u64 {
     60
 }
 fn default_fju_schedule_periods() -> Vec<String> {

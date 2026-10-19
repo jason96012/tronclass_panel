@@ -157,6 +157,10 @@ const ASSETS: &[(&str, &str)] = &[
         include_str!("static/js/shares-admin.js"),
     ),
     (
+        "/admin/static/js/suspensions-admin.js",
+        include_str!("static/js/suspensions-admin.js"),
+    ),
+    (
         "/admin/static/js/dashboard-particles.js",
         include_str!("static/js/dashboard-particles.js"),
     ),

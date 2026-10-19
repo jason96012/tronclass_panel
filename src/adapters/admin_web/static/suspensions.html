@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>帳號停權管理</title>
+<script defer src="/admin/static/js/suspensions-admin.js"></script>
+<style>
+  /* ACCOUNT_SUSPEND_V1：沿用 dashboard 主題變數（--card/--text/--line/...），支援深淺色。 */
+  *{box-sizing:border-box}
+  html,body{ margin:0; min-height:100vh; background:var(--bg,#f4f5f7); color:var(--text,#111);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif; }
+  body{isolation:isolate}
+  body::before{
+    content:''; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background:
+      radial-gradient(circle at 18% 18%, rgba(96,165,250,.16), transparent 34%),
+      radial-gradient(circle at 78% 28%, rgba(37,99,235,.14), transparent 30%),
+      linear-gradient(135deg,#f8fafc 0%,#eef2ff 50%,#eff6ff 100%);
+  }
+  @media(prefers-color-scheme:dark){
+    body::before{ background:
+      radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+      radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+      linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%); }
+  }
+  html[data-theme="dark"] body::before{ background:
+      radial-gradient(circle at 18% 18%, rgba(96,165,250,.22), transparent 34%),
+      radial-gradient(circle at 78% 28%, rgba(37,99,235,.20), transparent 30%),
+      linear-gradient(135deg,#020617 0%,#0f172a 55%,#111827 100%); }
+  [hidden]{display:none!important}
+  .wrap { position:relative; z-index:1; max-width: 980px; margin: 0 auto; padding: 16px; padding-top:calc(16px + env(safe-area-inset-top,0px)); }
+  h1 { font-size: 20px; margin: 8px 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 10px; }
+  .sub { color:var(--muted,#666); font-size: 13px; margin-bottom: 16px; }
+  .toolbar { display:flex; gap:8px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+  .toolbar a { text-decoration:none; }
+  .card { background:var(--card,#fff); color:var(--text,#111); border-radius:12px; padding:16px; margin-bottom:14px; box-shadow:0 1px 3px rgba(0,0,0,.14); }
+  .form-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:10px; align-items:end; }
+  .field { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted,#555); }
+  select, input[type=text], input[type=datetime-local] {
+    padding:8px 10px; border-radius:8px; border:1px solid var(--line,#ccc); background:var(--card,#fff); color:var(--text,#111); font-size:13px; width:100%; }
+  button { padding:8px 14px; border-radius:8px; border:1px solid var(--line,#ccc); background:var(--card,#fff); color:var(--text,#333); font-size:13px; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.primary { background:var(--primary,#2563eb); color:var(--primaryText,#fff); border-color:var(--primary,#2563eb); }
+  button.danger { background:transparent; color:var(--bad,#b91c1c); border-color:var(--bad,#b91c1c); }
+  button.small { padding:4px 10px; font-size:12px; }
+  .actions { margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .msg { font-size:13px; margin-top:10px; min-height:18px; }
+  .msg.ok { color:var(--ok,#1a7f37); }
+  .msg.bad { color:var(--bad,#b91c1c); }
+  table { width:100%; border-collapse: collapse; }
+  th, td { text-align:left; padding:9px 10px; font-size:13px; border-bottom:1px solid var(--line2,#eee); vertical-align: middle; color:var(--text,#111); }
+  th { font-weight:600; color:var(--muted,#555); }
+  .tbl-wrap { overflow-x:auto; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; background:var(--soft2,#e2e8f0); color:var(--text,#111); margin-right:4px; white-space:nowrap; }
+  .badge.stop { background:var(--bad,#b91c1c); color:#fff; }
+  .badge.off { background:var(--soft2,#94a3b8); }
+  .muted { color:var(--muted,#888); font-size:12px; }
+  .empty { padding:24px; text-align:center; color:var(--muted,#888); font-size:13px; }
+  @media (max-width:640px){
+    th, td { font-size:12px; padding:7px 6px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>帳號停權管理</h1>
+  <div class="sub">此頁僅管理員可設定。被停權的帳號無法進入管理後台（包含已登入的裝置，會立即登出）；到期後自動恢復，也可提前解除。停權不影響背景監控。</div>
+  <div class="toolbar">
+    <button id="refresh" class="primary" type="button">重新整理</button>
+    <a href="/admin/blacklist"><button type="button">IP 黑名單</button></a>
+    <a href="/admin"><button type="button">返回控制台</button></a>
+  </div>
+
+  <div class="card">
+    <h2>新增停權</h2>
+    <div class="form-grid">
+      <label class="field">帳號
+        <select id="susAccount"><option value="">載入中…</option></select>
+      </label>
+      <label class="field">停權時長
+        <select id="susDuration">
+          <option value="1h">1 小時</option>
+          <option value="1d">1 天</option>
+          <option value="3d">3 天</option>
+          <option value="7d">7 天</option>
+          <option value="custom">自訂到期時間</option>
+        </select>
+      </label>
+      <label class="field" id="susUntilWrap" hidden>到期時間（本機時間）
+        <input type="datetime-local" id="susUntil">
+      </label>
+      <label class="field">原因（選填，最多 200 字）
+        <input type="text" id="susReason" maxlength="200" autocomplete="off">
+      </label>
+    </div>
+    <div class="actions">
+      <button id="susSubmit" class="danger" type="button">停權並登出</button>
+      <span class="muted">同一帳號重新設定會覆寫原本的到期時間。最長 365 天。</span>
+    </div>
+    <div id="susMsg" class="msg" role="status"></div>
+  </div>
+
+  <div class="card">
+    <h2>目前停權中</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>帳號</th><th>到期時間</th><th>剩餘</th><th>原因</th><th>設定者</th><th></th></tr></thead>
+        <tbody id="activeBody"><tr><td colspan="6" class="empty">載入中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>所有帳號</h2>
+    <div class="tbl-wrap">
+      <table>
+        <thead><tr><th>帳號</th><th>提供者</th><th>角色／狀態</th><th></th></tr></thead>
+        <tbody id="accountsBody"><tr><td colspan="4" class="empty">載入中…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</body>
+</html>

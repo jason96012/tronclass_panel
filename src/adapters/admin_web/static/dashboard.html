@@ -1860,7 +1860,7 @@ function renderAttendance(){
     return;
   }
 
-  var sumTotal=0,sumSuccess=0,sumFailed=0,sumClassSigned=0,sumClassTotal=0,sumAuto=0,sumManual=0;
+  var sumTotal=0,sumSuccess=0,sumFailed=0,sumClassSigned=0,sumClassTotal=0,sumAuto=0,sumManual=0,sumLatestFailed=0;
 
   /* ATT_COURSES_PAGE_V1：先算出「每門課一張卡」的完整陣列（彙總數字仍然是
      對全部課程加總，不受下面只顯示幾張卡影響），轉成 HTML 字串的動作延後到
@@ -1869,15 +1869,18 @@ function renderAttendance(){
     sumTotal+=attNumber(c.total);
     sumSuccess+=attNumber(c.success);
     sumFailed+=attNumber(c.failed);
+    /* LATEST_ROLLCALL_ONLY_V1：「誰沒有點到名」以各課最新一次點名為準。 */
+    sumLatestFailed+=attNumber(c.latest_session&&c.latest_session.failed);
     /* ATT_STATS_AUTO_MANUAL_V1：這段期間這門課「系統自動送出」（無人按按鈕，
        班上超過 15% 人點名成功觸發）／「手動送出」的場次數，兩者相加等於
        c.total。 */
     sumAuto+=attNumber(c.auto_count);
     sumManual+=attNumber(c.manual_count);
 
-    var unUsers=c.unattended_users||[];
-    var lsUn=(c.latest_session&&c.latest_session.unattended_users)||[];
-    var targetList=lsUn.length?lsUn:unUsers;
+    /* LATEST_ROLLCALL_ONLY_V1：「誰沒有點到名」只看最新一次點名，不再退回累積名單。 */
+    var ls0=c.latest_session||null;
+    var targetList=(ls0&&ls0.unattended_users)||[];
+    var latestFailed=ls0?attNumber(ls0.failed):0;
     var unHtml='';
 
     // 依姓名去重統計
@@ -1891,17 +1894,18 @@ function renderAttendance(){
     var cNameEsc=esc(c.course_name);
     var cNameArg=esc(encodeURIComponent(c.course_name||''));
 
-    if(targetList.length===0&&attNumber(c.failed)===0){
+    if(!ls0){
+      unHtml='<span class="pill">尚無最新點名</span>';
+    }else if(targetList.length===0&&latestFailed===0){
       unHtml='<span class="pill good">全數點到</span>';
     }else if(targetList.length===0){
-      unHtml='<span class="pill good">本次全到</span>'+
-        (unUsers.length?(' <button type="button" class="button secondary btn-compact un-btn" style="min-height:28px;padding:0 10px;font-size:12px;margin-left:4px;cursor:pointer;border-radius:999px;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">歷史未到('+unUsers.length+')</button>'):'');
+      unHtml='<span class="pill bad">本次未點到 '+latestFailed+' 人</span>';
     }else if(uniqueNames.length<=2&&targetList.length<=2){
       var badges=targetList.map(function(u){
         var n=(u.label||u.user_name||u.account_id||'');
         return '<span class="pill bad" style="margin-right:4px;cursor:pointer;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">'+esc(n)+'</span>';
       }).join('');
-      unHtml=badges+(unUsers.length>targetList.length?(' <button type="button" class="button secondary btn-compact un-btn" style="min-height:28px;padding:0 10px;font-size:12px;cursor:pointer;border-radius:999px;" data-view-unattended="'+cNameEsc+'" onclick="window.openUnattendedModal&&window.openUnattendedModal(\''+cNameArg+'\');return false;">名冊</button>'):'');
+      unHtml=badges;
     }else{
       var summaryText='';
       if(uniqueNames.length===1){
@@ -2009,7 +2013,7 @@ function renderAttendance(){
     '<td data-label="累積成功率"><span class="pill '+attRateClass(overallSuccessRate)+'">'+overallSuccessRate.toFixed(1)+'%</span></td>'+
     '<td data-label="最新一次點名"><span class="small" style="color:var(--muted,#94a3b8)">最新各課點名彙總</span></td>'+
     '<td data-label="最後班上總點名人數"><span class="pill '+attRateClass(overallClassRate)+'">實到 <b>'+sumClassSigned+'</b> / 預計 <b>'+sumClassTotal+'</b> 人</span><div class="small" style="color:var(--muted,#94a3b8)">全班平均 '+overallClassRate.toFixed(1)+'%</div></td>'+
-    '<td data-label="誰沒有點到名">'+(sumFailed===0?'<span class="pill good">全員到齊</span>':('<span class="pill bad">共 '+sumFailed+' 筆未到</span>'))+'</td>'+
+    '<td data-label="誰沒有點到名">'+(sumLatestFailed===0?'<span class="pill good">全員到齊</span>':('<span class="pill bad">共 '+sumLatestFailed+' 筆未到（各課最新一次）</span>'))+'</td>'+
     '</tr></tfoot>';
 
   box.innerHTML='<div class="table-wrap"><table class="att-table"><thead><tr>'+

@@ -169,6 +169,8 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
   #saveBarMobile .inner{display:flex;gap:8px;align-items:center;max-width:1180px;margin:0 auto}
   #saveBarMobile .state{flex:1 1 auto;font-size:12.5px;color:var(--rd-muted)}
   #saveBarMobile button{flex:0 0 auto;min-width:104px}
+  /* SAVEBAR_HIDE_WHEN_CLEAN_V1：沒有未儲存的變更時整條隱藏，有變更才浮現。 */
+  #saveBarMobile.is-clean{display:none}
 }
 @media(max-width:390px){
   .head h1{font-size:17px}
@@ -716,6 +718,8 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
   }
   function updateSaveBar(){
     $('saveBarState').textContent = state.dirty ? '有未儲存的變更' : '尚無未儲存的變更';
+    // SAVEBAR_HIDE_WHEN_CLEAN_V1：沒有變更就不佔版面（手機版底部列）。
+    $('saveBarMobile').classList.toggle('is-clean', !state.dirty);
     $('saveBarSave').disabled = state.busy;
     $('saveBarReset').disabled = state.busy;
   }
@@ -931,6 +935,9 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
     renderCoords();
     renderDeviceState();
   });
+  /* SAVEBAR_NUMBER_INPUT_DIRTY_V1：精確度、海拔是手動輸入，改了數字也要算「未儲存的變更」。 */
+  $('accuracyInput').addEventListener('input', markDirty);
+  $('altitudeInput').addEventListener('input', markDirty);
   $('useDeviceChk').addEventListener('change', function(){
     state.useDevice = $('useDeviceChk').checked;
     markDirty();

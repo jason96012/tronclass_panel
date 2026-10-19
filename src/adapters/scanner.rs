@@ -4,7 +4,7 @@
 //! fans that payload out to every account currently waiting for the same
 //! provider + rollcall_id.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,6 +18,7 @@ use axum::{
 use miette::{IntoDiagnostic, Result, WrapErr};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::Mutex;
 use tower_http::trace::TraceLayer;
 use tracing::{debug, info, warn};
@@ -68,6 +69,17 @@ impl PendingQrKey {
 #[derive(Clone)]
 struct PendingAccount {
     tx: QrCodeSender,
+    /// QR_ORDERED_LANE_V1：此帳號的有序送出佇列（只有 QR 使用）。
+    lane: Arc<std::sync::Mutex<QrLane>>,
+}
+
+impl PendingAccount {
+    fn new(tx: QrCodeSender) -> Self {
+        Self {
+            tx,
+            lane: Arc::new(std::sync::Mutex::new(QrLane::default())),
+        }
+    }
 }
 
 struct PendingQrEntry {
@@ -222,7 +234,7 @@ impl QrScannerRegistry {
             entry.all_accounts.insert(account_id.to_string());
             entry
                 .accounts
-                .insert(account_id.to_string(), PendingAccount { tx: tx.clone() });
+                .insert(account_id.to_string(), PendingAccount::new(tx.clone()));
 
             (
                 entry.token.clone(),
@@ -509,6 +521,25 @@ impl QrScannerRegistry {
         }
     }
 
+    /// H2：本帳號是否已在這個 QR 點名中簽到成功（只看 `completed_accounts`）。
+    /// 「群組沒有等待中的帳號」不代表本帳號成功，早退前應以此判斷。
+    pub async fn is_qr_account_completed(&self, provider: &str, rollcall_id: u64, account_id: &str) -> bool {
+        let key = PendingQrKey::new(provider, rollcall_id);
+        let inner = self.inner.lock().await;
+        inner
+            .get(&key)
+            .is_some_and(|entry| entry.completed_accounts.contains(account_id))
+    }
+
+    /// H2：本帳號是否已在這個數字點名中簽到成功（只看 `completed_accounts`）。
+    pub async fn is_number_account_completed(&self, provider: &str, rollcall_id: u64, account_id: &str) -> bool {
+        let key = PendingNumberKey::new(provider, rollcall_id);
+        let inner = self.number_inner.lock().await;
+        inner
+            .get(&key)
+            .is_some_and(|entry| entry.completed_accounts.contains(account_id))
+    }
+
     pub async fn mark_number_failed(
         &self,
         provider: &str,
@@ -600,7 +631,7 @@ impl QrScannerRegistry {
         };
 
         let key = PendingNumberKey::new(provider, submission.rollcall_id);
-        let account_senders = {
+        let (account_senders, previous_state) = {
             let now = Instant::now();
             let mut inner = self.number_inner.lock().await;
             cleanup_expired_number_locked(&mut inner, now);
@@ -616,29 +647,36 @@ impl QrScannerRegistry {
             {
                 return Err(ScannerError::AccountNotPending);
             }
+            // M3：記下舊狀態；一個都沒送到時還原。
+            let previous_state = (entry.submitted_input.clone(), entry.last_error.clone());
             entry.submitted_input = Some(input.clone());
             entry.last_error = None;
 
-            entry
+            let senders = entry
                 .accounts
                 .iter()
                 .map(|(account_id, account)| (account_id.clone(), account.tx.clone()))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (senders, previous_state)
         };
 
         let mut delivered_accounts = Vec::new();
         let mut failed_accounts = Vec::new();
         for (account_id, tx) in account_senders {
-            match tx.send(input.clone()).await {
-                Ok(()) => delivered_accounts.push(account_id),
-                Err(e) => {
-                    warn!(account_id = %account_id, error = %e, "數字點名頁傳送輸入失敗");
-                    failed_accounts.push(account_id);
-                }
+            if queue_for_account(&tx, input.clone(), &account_id) {
+                delivered_accounts.push(account_id);
+            } else {
+                warn!(account_id = %account_id, "數字點名頁傳送輸入失敗（帳號已結束）");
+                failed_accounts.push(account_id);
             }
         }
 
         if delivered_accounts.is_empty() {
+            let mut inner = self.number_inner.lock().await;
+            if let Some(entry) = inner.get_mut(&key) {
+                entry.submitted_input = previous_state.0;
+                entry.last_error = previous_state.1;
+            }
             return Err(ScannerError::NoDeliveredAccounts);
         }
 
@@ -827,6 +865,8 @@ impl QrScannerRegistry {
         let key = PendingNumberKey::new(provider, rollcall_id);
         let mut inner = self.radar_inner.lock().await;
         if let Some(entry) = inner.get_mut(&key) {
+            // M1：與 mark_number_completed 一致——完成後移出待點名清單，不再被列為待點名或收到之後的座標。
+            entry.accounts.remove(account_id);
             entry.all_accounts.insert(account_id.to_string());
             entry.completed_accounts.insert(account_id.to_string());
             entry.last_error = None;
@@ -951,41 +991,65 @@ impl QrScannerRegistry {
         let provider = provider.trim();
         let now = Instant::now();
         let payload = RadarPointPayload::from_input(&point);
-        let mut inner = self.radar_inner.lock().await;
-        cleanup_expired_radar_locked(&mut inner, now);
+        // H3（RADAR_BROADCAST_UNLOCKED_V1）：鎖內只挑出目標並複製 Sender，送出在鎖外進行。
+        // 舊寫法在鎖內 `send().await`，一個滿載的帳號會卡住整個雷達註冊表（其他點名與狀態頁）。
+        let plans: Vec<(u64, String, Vec<(String, tokio::sync::mpsc::Sender<RadarPointInput>)>)> = {
+            let mut inner = self.radar_inner.lock().await;
+            cleanup_expired_radar_locked(&mut inner, now);
+            let mut plans = Vec::new();
+            for (key, entry) in inner.iter() {
+                if key.provider != provider {
+                    continue;
+                }
+                if let Some(id) = rollcall_id {
+                    if key.rollcall_id != id {
+                        continue;
+                    }
+                }
+                let senders = entry
+                    .accounts
+                    .iter()
+                    .map(|(account_id, account)| (account_id.clone(), account.tx.clone()))
+                    .collect::<Vec<_>>();
+                plans.push((key.rollcall_id, entry.course_name.clone(), senders));
+            }
+            plans
+        };
 
         let mut targets: Vec<RadarBroadcastTarget> = Vec::new();
         let mut delivered_total = 0usize;
-        for (key, entry) in inner.iter_mut() {
-            if key.provider != provider {
-                continue;
-            }
-            if let Some(id) = rollcall_id {
-                if key.rollcall_id != id {
-                    continue;
-                }
-            }
+        let mut delivered_rollcalls: Vec<u64> = Vec::new();
+        for (target_rollcall_id, course_name, senders) in plans {
             let mut delivered = 0usize;
-            for (account_id, account) in entry.accounts.iter() {
-                match account.tx.send(point).await {
-                    Ok(()) => delivered += 1,
-                    Err(e) => {
-                        warn!(account_id = %account_id, error = %e, "面板送出雷達座標失敗");
-                    }
+            for (account_id, tx) in senders {
+                if queue_for_account(&tx, point, &account_id) {
+                    delivered += 1;
+                } else {
+                    warn!(account_id = %account_id, "面板送出雷達座標失敗（帳號已結束）");
                 }
             }
             if delivered > 0 {
-                entry.submitted_point = Some(payload.clone());
-                entry.last_error = None;
+                delivered_rollcalls.push(target_rollcall_id);
             }
             delivered_total += delivered;
             targets.push(RadarBroadcastTarget {
-                rollcall_id: key.rollcall_id,
-                course_name: entry.course_name.clone(),
+                rollcall_id: target_rollcall_id,
+                course_name,
                 delivered_count: delivered,
             });
         }
         targets.sort_by_key(|target| target.rollcall_id);
+
+        // M3：只有真的送到的點名才記為「已送出的座標」。
+        if !delivered_rollcalls.is_empty() {
+            let mut inner = self.radar_inner.lock().await;
+            for target_rollcall_id in delivered_rollcalls {
+                if let Some(entry) = inner.get_mut(&PendingNumberKey::new(provider, target_rollcall_id)) {
+                    entry.submitted_point = Some(payload.clone());
+                    entry.last_error = None;
+                }
+            }
+        }
 
         if delivered_total > 0 {
             info!(
@@ -1068,7 +1132,7 @@ impl QrScannerRegistry {
         }
 
         let key = PendingNumberKey::new(provider, submission.rollcall_id);
-        let account_senders = {
+        let (account_senders, previous_state) = {
             let now = Instant::now();
             let mut inner = self.radar_inner.lock().await;
             cleanup_expired_radar_locked(&mut inner, now);
@@ -1084,29 +1148,36 @@ impl QrScannerRegistry {
             {
                 return Err(ScannerError::AccountNotPending);
             }
+            // M3：記下舊狀態；一個都沒送到時還原。
+            let previous_state = (entry.submitted_point.clone(), entry.last_error.clone());
             entry.submitted_point = Some(RadarPointPayload::from_input(&point));
             entry.last_error = None;
 
-            entry
+            let senders = entry
                 .accounts
                 .iter()
                 .map(|(account_id, account)| (account_id.clone(), account.tx.clone()))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            (senders, previous_state)
         };
 
         let mut delivered_accounts = Vec::new();
         let mut failed_accounts = Vec::new();
         for (account_id, tx) in account_senders {
-            match tx.send(point).await {
-                Ok(()) => delivered_accounts.push(account_id),
-                Err(e) => {
-                    warn!(account_id = %account_id, error = %e, "雷達點名頁傳送座標失敗");
-                    failed_accounts.push(account_id);
-                }
+            if queue_for_account(&tx, point, &account_id) {
+                delivered_accounts.push(account_id);
+            } else {
+                warn!(account_id = %account_id, "雷達點名頁傳送座標失敗（帳號已結束）");
+                failed_accounts.push(account_id);
             }
         }
 
         if delivered_accounts.is_empty() {
+            let mut inner = self.radar_inner.lock().await;
+            if let Some(entry) = inner.get_mut(&key) {
+                entry.submitted_point = previous_state.0;
+                entry.last_error = previous_state.1;
+            }
             return Err(ScannerError::NoDeliveredAccounts);
         }
 
@@ -1146,7 +1217,7 @@ impl QrScannerRegistry {
         }
 
         let key = PendingQrKey::new(provider, submission.rollcall_id);
-        let account_senders = {
+        let (account_senders, previous_state) = {
             let now = Instant::now();
             let mut inner = self.inner.lock().await;
             let entry = inner.get_mut(&key).ok_or(ScannerError::PendingNotFound)?;
@@ -1165,28 +1236,43 @@ impl QrScannerRegistry {
             // 同一個 scanner token 在過期前允許重複送出。
             // 課堂 QR Code 可能會輪換，scanner 頁面會持續掃描並把新的 payload
             // fan-out 給仍在等待的帳號；流程成功的帳號會自行 unregister。
+            // M3：記下舊狀態；若下面一個帳號都沒送到，會還原（避免晚到帳號收到從未送達的 payload）。
+            let previous_state = (entry.used, entry.submitted_qr_data.clone());
             entry.used = true;
             entry.submitted_qr_data = Some(qr_data.to_string());
-            entry
+            let senders = entry
                 .accounts
                 .iter()
-                .map(|(account_id, account)| (account_id.clone(), account.tx.clone()))
-                .collect::<Vec<_>>()
+                .map(|(account_id, account)| {
+                    (account_id.clone(), account.tx.clone(), Arc::clone(&account.lane))
+                })
+                .collect::<Vec<_>>();
+            (senders, previous_state)
         };
 
+        // QR_FANOUT_NONBLOCKING_V1：逐一派送時不能在這裡 `send().await`。每個帳號的 QR 佇列只有 4 格，
+        // 而帳號處理一筆 payload 前要先等「輪到自己」的群組排程（人數多時可達十幾秒），期間掃碼頁每掃一次
+        // 就多一筆。舊寫法遇到滿佇列會卡住這個 HTTP 請求，排在後面的帳號收不到新 payload，掃碼頁逾時重試
+        // 又會疊加；症狀就是「QR 仍有效，卻有人一直停在未完成」。現在：有空位立即送；佇列滿時改由背景
+        // 任務等待送出，不擋住回應與其他帳號。已知取捨：佇列滿時，背景送出的舊 payload 可能比之後直送的新
+        // payload 晚到；帳號端取佇列中最新的一筆，下一次掃碼會自然校正。
         let mut delivered_accounts = Vec::new();
         let mut failed_accounts = Vec::new();
-        for (account_id, tx) in account_senders {
-            match tx.send(qr_data.to_string()).await {
-                Ok(()) => delivered_accounts.push(account_id),
-                Err(e) => {
-                    warn!(account_id = %account_id, error = %e, "QR scanner callback 傳送失敗");
-                    failed_accounts.push(account_id);
-                }
+        for (account_id, tx, lane) in account_senders {
+            if queue_qr_ordered(&lane, &tx, qr_data.to_string(), &account_id) {
+                delivered_accounts.push(account_id);
+            } else {
+                warn!(account_id = %account_id, "QR scanner callback 傳送失敗（帳號已結束）");
+                failed_accounts.push(account_id);
             }
         }
 
         if delivered_accounts.is_empty() {
+            let mut inner = self.inner.lock().await;
+            if let Some(entry) = inner.get_mut(&key) {
+                entry.used = previous_state.0;
+                entry.submitted_qr_data = previous_state.1;
+            }
             return Err(ScannerError::NoDeliveredAccounts);
         }
 
@@ -1760,7 +1846,7 @@ async fn scanner_status_handler(
         Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
     }
@@ -1774,7 +1860,7 @@ async fn number_status_handler(
         Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
     }
@@ -1788,7 +1874,7 @@ async fn number_submit_handler(
         Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
     }
@@ -1802,7 +1888,7 @@ async fn radar_status_handler(
         Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
     }
@@ -1816,7 +1902,7 @@ async fn radar_submit_handler(
         Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
     }
@@ -1830,9 +1916,105 @@ async fn scanner_submit_handler(
         Ok(result) => (StatusCode::OK, Json(serde_json::json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": e.to_string() })),
+            Json(serde_json::json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
+    }
+}
+
+/// QR_ORDERED_LANE_V1：單一 QR 帳號的有序送出佇列狀態。
+///
+/// 通道滿載時，新的 payload 不能各自 spawn（那樣會亂序：較舊的碼可能晚到，
+/// 讓 handler 拿舊碼去學校送出，學校回過期，掃碼頁顯示錯誤）。
+/// 改成：pending 依序排隊，由同一個 pump 任務逐筆送出；pending 非空時，
+/// 之後的 payload 一律排在後面，不會搶先。
+#[derive(Default)]
+struct QrLane {
+    /// 等待送出的 payload。隊首是發送中的那一筆，送出成功後才移除。
+    pending: VecDeque<String>,
+    /// 是否已有 pump 任務在跑（同一帳號只會有一個）。
+    pumping: bool,
+}
+
+fn lock_lane(lane: &std::sync::Mutex<QrLane>) -> std::sync::MutexGuard<'_, QrLane> {
+    lane.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// QR 專用的有序派送。回傳 false 代表帳號通道已關閉（帳號已結束）。
+fn queue_qr_ordered(
+    lane: &Arc<std::sync::Mutex<QrLane>>,
+    tx: &QrCodeSender,
+    value: String,
+    account_id: &str,
+) -> bool {
+    let mut state = lock_lane(lane);
+    if state.pending.is_empty() {
+        match tx.try_send(value) {
+            Ok(()) => return true,
+            Err(TrySendError::Full(value)) => state.pending.push_back(value),
+            Err(TrySendError::Closed(_)) => return false,
+        }
+    } else {
+        state.pending.push_back(value);
+    }
+    if !state.pumping {
+        state.pumping = true;
+        tokio::spawn(qr_lane_pump(Arc::clone(lane), tx.clone(), account_id.to_string()));
+    }
+    true
+}
+
+/// 依序把 pending 送進通道；每筆送出成功後才從隊首移除。
+/// 鎖不跨越 await（只在進出時短暫持有）。
+async fn qr_lane_pump(lane: Arc<std::sync::Mutex<QrLane>>, tx: QrCodeSender, account_id: String) {
+    loop {
+        let front = {
+            let mut state = lock_lane(&lane);
+            let front = state.pending.front().cloned();
+            if front.is_none() {
+                state.pumping = false;
+            }
+            front
+        };
+        let Some(value) = front else {
+            return;
+        };
+        if tx.send(value).await.is_err() {
+            let mut state = lock_lane(&lane);
+            state.pending.clear();
+            state.pumping = false;
+            warn!(account_id = %account_id, "QR scanner callback 背景送出失敗（帳號已結束）");
+            return;
+        }
+        lock_lane(&lane).pending.pop_front();
+    }
+}
+
+/// QR_FANOUT_NONBLOCKING_V1 / M2：共用的非阻塞派送 helper。
+///
+/// - `try_send` 成功 → true。
+/// - 通道滿載 → clone 一份 Sender 交給背景任務送出，呼叫端不等待（回 true，表示已交給送出管道）。
+/// - 通道已關閉（帳號已結束）→ false。
+///
+/// 不可在註冊表鎖內或 handler 的關鍵路徑上 `send().await`：一個滿載的帳號會把整個註冊表卡住。
+fn queue_for_account<T: Send + 'static>(
+    tx: &tokio::sync::mpsc::Sender<T>,
+    value: T,
+    account_id: &str,
+) -> bool {
+    match tx.try_send(value) {
+        Ok(()) => true,
+        Err(TrySendError::Full(value)) => {
+            let tx = tx.clone();
+            let account_id = account_id.to_string();
+            tokio::spawn(async move {
+                if tx.send(value).await.is_err() {
+                    warn!(account_id = %account_id, "背景送出掃碼資料失敗（帳號已結束）");
+                }
+            });
+            true
+        }
+        Err(TrySendError::Closed(_)) => false,
     }
 }
 
@@ -2124,6 +2306,25 @@ pub enum ScannerError {
     NoDeliveredAccounts,
 }
 
+impl ScannerError {
+    /// 機器可讀的錯誤代碼（HTTP 回應的 `code` 欄位）。掃碼頁據此區分「帳號已不需要掃碼」與真正的錯誤。
+    pub fn code(&self) -> &'static str {
+        match self {
+            ScannerError::InvalidPublicBaseUrl => "invalid_public_base_url",
+            ScannerError::InvalidSubmission(_) => "invalid_submission",
+            ScannerError::PendingNotFound => "pending_not_found",
+            ScannerError::Expired => "expired",
+            ScannerError::TokenAlreadyUsed => "token_already_used",
+            ScannerError::InvalidToken => "invalid_token",
+            ScannerError::AccountNotPending => "account_not_pending",
+            ScannerError::QrDataTooLarge { .. } => "qr_data_too_large",
+            ScannerError::InvalidNumberCode => "invalid_number_code",
+            ScannerError::InvalidRadarPoint => "invalid_radar_point",
+            ScannerError::NoDeliveredAccounts => "no_delivered_accounts",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2339,5 +2540,85 @@ mod tests {
             registry.submit(base).await.unwrap_err(),
             ScannerError::Expired
         );
+    }
+
+    /// H2：被移出群組但從未簽到的帳號，不可因為「群組沒人等了」被判成功。
+    #[tokio::test]
+    async fn qr_account_completed_is_false_for_account_removed_without_signing() {
+        let registry = registry();
+        let (tx_a, _rx_a) = mpsc::channel(1);
+        let (tx_b, _rx_b) = mpsc::channel(1);
+        registry
+            .register_pending("fju", 42, "acc-a", tx_a, Duration::from_secs(60))
+            .await
+            .unwrap();
+        registry
+            .register_pending("fju", 42, "acc-b", tx_b, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        // acc-a 因致命錯誤被移出（從未簽到）；acc-b 簽到成功。
+        registry.unregister_pending("fju", 42, "acc-a").await;
+        registry.mark_completed("fju", 42, "acc-b").await;
+
+        assert!(registry.is_qr_group_completed("fju", 42).await);
+        assert!(!registry.is_qr_account_completed("fju", 42, "acc-a").await);
+        assert!(registry.is_qr_account_completed("fju", 42, "acc-b").await);
+    }
+
+    /// M1：雷達完成後必須從待點名清單移出，並記入已完成。
+    #[tokio::test]
+    async fn radar_completed_account_is_removed_from_pending_accounts() {
+        let registry = registry();
+        let (tx_a, _rx_a) = mpsc::channel(1);
+        let (tx_b, _rx_b) = mpsc::channel(1);
+        registry
+            .register_radar_pending("fju", 42, "acc-a", tx_a, Duration::from_secs(60), &[], "課程")
+            .await
+            .unwrap();
+        registry
+            .register_radar_pending("fju", 42, "acc-b", tx_b, Duration::from_secs(60), &[], "課程")
+            .await
+            .unwrap();
+
+        registry.mark_radar_completed("fju", 42, "acc-a").await;
+
+        let inner = registry.radar_inner.lock().await;
+        let entry = inner.get(&PendingNumberKey::new("fju", 42)).unwrap();
+        assert!(!entry.accounts.contains_key("acc-a"));
+        assert!(entry.accounts.contains_key("acc-b"));
+        assert!(entry.completed_accounts.contains("acc-a"));
+    }
+
+    /// QR_ORDERED_LANE_V1：通道滿載時，payload 仍必須依送出順序到達（不可亂序）。
+    #[tokio::test]
+    async fn qr_payloads_arrive_in_submission_order_when_channel_is_full() {
+        let registry = registry();
+        let (tx, mut rx) = mpsc::channel(1);
+        let link = registry
+            .register_pending("fju", 42, "acc-a", tx, Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        for data in ["0~100!3~p1!4~42", "0~100!3~p2!4~42", "0~100!3~p3!4~42", "0~100!3~p4!4~42"] {
+            registry
+                .submit(ScannerSubmission {
+                    provider: "fju".to_string(),
+                    rollcall_id: 42,
+                    account_id: "acc-a".to_string(),
+                    token: link.token.clone(),
+                    qr_data: data.to_string(),
+                })
+                .await
+                .unwrap();
+        }
+
+        for expected in ["0~100!3~p1!4~42", "0~100!3~p2!4~42", "0~100!3~p3!4~42", "0~100!3~p4!4~42"] {
+            let got = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("payload 應在 2 秒內到達")
+                .expect("通道不應關閉");
+            assert_eq!(got, expected);
+        }
     }
 }

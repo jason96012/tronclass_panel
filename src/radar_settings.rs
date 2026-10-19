@@ -218,6 +218,7 @@ pub async fn effective(provider: &str) -> Option<RadarConfig> {
             default_coords: Vec::new(),
             accuracy: override_.accuracy,
             altitude: override_.altitude,
+            scan_timeout_secs: crate::config::default_scan_timeout(),
         },
     };
     if !override_.coords.is_empty() {

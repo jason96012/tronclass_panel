@@ -652,6 +652,21 @@ pub(super) async fn admin_passkey_login_finish_handler(
         .await;
         return unauthorized_response();
     }
+    // ACCOUNT_SUSPEND_V1：暫時停權中的帳號同樣不得以通行密鑰登入（查詢失敗視為停權）。
+    if state.account_is_suspended(&account.id).await {
+        record_persistent_login_event(
+            &state,
+            &account.id,
+            Some(&account.id),
+            "login_failed",
+            "fail",
+            "帳號暫時停權中，通行密鑰登入遭拒",
+            &ip,
+            &SessionOrigin::from_request(&headers, &ip).user_agent,
+        )
+        .await;
+        return unauthorized_response();
+    }
 
     let account_id = account.id.clone();
     let is_admin = account.is_admin;

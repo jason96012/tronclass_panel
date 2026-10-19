@@ -189,6 +189,22 @@ pub enum RollcallRouteError {
 }
 
 /// 依指令選出要送入的點名。回傳 (點名 ID, sender) 清單；同 ID 的多個帳號會全部列出。
+/// NUMBER_AUTO_PICK_V1：這個帳號目前正在等待數字點名碼的點名 ID（由小到大、去重）。
+/// 只讀，不改變等待狀態；給「自動讀取代碼」按鈕決定單一送出或列出選單用。
+pub fn waiting_number_rollcall_ids(account_id: &str) -> Vec<u64> {
+    let map = ROLLCALL_INPUTS.lock().unwrap_or_else(|p| p.into_inner());
+    let mut ids: Vec<u64> = map
+        .iter()
+        .filter(|((account, _), sender)| {
+            sender.kind() == RollcallInputKind::Number && account.as_str() == account_id
+        })
+        .map(|((_, rollcall_id), _)| *rollcall_id)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 pub fn route_rollcall_input(
     account_ids: &[String],
     kind: RollcallInputKind,

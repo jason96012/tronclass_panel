@@ -83,6 +83,19 @@ pub fn hash_dashboard_password(password: &str, provider_password: &str) -> Resul
     Ok(hash.to_string())
 }
 
+/// SHARE_PASSWORD_V2：分享連結密碼的雜湊（Argon2id，與後台密碼同一組參數）。
+///
+/// 刻意不呼叫 `hash_dashboard_password`：後者會套用後台管理員密碼的規則
+/// （與供應商密碼比對等），分享密碼只需要長度下限，規則由呼叫端檢查。
+/// 驗證沿用 `verify_dashboard_password`（同樣讀 PHC 字串）。
+pub fn hash_share_password(password: &str) -> Result<String> {
+    let salt = SaltString::generate(&mut OsRng);
+    let hash = argon2_max()
+        .hash_password(password.as_bytes(), &salt)
+        .map_err(|e| miette::miette!("分享密碼雜湊失敗：{e}"))?;
+    Ok(hash.to_string())
+}
+
 /// Verify a Dashboard password against a stored verifier.
 ///
 /// Accepts both Argon2id (PHC format, `$argon2id$...`) and legacy PBKDF2

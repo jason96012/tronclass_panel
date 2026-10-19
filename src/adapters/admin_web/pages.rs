@@ -40,6 +40,9 @@ pub(super) const QR_CODE_MIN_JS: &str = include_str!("static/js/qrcode.min.js");
 // SHARE_ADMIN_V1: 分享連結管理頁（管理員專用）與其前端。
 pub(super) const SHARES_HTML: &str = include_str!("static/shares.html");
 pub(super) const SHARES_ADMIN_JS: &str = include_str!("static/js/shares-admin.js");
+// ACCOUNT_SUSPEND_V1：帳號暫時停權管理頁。
+pub(super) const SUSPENSIONS_HTML: &str = include_str!("static/suspensions.html");
+pub(super) const SUSPENSIONS_ADMIN_JS: &str = include_str!("static/js/suspensions-admin.js");
 // DASH_ASSET_V1: dashboard 單體 inline JS 資產化（粒子/登入卡/SSE+提示音）。
 pub(super) const DASHBOARD_PARTICLES_JS: &str = include_str!("static/js/dashboard-particles.js");
 pub(super) const DASHBOARD_LOGIN_CARD_JS: &str = include_str!("static/js/dashboard-login-card.js");
@@ -504,6 +507,26 @@ pub(super) async fn admin_shares_page_handler(
     // 讓分享管理頁背景與深淺色設定與主介面一致。
     static THEMED: once_cell::sync::Lazy<String> =
         once_cell::sync::Lazy::new(|| inject_theme(SHARES_HTML));
+    attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(THEMED.as_str(), &page.session)), &page, &headers)
+}
+
+// ACCOUNT_SUSPEND_V1: 帳號暫時停權管理頁（僅管理員）。
+pub(super) async fn admin_suspensions_page_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
+        return admin_login_redirect("/admin/suspensions");
+    };
+    if !page.session.is_admin {
+        return (StatusCode::FORBIDDEN, "僅管理員可存取").into_response();
+    }
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
+    }
+    static THEMED: once_cell::sync::Lazy<String> =
+        once_cell::sync::Lazy::new(|| inject_theme(SUSPENSIONS_HTML));
     attach_fresh_cookies(html_page_response(&headers, inject_auth_attrs(THEMED.as_str(), &page.session)), &page, &headers)
 }
 

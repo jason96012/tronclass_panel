@@ -38,6 +38,8 @@ const COMPONENT_FORCE: &str = "trc:force";
 const COMPONENT_REAUTH: &str = "trc:reauth";
 const COMPONENT_HELP: &str = "trc:help";
 const COMPONENT_NUMBER_AUTO_PREFIX: &str = "trc:number-auto:";
+/// NUMBER_AUTO_PICK_V1：多個點名同時等待時，選單上每個點名的按鈕（格式 `trc:number-pick:<帳號>:<點名ID>`）。
+const COMPONENT_NUMBER_PICK_PREFIX: &str = "trc:number-pick:";
 const COMPONENT_ACCOUNT_APPROVE_PREFIX: &str = "trc:account-approve:";
 const COMPONENT_BLOCK_IP_PREFIX: &str = "trc:block-ip:";
 const COMPONENT_UNBLOCK_IP_PREFIX: &str = "trc:unblock-ip:";
@@ -791,11 +793,37 @@ impl DiscordRuntime {
             "Discord button/component",
         );
 
-        if let Some(account_id) = parse_number_auto_custom_id(&component.data.custom_id) {
+        // NUMBER_AUTO_PICK_V1：選單上的單一點名按鈕 → 直接用該點名 ID 送出。
+        if let Some((account_id, rollcall_id)) = parse_number_pick_custom_id(&component.data.custom_id) {
             requests::execute_command(
                 RequestCommand::NumberAutoLookup {
                     account_id: Some(account_id.to_string()),
-                    rollcall_id: None,
+                    rollcall_id: Some(rollcall_id),
+                },
+                &reply_token,
+                &self.requests,
+                &user_id,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        // NUMBER_AUTO_PICK_V1：「自動讀取代碼」按鈕。
+        // 只有一個點名在等待 → 直接送出；兩個以上 → 列出選單讓使用者選（只有按的人看得到）。
+        // 未綁定該帳號的人不列 ID，仍由 execute_command 做授權檢查。
+        if let Some(account_id) = parse_number_auto_custom_id(&component.data.custom_id) {
+            let owned = user_id == self.bot.admin_user_id
+                || self.discord_user_owns_account(&user_id, account_id).await;
+            let waiting = requests::waiting_number_rollcall_ids(account_id);
+            if owned && waiting.len() >= 2 {
+                reply_number_picker(ctx, &component, account_id, &waiting).await?;
+                return Ok(());
+            }
+            let only = if waiting.len() == 1 { Some(waiting[0]) } else { None };
+            requests::execute_command(
+                RequestCommand::NumberAutoLookup {
+                    account_id: Some(account_id.to_string()),
+                    rollcall_id: only,
                 },
                 &reply_token,
                 &self.requests,
@@ -1747,6 +1775,42 @@ async fn reply_interaction(
         .wrap_err("回覆 Discord slash command 失敗")
 }
 
+/// NUMBER_AUTO_PICK_V1：多個數字點名同時等待時，回覆只有按的人看得到的選單，每個點名一顆按鈕。
+async fn reply_number_picker(
+    ctx: &Context,
+    component: &ComponentInteraction,
+    account_id: &str,
+    rollcall_ids: &[u64],
+) -> Result<()> {
+    // Discord 一則訊息最多 5 列、每列 5 顆按鈕，這裡最多列 20 個。
+    let shown: Vec<u64> = rollcall_ids.iter().copied().take(20).collect();
+    let mut rows: Vec<CreateActionRow> = Vec::new();
+    for chunk in shown.chunks(5) {
+        let buttons: Vec<CreateButton> = chunk
+            .iter()
+            .map(|rollcall_id| {
+                CreateButton::new(number_pick_custom_id(account_id, *rollcall_id))
+                    .label(format!("點名 #{rollcall_id}"))
+                    .style(ButtonStyle::Primary)
+            })
+            .collect();
+        rows.push(CreateActionRow::Buttons(buttons));
+    }
+    let text = format!(
+        "帳號 `{account_id}` 目前有 {} 個數字點名同時等待，請選擇要自動讀取哪一個：",
+        rollcall_ids.len()
+    );
+    let builder = CreateInteractionResponseMessage::new()
+        .content(text)
+        .ephemeral(true)
+        .components(rows);
+    component
+        .create_response(&ctx.http, CreateInteractionResponse::Message(builder))
+        .await
+        .into_diagnostic()
+        .wrap_err("回覆 Discord 點名選單失敗")
+}
+
 async fn reply_component(
     ctx: &Context,
     component: &ComponentInteraction,
@@ -1930,6 +1994,12 @@ fn discord_text_audit_action(content: &str) -> Option<&'static str> {
 }
 
 fn discord_component_audit(custom_id: &str) -> (&'static str, Option<String>) {
+    if let Some((account_id, rollcall_id)) = parse_number_pick_custom_id(custom_id) {
+        return (
+            "button_number_pick",
+            Some(format!("account={account_id} rollcall={rollcall_id}")),
+        );
+    }
     if let Some(account_id) = parse_number_auto_custom_id(custom_id) {
         return (
             "button_number_auto_lookup",
@@ -1961,6 +2031,20 @@ fn parse_number_auto_custom_id(value: &str) -> Option<&str> {
     value
         .strip_prefix(COMPONENT_NUMBER_AUTO_PREFIX)
         .filter(|account_id| !account_id.trim().is_empty())
+}
+
+fn number_pick_custom_id(account_id: &str, rollcall_id: u64) -> String {
+    format!("{COMPONENT_NUMBER_PICK_PREFIX}{account_id}:{rollcall_id}")
+}
+
+fn parse_number_pick_custom_id(value: &str) -> Option<(&str, u64)> {
+    let rest = value.strip_prefix(COMPONENT_NUMBER_PICK_PREFIX)?;
+    let (account_id, rollcall_id) = rest.rsplit_once(':')?;
+    if account_id.trim().is_empty() {
+        return None;
+    }
+    let rollcall_id = rollcall_id.parse::<u64>().ok()?;
+    Some((account_id, rollcall_id))
 }
 
 fn parse_account_review_custom_id(value: &str) -> Option<(AccountReviewAction, &str)> {

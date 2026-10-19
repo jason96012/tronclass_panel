@@ -9,6 +9,7 @@
 //! - [`materials`]   教材操作稽核事件
 //! - [`activity`]    登入 / 安全活動事件
 //! - [`blacklist`]   IP 黑名單
+//! - [`account_suspensions`] 帳號暫時停權（到期自動解除）
 //! - [`passkeys`]    WebAuthn passkey 憑證
 //! - [`timetable`]   課表與課表模板
 //! - [`preferences`] 通知 / 上課提醒 / 偵測排程偏好
@@ -22,6 +23,7 @@
 //! 對外仍以 `crate::db::AccountsDb` 與既有型別使用，公開 API 不變；所有型別
 //! 透過下方的 `pub use` 再匯出，維持 `crate::db::Xxx` 路徑。
 
+mod account_suspensions;
 mod accounts;
 mod activity;
 mod auth_throttle;

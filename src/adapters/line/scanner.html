@@ -833,6 +833,9 @@
        「同一個 scanner token 在過期前允許重複送出…流程成功的帳號會自行 unregister」，
        所以重試只會補送給**仍在等待**的帳號，不會造成重複簽到。 */
     const SUBMIT_ATTEMPTS = 3;          /* 1 次 + 最多 2 次重試 */
+    /* SCANNER_NOT_PENDING_V1：這些代碼代表「此帳號已不需要掃碼」（已簽到，或點名已結束），不是錯誤。
+       不重試、不紅字，並停止掃描。 */
+    const NOT_PENDING_CODES = ["account_not_pending", "pending_not_found", "expired"];
     const SUBMIT_RETRY_BASE_MS = 1200;  /* 退避：1.2s → 2.4s */
     /* 連續多久沒解到碼就提示使用者（秒）。 */
     const NO_QR_HINT_SECS = 2.5;
@@ -1198,6 +1201,7 @@
             const failure = new Error(body.error || `回傳失敗（HTTP ${res.status}）`);
             /* 有狀態碼＝學校系統的明確答案 → submitRetryVerdict 會據此決定不重試。 */
             failure.scannerStatus = res.status;
+            failure.scannerCode = body.code || "";
             throw failure;
           }
           return body;
@@ -1249,7 +1253,13 @@
         const aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
         /* ALL_DONE_AUTOSTOP_V1：已經自動收工就不用再報送出失敗（那時全班都已點到，
            這一輪的失敗已經不影響結果），免得紅色訊息蓋掉完成訊息。 */
-        if (!allDoneStopped) {
+        if (err && NOT_PENDING_CODES.indexOf(err.scannerCode) !== -1) {
+          /* 這個帳號已經不在等待名單（已簽到，或點名已結束）：不是錯誤，不重試，停止掃描。 */
+          setStatus("此帳號已不需要掃碼（可能已簽到，或點名已結束），已停止掃描。", "");
+          if (scanning) {
+            try { stopCamera(); } catch (stopErr) { /* 已經關閉 */ }
+          }
+        } else if (!allDoneStopped) {
           const tried = attempts > 1 ? `（已嘗試 ${attempts} 次）` : "";
           /* 離線時留著白話說明：原生錯誤（Failed to fetch）對老師沒有任何意義。 */
           const reason = offlineThisTime

@@ -72,6 +72,13 @@
   .share-qr-box{display:flex;justify-content:center;margin:10px 0}
   .share-actions{display:flex;gap:8px;justify-content:center}
   .td-nowrap{white-space:nowrap}
+  /* SHARE_V2: 存取紀錄展開列、舊版標籤、UA 欄位 */
+  [hidden]{display:none!important}
+  .log-row > td{background:var(--soft,#fafafa);padding:8px 12px}
+  table.log{box-shadow:none;font-size:12px}
+  table.log th,table.log td{padding:6px 8px;font-size:12px}
+  .ua{max-width:320px;word-break:break-all;color:var(--muted,#666)}
+  .tag{display:inline-block;padding:0 6px;border-radius:6px;font-size:11px;background:var(--soft2,#e2e8f0);color:var(--text,#111)}
 </style>
 <style id="SAFE_AREA_TOP_V1">
   /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，

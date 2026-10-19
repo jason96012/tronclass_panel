@@ -85,8 +85,18 @@
         }
         report('branch', 'office-online(OLE2/non-zip)');
         // OLE2 / 非 zip（如 .doc 改名 .docx）→ Office Online，src 用現簽 15 分鐘 /pub/office。
+        // SHARE_V2: 帶 sid 的連結後端不輸出 office_src（避免繞過密碼與次數限制），
+        // 此時舊版 OLE2 格式改提供下載備援，不再嘗試 Office Online。
         var offMeta = document.getElementById('share-office');
-        var src = (offMeta && offMeta.content) || RAW;
+        var src = offMeta && offMeta.content;
+        if (!src) {
+          stage.textContent = '';
+          var note = document.createElement('div');
+          note.className = 'msg';
+          note.textContent = '此舊版 Office 格式無法在此線上預覽，請使用右上角「下載」取得檔案。';
+          stage.appendChild(note);
+          return;
+        }
         stage.innerHTML = '<iframe src="https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(location.origin + src) + '"></iframe>';
       })
       .catch(function (e) { fail('讀取失敗：' + ((e && e.message) || e)); });

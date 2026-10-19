@@ -663,15 +663,30 @@ async fn handle_number_rollcall(
             };
         }
 
-        // 節流與提早結束：若該課程的所有帳號均已完成簽到，不再發送任何伺服器確認請求
+        // 節流與提早結束：數字群組已沒有等待中的帳號時，不再發送任何伺服器確認請求。
+        // H2：只有本帳號確實簽到成功才回報 Success，否則回報 Failed（附原因）。
         if let Some((registry, _)) = number_registered.as_ref() {
             if registry.is_number_group_completed(&config.provider, rollcall.rollcall_id).await {
-                info!(
+                if registry
+                    .is_number_account_completed(&config.provider, rollcall.rollcall_id, &config.id)
+                    .await
+                {
+                    info!(
+                        rollcall_id = rollcall.rollcall_id,
+                        "本帳號已完成數字簽到，數字群組已無等待中的帳號，結束等待"
+                    );
+                    return RollcallResult::Success {
+                        detail: "本帳號已簽到成功（群組已無等待中的帳號）".to_string(),
+                    };
+                }
+                warn!(
                     rollcall_id = rollcall.rollcall_id,
-                    "該課程所有帳號均已完成數字簽到，停止向學校發送請求並結束等待"
+                    "數字群組已無等待中的帳號，但本帳號未簽到成功，結束等待"
                 );
-                return RollcallResult::Success {
-                    detail: "該課程所有帳號均已完成簽到".to_string(),
+                return RollcallResult::Failed {
+                    reason: last_error
+                        .clone()
+                        .unwrap_or_else(|| "數字點名已結束，本帳號未取得簽到成功".to_string()),
                 };
             }
         }
@@ -1257,7 +1272,8 @@ async fn handle_radar_rollcall(
     // 流程與數字點名頁完全相同（註冊 → 通知帶網址 → 頁面輪詢狀態 → 送出座標 → 監控端取用）。
     // 注意：雷達不像數字點名需要「等」輸入（監控每一輪都會重試），所以這裡不阻塞，
     // 只負責把網址送到使用者手上並讓頁面看得到進度。
-    let timeout_secs = config.provider_config.qrcode.scan_timeout_secs;
+    // M4：雷達逾時使用雷達自己的 `radar.scan_timeout_secs`，不再共用 QR 的設定。
+    let timeout_secs = radar_config.scan_timeout_secs;
     let timeout = Duration::from_secs(timeout_secs);
     let radar_registered =
         if let (Some(registry), Some(tx)) = (scanner_registry.as_ref(), radar_tx) {
@@ -1716,15 +1732,30 @@ async fn handle_qrcode_rollcall(
             };
         }
 
-        // 節流與提早結束：若該課程的所有帳號均已完成簽到，不再發送任何伺服器確認請求
+        // 節流與提早結束：掃碼群組已沒有等待中的帳號時，不再發送任何伺服器確認請求。
+        // H2：「沒有人在等」不等於「本帳號成功」——只有本帳號確實簽到成功才回報 Success。
         if let Some((registry, _, _)) = scanner_registered.as_ref() {
             if registry.is_qr_group_completed(&config.provider, rollcall.rollcall_id).await {
-                info!(
+                if registry
+                    .is_qr_account_completed(&config.provider, rollcall.rollcall_id, &config.id)
+                    .await
+                {
+                    info!(
+                        rollcall_id = rollcall.rollcall_id,
+                        "本帳號已完成 QR 簽到，掃碼群組已無等待中的帳號，結束等待"
+                    );
+                    return RollcallResult::Success {
+                        detail: "本帳號已簽到成功（掃碼群組已無等待中的帳號）".to_string(),
+                    };
+                }
+                warn!(
                     rollcall_id = rollcall.rollcall_id,
-                    "該課程所有帳號均已完成 QR 簽到，停止向學校發送請求並結束等待"
+                    "掃碼群組已無等待中的帳號，但本帳號未簽到成功，結束等待"
                 );
-                return RollcallResult::Success {
-                    detail: "該課程所有帳號均已完成簽到".to_string(),
+                return RollcallResult::Failed {
+                    reason: last_error
+                        .clone()
+                        .unwrap_or_else(|| "掃碼點名已結束，本帳號未取得簽到成功".to_string()),
                 };
             }
         }
@@ -1917,14 +1948,18 @@ async fn handle_qrcode_rollcall(
                 last_error = Some(reason);
             }
             QrCodeResult::Error(e) => {
-                if let Some((registry, _, _)) = scanner_registered.as_ref() {
-                    registry
-                        .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
-                        .await;
-                }
+                // H1（QR_ERROR_KEEPS_REGISTRATION_V1）：只有致命錯誤才移出掃碼群組。
+                // 舊寫法先移出再判斷，非致命錯誤（例如學校端暫時封鎖）會讓帳號留在迴圈裡，
+                // 卻已收不到之後的 payload，直到 3 小時上限才結束。
                 if is_auth_error(&e) {
+                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                        registry
+                            .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
+                            .await;
+                    }
                     return RollcallResult::FatalError { reason: e };
                 }
+                warn!(reason = %e, "QR Code 簽到錯誤（非致命），保留在掃碼群組中等待下一筆 payload");
                 last_error = Some(e);
             }
         }

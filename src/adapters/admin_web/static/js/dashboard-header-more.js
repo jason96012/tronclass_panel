@@ -107,6 +107,9 @@
     })();
     var blacklist=addBtn(grid,'moreBlacklistFinalV2','黑名單','secondary', function(){ location.href='/admin/blacklist'; });
     if(blacklist){ blacklist.setAttribute('data-admin-only','1'); blacklist.onclick=function(){ location.href='/admin/blacklist'; }; }
+    // ACCOUNT_SUSPEND_V1：帳號暫時停權（僅管理員）。
+    var suspensions=addBtn(grid,'moreSuspensionsV1','帳號停權','secondary', function(){ location.href='/admin/suspensions'; });
+    if(suspensions){ suspensions.setAttribute('data-admin-only','1'); suspensions.onclick=function(){ location.href='/admin/suspensions'; }; }
     var drive=q('moreDriveFinalV2');
     if(drive) drive.textContent='教材／雲端硬碟';
   }

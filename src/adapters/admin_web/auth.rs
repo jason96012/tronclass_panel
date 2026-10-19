@@ -239,6 +239,9 @@ pub(super) async fn admin_login_handler(
 
     let mut matched = None;
     let mut ran_slow_verify = false;
+    // ACCOUNT_SUSPEND_V1：密碼正確但帳號處於暫時停權時，不進入成功路徑；記下到期時間後
+    // 繼續找其他候選。只有在密碼已驗證通過後才會揭露停權（避免未驗證者探測帳號狀態）。
+    let mut suspended_hit: Option<i64> = None;
     for account in ordered {
         if !account.dashboard_password_hash.is_empty() {
             ran_slow_verify = true;
@@ -248,20 +251,58 @@ pub(super) async fn admin_login_handler(
             )
             .await
             {
-                matched = Some((account, false));
-                break;
+                match active_suspension_until(&state, &account.id).await {
+                    Ok(None) => {
+                        matched = Some((account, false));
+                        break;
+                    }
+                    Ok(Some(until)) => {
+                        suspended_hit = Some(until);
+                        continue;
+                    }
+                    Err(response) => return response,
+                }
             }
             continue;
         }
         if crate::dashboard_auth::verify_first_login_password(password, &account.password) {
-            matched = Some((account, true));
-            break;
+            match active_suspension_until(&state, &account.id).await {
+                Ok(None) => {
+                    matched = Some((account, true));
+                    break;
+                }
+                Ok(Some(until)) => {
+                    suspended_hit = Some(until);
+                    continue;
+                }
+                Err(response) => return response,
+            }
         }
     }
     // LOGIN_TIMING_EQUALIZE_V1：沒有任何候選跑過慢雜湊（帳號不存在／停用／只有 bootstrap
     // 比對）時，補做一次固定假雜湊驗證，讓回應時間與「帳號存在但密碼錯」相近。
     if matched.is_none() && !ran_slow_verify {
         crate::dashboard_auth::burn_dummy_verification(password.to_string()).await;
+    }
+
+    // ACCOUNT_SUSPEND_V1：密碼正確但全部候選都停權中 → 明確告知到期時間（不建立 session）。
+    if matched.is_none() {
+        if let Some(until) = suspended_hit {
+            warn!(username = %username, client = %client, "admin web login refused: account suspended");
+            crate::logs::record_audit(
+                "web",
+                username,
+                "login_suspended",
+                None,
+                None,
+                "Web 管理頁登入遭拒：帳號暫時停權中",
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "account_suspended", "suspended_until": until })),
+            )
+                .into_response();
+        }
     }
 
     let Some((account, must_change_password)) = matched else {
@@ -516,6 +557,29 @@ pub(super) async fn admin_logout_redirect_handler(
         header::HeaderValue::from_static("\"cache\", \"cookies\", \"storage\""),
     );
     response
+}
+
+/// ACCOUNT_SUSPEND_V1：回傳帳號目前生效中的停權到期時間（Unix 秒）；沒有停權則 `None`。
+/// 查詢失敗時回傳 503（fail closed：寧可暫時無法登入，也不放行可能被停權的帳號）。
+async fn active_suspension_until(
+    state: &AdminWebState,
+    account_id: &str,
+) -> std::result::Result<Option<i64>, Response> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    match state.accounts_db.account_suspension_active(account_id, now).await {
+        Ok(row) => Ok(row.map(|row| row.until)),
+        Err(error) => {
+            warn!(account = %account_id, error = %error, "login suspension lookup failed");
+            Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "internal server error" })),
+            )
+                .into_response())
+        }
+    }
 }
 
 pub(super) async fn admin_session_refresh_handler(

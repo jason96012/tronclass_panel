@@ -874,6 +874,27 @@
     }[a] || a || '-';
   }
 
+  /* LOGIN_RESULT_FROM_RESULT_V1：登入事件的成敗以 result 為準，規則與後端
+     blacklist.rs 的「登入失敗」判斷一致：
+       action=login_failed，或 result 為 fail/failed/error/false，
+       或 action=login 且 result 不是 success，都算失敗。
+     沒有 result 的舊資料才退回看 action 與訊息。 */
+  function loginIsOk(x){
+    if (!x) return false;
+    const a = String(x.action || '').trim().toLowerCase();
+    const r = String(x.result || '').trim().toLowerCase();
+    if (r) {
+      if (a === 'login_failed') return false;
+      if (['fail', 'failed', 'error', 'false'].indexOf(r) >= 0) return false;
+      if (a === 'login') return r === 'success';
+      return r === 'success' || r === 'ok' || a === 'passkey_login';
+    }
+    if (typeof x.success === 'boolean') return x.success;
+    const msg = String(x.details || x.detail || x.message || '');
+    if (/fail|reject|locked|rate_limited/.test(a) || /失敗|rejected|locked/i.test(msg)) return false;
+    return a === 'login' || a === 'passkey_login';
+  }
+
   /* 1. 渲染登入審計 */
   function renderLogin(){
     const kw = (q('loginSearch') ? q('loginSearch').value : '').trim().toLowerCase();
@@ -882,7 +903,7 @@
     
     if (sf) {
       arr = arr.filter(x => {
-        const isOk = x.result === 'success' || x.action === 'login' || x.action === 'passkey_login' || x.success === true;
+        const isOk = loginIsOk(x);
         return sf === 'success' ? isOk : !isOk;
       });
     }
@@ -893,7 +914,7 @@
     // 桌面表格
     if (q('loginBody')) {
       q('loginBody').innerHTML = arr.length ? arr.map(x => {
-        const isOk = x.result === 'success' || x.action === 'login' || x.action === 'passkey_login' || x.success === true;
+        const isOk = loginIsOk(x);
         return '<tr>' +
           '<td class="td-time">' + fmtTime(x.time || x.timestamp) + '</td>' +
           '<td>' + pill(isOk ? 'ok' : 'bad', isOk ? '成功' : '失敗') + '</td>' +
@@ -908,7 +929,7 @@
     // 手機卡片 (時間、人員、結果、動作)
     if (q('loginCards')) {
       q('loginCards').innerHTML = arr.length ? arr.map(x => {
-        const isOk = x.result === 'success' || x.action === 'login' || x.action === 'passkey_login' || x.success === true;
+        const isOk = loginIsOk(x);
         return '<div class="record-card">' +
           '<div class="card-header-row">' +
             '<span class="card-time">' + fmtTime(x.time || x.timestamp) + '</span>' +
@@ -1012,8 +1033,8 @@
   }
 
   function updateStats(){
-    const okCount = loginList.filter(x => x.result === 'success' || x.action === 'login' || x.action === 'passkey_login' || x.success === true).length;
-    const failCount = loginList.filter(x => !(x.result === 'success' || x.action === 'login' || x.action === 'passkey_login' || x.success === true)).length;
+    const okCount = loginList.filter(x => loginIsOk(x)).length;
+    const failCount = loginList.filter(x => !(loginIsOk(x))).length;
     if (q('loginOk')) q('loginOk').textContent = okCount;
     if (q('loginFail')) q('loginFail').textContent = failCount;
     if (q('fileEvents')) q('fileEvents').textContent = fileList.length;

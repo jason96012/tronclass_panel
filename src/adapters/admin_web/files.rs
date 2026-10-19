@@ -1029,6 +1029,8 @@ const SHARE_TTL_SECS: u64 = 7 * 24 * 60 * 60;
 /// 已登入後台：核發「免登入、可預覽」的公開分享連結（/pub/share?path=&exp=&sig=）。
 /// 簽章只綁 path+exp，時效內任何人點開都能預覽、不能列舉其他檔案。
 // SHARE_ADMIN_V1: 已發出分享連結的記錄（檔案型 config/share_links.jsonl，免改 DB schema）。
+// SHARE_V2: 新式分享連結（帶 sid）才會寫入下列欄位；舊紀錄反序列化後為預設值，
+// 行為與舊版完全相同（v1 簽章、無密碼、無次數上限、無存取紀錄）。
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub(super) struct ShareLinkRecord {
     pub path: String,
@@ -1036,7 +1038,35 @@ pub(super) struct ShareLinkRecord {
     pub created: i64,
     #[serde(default)]
     pub revoked: bool,
+    #[serde(default)]
+    pub sid: String,
+    // Argon2id PHC 字串；None 代表無密碼。
+    #[serde(default)]
+    pub password_hash: Option<String>,
+    // 預覽頁開啟次數上限；None 代表不限。
+    #[serde(default)]
+    pub max_views: Option<u32>,
+    #[serde(default)]
+    pub views: u32,
+    #[serde(default)]
+    pub access: Vec<ShareAccessEntry>,
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+pub(super) struct ShareAccessEntry {
+    pub time: i64,
+    pub ip: String,
+    pub ua: String,
+    // view / download / unlock_ok / unlock_fail / blocked_limit
+    pub action: String,
+}
+
+const SHARE_ACCESS_LOG_MAX: usize = 200;
+const SHARE_TTL_CHOICES: [u64; 5] = [3600, 86_400, 259_200, 604_800, 2_592_000];
+const SHARE_PASSWORD_MIN_CHARS: usize = 4;
+const SHARE_PASSWORD_MAX_CHARS: usize = 64;
+const SHARE_MAX_VIEWS_LIMIT: u32 = 10_000;
+const SHARE_UNLOCK_RATE_LIMIT: u32 = 10;
 
 fn share_links_file() -> std::path::PathBuf {
     std::path::Path::new("config/share_links.jsonl").to_path_buf()
@@ -1084,6 +1114,11 @@ fn record_share_link(path: &str, exp: i64) {
             exp,
             created: office_now_secs() as i64,
             revoked: false,
+            sid: String::new(),
+            password_hash: None,
+            max_views: None,
+            views: 0,
+            access: Vec::new(),
         });
         persist_share_links(&list);
     }
@@ -1093,7 +1128,7 @@ fn revoke_share_link(path: &str, exp: i64) -> bool {
     if let Ok(mut list) = SHARE_LINKS.lock() {
         let mut changed = false;
         for r in list.iter_mut() {
-            if r.path == path && r.exp == exp && !r.revoked {
+            if r.sid.is_empty() && r.path == path && r.exp == exp && !r.revoked {
                 r.revoked = true;
                 changed = true;
             }
@@ -1107,11 +1142,152 @@ fn revoke_share_link(path: &str, exp: i64) -> bool {
     }
 }
 
+// SHARE_V1 紀錄（無 sid）才以 path+exp 比對，避免與 SHARE_V2 紀錄互相影響。
 fn is_share_revoked(path: &str, exp: i64) -> bool {
     SHARE_LINKS
         .lock()
-        .map(|l| l.iter().any(|r| r.path == path && r.exp == exp && r.revoked))
+        .map(|l| {
+            l.iter()
+                .any(|r| r.sid.is_empty() && r.path == path && r.exp == exp && r.revoked)
+        })
         .unwrap_or(false)
+}
+
+// SHARE_V2: 新式分享連結（帶 sid）。簽章綁定 sid，使用者無法移除 sid 來繞過
+// 密碼或次數限制（移除後會變成 v1 驗證，而 v1 簽章不涵蓋 sid，因此會失敗）。
+fn share_sig_v2(path: &str, exp: u64, sid: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(OFFICE_PREVIEW_SECRET.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(format!("share-v2|{path}|{exp}|{sid}").as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn verify_share_sig_v2(path: &str, exp: u64, sid: &str, sig: &str) -> bool {
+    hex::decode(sig)
+        .map(|raw| {
+            let mut mac = Hmac::<Sha256>::new_from_slice(OFFICE_PREVIEW_SECRET.as_bytes())
+                .expect("HMAC accepts any key length");
+            mac.update(format!("share-v2|{path}|{exp}|{sid}").as_bytes());
+            mac.verify_slice(&raw).is_ok()
+        })
+        .unwrap_or(false)
+}
+
+/// 密碼解鎖 cookie 的值：綁定 sid 與 exp，由伺服器金鑰產生，不含密碼本身。
+fn share_unlock_token(sid: &str, exp: u64) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(OFFICE_PREVIEW_SECRET.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(format!("share-unlock|{sid}|{exp}").as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
+fn share_unlock_cookie_name(sid: &str) -> String {
+    format!("share_unlock_{sid}")
+}
+
+/// sid 只接受 32 位十六進位（由伺服器產生），避免被拿來當 cookie 名稱或查詢注入。
+fn share_sid_is_valid(sid: &str) -> bool {
+    sid.len() == 32 && sid.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn new_share_sid() -> String {
+    use argon2::password_hash::rand_core::RngCore;
+    let mut buf = [0u8; 16];
+    argon2::password_hash::rand_core::OsRng.fill_bytes(&mut buf);
+    hex::encode(buf)
+}
+
+fn share_cookie_value(headers: &HeaderMap, want: &str) -> Option<String> {
+    let cookies = headers.get(header::COOKIE)?.to_str().ok()?;
+    for pair in cookies.split(';') {
+        let Some((name, value)) = pair.trim().split_once('=') else {
+            continue;
+        };
+        if name.trim() == want && !value.trim().is_empty() {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
+}
+
+fn share_snapshot_by_sid(sid: &str) -> Option<ShareLinkRecord> {
+    let list = SHARE_LINKS.lock().ok()?;
+    let found = list.iter().find(|r| !r.sid.is_empty() && r.sid == sid).cloned();
+    found
+}
+
+fn share_push_entry(rec: &mut ShareLinkRecord, ip: &str, ua: &str, action: &str) {
+    rec.access.push(ShareAccessEntry {
+        time: office_now_secs() as i64,
+        ip: sanitize_log_field(ip, 64),
+        ua: sanitize_log_field(ua, 160),
+        action: action.to_string(),
+    });
+    let overflow = rec.access.len().saturating_sub(SHARE_ACCESS_LOG_MAX);
+    if overflow > 0 {
+        rec.access.drain(0..overflow);
+    }
+}
+
+fn share_access_append(sid: &str, ip: &str, ua: &str, action: &str) {
+    let Ok(mut list) = SHARE_LINKS.lock() else {
+        return;
+    };
+    let Some(i) = list.iter().position(|r| !r.sid.is_empty() && r.sid == sid) else {
+        return;
+    };
+    share_push_entry(&mut list[i], ip, ua, action);
+    persist_share_links(&list);
+}
+
+/// 計算一次「開啟預覽頁」。回傳 false 代表已達次數上限（會記錄 blocked_limit，不再計數）。
+fn share_count_view(sid: &str, ip: &str, ua: &str) -> bool {
+    let Ok(mut list) = SHARE_LINKS.lock() else {
+        return false;
+    };
+    let Some(i) = list.iter().position(|r| !r.sid.is_empty() && r.sid == sid) else {
+        return false;
+    };
+    let limit_hit = list[i].max_views.is_some_and(|max| list[i].views >= max);
+    if limit_hit {
+        share_push_entry(&mut list[i], ip, ua, "blocked_limit");
+    } else {
+        list[i].views = list[i].views.saturating_add(1);
+        share_push_entry(&mut list[i], ip, ua, "view");
+    }
+    persist_share_links(&list);
+    !limit_hit
+}
+
+fn revoke_share_by_sid(sid: &str) -> bool {
+    let Ok(mut list) = SHARE_LINKS.lock() else {
+        return false;
+    };
+    let Some(i) = list.iter().position(|r| !r.sid.is_empty() && r.sid == sid) else {
+        return false;
+    };
+    if list[i].revoked {
+        return false;
+    }
+    list[i].revoked = true;
+    persist_share_links(&list);
+    true
+}
+
+/// 分享連結的公開網址（前端直接使用，不必再自行組 sig）。
+fn share_public_path(rec: &ShareLinkRecord) -> String {
+    let exp = rec.exp as u64;
+    if rec.sid.is_empty() {
+        let sig = office_sig(&rec.path, exp);
+        format!("/pub/share?path={}&exp={exp}&sig={sig}", pct(&rec.path))
+    } else {
+        let sig = share_sig_v2(&rec.path, exp, &rec.sid);
+        format!(
+            "/pub/share?path={}&exp={exp}&sig={sig}&sid={}",
+            pct(&rec.path),
+            rec.sid
+        )
+    }
 }
 
 // 管理員：列出所有分享連結（含伺服器端重算的 sig，前端組出完整網址 + QR）。
@@ -1133,12 +1309,36 @@ pub(super) async fn admin_shares_list_handler(
         .map(|list| {
             list.iter()
                 .map(|r| {
+                    // SHARE_V2 統計：views／max_views／has_password／last_access，
+                    // 以及最近 50 筆存取紀錄（新到舊）。舊紀錄這些欄位為預設值。
+                    let access: Vec<serde_json::Value> = r
+                        .access
+                        .iter()
+                        .rev()
+                        .take(50)
+                        .map(|a| {
+                            json!({
+                                "time": a.time,
+                                "ip": a.ip,
+                                "ua": a.ua,
+                                "action": a.action,
+                            })
+                        })
+                        .collect();
                     json!({
                         "path": r.path,
                         "exp": r.exp,
                         "created": r.created,
                         "revoked": r.revoked,
                         "sig": office_sig(&r.path, r.exp as u64),
+                        "sid": r.sid,
+                        "public_path": share_public_path(r),
+                        "has_password": r.password_hash.is_some(),
+                        "max_views": r.max_views,
+                        "views": r.views,
+                        "last_access": r.access.last().map(|a| a.time),
+                        "access_total": r.access.len(),
+                        "access": access,
                     })
                 })
                 .collect()
@@ -1153,6 +1353,9 @@ pub(super) struct RevokeShareRequest {
     path: String,
     #[serde(default)]
     exp: i64,
+    // SHARE_V2: 有 sid 時以 sid 精準撤銷（同一檔案、同一到期時間的多條連結不會互相誤傷）。
+    #[serde(default)]
+    sid: String,
 }
 
 // 管理員：撤銷指定分享連結。
@@ -1169,7 +1372,11 @@ pub(super) async fn admin_shares_revoke_handler(
     if !session.is_admin {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "admin only" }))).into_response();
     }
-    let changed = revoke_share_link(&body.path, body.exp);
+    let changed = if !body.sid.is_empty() {
+        revoke_share_by_sid(&body.sid)
+    } else {
+        revoke_share_link(&body.path, body.exp)
+    };
     (StatusCode::OK, Json(json!({ "revoked": changed }))).into_response()
 }
 
@@ -1194,6 +1401,396 @@ pub(super) async fn admin_files_share_link_handler(
     record_share_link(&rel_str, exp as i64);
     let public_path = format!("/pub/share?path={}&exp={exp}&sig={sig}", pct(&rel_str));
     (StatusCode::OK, Json(json!({ "public_path": public_path }))).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminShareCreateRequest {
+    #[serde(default)]
+    path: String,
+    // 有效期秒數；0 代表預設 7 天，其餘只接受 SHARE_TTL_CHOICES。
+    #[serde(default)]
+    ttl_secs: u64,
+    // 空字串代表無密碼；否則 4–64 字元。
+    #[serde(default)]
+    password: String,
+    // 0 代表不限；否則 1–SHARE_MAX_VIEWS_LIMIT。
+    #[serde(default)]
+    max_views: u32,
+}
+
+fn bad_request_response(message: &str) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response()
+}
+
+fn material_rel_string(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+// SHARE_V2: 建立可自訂有效期／密碼／檢視次數上限的分享連結（新端點；舊 share-link 保留原行為）。
+// 密碼只放在 JSON body（不進 query string、不進日誌），伺服器僅保存 Argon2id 雜湊。
+pub(super) async fn admin_files_share_link2_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(req): Json<AdminShareCreateRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
+        return response;
+    }
+    let Some(rel) = safe_relative_path(&req.path).filter(|p| !p.as_os_str().is_empty()) else {
+        return bad_request_response("invalid path");
+    };
+    let ttl = if req.ttl_secs == 0 {
+        SHARE_TTL_SECS
+    } else if SHARE_TTL_CHOICES.contains(&req.ttl_secs) {
+        req.ttl_secs
+    } else {
+        return bad_request_response("有效期不在允許範圍內");
+    };
+    let password_chars = req.password.chars().count();
+    if password_chars > 0
+        && !(SHARE_PASSWORD_MIN_CHARS..=SHARE_PASSWORD_MAX_CHARS).contains(&password_chars)
+    {
+        return bad_request_response("分享密碼需為 4–64 個字元（留空代表不設密碼）");
+    }
+    if req.max_views > SHARE_MAX_VIEWS_LIMIT {
+        return bad_request_response("檢視次數上限需介於 1–10000（0 代表不限）");
+    }
+    let max_views = if req.max_views == 0 { None } else { Some(req.max_views) };
+
+    let root = session_materials_root(&session);
+    let path = match secure_existing_material_path_response(&root, &rel, "file not found") {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    if !path.is_file() {
+        return bad_request_response("只能分享檔案");
+    }
+    let rel_str = rel.to_string_lossy().into_owned();
+
+    let password_hash = if password_chars == 0 {
+        None
+    } else {
+        let password = req.password.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::dashboard_auth::hash_share_password(&password)
+        })
+        .await
+        {
+            Ok(Ok(hash)) => Some(hash),
+            _ => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "分享密碼處理失敗" })),
+                )
+                    .into_response()
+            }
+        }
+    };
+
+    let now = office_now_secs();
+    let exp = now + ttl;
+    let sid = new_share_sid();
+    let has_password = password_hash.is_some();
+    let record = ShareLinkRecord {
+        path: rel_str,
+        exp: exp as i64,
+        created: now as i64,
+        revoked: false,
+        sid: sid.clone(),
+        password_hash,
+        max_views,
+        views: 0,
+        access: Vec::new(),
+    };
+    let public_path = share_public_path(&record);
+    match SHARE_LINKS.lock() {
+        Ok(mut list) => {
+            list.push(record);
+            persist_share_links(&list);
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "分享紀錄寫入失敗" })),
+            )
+                .into_response()
+        }
+    }
+    crate::logs::record_audit(
+        "web",
+        &session.account_id,
+        "material_share",
+        None,
+        Some(req.path.as_str()),
+        format!(
+            "建立分享連結（有效 {ttl} 秒{}{}）",
+            if has_password { "，含密碼" } else { "" },
+            max_views
+                .map(|m| format!("，檢視上限 {m}"))
+                .unwrap_or_default()
+        ),
+    );
+    (
+        StatusCode::OK,
+        Json(json!({
+            "public_path": public_path,
+            "sid": sid,
+            "exp": exp,
+            "has_password": has_password,
+            "max_views": max_views,
+        })),
+    )
+        .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminFileRenameRequest {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    new_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminFileMoveRequest {
+    #[serde(default)]
+    path: String,
+    // 目的資料夾的相對路徑；空字串代表教材根目錄。
+    #[serde(default)]
+    dest_folder: String,
+}
+
+// MATERIAL_ITEM_NAME_V1: 改名的名稱規則（只允許單一路徑段，防路徑穿越與跨平台問題）。
+fn validate_material_item_name(raw: &str) -> std::result::Result<String, &'static str> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err("名稱不可為空");
+    }
+    if name.chars().count() > 200 {
+        return Err("名稱過長（上限 200 字）");
+    }
+    if name == "." || name == ".." {
+        return Err("名稱不合法");
+    }
+    if name.chars().any(|c| {
+        c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
+    }) {
+        return Err("名稱不可包含 / \\ : * ? \" < > | 或控制字元");
+    }
+    Ok(name.to_string())
+}
+
+// MATERIAL_RENAME_V1: 改名（同一資料夾內）。目標已存在一律回 409，不覆蓋。
+pub(super) async fn admin_files_rename_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(req): Json<AdminFileRenameRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
+        return response;
+    }
+    let Some(rel) = safe_relative_path(&req.path).filter(|p| !p.as_os_str().is_empty()) else {
+        return bad_request_response("invalid path");
+    };
+    let new_name = match validate_material_item_name(&req.new_name) {
+        Ok(name) => name,
+        Err(message) => return bad_request_response(message),
+    };
+    let root = session_materials_root(&session);
+    let src = match secure_existing_material_path_response(&root, &rel, "file not found") {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+    let Some(parent) = src.parent().map(std::path::Path::to_path_buf) else {
+        return bad_request_response("invalid path");
+    };
+    let old_name = src
+        .file_name()
+        .and_then(|v| v.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let rel_parent = rel
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    let new_rel = rel_parent.join(&new_name);
+    let new_rel_str = material_rel_string(&new_rel);
+    let old_rel_str = material_rel_string(&rel);
+    if old_name == new_name {
+        return (StatusCode::OK, Json(json!({ "ok": true, "path": new_rel_str }))).into_response();
+    }
+    let dst = parent.join(&new_name);
+    // symlink_metadata 會把懸空符號連結也視為「已存在」，避免被覆寫。
+    if std::fs::symlink_metadata(&dst).is_ok() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "同名項目已存在" })),
+        )
+            .into_response();
+    }
+    let is_dir = src.is_dir();
+    let size = if is_dir {
+        0
+    } else {
+        std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0)
+    };
+    let folder = material_rel_string(&rel_parent);
+    match tokio::fs::rename(&src, &dst).await {
+        Ok(()) => {
+            record_material_event(
+                &state,
+                &session.account_id,
+                "rename",
+                &new_rel_str,
+                &folder,
+                &new_name,
+                size,
+                "success",
+                &format!("material_rename_history:from={old_rel_str}"),
+            )
+            .await;
+            invalidate_materials_list_cache().await;
+            invalidate_materials_usage_cache().await;
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "material_rename",
+                None,
+                Some(old_rel_str.as_str()),
+                format!("改名為 {new_name}"),
+            );
+            (StatusCode::OK, Json(json!({ "ok": true, "path": new_rel_str }))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": super::public_error("改名失敗：", &e) })),
+        )
+            .into_response(),
+    }
+}
+
+// MATERIAL_MOVE_V1: 移動檔案／資料夾到既有的目的資料夾。
+// 規則：目的地必須是既有目錄（空字串 = 根目錄）；目標同名一律 409；
+// 資料夾不可移入自己或其子資料夾；所有路徑都經 secure_existing_material_path 檢查。
+pub(super) async fn admin_files_move_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(req): Json<AdminFileMoveRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if let Err(response) = validate_admin_text(&req.path, ADMIN_MAX_PATH_BYTES, "path") {
+        return response;
+    }
+    let Some(rel) = safe_relative_path(&req.path).filter(|p| !p.as_os_str().is_empty()) else {
+        return bad_request_response("invalid path");
+    };
+    let root = session_materials_root(&session);
+    let src = match secure_existing_material_path_response(&root, &rel, "file not found") {
+        Ok(path) => path,
+        Err(response) => return response,
+    };
+
+    let dest_rel: std::path::PathBuf = if req.dest_folder.trim().is_empty() {
+        std::path::PathBuf::new()
+    } else {
+        if let Err(response) =
+            validate_admin_text(&req.dest_folder, ADMIN_MAX_PATH_BYTES, "dest_folder")
+        {
+            return response;
+        }
+        match safe_relative_path(&req.dest_folder) {
+            Some(path) => path,
+            None => return bad_request_response("invalid dest_folder"),
+        }
+    };
+    let dest_dir = if dest_rel.as_os_str().is_empty() {
+        match root.canonicalize() {
+            Ok(path) => path,
+            Err(_) => return bad_request_response("目的資料夾不存在"),
+        }
+    } else {
+        match secure_existing_material_path_response(&root, &dest_rel, "folder not found") {
+            Ok(path) => path,
+            Err(response) => return response,
+        }
+    };
+    if !dest_dir.is_dir() {
+        return bad_request_response("目的地不是資料夾");
+    }
+    let is_dir = src.is_dir();
+    if is_dir && dest_dir.starts_with(&src) {
+        return bad_request_response("不能移動到自己或其子資料夾");
+    }
+    let Some(name) = src.file_name().map(std::ffi::OsStr::to_os_string) else {
+        return bad_request_response("invalid path");
+    };
+    if src.parent() == Some(dest_dir.as_path()) {
+        return bad_request_response("項目已在該資料夾中");
+    }
+    let dst = dest_dir.join(&name);
+    if std::fs::symlink_metadata(&dst).is_ok() {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "目的資料夾已有同名項目" })),
+        )
+            .into_response();
+    }
+    let name_str = name.to_string_lossy().into_owned();
+    let new_rel = dest_rel.join(&name_str);
+    let new_rel_str = material_rel_string(&new_rel);
+    let old_rel_str = material_rel_string(&rel);
+    let folder = material_rel_string(&dest_rel);
+    let size = if is_dir {
+        0
+    } else {
+        std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0)
+    };
+    match tokio::fs::rename(&src, &dst).await {
+        Ok(()) => {
+            record_material_event(
+                &state,
+                &session.account_id,
+                "move",
+                &new_rel_str,
+                &folder,
+                &name_str,
+                size,
+                "success",
+                &format!("material_move_history:from={old_rel_str}"),
+            )
+            .await;
+            invalidate_materials_list_cache().await;
+            invalidate_materials_usage_cache().await;
+            crate::logs::record_audit(
+                "web",
+                &session.account_id,
+                "material_move",
+                None,
+                Some(old_rel_str.as_str()),
+                format!("移動到 {}", if folder.is_empty() { "/" } else { folder.as_str() }),
+            );
+            (StatusCode::OK, Json(json!({ "ok": true, "path": new_rel_str }))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": super::public_error("移動失敗：", &e) })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1235,11 +1832,16 @@ static PUB_RATE_LIMIT: once_cell::sync::Lazy<
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 fn pub_rate_exceeded(ip: &str, limit: u32, window_secs: u64) -> bool {
+    pub_rate_exceeded_scoped("", ip, limit, window_secs)
+}
+
+// SHARE_V2: 分享密碼解鎖使用獨立計數（scope 前綴），避免與一般分享頁請求互相影響。
+fn pub_rate_exceeded_scoped(scope: &str, ip: &str, limit: u32, window_secs: u64) -> bool {
     // PUB_RATE_GROUP_KEY_V1（fix120）：原本以原始 IP 字串當鍵——攻擊者在 IPv6
     // 隱私位址空間逐請求輪換，即可無限繞過公開端點限速（分享頁 120/分、
     // 預覽紀錄 10/分），且每次輪換都讓記憶體多長一筆。改成與黑名單／登入節流
     // 同一把尺（IP_BLACKLIST_V6_GROUP_V1）：IPv6 收斂成 /64、IPv4-mapped 先收斂。
-    let key = crate::trusted_ip::blacklist_group_key(ip);
+    let key = format!("{scope}{}", crate::trusted_ip::blacklist_group_key(ip));
     let now = office_now_secs();
     let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
         return false;
@@ -1308,6 +1910,9 @@ pub(super) struct PublicOfficeQuery {
     // 讓分享頁 fetch 與 Office Online 的 src 都指向「已驗證有效」的同一端點。
     #[serde(default)]
     raw: Option<String>,
+    // SHARE_V2: 新式分享連結的隨機 id（32 位十六進位）；缺省代表舊版 v1 連結。
+    #[serde(default)]
+    sid: Option<String>,
 }
 
 /// 公開端點：驗證簽章與時效後串流原始檔案（供微軟檢視器抓取）。不驗證 session。
@@ -1390,6 +1995,156 @@ __SCRIPTS__
 </body>
 </html>"#;
 
+fn share_request_ua(headers: &HeaderMap) -> String {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
+}
+
+// SHARE_V2: 密碼頁。使用純 HTML 表單 POST（form-action 'self'），不需要 JS，也不需要 inline script／style。
+const SHARE_GATE_PAGE: &str = r#"<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>需要密碼才能開啟</title>
+<link rel="stylesheet" href="/pub/static/css/share.css">
+</head>
+<body>
+<main>
+<h1>此分享需要密碼</h1>
+<p>請輸入分享者提供的密碼以開啟檔案。</p>
+<form method="post" action="/pub/share/unlock">
+<input type="hidden" name="path" value="__PATH__">
+<input type="hidden" name="exp" value="__EXP__">
+<input type="hidden" name="sig" value="__SIG__">
+<input type="hidden" name="sid" value="__SID__">
+<label>密碼 <input type="password" name="password" required minlength="4" maxlength="64" autocomplete="off" autofocus></label>
+<button type="submit">開啟</button>
+__ERROR__
+</form>
+</main>
+</body>
+</html>"#;
+
+const SHARE_GATE_CSP: &str = "default-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; style-src 'self'; img-src 'self' data:";
+
+fn share_password_gate_response(
+    path: &str,
+    exp: u64,
+    sig: &str,
+    sid: &str,
+    error: Option<&str>,
+    status: StatusCode,
+) -> Response {
+    let esc = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+    };
+    let error_html = error
+        .map(|e| format!("<p role=\"alert\">{}</p>", esc(e)))
+        .unwrap_or_default();
+    let page = SHARE_GATE_PAGE
+        .replace("__PATH__", &esc(path))
+        .replace("__EXP__", &exp.to_string())
+        .replace("__SIG__", &esc(sig))
+        .replace("__SID__", &esc(sid))
+        .replace("__ERROR__", &error_html);
+    let page = super::asset_versions::rewrite_asset_versions(&page).into_owned();
+    let mut res = Response::new(page.into());
+    *res.status_mut() = status;
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("text/html; charset=utf-8"),
+    );
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(SHARE_GATE_CSP),
+    );
+    res
+}
+
+/// SHARE_V2: 分享密碼解鎖（POST /pub/share/unlock，表單欄位：path、exp、sig、sid、password）。
+/// 成功後設定 HttpOnly 解鎖 cookie（Path=/pub，到期與連結相同）並導回分享頁；
+/// 失敗回 401 密碼頁並記錄 unlock_fail。密碼只在 body 中傳遞，不進 URL 與日誌。
+pub(super) async fn public_share_unlock_handler(
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if pub_rate_exceeded_scoped("unlock:", &ip, SHARE_UNLOCK_RATE_LIMIT, 60) {
+        return too_many_requests_response();
+    }
+    let mut form = std::collections::HashMap::<String, String>::new();
+    for (key, value) in url::form_urlencoded::parse(&body) {
+        form.insert(key.into_owned(), value.into_owned());
+    }
+    let field = |name: &str| form.get(name).cloned().unwrap_or_default();
+    let path = field("path");
+    let sid = field("sid");
+    let sig = field("sig");
+    let password = field("password");
+    let exp: u64 = field("exp").parse().unwrap_or(0);
+    if path.is_empty() || exp == 0 || !share_sid_is_valid(&sid) {
+        return (StatusCode::BAD_REQUEST, "missing params").into_response();
+    }
+    if office_now_secs() > exp {
+        return (StatusCode::FORBIDDEN, "分享連結已過期").into_response();
+    }
+    if !verify_share_sig_v2(&path, exp, &sid, &sig) {
+        return (StatusCode::FORBIDDEN, "分享連結無效").into_response();
+    }
+    let Some(rec) = share_snapshot_by_sid(&sid).filter(|r| r.path == path) else {
+        return (StatusCode::FORBIDDEN, "分享連結無效").into_response();
+    };
+    if rec.revoked {
+        return (StatusCode::FORBIDDEN, "分享連結已撤銷").into_response();
+    }
+    let ua = share_request_ua(&headers);
+    if let Some(hash) = rec.password_hash.clone() {
+        let ok = crate::dashboard_auth::verify_dashboard_password_async(password, hash).await;
+        if !ok {
+            share_access_append(&sid, &ip, &ua, "unlock_fail");
+            return share_password_gate_response(
+                &path,
+                exp,
+                &sig,
+                &sid,
+                Some("密碼錯誤，請再試一次。"),
+                StatusCode::UNAUTHORIZED,
+            );
+        }
+        share_access_append(&sid, &ip, &ua, "unlock_ok");
+    }
+    let token = share_unlock_token(&sid, exp);
+    let max_age = exp.saturating_sub(office_now_secs());
+    let cookie = format!(
+        "{}={token}; Path=/pub; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax",
+        share_unlock_cookie_name(&sid)
+    );
+    let location = format!(
+        "/pub/share?path={}&exp={exp}&sig={sig}&sid={sid}",
+        pct(&path)
+    );
+    let mut res = StatusCode::SEE_OTHER.into_response();
+    let h = res.headers_mut();
+    if let Ok(v) = HeaderValue::from_str(&location) {
+        h.insert(header::LOCATION, v);
+    }
+    if let Ok(v) = HeaderValue::from_str(&cookie) {
+        h.append(header::SET_COOKIE, v);
+    }
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    res
+}
+
 /// 公開分享預覽頁：驗證簽章與時效後回傳一個免登入的預覽 HTML。不驗證 session。
 pub(super) async fn public_share_preview_handler(
     ClientIp(ip): ClientIp,
@@ -1408,11 +2163,33 @@ pub(super) async fn public_share_preview_handler(
         tracing::warn!(path = %path, exp, "pub share rejected: link expired");
         return (StatusCode::FORBIDDEN, "分享連結已過期").into_response();
     }
-    if !verify_office_sig(&path, exp, &sig) {
-        tracing::warn!(path = %path, exp, "pub share rejected: bad signature");
-        return (StatusCode::FORBIDDEN, "分享連結無效").into_response();
-    }
-    if is_share_revoked(&path, exp as i64) {
+    // SHARE_V2: 帶 sid 的連結改用 v2 簽章（綁定 sid），並讀取其密碼／次數狀態；
+    // 不帶 sid 的舊連結維持 v1 行為。移除 sid 參數會讓 v2 簽章失效，無法繞過限制。
+    let sid = query.sid.clone().filter(|s| !s.is_empty());
+    let share_rec: Option<ShareLinkRecord> = match &sid {
+        Some(sid) => {
+            if !share_sid_is_valid(sid) || !verify_share_sig_v2(&path, exp, sid, &sig) {
+                tracing::warn!(path = %path, exp, "pub share rejected: bad v2 signature");
+                return (StatusCode::FORBIDDEN, "分享連結無效").into_response();
+            }
+            match share_snapshot_by_sid(sid) {
+                Some(rec) if rec.path == path => Some(rec),
+                _ => return (StatusCode::FORBIDDEN, "分享連結無效").into_response(),
+            }
+        }
+        None => {
+            if !verify_office_sig(&path, exp, &sig) {
+                tracing::warn!(path = %path, exp, "pub share rejected: bad signature");
+                return (StatusCode::FORBIDDEN, "分享連結無效").into_response();
+            }
+            None
+        }
+    };
+    let revoked = match &share_rec {
+        Some(rec) => rec.revoked,
+        None => is_share_revoked(&path, exp as i64),
+    };
+    if revoked {
         tracing::warn!(path = %path, exp, "pub share rejected: revoked");
         return (StatusCode::FORBIDDEN, "分享連結已撤銷").into_response();
     }
@@ -1423,9 +2200,38 @@ pub(super) async fn public_share_preview_handler(
     if !full.is_file() {
         return (StatusCode::NOT_FOUND, "檔案不存在").into_response();
     }
+    let ua = share_request_ua(&headers);
+    // SHARE_V2: 有密碼的連結，沒有有效解鎖 cookie 一律先出密碼頁（raw 直接 403）。
+    if let (Some(sid), Some(rec)) = (sid.as_deref(), share_rec.as_ref()) {
+        if rec.password_hash.is_some() {
+            let unlocked = share_cookie_value(&headers, &share_unlock_cookie_name(sid))
+                .is_some_and(|t| {
+                    crate::dashboard_auth::constant_time_eq(
+                        t.as_bytes(),
+                        share_unlock_token(sid, exp).as_bytes(),
+                    )
+                });
+            if !unlocked {
+                if query.raw.as_deref() == Some("1") {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "password required" })),
+                    )
+                        .into_response();
+                }
+                return share_password_gate_response(&path, exp, &sig, sid, None, StatusCode::OK);
+            }
+        }
+    }
     // SHARE_V1b: raw=1 → 同一簽章驗證後直接串流原始檔（分享頁 fetch 與
     // Office Online 的 src 都用這個），不再依賴 /pub/office，避免兩端點差異。
+    // SHARE_V2: raw 不計入檢視次數（分享頁自己的 fetch 也走 raw）；只有 dl=1 的下載會留紀錄。
     if query.raw.as_deref() == Some("1") {
+        if let Some(sid) = sid.as_deref() {
+            if query.dl.as_deref() == Some("1") {
+                share_access_append(sid, &ip, &ua, "download");
+            }
+        }
         let disposition = if query.dl.as_deref() == Some("1") { "attachment" } else { "inline" };
         tracing::info!(path = %path, disposition, "pub share streaming raw file");
         return stream_material_file_response(
@@ -1451,13 +2257,26 @@ pub(super) async fn public_share_preview_handler(
         .unwrap_or("分享檔案")
         .to_string();
     // 現代格式本機解析：fetch 用與頁面「同一已驗證簽章」的 /pub/share?raw=1。
-    let raw_url = format!("/pub/share?path={}&exp={exp}&sig={sig}&raw=1", pct(&rel_str));
+    // SHARE_V2: 頁面計次（開啟預覽頁才算一次；超過上限直接擋下）。
+    if let Some(sid) = sid.as_deref() {
+        if !share_count_view(sid, &ip, &ua) {
+            return (StatusCode::FORBIDDEN, "已達檢視次數上限").into_response();
+        }
+    }
+    let sid_q = sid.as_deref().map(|s| format!("&sid={s}")).unwrap_or_default();
+    let raw_url = format!("/pub/share?path={}&exp={exp}&sig={sig}{sid_q}&raw=1", pct(&rel_str));
     let dl_url = format!("{raw_url}&dl=1");
     // 舊版格式：給 Office Online 一條與 app 內 office-embed「完全相同」的
     // 現簽 15 分鐘 /pub/office 連結（proven 可被微軟抓取）。
-    let embed_exp = office_now_secs() + OFFICE_EMBED_TTL_SECS;
-    let embed_sig = office_sig(&rel_str, embed_exp);
-    let office_src = format!("/pub/office?path={}&exp={embed_exp}&sig={embed_sig}", pct(&rel_str));
+    // SHARE_V2: 帶 sid 的連結不輸出此連結——/pub/office 是 v1 簽章且 15 分鐘內
+    // 不經密碼與次數檢查，會讓限制失效；舊版 Office 格式改由下載按鈕備援。
+    let office_src = if sid.is_some() {
+        String::new()
+    } else {
+        let embed_exp = office_now_secs() + OFFICE_EMBED_TTL_SECS;
+        let embed_sig = office_sig(&rel_str, embed_exp);
+        format!("/pub/office?path={}&exp={embed_exp}&sig={embed_sig}", pct(&rel_str))
+    };
     let is_modern_office = ["docx", "pptx", "xlsx", "odt", "ods", "odp", "rtf"].contains(&ext.as_str());
     let scripts = if is_modern_office {
         "<script src=\"/pub/static/js/jszip.min.js\"></script>\n<script src=\"/pub/static/js/office-view.js\"></script>"

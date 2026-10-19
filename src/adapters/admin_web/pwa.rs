@@ -277,6 +277,11 @@ pub(super) async fn icon_512_handler() -> Response {
     png_response(include_bytes!("static/pwa/icon-512.png"))
 }
 
+/// LANDING_OG_IMAGE_V1：公開首頁的社群分享預覽圖（1200×630）。
+pub(super) async fn og_image_handler() -> Response {
+    png_response(include_bytes!("static/pwa/og-image.png"))
+}
+
 pub(super) async fn apple_touch_icon_handler() -> Response {
     png_response(include_bytes!("static/pwa/apple-touch-icon.png"))
 }

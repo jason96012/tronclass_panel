@@ -586,6 +586,11 @@
       font-variant-numeric:tabular-nums;word-break:break-word}
     .dl-accel-done .dl-accel-bar span{background:#22c55e}
     @media(max-width:820px){.dl-accel{bottom:calc(96px + var(--safe))}}
+  /* PREVIEW_TABLET_FULLSCREEN_V1：平板（寬螢幕觸控）的檔案預覽也全螢幕。 */
+  @media (min-width:821px) and (pointer:coarse){
+    #previewModal.modal-backdrop{padding:0;align-items:stretch;justify-content:stretch}
+    #previewModal .modal{width:100%;height:100vh;height:100dvh;max-height:none;border-radius:0;border:0}
+  }
   </style>
 
   <script id="optimizeV47Theme">
@@ -1017,6 +1022,132 @@
     border-right:env(safe-area-inset-right,0px) solid transparent;
   }
 </style>
+<style id="DRIVE_OPS_V2">
+  [hidden]{display:none!important}
+  .file-card,.folder-card{position:relative}
+  .sel-box{position:absolute;top:8px;left:8px;z-index:3;width:24px;height:24px;display:flex;align-items:center;justify-content:center;background:var(--surface,#fff);border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.2);cursor:pointer}
+  .sel-box input{width:16px;height:16px;margin:0;cursor:pointer}
+  .list-table .sel-box{position:static;display:inline-flex;vertical-align:middle;margin-right:8px;box-shadow:none;background:none;width:auto;height:auto}
+  .is-selected{outline:2px solid var(--primary,#2563eb);outline-offset:-2px}
+  tr.is-selected{background:rgba(37,99,235,.08)}
+  .drop-target{outline:2px dashed var(--primary,#2563eb)!important;outline-offset:2px;background:rgba(37,99,235,.08)}
+  .dragging{opacity:.5}
+  .ops-tools{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+  .ops-mini{padding:4px 8px;font-size:12px;border-radius:8px;border:1px solid var(--line,#ccc);background:var(--surface,#fff);color:var(--text,#111);cursor:pointer}
+  .batch-bar{position:sticky;top:8px;z-index:30;display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:10px 0;padding:10px 14px;border-radius:12px;background:var(--surface,#fff);color:var(--text,#111);border:1px solid var(--primary,#2563eb);box-shadow:0 6px 18px rgba(0,0,0,.12)}
+  .batch-bar .batch-count{font-weight:700;margin-right:auto}
+  .batch-bar button{padding:6px 12px;border-radius:8px;border:1px solid var(--line,#ccc);background:var(--surface,#fff);color:var(--text,#111);cursor:pointer;font-size:13px}
+  .batch-bar button.danger{color:#b91c1c;border-color:#b91c1c}
+  .ops-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99998;padding:16px}
+  .ops-box{background:#fff;color:#111;border-radius:14px;max-width:460px;width:100%;max-height:86vh;overflow:auto;padding:20px;box-shadow:0 10px 40px rgba(0,0,0,.35)}
+  html[data-theme="dark"] .ops-box{background:#1e293b;color:#e2e8f0}
+  .ops-title{font-size:16px;font-weight:700;margin-bottom:6px}
+  .ops-hint{font-size:12px;opacity:.7;margin-bottom:10px;word-break:break-all}
+  .ops-list{display:flex;flex-direction:column;gap:6px;max-height:50vh;overflow:auto;margin-bottom:12px}
+  .ops-list button{text-align:left;padding:9px 12px;border-radius:10px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit;cursor:pointer;font-size:14px}
+  .ops-list button:disabled{opacity:.4;cursor:not-allowed}
+  .ops-list button.current{font-weight:700;border-color:var(--primary,#2563eb)}
+  .ops-field{display:flex;flex-direction:column;gap:6px;font-size:13px;margin-bottom:12px}
+  .ops-field input,.ops-field select{padding:9px 10px;border-radius:8px;border:1px solid rgba(127,127,127,.4);font-size:15px;background:transparent;color:inherit}
+  .ops-note{font-size:12px;opacity:.75;margin-bottom:12px;line-height:1.5}
+  .ops-actions{display:flex;gap:8px;justify-content:flex-end}
+  .ops-actions button{padding:9px 16px;border-radius:10px;border:1px solid rgba(127,127,127,.4);background:transparent;color:inherit;cursor:pointer;font-size:14px}
+  .ops-actions button.primary{background:var(--primary,#2563eb);color:#fff;border-color:transparent}
+  .ops-actions button:disabled{opacity:.5}
+</style>
+<style id="MOBILE_DRIVE_LAYOUT_V2">
+/* 手機版雲端硬碟排版（僅 max-width:820px，桌面不變）：
+   1) 資料夾卡：圖示｜名稱｜垃圾桶 同一排，改名/移動 置於名稱下方，不再擠在標題旁、垃圾桶不再換行。
+   2) 選取框：移出縮圖上方，資料夾放左側、檔案放右上角，不再蓋住圖示。
+   3) 檔案操作列：3 欄網格，6 顆按鈕整齊兩排。
+   4) 批次操作列：不再 sticky（不遮擋卡片），計數一行、按鈕 2×2。 */
+@media (max-width:820px){
+  .sel-box{
+    background:#fff!important;
+    border:1.5px solid #64748b;
+    box-shadow:0 1px 4px rgba(0,0,0,.35)!important;
+    border-radius:7px;
+  }
+  .sel-box input{accent-color:#2563eb}
+
+  /* 資料夾卡 */
+  .folder-grid .folder-card{
+    display:grid!important;
+    grid-template-columns:40px minmax(0,1fr) 38px!important;
+    grid-template-areas:"icon name del" "icon tools tools"!important;
+    column-gap:10px!important;
+    row-gap:6px!important;
+    align-items:center!important;
+    padding:12px!important;
+    min-height:0!important;
+  }
+  .folder-grid .folder-card .folder-icon{grid-area:icon;width:40px!important;height:40px!important;margin:0!important}
+  .folder-grid .folder-card .folder-name{grid-area:name;min-width:0;overflow-wrap:anywhere;font-size:16px!important;font-weight:800!important}
+  .folder-grid .folder-card .ops-tools{grid-area:tools;margin:0!important;gap:6px!important}
+  .folder-grid .folder-card .ops-tools .ops-mini{min-height:34px;padding:0 12px;font-size:13px}
+  .folder-grid .folder-card .folder-del{
+    grid-area:del;width:38px!important;min-width:38px!important;min-height:38px!important;max-height:38px!important;
+  }
+  .folder-grid .folder-card .sel-box{top:50%!important;left:10px!important;transform:translateY(-50%)}
+
+  /* 檔案卡：選取框放右上角，標題右側留白 */
+  .file-card .sel-box{top:12px!important;right:12px!important;left:auto!important}
+
+  /* 檔案操作列：3 欄 × 2 排 */
+  .file-actions{
+    display:grid!important;
+    grid-template-columns:repeat(3,minmax(0,1fr))!important;
+    gap:8px!important;
+    padding:10px 12px 12px!important;
+  }
+  .file-actions a,.file-actions button{
+    width:100%!important;min-width:0!important;min-height:44px!important;
+    white-space:nowrap;
+  }
+  .file-actions .remove-btn{
+    width:100%!important;min-width:0!important;max-width:none!important;
+    min-height:44px!important;max-height:none!important;
+  }
+
+  /* 批次操作列：不 sticky，計數一行、按鈕 2×2 */
+  .batch-bar{
+    position:relative!important;top:auto!important;z-index:1!important;
+    display:grid!important;
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+    gap:8px!important;
+    margin:0 0 12px!important;
+    padding:10px 12px!important;
+  }
+  .batch-bar[hidden]{display:none!important}
+  .batch-bar .batch-count{grid-column:1/-1;margin:0!important;font-size:13px;color:var(--muted,#64748b)}
+  .batch-bar button{
+    width:100%;min-height:42px;font-size:14px!important;font-weight:700;border-radius:12px!important;
+  }
+}
+</style>
+<style id="FILE_MORE_V1">
+/* 檔案卡「更多」面板：分享／改名／移動／刪除 收進「更多」，預設隱藏。 */
+.file-more{display:flex;flex-wrap:wrap;gap:6px;padding:0 10px 8px;background:var(--surface2)}
+.file-more[hidden]{display:none!important}
+.file-more a,.file-more button{min-height:32px;font-size:12px;padding:0 10px}
+.file-more .remove-btn{background:rgba(239,68,68,.12)!important;color:var(--bad)!important;border:1px solid transparent!important}
+.file-more .remove-btn:hover{background:rgba(239,68,68,.9)!important;color:#fff!important}
+.file-more-btn[aria-expanded="true"]{outline:2px solid var(--primary,#2563eb);outline-offset:-2px}
+@media (max-width:820px){
+  .file-more{
+    display:grid!important;
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+    gap:8px!important;
+    padding:0 12px 12px!important;
+  }
+  .file-more[hidden]{display:none!important}
+  .file-more a,.file-more button{
+    width:100%!important;min-width:0!important;min-height:44px!important;max-height:none!important;
+    font-size:13px!important;font-weight:800!important;border-radius:12px!important;white-space:nowrap;
+  }
+  .file-more .remove-btn{width:100%!important;min-width:0!important;max-width:none!important;min-height:44px!important}
+}
+</style>
 </head>
 <body>
 <!-- NATIVE_MATERIALS_PAGE_ONLY_V1: the obsolete Nextcloud redirect overlay was
@@ -1095,8 +1226,11 @@
       <div class="toolbar-right">
         <select id="sortBy">
           <option value="modified_desc" selected>最新修改</option>
+          <option value="modified_asc">最舊修改</option>
           <option value="name_asc">名稱 A-Z</option>
-          <option value="size_desc">檔案大小</option>
+          <option value="name_desc">名稱 Z-A</option>
+          <option value="size_desc">檔案大小（大→小）</option>
+          <option value="size_asc">檔案大小（小→大）</option>
         </select>
         <div class="view-toggle">
           <button id="gridView" class="button secondary active" type="button">格狀</button>
@@ -1506,11 +1640,7 @@
     if (needle) {
       list = files.filter(f => ((f.path||'') + ' ' + (f.name||'') + ' ' + (f.folder||'')).toLowerCase().includes(needle));
     }
-    list.sort((a,b) => {
-      if (sort === 'name_asc') return String(a.name || a.path || '').localeCompare(String(b.name || b.path || ''), 'zh-Hant');
-      if (sort === 'size_desc') return Number(b.size || 0) - Number(a.size || 0);
-      return String(b.modified || '').localeCompare(String(a.modified || ''));
-    });
+    list.sort(sortCompare);
     return list;
   }
 
@@ -1518,18 +1648,18 @@
     const all = folderSet();
     if (q('navAll')) q('navAll').classList.toggle('active', currentFolder === '');
     if (q('folderNav')) {
-      q('folderNav').innerHTML = all.slice(0, 60).map(f => 
-        '<button type="button" class="' + (f === currentFolder ? 'active' : '') + '" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button>'
+      q('folderNav').innerHTML = all.slice(0, 60).map(f =>
+        '<button type="button" class="' + (f === currentFolder ? 'active' : '') + '" data-folder="' + esc(f) + '" data-drop-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button>'
       ).join('') || '<div class="small subfolder-empty">無子資料夾</div>';
     }
   }
 
   function renderBreadcrumb(){
     const parts = currentFolder ? currentFolder.split('/') : [];
-    let acc = '', html = '<button type="button" data-folder="">我的教材</button>';
+    let acc = '', html = '<button type="button" data-folder="" data-drop-folder="">我的教材</button>';
     parts.forEach(part => {
       acc = acc ? acc + '/' + part : part;
-      html += '<span>/</span><button type="button" data-folder="' + esc(acc) + '">' + esc(part) + '</button>';
+      html += '<span>/</span><button type="button" data-folder="' + esc(acc) + '" data-drop-folder="' + esc(acc) + '">' + esc(part) + '</button>';
     });
     if (q('breadcrumb')) q('breadcrumb').innerHTML = html;
     if (q('pageTitle')) q('pageTitle').textContent = currentFolder ? base(currentFolder) : '我的教材';
@@ -1544,9 +1674,10 @@
   }
 
   function folderCard(f){
-    return '<div class="folder-card" data-open-folder="' + esc(f) + '">' +
+    return '<div class="folder-card' + (isSelected('folder', f) ? ' is-selected' : '') + '" data-open-folder="' + esc(f) + '" data-drop-folder="' + esc(f) + '" data-drag-kind="folder" data-drag-path="' + esc(f) + '" draggable="true">' +
       '<div class="folder-icon"></div>' +
       '<div class="folder-name">' + esc(base(f)) + '</div>' +
+      '<div class="ops-tools">' + itemTools('folder', f) + '</div>' +
       '<button class="button danger folder-del" data-delete-folder="' + esc(f) + '" title="刪除資料夾">🗑</button>' +
     '</div>';
   }
@@ -1554,45 +1685,70 @@
   function fileCard(f){
     const e = ext(f);
     const isImg = IMAGE_PREVIEW_EXTS.includes(e);
+    const name = f.name || f.path;
     // BADGE_INLINE_V1: 非圖片檔左側只放色塊縮圖，副檔名改以小標籤放在檔名欄內，
     // 不再用左側大格放徽章，徹底避免遮擋檔名。
     const thumb = isImg
       ? '<img class="file-thumb-img" src="' + pv(f.path) + '" alt="" loading="lazy" decoding="async">'
       : '<div class="file-thumb-ph"></div>';
     const chip = isImg ? '' : '<span class="file-chip">' + esc(e || 'FILE') + '</span>';
-    return '<div class="file-card">' +
+    return '<div class="file-card' + (isSelected('file', f.path) ? ' is-selected' : '') + '" data-drag-kind="file" data-drag-path="' + esc(f.path) + '" draggable="true">' +
       '<div class="file-head">' +
         '<div class="file-thumb">' + thumb + '</div>' +
         '<div class="file-info">' + chip +
-          '<div class="file-name">' + esc(f.name || f.path) + '</div>' +
+          '<div class="file-name">' + esc(name) + '</div>' +
           '<div class="file-meta">' + esc(f.modified || '-') + ' ｜ ' + esc(f.size_label || sizeLabel(f.size)) + '</div>' +
         '</div>' +
       '</div>' +
       '<div class="file-actions">' +
-        '<a class="button secondary download-link" href="' + dl(f.path) + '" download="' + esc(f.name || f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' +
+        '<a class="button secondary download-link" href="' + dl(f.path) + '" download="' + esc(name) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(name) + '">下載</a>' +
         (canPreview(e) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
+        '<button type="button" class="button secondary file-more-btn" data-more-toggle aria-expanded="false">更多</button>' +
+      '</div>' +
+      '<div class="file-more" hidden>' +
         '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button>' +
-        '<button class="button danger remove-btn" data-delete-file="' + esc(f.path) + '" title="刪除檔案">🗑</button>' +
+        itemTools('file', f.path) +
+        '<button class="button danger remove-btn" data-delete-file="' + esc(f.path) + '" title="刪除檔案">🗑 刪除</button>' +
       '</div>' +
     '</div>';
+  }
+
+  function folderRow(f){
+    return '<tr class="' + (isSelected('folder', f) ? 'is-selected' : '') + '" data-drop-folder="' + esc(f) + '" data-drag-kind="folder" data-drag-path="' + esc(f) + '" draggable="true">' +
+      '<td>' + '<button type="button" class="button secondary btn-compact" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td>' +
+      '<td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td>' +
+      '<td>' + itemTools('folder', f) + ' <button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button></td></tr>';
+  }
+
+  function fileRow(f){
+    const name = f.name || f.path;
+    return '<tr class="' + (isSelected('file', f.path) ? 'is-selected' : '') + '" data-drag-kind="file" data-drag-path="' + esc(f.path) + '" draggable="true">' +
+      '<td><b>' + esc(name) + '</b></td>' +
+      '<td>' + esc(f.folder || '我的教材') + '</td>' +
+      '<td>' + esc(f.modified || '-') + '</td>' +
+      '<td>' + esc(f.size_label || sizeLabel(f.size)) + '</td>' +
+      '<td><a class="button secondary" href="' + dl(f.path) + '" download="' + esc(name) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(name) + '">下載</a>' +
+      (canPreview(ext(f)) ? ' <button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') +
+      ' <button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button> ' +
+      itemTools('file', f.path) +
+      ' <button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>';
   }
 
   function renderListTable(folds, fList){
     const tbody = q('listBody');
     if (!tbody) return;
-    tbody.innerHTML = folds.map(f => 
-      '<tr><td><button class="button secondary btn-compact" data-folder="' + esc(f) + '">📁 ' + esc(base(f)) + '</button></td><td>' + esc(parent(f) || '我的教材') + '</td><td>-</td><td>資料夾</td><td><button class="button danger" data-delete-folder="' + esc(f) + '" title="刪除資料夾">刪除</button></td></tr>'
-    ).concat(fList.map(f => 
-      '<tr><td><b>' + esc(f.name || f.path) + '</b></td><td>' + esc(f.folder || '我的教材') + '</td><td>' + esc(f.modified || '-') + '</td><td>' + esc(f.size_label || sizeLabel(f.size)) + '</td><td><a class="button secondary" href="' + dl(f.path) + '" download="' + esc(f.name || f.path) + '" data-download="' + esc(f.path) + '" data-size="' + Number(f.size || 0) + '" data-name="' + esc(f.name || f.path) + '">下載</a>' + (canPreview(ext(f)) ? '<button class="button secondary" data-preview="' + esc(f.path) + '">預覽</button>' : '') + '<button class="button secondary" data-share="' + esc(f.path) + '" title="分享">分享</button><button class="button danger" data-delete-file="' + esc(f.path) + '" title="刪除檔案">刪除</button></td></tr>'
-    )).join('') || '<tr><td colspan="5" class="empty">目前資料夾為空</td></tr>';
+    tbody.innerHTML = folds.map(folderRow).join('') + fList.map(fileRow).join('')
+      || '<tr><td colspan="5" class="empty">目前資料夾為空</td></tr>';
   }
 
   function render(){
     renderNav();
     renderBreadcrumb();
     renderStorage();
+    pruneSelection();
 
     const folds = childFolders();
+    if (sort === 'name_desc') folds.reverse();
     const fList = directFiles();
 
     if (q('summary')) q('summary').textContent = '資料夾 ' + folds.length + ' 個 ｜ 檔案 ' + fList.length + ' 個';
@@ -1897,7 +2053,7 @@
           renderUploadQueue();
           uploadAggregate();
         }
-      }).then(resolve, reject);
+      }, row.folder).then(resolve, reject);
     });
   }
 
@@ -1975,10 +2131,10 @@
     return failedNow;
   }
 
-  function uploadOne(file, i, total, displayName, onProgress){
+  function uploadOne(file, i, total, displayName, onProgress, folder){
     return new Promise((resolve, reject) => {
       const fd = new FormData();
-      fd.append('folder', currentFolder);
+      fd.append('folder', folder === undefined ? currentFolder : folder);
       // UPLOAD_ANY_TYPE_V1（fix39）：原檔名原樣送出（後端不再判斷格式、也不改名）
       fd.append('file', file, displayName || file.name);
       const xhr = new XMLHttpRequest();
@@ -2041,7 +2197,8 @@
     // UPLOAD_NO_FILE_CAP_V1（fix54）：不做格式預檢，也不做大小預檢——多大的檔案都
     // 直接送。能不能收下由伺服器依「硬碟總容量」逐片段決定（超過會回 413 並附原因）。
     const will = arr;
-    _uploadRows = will.map(f => ({ file: f, sent: 0, total: f.size, speed: 0, eta: 0, attempts: 0, status: 'waiting', error: '' }));
+    // UPLOAD_FOLDER_PIN_V2: 每個項目記下「選檔當下」的資料夾；重試或切換資料夾後重試，仍上傳到原資料夾。
+    _uploadRows = will.map(f => ({ file: f, folder: currentFolder, sent: 0, total: f.size, speed: 0, eta: 0, attempts: 0, status: 'waiting', error: '' }));
     // UPLOAD_DESKTOP_FIX_V1（fix50）：選到檔案就立刻顯示進度列與提示——
     // 之後不可能再出現「選完檔案卻看起來完全沒反應」的狀態。
     if (_pickWatchTimer) { clearInterval(_pickWatchTimer); _pickWatchTimer = 0; }
@@ -2752,13 +2909,8 @@
   // 連結指向 /pub/share 預覽頁，不是下載頁；對方不用登入即可預覽。
   // QR_SHARE_V1: 按「分享」→ 彈窗顯示「分享連結 + QR code」，可複製或掃描。
   async function shareFile(path){
-    let link = null;
-    try {
-      const res = await fetch('/admin/api/files/share-link?path=' + encodeURIComponent(path), { cache: 'no-store' });
-      if (res.ok) { const j = await res.json(); if (j && j.public_path) link = location.origin + j.public_path; }
-    } catch (_) {}
-    if (!link) { toast('無法產生分享連結'); return; }
-    await openShareModal(link);
+    // SHARE_V2: 先打開分享設定（有效期／密碼／次數），再由後端建立連結。
+    openShareConfig(path);
   }
 
   // TRUSTED_TYPES_V1: 後台 CSP require-trusted-types-for 'script'，innerHTML 字串會經過
@@ -2766,7 +2918,7 @@
   // 重複建立 'default' 會失敗，若成功則會覆寫消毒器。
   function setHTMLSafe(el, html) { el.innerHTML = html; }
 
-  async function openShareModal(link){
+  async function openShareModal(link, hint){
     const old = document.getElementById('share-modal'); if (old) old.remove();
     const ov = document.createElement('div'); ov.id = 'share-modal';
     ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;z-index:99999;padding:16px;';
@@ -2775,7 +2927,7 @@
     setHTMLSafe(box,
       '<div class="share-modal-title">分享連結</div>'
       + '<div id="share-qr" class="share-qr-box"></div>'
-      + '<div class="share-modal-hint">免登入可預覽 · 7 天有效</div>'
+      + '<div class="share-modal-hint">' + esc(hint || '免登入可預覽 · 7 天有效') + '</div>'
       + '<div id="share-link" class="share-link-box"></div>'
       + '<div class="share-modal-actions">'
       + '<button id="share-copy" type="button" class="share-btn-primary">複製連結</button>'
@@ -2875,8 +3027,307 @@
     setFolder(parts.join('/'));
   }
 
+  /* ===== DRIVE_OPS_V2：改名、拖曳／選單移動、批次操作、分享設定 =====
+     後端端點：/admin/api/files/rename、/admin/api/files/move、/admin/api/files/share-link2。
+     拖曳只在桌機瀏覽器有效；手機與觸控裝置一律用每列／卡片上的「移動」選單（同一套規則）。 */
+  const MOVE_MIME = 'application/x-tron-move';
+  const SHARE_TTL_OPTIONS = [
+    { v: 3600, t: '1 小時' }, { v: 86400, t: '1 天' }, { v: 259200, t: '3 天' },
+    { v: 604800, t: '7 天（預設）' }, { v: 2592000, t: '30 天' }
+  ];
+  const SHARE_VIEW_OPTIONS = [1, 3, 5, 10, 20, 50, 100];
+  const _selected = new Map();   // key -> { kind: 'file'|'folder', path }
+  let _dragItems = [];
+
+  function selKey(kind, path){ return kind + ':' + path; }
+  function isSelected(kind, path){ return _selected.has(selKey(kind, path)); }
+  function setSelected(kind, path, on){
+    const k = selKey(kind, path);
+    if (on) _selected.set(k, { kind: kind, path: path }); else _selected.delete(k);
+  }
+  function selectedItems(){ return Array.from(_selected.values()); }
+  function clearSelection(){ _selected.clear(); }
+
+  function pruneSelection(){
+    const live = new Set();
+    files.forEach(f => live.add(selKey('file', f.path || '')));
+    folderSet().forEach(f => live.add(selKey('folder', f)));
+    Array.from(_selected.keys()).forEach(k => { if (!live.has(k)) _selected.delete(k); });
+  }
+
+  // 與後端 validate_material_item_name 相同的規則（前端先擋，後端仍會再驗）。
+  function nameProblem(name){
+    if (!name) return '名稱不可為空';
+    if (Array.from(name).length > 200) return '名稱過長（上限 200 字）';
+    if (name === '.' || name === '..') return '名稱不合法';
+    if (/[\/\\:*?"<>|\u0000-\u001f\u007f]/.test(name)) return '名稱不可包含 / \\ : * ? " < > | 或控制字元';
+    return '';
+  }
+
+  // 回傳空字串代表可以移動到 dest；否則為原因（同時供按鈕停用與拖曳判斷）。
+  function moveBlockReason(items, dest){
+    for (const it of items) {
+      if (it.kind === 'folder' && (dest === it.path || dest.startsWith(it.path + '/'))) {
+        return '不能移動到自己或其子資料夾';
+      }
+    }
+    if (items.every(it => parent(it.path) === dest)) return '已在該資料夾中';
+    return '';
+  }
+
+  function remapPath(p, renames){
+    for (const r of renames) {
+      if (p === r.from) return r.to;
+      if (p.startsWith(r.from + '/')) return r.to + p.slice(r.from.length);
+    }
+    return p;
+  }
+
+  function hasMovePayload(e){
+    const types = e.dataTransfer && e.dataTransfer.types ? Array.from(e.dataTransfer.types) : [];
+    return types.indexOf(MOVE_MIME) !== -1;
+  }
+
+  function sortCompare(a, b){
+    const na = String(a.name || a.path || ''), nb = String(b.name || b.path || '');
+    switch (sort) {
+      case 'name_asc': return na.localeCompare(nb, 'zh-Hant');
+      case 'name_desc': return nb.localeCompare(na, 'zh-Hant');
+      case 'size_desc': return Number(b.size || 0) - Number(a.size || 0);
+      case 'size_asc': return Number(a.size || 0) - Number(b.size || 0);
+      case 'modified_asc': return String(a.modified || '').localeCompare(String(b.modified || ''));
+      default: return String(b.modified || '').localeCompare(String(a.modified || ''));
+    }
+  }
+
+  function itemTools(kind, path){
+    return '<button type="button" class="ops-mini" data-rename="' + esc(path) + '" data-rename-kind="' + kind + '" title="改名">改名</button> '
+      + '<button type="button" class="ops-mini" data-move="' + esc(path) + '" data-move-kind="' + kind + '" title="移動到…">移動</button>';
+  }
+
+  function opsOverlay(id){
+    const old = document.getElementById('ops-' + id);
+    if (old) old.remove();
+    const ov = document.createElement('div');
+    ov.id = 'ops-' + id;
+    ov.className = 'ops-backdrop';
+    const box = document.createElement('div');
+    box.className = 'ops-box';
+    ov.appendChild(box);
+    document.body.appendChild(ov);
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    return ov;
+  }
+
+  async function postJson(url, body){
+    return api(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  }
+
+  async function performMove(items, dest){
+    const todo = items.filter(it => !moveBlockReason([it], dest));
+    if (!todo.length) { toast('沒有可移動的項目（已在該資料夾或不可移入）', false); return; }
+    const renames = [];
+    const failed = [];
+    let ok = 0;
+    for (const it of todo) {
+      try {
+        const b = await postJson('/admin/api/files/move', { path: it.path, dest_folder: dest });
+        ok++;
+        _selected.delete(selKey(it.kind, it.path));
+        if (it.kind === 'folder' && b && b.path) renames.push({ from: it.path, to: b.path });
+      } catch (e) {
+        failed.push(base(it.path) + '：' + (e.message || '失敗'));
+      }
+    }
+    if (renames.length) currentFolder = remapPath(currentFolder, renames);
+    await loadFiles();
+    if (failed.length) toast('已移動 ' + ok + ' 項；失敗：' + failed.join('、'), false);
+    else toast('已移動 ' + ok + ' 項到「' + (dest ? base(dest) : '我的教材') + '」');
+  }
+
+  function openMovePicker(items){
+    if (!items.length) return;
+    const ov = opsOverlay('move-picker');
+    const box = ov.firstChild;
+    const title = items.length === 1 ? ('移動「' + base(items[0].path) + '」到…') : ('移動 ' + items.length + ' 項到…');
+    const row = (dest, label, depth) => {
+      const reason = moveBlockReason(items, dest);
+      const isCur = currentFolder === dest;
+      return '<button type="button" data-dest="' + esc(dest) + '"' + (reason ? ' disabled title="' + esc(reason) + '"' : '')
+        + ' class="' + (isCur ? 'current' : '') + '" style="padding-left:' + (12 + depth * 16) + 'px">'
+        + (dest ? '📁 ' : '🏠 ') + esc(label) + (isCur ? '（目前位置）' : '') + '</button>';
+    };
+    let html = '<div class="ops-title">' + esc(title) + '</div>'
+      + '<div class="ops-hint">選擇目的資料夾（不能移入自己或子資料夾）</div><div class="ops-list">'
+      + row('', '我的教材（根目錄）', 0);
+    folderSet().forEach(f => { html += row(f, base(f), f.split('/').length - 1); });
+    html += '</div><div class="ops-actions"><button type="button" data-ops-close>取消</button></div>';
+    setHTMLSafe(box, html);
+    box.querySelector('[data-ops-close]').addEventListener('click', () => ov.remove());
+    box.querySelectorAll('[data-dest]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const dest = btn.getAttribute('data-dest') || '';
+        ov.remove();
+        performMove(items, dest);
+      });
+    });
+  }
+
+  async function renameItem(kind, path){
+    const oldName = base(path);
+    const input = window.prompt(kind === 'folder' ? '輸入新的資料夾名稱：' : '輸入新的檔案名稱：', oldName);
+    if (input === null) return;
+    const newName = input.trim();
+    if (!newName || newName === oldName) return;
+    const problem = nameProblem(newName);
+    if (problem) { toast(problem, false); return; }
+    try {
+      const b = await postJson('/admin/api/files/rename', { path: path, new_name: newName });
+      if (kind === 'folder' && b && b.path) currentFolder = remapPath(currentFolder, [{ from: path, to: b.path }]);
+      _selected.delete(selKey(kind, path));
+      await loadFiles();
+      setFolder(currentFolder);
+      toast('已改名為「' + newName + '」');
+    } catch (e) {
+      toast(e.message || '改名失敗', false);
+    }
+  }
+
+  async function runBatch(action){
+    if (action === 'clear') { clearSelection(); render(); return; }
+    const items = selectedItems();
+    if (!items.length) return;
+    if (action === 'delete') {
+      if (!confirm('確定刪除選取的 ' + items.length + ' 項？\n（資料夾會連同內容一起刪除）')) return;
+      let ok = 0;
+      const failed = [];
+      for (const it of items) {
+        try {
+          await postJson(it.kind === 'folder' ? '/admin/api/files/rmdir' : '/admin/api/files/delete', { path: it.path });
+          ok++;
+          _selected.delete(selKey(it.kind, it.path));
+          if (it.kind === 'folder' && (currentFolder === it.path || currentFolder.startsWith(it.path + '/'))) currentFolder = '';
+        } catch (e) {
+          failed.push(base(it.path));
+        }
+      }
+      await loadFiles();
+      if (failed.length) toast('已刪除 ' + ok + ' 項；失敗：' + failed.join('、'), false);
+      else toast('已刪除 ' + ok + ' 項');
+    }
+  }
+
+  // SHARE_V2 分享設定：有效期 ／ 密碼（選填）／ 檢視次數上限。
+  function openShareConfig(path){
+    const ov = opsOverlay('share-config');
+    const box = ov.firstChild;
+    const ttlHtml = SHARE_TTL_OPTIONS.map(o => '<option value="' + o.v + '"' + (o.v === 604800 ? ' selected' : '') + '>' + esc(o.t) + '</option>').join('');
+    const viewHtml = '<option value="0">不限</option>'
+      + SHARE_VIEW_OPTIONS.map(n => '<option value="' + n + '">' + n + ' 次</option>').join('')
+      + '<option value="custom">自訂…</option>';
+    setHTMLSafe(box,
+      '<div class="ops-title">分享設定</div>'
+      + '<div class="ops-hint">' + esc(base(path)) + '</div>'
+      + '<label class="ops-field">有效期限<select id="shcfgTtl">' + ttlHtml + '</select></label>'
+      + '<label class="ops-field">分享密碼（選填，4–64 字）<input id="shcfgPw" type="password" maxlength="64" autocomplete="new-password" placeholder="留空代表不設密碼"></label>'
+      + '<label class="ops-field">檢視次數上限<select id="shcfgViews">' + viewHtml + '</select></label>'
+      + '<label class="ops-field" id="shcfgCustomWrap" hidden>自訂次數（1–10000）<input id="shcfgCustom" type="number" min="1" max="10000" step="1"></label>'
+      + '<div class="ops-note">次數只計算「開啟預覽頁」的次數，超過後不能再開啟預覽頁。下載按鈕不受此限制。</div>'
+      + '<div class="ops-actions"><button type="button" id="shcfgCancel">取消</button><button type="button" id="shcfgOk" class="primary">產生連結</button></div>');
+    const views = box.querySelector('#shcfgViews');
+    const custom = box.querySelector('#shcfgCustom');
+    const wrap = box.querySelector('#shcfgCustomWrap');
+    views.addEventListener('change', () => {
+      wrap.hidden = views.value !== 'custom';
+      if (!wrap.hidden) custom.focus();
+    });
+    box.querySelector('#shcfgCancel').addEventListener('click', () => ov.remove());
+    const ok = box.querySelector('#shcfgOk');
+    ok.addEventListener('click', async () => {
+      const ttl = Number(box.querySelector('#shcfgTtl').value);
+      const pw = box.querySelector('#shcfgPw').value;
+      const pwChars = Array.from(pw).length;
+      if (pwChars && (pwChars < 4 || pwChars > 64)) { toast('分享密碼需為 4–64 字元', false); return; }
+      let maxViews = 0;
+      if (views.value === 'custom') {
+        maxViews = Math.floor(Number(custom.value));
+        if (!(maxViews >= 1 && maxViews <= 10000)) { toast('自訂次數需介於 1–10000', false); return; }
+      } else {
+        maxViews = Number(views.value);
+      }
+      ok.disabled = true;
+      try {
+        const b = await postJson('/admin/api/files/share-link2', { path: path, ttl_secs: ttl, password: pw, max_views: maxViews });
+        ov.remove();
+        const hint = '有效至 ' + new Date(b.exp * 1000).toLocaleString()
+          + ' ｜ ' + (b.has_password ? '需要密碼' : '無密碼')
+          + ' ｜ ' + (b.max_views ? ('最多開啟 ' + b.max_views + ' 次') : '次數不限');
+        await openShareModal(location.origin + b.public_path, hint);
+      } catch (e) {
+        ok.disabled = false;
+        toast(e.message || '產生分享連結失敗', false);
+      }
+    });
+  }
+
+  // 拖曳移動、勾選、批次列與點擊委派（綁定一次）。
+  function bindDriveOps(){
+    if (q('navAll')) q('navAll').setAttribute('data-drop-folder', '');
+    document.addEventListener('dragstart', e => {
+      const src = e.target && e.target.closest ? e.target.closest('[data-drag-path]') : null;
+      if (!src || !e.dataTransfer) return;
+      const kind = src.getAttribute('data-drag-kind');
+      const path = src.getAttribute('data-drag-path');
+      const items = (isSelected(kind, path) && _selected.size > 1) ? selectedItems() : [{ kind: kind, path: path }];
+      _dragItems = items;
+      e.dataTransfer.effectAllowed = 'move';
+      try {
+        e.dataTransfer.setData(MOVE_MIME, JSON.stringify(items));
+        e.dataTransfer.setData('text/plain', items.map(i => i.path).join('\n'));
+      } catch (_) {}
+      src.classList.add('dragging');
+    });
+    document.addEventListener('dragover', e => {
+      if (!hasMovePayload(e)) return;
+      const t = e.target && e.target.closest ? e.target.closest('[data-drop-folder]') : null;
+      document.querySelectorAll('.drop-target').forEach(el => { if (el !== t) el.classList.remove('drop-target'); });
+      if (!t) return;
+      const dest = t.getAttribute('data-drop-folder') || '';
+      if (!_dragItems.length || _dragItems.every(it => moveBlockReason([it], dest))) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      t.classList.add('drop-target');
+    });
+    document.addEventListener('drop', e => {
+      if (!hasMovePayload(e)) return;
+      document.querySelectorAll('.drop-target').forEach(el => el.classList.remove('drop-target'));
+      const t = e.target && e.target.closest ? e.target.closest('[data-drop-folder]') : null;
+      if (!t) return;
+      e.preventDefault();
+      const items = _dragItems.slice();
+      _dragItems = [];
+      if (items.length) performMove(items, t.getAttribute('data-drop-folder') || '');
+    });
+    document.addEventListener('dragend', () => {
+      _dragItems = [];
+      document.querySelectorAll('.dragging,.drop-target').forEach(el => el.classList.remove('dragging', 'drop-target'));
+    });
+  }
+
+  // 點擊委派：改名／移動／批次列。回傳 true 表示已處理。
+  function handleOpsClick(e){
+    const batch = e.target.closest ? e.target.closest('[data-batch]') : null;
+    if (batch) { runBatch(batch.getAttribute('data-batch')); return true; }
+    const ren = e.target.closest ? e.target.closest('[data-rename]') : null;
+    if (ren) { renameItem(ren.getAttribute('data-rename-kind'), ren.getAttribute('data-rename')); return true; }
+    const mv = e.target.closest ? e.target.closest('[data-move]') : null;
+    if (mv) { openMovePicker([{ kind: mv.getAttribute('data-move-kind'), path: mv.getAttribute('data-move') }]); return true; }
+    return false;
+  }
+
   function init(){
     syncLinks();
+    bindDriveOps();
     
     if (q('newBtn')) q('newBtn').onclick = () => q('newMenu').classList.toggle('open');
     // UPLOAD_DESKTOP_FIX_V1（fix50）：上傳入口一律走 pickFiles()（含 watchdog）。
@@ -3094,6 +3545,113 @@
 
   /* 退回原生下載：另建一個「沒有 data-download」的 <a> 點下去 —— 上面那支委派監聽
      因此不會再攔一次，行為與原本的 <a href> 完全相同。 */
+  /* IPHONE_BLOB_DOWNLOAD_V1：手機 PWA（iOS）上 <a href download> 會把整個 App 導航到檔案網址，
+     iOS 以全螢幕檢視器打開且沒有返回鍵，使用者找不到下載按鈕。改成：先 fetch 成 blob，
+     完成後直接叫出系統分享（iOS 可「儲存到檔案」）；若被擋，再按一次下載即可。
+     只在 iOS 或 standalone（主畫面 App）啟用；桌機與 Android 維持原生下載。 */
+  function dlBlobPreferred(){
+    try {
+      const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+      if (/iPhone|iPad|iPod/.test(ua)) return true;
+      // iPadOS 13+ 的 Safari 預設送出 Macintosh UA，要用觸控點數分辨。
+      if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true;
+      if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) return true;
+      if (window.navigator && window.navigator.standalone === true) return true;
+    } catch (_) {}
+    return false;
+  }
+  function dlSaveBlob(blob, label){
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl;
+    a.download = label;
+    a.rel = 'noopener';
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    try { a.click(); } finally {
+      setTimeout(() => { a.remove(); URL.revokeObjectURL(objUrl); }, 4000);
+    }
+  }
+  /* 把 blob 交給系統分享選單（iOS：「儲存到檔案」）。
+     iOS 只允許在點擊手勢內叫出分享；若等待下載後被擋（NotAllowedError），
+     不再顯示按鈕，而是把檔案留在記憶體，使用者再按一次「下載」就直接分享。 */
+  let _dlPending = null;   // { path, blob, label }：已備妥、等使用者再按一次的檔案
+  function dlDeliverBlob(blob, label, path){
+    let file = null;
+    let canShareFile = false;
+    try {
+      file = new File([blob], label, { type: blob.type || 'application/octet-stream' });
+      canShareFile = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] }));
+    } catch (_) { canShareFile = false; }
+    if (!canShareFile) {
+      dlSaveBlob(blob, label);
+      toast('已開始下載：' + label, true);
+      return;
+    }
+    navigator.share({ files: [file], title: label }).then(function(){
+      _dlPending = null;
+      toast('已開啟分享選單，選「儲存到檔案」即可保存。', true);
+    }).catch(function(err){
+      if (err && err.name === 'AbortError') return;   // 使用者自己關掉分享選單
+      if (err && err.name === 'NotAllowedError') {
+        _dlPending = { path: path, blob: blob, label: label };
+        toast('「' + label + '」已準備好，請再按一次「下載」。', true);
+        return;
+      }
+      dlSaveBlob(blob, label);
+      toast('已開始下載：' + label, true);
+    });
+  }
+
+  /* 抓檔案位元組：同一檔案只抓一次（進行中的工作會被共用），抓好就放進預覽快取。 */
+  var _dlInflight = {};
+  function dlFetchBytes(url, path){
+    if (path){
+      const cached = previewCacheGet(path);
+      if (cached && cached.length) return Promise.resolve(cached);
+      if (_dlInflight[path]) return _dlInflight[path];
+    }
+    const job = fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function(res){
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.arrayBuffer();
+    }).then(function(buf){
+      const bytes = new Uint8Array(buf);
+      if (path) previewCachePut(path, bytes);
+      return bytes;
+    }).finally(function(){
+      if (path) delete _dlInflight[path];
+    });
+    if (path) _dlInflight[path] = job;
+    job.catch(function(){});   // 預抓失敗不該變成未處理的例外；點擊時會再報錯
+    return job;
+  }
+  async function dlBlobDownload(url, name, path){
+    const label = name || '檔案';
+    // 上一次已備妥、被擋住的檔案：這一下點擊仍在手勢內，直接分享。
+    if (_dlPending && _dlPending.path === path) {
+      const r = _dlPending;
+      _dlPending = null;
+      dlDeliverBlob(r.blob, r.label, path);
+      return;
+    }
+    // 已在記憶體（預抓或剛預覽過）：沒有任何 await，分享仍在點擊手勢內。
+    const cached = path ? previewCacheGet(path) : null;
+    if (cached && cached.length) {
+      dlDeliverBlob(new Blob([cached]), label, path);
+      return;
+    }
+    // 還沒抓完：點擊後等下載完成再分享（iOS 可能會擋，見 dlDeliverBlob）。
+    toast('正在準備「' + label + '」…', true);
+    let bytes = null;
+    try {
+      bytes = await dlFetchBytes(url, path);
+    } catch (err) {
+      toast('下載失敗（' + ((err && err.message) || '未知錯誤') + '）。可稍後再試。', false);
+      return;
+    }
+    dlDeliverBlob(new Blob([bytes]), label, path);
+  }
+
   function dlAccelNativeFallback(url, reason){
     if (reason) toast(reason, false);
     const a = document.createElement('a');
@@ -3323,10 +3881,26 @@
     }
   }
 
+    /* IPHONE_BLOB_DOWNLOAD_V1：手指一按下就開始抓檔案（比 click 早約 100～300 ms），
+       讓點擊當下檔案多半已在記憶體，分享就能一鍵叫出。 */
+    document.body.addEventListener('pointerdown', e => {
+      if (!dlBlobPreferred()) return;
+      const dlLink = e.target.closest ? e.target.closest('a[data-download]') : null;
+      if (!dlLink || dlAccelOverride() === '0' || dlAccelWanted(dlLink.dataset.size)) return;
+      dlFetchBytes(dlLink.getAttribute('href'), dlLink.dataset.download || '').catch(() => {});
+    }, { passive: true });
+
     document.body.addEventListener('click', e => {
       /* CLOUD_DOWNLOAD_ACCEL_V1（fix111）：大檔＋支援串流寫檔 → 多連線分段下載；
          其餘情況完全不攔截（照舊原生下載）。 */
       const accelLink = e.target.closest ? e.target.closest('a[data-download]') : null;
+      /* IPHONE_BLOB_DOWNLOAD_V1：iOS／主畫面 App 不走原生 <a> 導航（會跳全螢幕檢視器）。 */
+      if (accelLink && !e.defaultPrevented && dlAccelOverride() !== '0' &&
+          !dlAccelWanted(accelLink.dataset.size) && dlBlobPreferred()){
+        e.preventDefault();
+        dlBlobDownload(accelLink.getAttribute('href'), accelLink.dataset.name || accelLink.dataset.download || '', accelLink.dataset.download || '');
+        return;
+      }
       if (accelLink && !e.defaultPrevented && dlAccelWanted(accelLink.dataset.size)){
         const accelUrl = accelLink.getAttribute('href');
         e.preventDefault();
@@ -3339,8 +3913,16 @@
         });
         return;
       }
+      if (handleOpsClick(e)) return;
+      const moreBtn = e.target.closest ? e.target.closest('[data-more-toggle]') : null;
+      if (moreBtn) {
+        const card = moreBtn.closest('.file-card');
+        const panel = card ? card.querySelector('.file-more') : null;
+        if (panel) { panel.hidden = !panel.hidden; moreBtn.setAttribute('aria-expanded', String(!panel.hidden)); }
+        return;
+      }
       const open = e.target.closest('[data-open-folder]');
-      if (open && !e.target.closest('button,a')) return setFolder(open.dataset.openFolder);
+      if (open && !e.target.closest('button,a,input,label')) return setFolder(open.dataset.openFolder);
       const btn = e.target.closest('[data-folder],[data-delete-file],[data-delete-folder],[data-preview],[data-share]');
       if (!btn) return;
       if (btn.dataset.folder !== undefined) return setFolder(btn.dataset.folder);
@@ -3357,7 +3939,7 @@
       drop.onkeydown = e => {
         if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); pickFiles(); }
       };
-      ['dragenter','dragover'].forEach(n => document.addEventListener(n, e => { e.preventDefault(); drop.classList.add('dragover'); }));
+      ['dragenter','dragover'].forEach(n => document.addEventListener(n, e => { if (hasMovePayload(e)) return; e.preventDefault(); drop.classList.add('dragover'); }));
       document.addEventListener('dragleave', e => { if (e.clientX === 0 && e.clientY === 0) drop.classList.remove('dragover'); });
       document.addEventListener('drop', e => {
         e.preventDefault();

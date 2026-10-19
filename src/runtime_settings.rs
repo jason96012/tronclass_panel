@@ -17,33 +17,33 @@ use tokio::sync::RwLock;
 ///
 /// 同一場點名由多個帳號送出時，第一位立即送出，之後每位間隔
 /// `base + U(0, jitter)`；游標只前進不後退，因此兩人至少間隔 `base`。
-pub const DEFAULT_GROUP_SUBMIT_INTERVAL_MS: u64 = 600;
-/// GROUP_SUBMIT_RELAY_V1（fix67）：送出間隔的**隨機上限**（毫秒，預設 2000）。
+pub const DEFAULT_GROUP_SUBMIT_INTERVAL_MS: u64 = 500;
+/// GROUP_SUBMIT_RELAY_V1（fix67）：送出間隔的**隨機上限**（毫秒，預設 500）。
 ///
 /// 0 ＝ 完全固定間隔（fix67 之前的行為）。
-pub const DEFAULT_GROUP_SUBMIT_JITTER_MS: u64 = 2000;
+pub const DEFAULT_GROUP_SUBMIT_JITTER_MS: u64 = 500;
 /// 隨機上限的硬上限（面板／API 都不能超過）。
 pub const MAX_GROUP_SUBMIT_JITTER_MS: u64 = 5000;
 /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔**基準**（毫秒）。
-pub const DEFAULT_GROUP_SUBMIT_QRCODE_INTERVAL_MS: u64 = 600;
+pub const DEFAULT_GROUP_SUBMIT_QRCODE_INTERVAL_MS: u64 = 500;
 /// QR_FRESH_PAYLOAD_V1（fix68）：QR Code 點名的送出間隔**隨機上限**（毫秒）。
 ///
 /// 比數字點名小：課堂 QR 會輪換，等太久只是白白送出過期的碼
 /// （送出前會再抓一次最新 payload，這裡控制的是帳號之間的間距）。
-pub const DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS: u64 = 600;
+pub const DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS: u64 = 500;
 /// GROUP_SUBMIT_RELAY_V1（fix67）：**雷達點名**的送出間隔基準（毫秒）。
 ///
 /// 雷達也要跟著「每位間隔」走：同一個 provider 的同一場點名，多個帳號各自要送出座標時，
-/// 第一位立即送出，之後每位間隔 `base + U(0, jitter)`。預設與數字點名相同（600）。
-pub const DEFAULT_GROUP_SUBMIT_RADAR_INTERVAL_MS: u64 = 600;
-/// GROUP_SUBMIT_RELAY_V1（fix67）：**雷達點名**送出間隔的隨機上限（毫秒，預設 2000）。
-pub const DEFAULT_GROUP_SUBMIT_RADAR_JITTER_MS: u64 = 2_000;
+/// 第一位立即送出，之後每位間隔 `base + U(0, jitter)`。預設與數字點名相同（500）。
+pub const DEFAULT_GROUP_SUBMIT_RADAR_INTERVAL_MS: u64 = 500;
+/// GROUP_SUBMIT_RELAY_V1（fix67）：**雷達點名**送出間隔的隨機上限（毫秒，預設 500）。
+pub const DEFAULT_GROUP_SUBMIT_RADAR_JITTER_MS: u64 = 500;
 /// 基準的硬上限（沿用既有 10 秒上限）。
 pub const MAX_GROUP_SUBMIT_INTERVAL_MS: u64 = 10_000;
 pub const MAX_RUNTIME_REST_PERIODS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]   // 讀檔時缺欄位＝用 Default（送出節奏的預設是 600/2000…，不會變成 0）
+#[serde(default)]   // 讀檔時缺欄位＝用 Default（送出節奏的預設是 500/500…，不會變成 0）
 pub struct RuntimeSettings {
     /// Override provider poll interval. None means use provider config.
     pub poll_interval_secs: Option<u64>,
@@ -184,7 +184,7 @@ fn settings_file() -> PathBuf {
 
 /// 把設定檔的 JSON 文字轉成 [`RuntimeSettings`]：
 /// * 缺欄位 → 該欄位的預設（`#[serde(default)]` 用 [`RuntimeSettings::default`]；
-///   送出節奏的預設是 600/2000…，**不會變成 0** 而意外讓大家同時送出）
+///   送出節奏的預設是 500/500…，**不會變成 0** 而意外讓大家同時送出）
 /// * 超界值 → [`normalize`] 夾回硬上限（手改檔也不能繞過）
 /// * 整份壞掉 → 全部回預設（不讓半截 JSON 讓服務起不來）
 fn parse_persisted(text: &str) -> RuntimeSettings {

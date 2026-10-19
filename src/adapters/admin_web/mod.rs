@@ -120,6 +120,8 @@ mod rollcall_stats;
 mod credits;
 // STOCKGENIE_EMBED_V1：智選股 sidecar（/admin/stock + /admin/stock-api → 127.0.0.1:18765）。
 mod stock;
+// ACCOUNT_SUSPEND_V1：帳號暫時停權（管理頁＋API）。
+mod suspensions;
 mod timetable;
 mod web_push;
 pub mod materials_webdav;
@@ -860,6 +862,12 @@ async fn reject_hosting_ip_middleware(
     // IP 解析不出來、或區網／私有位址：不是這層該處理的問題，直接放行
     // （道理同 `reject_foreign_admin_ip_middleware`）。
     if ip == "unknown" || blacklist::is_private_or_local_ip(&ip) {
+        return next.run(request).await;
+    }
+    // GOOGLE_CRAWLER_ALLOWLIST_V1：Google 官方爬蟲／抓取器的 IP 一律放行（ip-api 會把 Googlebot
+    // 標成機房 IP，不放行的話整站對搜尋引擎回 403）。只比對 Google 官方公布的範圍，不靠 UA。
+    // 黑名單與其他層的檢查不受影響（這裡只豁免「機房 IP」這一層）。
+    if crate::hosting_ip::is_verified_google_crawler(&ip) {
         return next.run(request).await;
     }
     // 共用既有「國外存取」暫時放行表：不管被擋原因是地區還是機房 IP，
@@ -2405,6 +2413,30 @@ impl AdminWebState {
     }
 
     async fn authorize_any(&self, token: &str) -> Option<AdminSession> {
+        let session = self.authorize_any_unsuspended(token).await?;
+        // ACCOUNT_SUSPEND_V1：停權中的帳號即使持有有效 token 也一律拒絕（查詢失敗視為停權）。
+        if self.account_is_suspended(&session.account_id).await {
+            return None;
+        }
+        Some(session)
+    }
+
+    /// ACCOUNT_SUSPEND_V1：帳號是否處於生效中的暫時停權。查詢失敗一律視為停權（fail closed）。
+    pub(super) async fn account_is_suspended(&self, account_id: &str) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        match self.accounts_db.account_suspension_active(account_id, now).await {
+            Ok(row) => row.is_some(),
+            Err(error) => {
+                warn!(account = %account_id, error = %error, "讀取帳號停權失敗，暫時拒絕該帳號");
+                true
+            }
+        }
+    }
+
+    async fn authorize_any_unsuspended(&self, token: &str) -> Option<AdminSession> {
         let token = token.trim();
         if token.is_empty() {
             return None;
@@ -2737,6 +2769,12 @@ impl AdminWebState {
                 .accounts_db
                 .delete_dashboard_session_by_refresh(refresh_token)
                 .await;
+            return None;
+        }
+
+        // ACCOUNT_SUSPEND_V1：停權中的帳號不得輪換出新 session；順便撤銷其既有 session。
+        if self.account_is_suspended(&row.account_id).await {
+            self.revoke_sessions_for_account(&row.account_id).await;
             return None;
         }
 
@@ -3095,6 +3133,7 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/apple-touch-icon-180x180.png", get(pwa::apple_touch_icon_handler))
         .route("/favicon.ico", get(pwa::icon_192_handler))
         .route("/favicon.png", get(pwa::icon_192_handler))
+        .route("/og-image.png", get(pwa::og_image_handler))
         .route("/admin/static/theme.css", get(static_assets::admin_theme_css_handler))
         .route(
             "/admin/static/session-security.js",
@@ -3161,6 +3200,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/static/js/shares-admin.js",
             get(static_assets::admin_shares_admin_js_handler),
+        )
+        // ACCOUNT_SUSPEND_V1
+        .route(
+            "/admin/static/js/suspensions-admin.js",
+            get(static_assets::admin_suspensions_admin_js_handler),
         )
         // DASH_ASSET_V1
         .route(
@@ -3447,6 +3491,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/admin/shares", get(pages::admin_shares_page_handler))
         .route("/admin/api/shares", get(files::admin_shares_list_handler))
         .route("/admin/api/shares/revoke", post(files::admin_shares_revoke_handler))
+        // ACCOUNT_SUSPEND_V1：帳號暫時停權管理（僅管理員可設定）。
+        .route("/admin/suspensions", get(pages::admin_suspensions_page_handler))
+        .route("/admin/api/suspensions", get(suspensions::admin_suspensions_list_handler))
+        .route("/admin/api/suspensions/set", post(suspensions::admin_suspensions_set_handler))
+        .route("/admin/api/suspensions/clear", post(suspensions::admin_suspensions_clear_handler))
         .route(
             "/.well-known/openid-configuration",
             get(oidc::discovery_handler),
@@ -3607,6 +3656,12 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route("/pub/office", get(files::public_office_file_handler))
         // SHARE_V1: 免登入分享預覽頁＋其所需的公開 viewer 靜態檔。
         .route("/pub/share", get(files::public_share_preview_handler))
+        // SHARE_V2: 分享密碼表單解鎖（HTML 表單 POST，導回分享頁）。
+        .route(
+            "/pub/share/unlock",
+            post(files::public_share_unlock_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         .route("/pub/preview-log", post(files::public_share_log_handler))
         .route(
             "/pub/static/js/jszip.min.js",
@@ -3650,6 +3705,23 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/api/files/delete",
             post(files::admin_files_delete_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // MATERIAL_RENAME_V1 / MATERIAL_MOVE_V1: 改名、拖曳移動（同一套路徑檢查，不覆蓋既有項目）。
+        .route(
+            "/admin/api/files/rename",
+            post(files::admin_files_rename_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/files/move",
+            post(files::admin_files_move_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        // SHARE_V2: 自訂有效期／分享密碼／檢視次數上限的分享連結。
+        .route(
+            "/admin/api/files/share-link2",
+            post(files::admin_files_share_link2_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
         // MATERIALS_IMPORT_V1: 自動從 iClass 匯入教材到教材雲端硬碟。

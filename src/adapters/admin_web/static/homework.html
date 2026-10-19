@@ -424,6 +424,10 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
      內容依型別由前端選擇渲染方式（圖片／PDF／影音／文字／Office 本機解析），
      檔案一律由面板伺服器端代抓（/admin/api/homework/file）。 */
   .hw-file-preview,.hw-file-download{white-space:nowrap}
+  /* HOMEWORK_PWA_DOWNLOAD_V1：下載狀態提示（獨立視窗裡看得到，不依賴瀏覽器下載列）。 */
+  #hwToast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(env(safe-area-inset-bottom,0px) + 18px);z-index:10200;display:none;max-width:min(92vw,520px);padding:10px 14px;border-radius:12px;background:#0f172a;color:#fff;font-size:14px;line-height:1.6;box-shadow:0 10px 30px rgba(2,6,23,.35);text-align:center;word-break:break-word}
+  #hwToast.open{display:block}
+  #hwToast.error{background:#b91c1c}
   .hw-detail-attach li .hw-file-preview,.hw-detail-attach li .hw-file-download{margin-left:6px}
   .hw-submit-files li{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
   .hw-submit-files .file-name{flex:1;min-width:120px;word-break:break-all}
@@ -999,6 +1003,107 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     if (body) body.textContent = '';
   }
 
+  /* BACKDROP_DRAG_SAFE_V1：點遮罩才關閉，而且「按下」與「放開」都要在遮罩上。
+     只看 click 的話，在面板內選字、拖曳到面板外才放開，瀏覽器會把 click 派給共同祖先
+     （遮罩），彈窗就被誤關——正是「複製說明時一按就跳掉」的原因。 */
+  function bindBackdropClose(backdrop, onClose) {
+    let downTarget = null;
+    let upTarget = null;
+    backdrop.addEventListener('pointerdown', function(ev) { downTarget = ev.target; upTarget = null; });
+    backdrop.addEventListener('pointerup', function(ev) { upTarget = ev.target; });
+    backdrop.addEventListener('click', function(ev) {
+      const pressedOnBackdrop = downTarget === backdrop && upTarget === backdrop;
+      downTarget = null;
+      upTarget = null;
+      if (pressedOnBackdrop && ev.target === backdrop) onClose();
+    });
+  }
+
+  /* HOMEWORK_PWA_DOWNLOAD_V1：附件下載（電腦與手機 PWA 都能用）。
+     PWA 獨立視窗沒有瀏覽器的下載列，單純 <a href> 導到附件網址常常什麼都不發生。
+     做法：先在面板內抓成 Blob；手機有 Web Share 就開分享選單（可「儲存到檔案」）；
+     否則用 blob 連結加 download 屬性存檔。抓好的檔案暫存，再按一次就同步開分享選單
+     （手機分享需要使用者手勢，非同步等待後手勢可能已失效）。 */
+  const HW_READY_FILES_MAX = 4;
+  const hwReadyFiles = new Map();   // url -> { blob, label }
+  let hwToastTimer = null;
+
+  function hwToast(message, isError) {
+    let el = document.getElementById('hwToast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'hwToast';
+      el.setAttribute('role', 'status');
+      el.setAttribute('aria-live', 'polite');
+      document.body.appendChild(el);
+    }
+    el.textContent = message || '';
+    el.className = message ? ('open' + (isError ? ' error' : '')) : '';
+    clearTimeout(hwToastTimer);
+    if (message) {
+      hwToastTimer = setTimeout(function() { el.className = ''; }, isError ? 9000 : 5000);
+    }
+  }
+
+  function hwSaveBlob(blob, label) {
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objectUrl;
+    a.download = label;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function() { URL.revokeObjectURL(objectUrl); }, 4000);
+  }
+
+  function hwDeliverBlob(blob, label, fromAsync) {
+    let file = null;
+    let canShareFile = false;
+    try {
+      file = new File([blob], label, { type: blob.type || 'application/octet-stream' });
+      canShareFile = !!(navigator.share && navigator.canShare && navigator.canShare({ files: [file] }));
+    } catch (_) { canShareFile = false; }
+    if (!canShareFile) {
+      hwSaveBlob(blob, label);
+      hwToast('已開始下載：' + label);
+      return;
+    }
+    navigator.share({ files: [file], title: label }).then(function() {
+      hwToast('已開啟分享選單，選「儲存到檔案」即可保存。');
+    }).catch(function(err) {
+      if (err && err.name === 'AbortError') { hwToast(''); return; }   // 使用者自己關掉分享選單
+      if (fromAsync) { hwToast('檔案已準備好，請再按一次「下載」。'); return; }   // 非同步後手勢已失效
+      hwSaveBlob(blob, label);
+      hwToast('已開始下載：' + label);
+    });
+  }
+
+  async function hwDownloadFile(uploadId, name) {
+    const url = hwFileUrl(uploadId, name, '');
+    const label = name || ('檔案 ' + uploadId);
+    const ready = hwReadyFiles.get(url);
+    if (ready) {
+      // 已抓好：這裡沒有任何 await，分享仍在使用者手勢內。
+      hwDeliverBlob(ready.blob, ready.label, false);
+      return;
+    }
+    hwToast('正在準備「' + label + '」…');
+    let blob = null;
+    try {
+      const res = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      blob = await res.blob();
+    } catch (err) {
+      hwToast('下載失敗（' + ((err && err.message) || '未知錯誤') + '）。可稍後再試，或到 iClass 下載。', true);
+      return;
+    }
+    hwReadyFiles.set(url, { blob: blob, label: label });
+    while (hwReadyFiles.size > HW_READY_FILES_MAX) {
+      hwReadyFiles.delete(hwReadyFiles.keys().next().value);
+    }
+    hwDeliverBlob(blob, label, true);
+  }
+
   function ensureDetailModal() {
     let mask = q('hwDetailMask');
     if (mask) return mask;
@@ -1025,7 +1130,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     const close = function() { closeOverlayLayer(true); };
     q('hwDetailClose').onclick = close;
     q('hwDetailOk').onclick = close;
-    mask.addEventListener('click', function(ev) { if (ev.target === mask) close(); });
+    bindBackdropClose(mask, close);
     return mask;
   }
 
@@ -1794,10 +1899,11 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
       preview.addEventListener('click', function() { openHomeworkPreview(uploadId, name || ''); });
       parent.appendChild(preview);
     }
-    const link = document.createElement('a');
+    const link = document.createElement('button');
+    link.type = 'button';
     link.className = 'button secondary hw-file-download';
     link.textContent = '下載';
-    link.href = hwFileUrl(uploadId, name || '', '');
+    link.addEventListener('click', function() { hwDownloadFile(uploadId, name || ''); });
     parent.appendChild(link);
   }
 
@@ -1816,7 +1922,8 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     title.id = 'hwPreviewTitle';
     const actions = document.createElement('div');
     actions.className = 'hw-preview-actions';
-    const download = document.createElement('a');
+    const download = document.createElement('button');
+    download.type = 'button';
     download.className = 'button secondary';
     download.id = 'hwPreviewDownload';
     download.textContent = '下載';
@@ -1835,9 +1942,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     panel.appendChild(head);
     panel.appendChild(body);
     overlay.appendChild(panel);
-    overlay.addEventListener('click', function(ev) {
-      if (ev.target === overlay) closeHomeworkPreview();
-    });
+    bindBackdropClose(overlay, closeHomeworkPreview);
     // Escape 由上面的全域處理器統一關「最上層浮層」（避免一次 Escape 連關兩層）。
     document.body.appendChild(overlay);
     return overlay;
@@ -1866,7 +1971,7 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
     const download = q('hwPreviewDownload');
     if (!body) return;
     if (title) title.textContent = name || ('檔案 ' + uploadId);
-    if (download) download.href = hwFileUrl(uploadId, name, '');
+    if (download) download.onclick = function() { hwDownloadFile(uploadId, name || ''); };
     body.textContent = '';
     overlay.classList.add('open');
     openOverlayLayer('preview', hideHomeworkPreview);

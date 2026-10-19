@@ -123,6 +123,8 @@
       '<a id="moreAiFinalV2" class="button secondary" href="/admin/ai">AI 對話</a>' +
       (isAdmin ? '<a id="moreActivityFinalV2" class="button secondary" href="/admin/activity">登入/檔案紀錄</a>' : '') +
       (isAdmin ? '<a id="moreBlacklistFinalV2" class="button secondary" href="/admin/blacklist">黑名單</a>' : '') +
+      // ACCOUNT_SUSPEND_V1：帳號暫時停權（僅管理員）。
+      (isAdmin ? '<a id="moreSuspensionsV1" class="button secondary" href="/admin/suspensions">帳號停權</a>' : '') +
       // RADAR_PANEL_V1（fix70）：雷達點名（僅管理員；設定影響整個 provider）。
       (isAdmin ? '<a id="moreRadarFinalV2" class="button secondary" href="/admin/radar">雷達點名</a>' : '') +
       '<button id="moreRefreshFinalV2" class="secondary" type="button">重新整理</button>' +

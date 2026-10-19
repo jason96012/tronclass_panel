@@ -211,6 +211,71 @@ fn cache_put(ip: &str, info: &Option<HostingInfo>) {
     cache.insert(ip.to_string(), (Instant::now(), info.clone()));
 }
 
+// GOOGLE_CRAWLER_ALLOWLIST_V1：Google 官方公布的爬蟲 IP 範圍。ip-api.com 會把 Googlebot
+// 的 IP（例如 66.249.66.1）標成 `hosting: true`，若沒有這份例外，整個網站會對 Google 回 403，
+// 搜尋引擎完全抓不到內容。只放行「官方清單內」的 IP：
+//   * common-crawlers.json：Googlebot 等一般爬蟲（反向 DNS 為 *.googlebot.com）
+//   * user-triggered-fetchers-google.json：Search Console「網址檢查／即時測試」等由使用者觸發的抓取器（反向 DNS 為 *.google.com）
+// 任何不在這兩份清單內的機房 IP（包括偽裝成 Googlebot 的 UA）仍照常封鎖。
+// 清單抓取失敗時沿用舊快取；從未成功過時是空的（＝不放行，維持原本的封鎖行為）。
+const GOOGLE_COMMON_CRAWLERS_URL: &str =
+    "https://developers.google.com/static/crawling/ipranges/common-crawlers.json";
+const GOOGLE_USER_TRIGGERED_URL: &str =
+    "https://developers.google.com/static/crawling/ipranges/user-triggered-fetchers-google.json";
+
+static GOOGLE_CRAWLER_RANGES_V4: Lazy<Mutex<Vec<Ipv4Range>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static GOOGLE_CRAWLER_RANGES_V6: Lazy<Mutex<Vec<Ipv6Range>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// 二分搜尋（清單須已排序、合併成不重疊區段）。
+fn ipv4_in_sorted_ranges(ranges: &[Ipv4Range], target: u32) -> bool {
+    let idx = ranges.partition_point(|r| r.start <= target);
+    idx > 0 && target <= ranges[idx - 1].end
+}
+
+fn ipv6_in_sorted_ranges(ranges: &[Ipv6Range], target: u128) -> bool {
+    let idx = ranges.partition_point(|r| r.start <= target);
+    idx > 0 && target <= ranges[idx - 1].end
+}
+
+/// 這個 IP 是否落在 Google 官方爬蟲／抓取器清單內（不查 DNS，純本地比對）。
+pub fn is_verified_google_crawler(ip: &str) -> bool {
+    match ip.trim().parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let ranges = GOOGLE_CRAWLER_RANGES_V4.lock().unwrap_or_else(|p| p.into_inner());
+            !ranges.is_empty() && ipv4_in_sorted_ranges(&ranges, u32::from(v4))
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let ranges = GOOGLE_CRAWLER_RANGES_V6.lock().unwrap_or_else(|p| p.into_inner());
+            !ranges.is_empty() && ipv6_in_sorted_ranges(&ranges, u128::from(v6))
+        }
+        Err(_) => false,
+    }
+}
+
+/// 抓取兩份 Google 官方清單並更新本地快取。兩份都成功才整批替換；任一份失敗就沿用舊快取，
+/// 避免只抓到一半時把另一份的範圍整個清掉。
+async fn refresh_google_crawler_ranges() {
+    let common = fetch_official_json(GOOGLE_COMMON_CRAWLERS_URL).await;
+    let triggered = fetch_official_json(GOOGLE_USER_TRIGGERED_URL).await;
+    let (Some(common), Some(triggered)) = (common, triggered) else {
+        tracing::warn!("Google 官方爬蟲 IP 範圍抓取不完整，沿用舊的本地快取（若有）");
+        return;
+    };
+    let mut v4 = extract_ipv4_ranges(&common, "prefixes", "ipv4Prefix");
+    v4.extend(extract_ipv4_ranges(&triggered, "prefixes", "ipv4Prefix"));
+    let mut v6 = extract_ipv6_ranges(&common, "prefixes", "ipv6Prefix");
+    v6.extend(extract_ipv6_ranges(&triggered, "prefixes", "ipv6Prefix"));
+    if v4.is_empty() && v6.is_empty() {
+        tracing::warn!("Google 官方爬蟲 IP 範圍內容為空，沿用舊的本地快取（若有）");
+        return;
+    }
+    let v4_count = merge_ipv4_ranges(v4.clone()).len();
+    let v6_count = merge_ipv6_ranges(v6.clone()).len();
+    *GOOGLE_CRAWLER_RANGES_V4.lock().unwrap_or_else(|p| p.into_inner()) = merge_ipv4_ranges(v4);
+    *GOOGLE_CRAWLER_RANGES_V6.lock().unwrap_or_else(|p| p.into_inner()) = merge_ipv6_ranges(v6);
+    tracing::info!(ipv4_entries = v4_count, ipv6_entries = v6_count, "已更新 Google 官方爬蟲 IP 範圍本地快取");
+}
+
 /// 抓官方清單用的獨立 client：網址是 HTTPS、檔案比查單一 IP 大很多
 /// （AWS 那份有數千筆、約 2~3 MB），逾時給寬一點，不跟上面查單一 IP 共用
 /// 短逾時設定。
@@ -622,6 +687,8 @@ pub async fn refresh_known_cloud_ranges() {
     // 連帶讓這份也沒機會刷新。抓取失敗只記 warn、沿用舊清單，不影響這個
     // 函式接下來處理 AWS／GCP 的任何邏輯。
     refresh_private_relay_ranges().await;
+    // GOOGLE_CRAWLER_ALLOWLIST_V1：與 AWS／GCP 無關的獨立清單，放在提早 return 之前。
+    refresh_google_crawler_ranges().await;
 
     let aws_body = fetch_official_json(AWS_IP_RANGES_URL).await;
     let gcp_body = fetch_official_json(GCP_IP_RANGES_URL).await;
@@ -763,6 +830,34 @@ pub async fn lookup(ip: &str) -> Option<HostingInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_crawler_ranges_match_only_listed_prefixes() {
+        let body: serde_json::Value = serde_json::from_str(
+            r#"{"prefixes":[{"ipv4Prefix":"66.249.64.0/19"},{"ipv6Prefix":"2001:4860:4801::/48"}]}"#,
+        )
+        .unwrap();
+        let v4 = merge_ipv4_ranges(extract_ipv4_ranges(&body, "prefixes", "ipv4Prefix"));
+        let v6 = merge_ipv6_ranges(extract_ipv6_ranges(&body, "prefixes", "ipv6Prefix"));
+        // 66.249.66.1 是 Googlebot 常見位址（ip-api 標成 hosting）。
+        assert!(ipv4_in_sorted_ranges(&v4, u32::from(Ipv4Addr::new(66, 249, 66, 1))));
+        assert!(ipv4_in_sorted_ranges(&v4, u32::from(Ipv4Addr::new(66, 249, 95, 255))));
+        // 區段外、以及相鄰的下一個 /19 都不可放行。
+        assert!(!ipv4_in_sorted_ranges(&v4, u32::from(Ipv4Addr::new(66, 249, 96, 0))));
+        assert!(!ipv4_in_sorted_ranges(&v4, u32::from(Ipv4Addr::new(66, 249, 63, 255))));
+        assert!(!ipv4_in_sorted_ranges(&v4, u32::from(Ipv4Addr::new(8, 8, 8, 8))));
+        let v6_in: std::net::Ipv6Addr = "2001:4860:4801::1".parse().unwrap();
+        let v6_out: std::net::Ipv6Addr = "2001:4860:4802::1".parse().unwrap();
+        assert!(ipv6_in_sorted_ranges(&v6, u128::from(v6_in)));
+        assert!(!ipv6_in_sorted_ranges(&v6, u128::from(v6_out)));
+    }
+
+    #[test]
+    fn is_verified_google_crawler_is_false_while_cache_is_empty() {
+        // 快取從未成功更新時必須不放行（fail-closed，維持原本的封鎖行為）。
+        assert!(!is_verified_google_crawler("66.249.66.1"));
+        assert!(!is_verified_google_crawler("not-an-ip"));
+    }
 
     #[test]
     fn parses_hosting_true() {

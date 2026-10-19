@@ -223,6 +223,11 @@ pub(super) async fn admin_shares_admin_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::SHARES_ADMIN_JS)
 }
 
+// ACCOUNT_SUSPEND_V1: 帳號停權管理頁前端。
+pub(super) async fn admin_suspensions_admin_js_handler() -> Response {
+    admin_static_asset("application/javascript; charset=utf-8", pages::SUSPENSIONS_ADMIN_JS)
+}
+
 // DASH_ASSET_V1: dashboard 資產化模組。
 pub(super) async fn admin_dashboard_particles_js_handler() -> Response {
     admin_static_asset("application/javascript; charset=utf-8", pages::DASHBOARD_PARTICLES_JS)

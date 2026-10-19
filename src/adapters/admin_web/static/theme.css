@@ -834,3 +834,20 @@ html.tron-auth-logged-out:has(#loginCard[data-animated-login-installed]){visibil
      這裡不寫死，避免 mobile-navigation.css 改高度時兩邊對不齊。 */
   #rollcallPendingFab{right:16px}
 }
+
+/* ACCOUNTS_TABLET_ACTIONS_V1：平板（寬螢幕 821–1366px 或觸控裝置）帳號操作鈕改成等寬網格，
+   不再因欄寬不足而參差換行、錯位。 */
+@media (min-width:821px) and (max-width:1366px), (min-width:821px) and (pointer:coarse){
+  /* 操作欄給足最小寬度，網格才不會被表格自動配寬壓成一欄（否則每顆按鈕一列）。 */
+  #accountsBody td:last-child{min-width:460px!important}
+  #accountsBody .actions-cell{
+    display:grid!important;
+    grid-template-columns:repeat(auto-fill,minmax(96px,1fr))!important;
+    gap:6px!important;
+    min-width:0;
+  }
+  #accountsBody .actions-cell button{
+    width:100%!important;min-width:0!important;min-height:40px!important;
+    padding:0 8px!important;font-size:13px!important;white-space:nowrap!important;
+  }
+}

@@ -2,6 +2,7 @@
 // TRUSTED_TYPES_V1: 後台 CSP 為 require-trusted-types-for 'script' + trusted-types default dompurify，
 // innerHTML 字串會經過頁面既有的 default policy（trusted-types-init.js 或 pages.rs 的 inline 守衛，
 // 皆為消毒型，見 M1）。本檔不再自建 identity policy：那會把已消毒的 default 覆寫成原樣放行。
+// SHARE_V2: 新增密碼／檢視次數／最後存取欄位、存取紀錄展開列；撤銷時帶 sid 精準撤銷。
 (function () {
   'use strict';
 
@@ -10,14 +11,23 @@
   }
 
   function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+    return String(s == null ? '' : s).replace(/[&<>\"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' })[c];
     });
   }
   function fmtDate(secs) {
     try { return new Date(secs * 1000).toLocaleString(); } catch (e) { return String(secs); }
   }
+  var ACTION_LABELS = {
+    view: '開啟預覽',
+    download: '下載',
+    unlock_ok: '密碼正確',
+    unlock_fail: '密碼錯誤',
+    blocked_limit: '達次數上限（已擋）'
+  };
+  // 新連結用伺服器給的 public_path（含 sid 與 v2 簽章）；舊連結退回 v1 組法。
   function buildLink(rec) {
+    if (rec.public_path) return location.origin + rec.public_path;
     return location.origin + '/pub/share?path=' + encodeURIComponent(rec.path) + '&exp=' + rec.exp + '&sig=' + rec.sig;
   }
 
@@ -50,10 +60,35 @@
     bg.onclick = function (e) { if (e.target === bg) bg.remove(); };
   }
 
+  function viewsLabel(r) {
+    if (!r.sid) return '—';
+    return r.max_views ? (r.views + ' / ' + r.max_views) : (r.views + ' / 不限');
+  }
+  function lastLabel(r) {
+    return r.sid && r.last_access ? fmtDate(r.last_access) : '—';
+  }
+  function logHtml(r) {
+    if (!r.access || !r.access.length) return '<div class="empty">尚無存取紀錄</div>';
+    var rows = r.access.map(function (a) {
+      return '<tr><td class="td-nowrap">' + esc(fmtDate(a.time)) + '</td>'
+        + '<td>' + esc(ACTION_LABELS[a.action] || a.action) + '</td>'
+        + '<td>' + esc(a.ip) + '</td>'
+        + '<td class="ua">' + esc(a.ua) + '</td></tr>';
+    }).join('');
+    var more = (r.access_total > r.access.length)
+      ? '<div class="sub">僅顯示最近 ' + r.access.length + ' 筆（共 ' + r.access_total + ' 筆，最多保留 200 筆）</div>'
+      : '';
+    return '<table class="log"><thead><tr><th>時間</th><th>動作</th><th>IP</th><th>裝置／瀏覽器</th></tr></thead><tbody>'
+      + rows + '</tbody></table>' + more;
+  }
+
   function render(list) {
     var content = document.getElementById('content');
     if (!list || !list.length) { setHTML(content, '<div class="empty">尚無分享連結</div>'); return; }
     var now = Math.floor(Date.now() / 1000);
+    var active = list.filter(function (r) { return !r.revoked && r.exp >= now; }).length;
+    var totalViews = list.reduce(function (s, r) { return s + (r.views || 0); }, 0);
+    var summary = '<div class="sub">共 ' + list.length + ' 條｜有效 ' + active + ' 條｜累計開啟預覽 ' + totalViews + ' 次</div>';
     var rows = list.map(function (r, i) {
       var revoked = !!r.revoked;
       var expired = r.exp < now;
@@ -61,17 +96,31 @@
         : expired ? '<span class="badge exp">已過期</span>'
         : '<span class="badge ok">有效</span>';
       return '<tr>'
-        + '<td class="path">' + esc(r.path) + '</td>'
-        + '<td>' + fmtDate(r.exp) + '</td>'
+        + '<td class="path">' + esc(r.path) + (r.sid ? '' : ' <span class="tag">舊版</span>') + '</td>'
+        + '<td class="td-nowrap">' + fmtDate(r.exp) + '</td>'
         + '<td>' + badge + '</td>'
+        + '<td>' + (r.sid ? (r.has_password ? '🔒 有' : '—') : '—') + '</td>'
+        + '<td class="td-nowrap">' + esc(viewsLabel(r)) + '</td>'
+        + '<td class="td-nowrap">' + esc(lastLabel(r)) + '</td>'
         + '<td class="td-nowrap">'
         + '<button type="button" data-qr="' + i + '">QR／複製</button> '
+        + (r.sid ? '<button type="button" data-log="' + i + '">紀錄（' + (r.access_total || 0) + '）</button> ' : '')
         + (revoked ? '' : '<button type="button" class="danger" data-revoke="' + i + '">撤銷</button>')
-        + '</td></tr>';
+        + '</td></tr>'
+        + (r.sid ? '<tr class="log-row" id="log-' + i + '" hidden><td colspan="7">' + logHtml(r) + '</td></tr>' : '');
     }).join('');
-    setHTML(content, '<table><thead><tr><th>檔案路徑</th><th>到期時間</th><th>狀態</th><th>動作</th></tr></thead><tbody>' + rows + '</tbody></table>');
+    setHTML(content, summary
+      + '<table><thead><tr><th>檔案路徑</th><th>到期時間</th><th>狀態</th><th>密碼</th><th>檢視次數</th><th>最後存取</th><th>動作</th></tr></thead><tbody>'
+      + rows + '</tbody></table>');
+
     content.querySelectorAll('[data-qr]').forEach(function (b) {
       b.addEventListener('click', function () { showQr(buildLink(list[+b.getAttribute('data-qr')])); });
+    });
+    content.querySelectorAll('[data-log]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var row = document.getElementById('log-' + b.getAttribute('data-log'));
+        if (row) row.hidden = !row.hidden;
+      });
     });
     content.querySelectorAll('[data-revoke]').forEach(function (b) {
       b.addEventListener('click', function () {
@@ -80,7 +129,7 @@
         fetch('/admin/api/shares/revoke', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ path: rec.path, exp: rec.exp })
+          body: JSON.stringify({ path: rec.path, exp: rec.exp, sid: rec.sid || '' })
         }).then(function () { load(); }).catch(function () { alert('撤銷失敗'); });
       });
     });

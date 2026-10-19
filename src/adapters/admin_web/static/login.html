@@ -334,6 +334,11 @@
       var mins = err && err.retryAfter ? Math.max(1, Math.ceil(err.retryAfter / 60)) : 10;
       return '此帳號因連續密碼錯誤已暫時鎖定密碼登入（約 ' + mins + ' 分鐘）。若是你本人，可改用通行密鑰登入，或到 Discord 通知按「取消這次鎖定」。';
     }
+    // ACCOUNT_SUSPEND_V1：密碼正確但帳號被管理員暫時停權（到期後自動恢復）。
+    if(status === 403 && code === 'account_suspended'){
+      var until = err && err.suspendedUntil ? new Date(err.suspendedUntil * 1000) : null;
+      return '此帳號已被管理員暫時停權' + (until && !isNaN(until) ? '，預計 ' + until.toLocaleString('zh-TW', { hour12: false }) + ' 解除' : '') + '。如有疑問請聯絡管理員。';
+    }
     if(status === 429 || code.indexOf('too many') >= 0) return '嘗試次數過多，請稍後一分鐘再試。';
     if(status === 403 && code.indexOf('access_denied') >= 0) return '你的來源 IP 已被封鎖，無法登入。';
     if(status === 401 || code === 'unauthorized') return '帳號或密碼錯誤，或此帳號未啟用。';
@@ -348,7 +353,7 @@
     var body = await res.json().catch(function(){ return {}; });
     if(!res.ok){
       var e = new Error(body.error || ('HTTP ' + res.status));
-      e.status = res.status; e.code = body.error || ''; e.retryAfter = body.retry_after_secs || 0;
+      e.status = res.status; e.code = body.error || ''; e.retryAfter = body.retry_after_secs || 0; e.suspendedUntil = body.suspended_until || 0;
       throw e;
     }
     return body;

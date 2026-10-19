@@ -24,12 +24,14 @@ __VERIFICATION_META__
 <meta property="og:url" content="__ORIGIN__/">
 <meta property="og:title" content="jasonserver｜Tronclass 作業提醒與課程自動化面板">
 <meta property="og:description" content="作業與測驗截止提醒、iClass 教材匯入與雲端硬碟、公告 AI 摘要與翻譯、課表與學分統計，並可透過 LINE、Discord 或瀏覽器推播即時通知。jasonserver 讓 Tronclass 的日常一次到位。">
-<meta property="og:image" content="__ORIGIN__/favicon.png">
-<meta property="og:image:alt" content="jasonserver 標誌">
+<meta property="og:image" content="__ORIGIN__/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="jasonserver｜Tronclass 作業提醒與課程自動化面板">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="jasonserver｜Tronclass 作業提醒與課程自動化面板">
 <meta name="twitter:description" content="作業截止提醒、iClass 教材雲端硬碟、公告 AI 摘要、課表與學分統計、即時推播通知。">
-<meta name="twitter:image" content="__ORIGIN__/favicon.png">
+<meta name="twitter:image" content="__ORIGIN__/og-image.png">
 
 <!-- JSON-LD 結構化資料：讓搜尋引擎知道「jasonserver」是一個網站／服務 -->
 <script type="application/ld+json">
@@ -70,7 +72,7 @@ __VERIFICATION_META__
         },
         {
           "@type": "Question",
-          "name": "jasonserver 怎麼登入？",
+          "name": "要怎麼登入？",
           "acceptedAnswer": {
             "@type": "Answer",
             "text": "在瀏覽器打開 dashboard.jasoncloudserver.me，於登入頁輸入你在 jasonserver 設定的帳號密碼（或使用通行密鑰 Passkey）即可進入面板。面板本身需要登入才能使用，公開的只有這一頁介紹。"
@@ -102,7 +104,7 @@ __VERIFICATION_META__
         },
         {
           "@type": "Question",
-          "name": "有手機版嗎？",
+          "name": "手機上可以用嗎？",
           "acceptedAnswer": {
             "@type": "Answer",
             "text": "有。整站支援手機瀏覽，並可安裝成 PWA（加入主畫面），公告、教材預覽與通知在手機上都是全螢幕與觸控優化版本。"
@@ -191,6 +193,8 @@ h2{font-size:clamp(21px,3vw,27px);margin:0 0 8px;letter-spacing:-.01em}
 footer{margin-top:64px;padding-top:22px;border-top:1px solid var(--line);display:flex;flex-wrap:wrap;gap:14px;
   align-items:center;justify-content:space-between;color:var(--muted);font-size:13.5px}
 footer nav{display:flex;flex-wrap:wrap;gap:14px}
+footer nav a{display:inline-flex;align-items:center;min-height:44px}
+.faq summary{min-height:44px;display:flex;align-items:center}
 .cta{margin-top:30px;border:1px solid var(--line);border-radius:20px;padding:26px;
   background:linear-gradient(135deg,rgba(79,140,255,.16),rgba(124,92,255,.12))}
 .cta h2{margin-bottom:6px}
@@ -301,6 +305,33 @@ footer nav{display:flex;flex-wrap:wrap;gap:14px}
           <h3>回到面板看總覽</h3>
           <p>儀表板會顯示作業待辦與截止倒數、最近的公告與教材更新；需要教材時就到教材雲端硬碟下載或線上預覽。</p>
         </div>
+      </div>
+    </section>
+
+    <section id="security">
+      <h2>安全與資料掌控</h2>
+      <p class="section-lead">你的 iClass 帳號與資料只留在自己架設的伺服器上，登入與重要管理操作都有紀錄。</p>
+      <div class="grid">
+        <article class="card">
+          <div class="ico">🔑</div>
+          <h3>通行密鑰登入</h3>
+          <p>支援 Passkey（通行密鑰），登入面板時可以不必輸入密碼。</p>
+        </article>
+        <article class="card">
+          <div class="ico">🛡️</div>
+          <h3>登入失敗會限速</h3>
+          <p>連續登入失敗的帳號會被暫時鎖定，降低被猜密碼的風險。</p>
+        </article>
+        <article class="card">
+          <div class="ico">📍</div>
+          <h3>新地點登入告警</h3>
+          <p>出現新的登入地點或 IP 時會發出告警，並寫入紀錄。</p>
+        </article>
+        <article class="card">
+          <div class="ico">📜</div>
+          <h3>登入與管理紀錄</h3>
+          <p>登入與重要管理操作都會寫入稽核紀錄，方便事後追查。</p>
+        </article>
       </div>
     </section>
 
