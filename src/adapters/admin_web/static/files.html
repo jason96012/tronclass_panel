@@ -1148,6 +1148,53 @@
   .file-more .remove-btn{width:100%!important;min-width:0!important;max-width:none!important;min-height:44px!important}
 }
 </style>
+<style id="TABLET_FOLDER_LAYOUT_V1">
+/* 平板卡片：名稱與操作分排，避免 200px 欄寬內的按鈕擠掉名稱。
+   寬度條件涵蓋接鍵鼠的平板；較大觸控螢幕亦套用。手機沿用原版型。 */
+@media (min-width:821px) and (max-width:1366px), (min-width:821px) and (pointer:coarse){
+  .folder-grid .folder-card{
+    display:grid;
+    grid-template-columns:32px minmax(0,1fr) 44px;
+    grid-template-areas:"icon name name" "tools tools del";
+    align-items:center;
+    align-content:start;
+    gap:10px;
+    min-width:0;
+  }
+  .folder-grid .folder-card .folder-icon{grid-area:icon}
+  .folder-grid .folder-card .folder-name{
+    grid-area:name;
+    min-width:0;
+    white-space:normal;
+    overflow-wrap:anywhere;
+    word-break:normal;
+    overflow:visible;
+    text-overflow:clip;
+    line-height:1.5;
+  }
+  .folder-grid .folder-card .ops-tools{
+    grid-area:tools;
+    min-width:0;
+    margin:0;
+    gap:6px;
+    flex-wrap:wrap;
+    align-items:center;
+  }
+  .folder-grid .folder-card .ops-mini{min-width:44px;min-height:44px}
+  .folder-grid .folder-card .folder-del{
+    grid-area:del;
+    justify-self:end;
+    width:44px!important;
+    min-width:44px!important;
+    max-width:44px!important;
+    height:44px!important;
+    min-height:44px!important;
+    max-height:44px!important;
+    opacity:1;
+    visibility:visible;
+  }
+}
+</style>
 </head>
 <body>
 <!-- NATIVE_MATERIALS_PAGE_ONLY_V1: the obsolete Nextcloud redirect overlay was
