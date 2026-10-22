@@ -833,9 +833,61 @@
        「同一個 scanner token 在過期前允許重複送出…流程成功的帳號會自行 unregister」，
        所以重試只會補送給**仍在等待**的帳號，不會造成重複簽到。 */
     const SUBMIT_ATTEMPTS = 3;          /* 1 次 + 最多 2 次重試 */
-    /* SCANNER_NOT_PENDING_V1：這些代碼代表「此帳號已不需要掃碼」（已簽到，或點名已結束），不是錯誤。
-       不重試、不紅字，並停止掃描。 */
-    const NOT_PENDING_CODES = ["account_not_pending", "pending_not_found", "expired"];
+    /* QR_RECOVERY_V1：單一帳號不再等待不代表整場完成；只有真正失效的連結才終止掃描。 */
+    const SCANNER_TERMINAL_CODES = ["pending_not_found", "expired", "invalid_token"];
+    const STATUS_TIMEOUT_MS = 8000;
+    let attendanceStatusRequest = null;
+    // QR_MANUAL_CAMERA_V1: local epochs reject responses/decodes from an older camera session.
+    let statusEpoch = 0;
+    let scanEpoch = 0;
+    let queuedQr = null;
+    let resumeRequest = null;
+    let resumeRevision = 0;
+    let completionRecheckStarted = false;
+    let nextCompletionCheckAt = 0;
+    const QUEUED_QR_MAX_AGE_MS = 3000;
+
+    function flushQueuedQr() {
+      if (submitInFlight || resumeRequest || !queuedQr) return;
+      const next = queuedQr;
+      if (next.epoch !== scanEpoch || Date.now() - next.observedAt > QUEUED_QR_MAX_AGE_MS) {
+        queuedQr = null;
+        return;
+      }
+      if (next.data === lastSubmittedData && Date.now() - lastSubmittedAt < RESUBMIT_SAME_QR_MS) return;
+      queuedQr = null;
+      submitQr(next.data, next); // do not refresh observedAt merely because a timer ran
+    }
+
+    function requestQrRecheck() {
+      if (resumeRequest) return resumeRequest;
+      statusEpoch += 1;
+      const epoch = scanEpoch;
+      completionRecheckStarted = true;
+      resumeRevision = 0; // no cached all-done reading may close the camera during POST
+      resumeRequest = (async () => {
+        try {
+          const { res, body } = await scannerFetchJson("/scanner/resume", {
+            method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ provider, rollcall_id: rollcallId, account_id: accountId, token })
+          }, SUBMIT_TIMEOUT_MS);
+          if (!res.ok) throw new Error(body.error || `重新核對失敗（HTTP ${res.status}）`);
+          resumeRevision = Number(body.recheck_revision) || 0;
+          if (epoch === scanEpoch) setStatus("已要求同場帳號重新核對；未點到者將恢復接收，請持續對準最新QR。這不是簽到成功回報。", "warn");
+          return body;
+        } catch (err) {
+          completionRecheckStarted = false;
+          nextCompletionCheckAt = Date.now() + 10000;
+          if (epoch === scanEpoch) setStatus(((err && err.message) || "重查失敗") + "；尚未確認完成，可再次按開啟相機重查。", "warn");
+          return null;
+        }
+      })().finally(() => {
+        resumeRequest = null;
+        refreshAttendanceStatus();
+        flushQueuedQr();
+      });
+      return resumeRequest;
+    }
     const SUBMIT_RETRY_BASE_MS = 1200;  /* 退避：1.2s → 2.4s */
     /* 連續多久沒解到碼就提示使用者（秒）。 */
     const NO_QR_HINT_SECS = 2.5;
@@ -861,7 +913,8 @@
     function pendingBadgeSuffix() {
       const s = lastKnownCounts;
       if (!s || s.total <= 0) return "";
-      if (s.pending <= 0) return "・全部已點到🎉";
+      if (s.allDone) return resumeRevision > 0 && !resumeRequest ? "・全部已點到🎉" : "・待學校重新確認";
+      if (s.pending <= 0) return "・尚有帳號未確認成功";
       return `・還有 ${s.pending} 人未點到`;
     }
     /* 「掃描中…」／「已停止」這兩種閒置狀態的膠囊文字，統一從這裡組，
@@ -974,6 +1027,12 @@
     function syncCountdown(expiresInSecs) {
       if (typeof expiresInSecs !== "number" || !isFinite(expiresInSecs)) return;
       cdDeadlineMs = Date.now() + expiresInSecs * 1000;
+      if (expiresInSecs > 0 && cdExpiredNotified) {
+        // 新的有效狀態恢復操作按鈕，但不擅自重開相機。
+        cdExpiredNotified = false;
+        document.getElementById("start").disabled = false;
+        document.getElementById("submitManual").disabled = false;
+      }
       countdownEl.style.display = "";
       tickCountdown();
     }
@@ -1015,38 +1074,96 @@
       }
     }
 
-    async function refreshAttendanceStatus() {
-      if (!validScannerParams()) return;
+    /* QR_RECOVERY_V1：deadline 包含 fetch 與 JSON 讀取；即使沒有 AbortController
+       也會解除本頁等待。晚到的回應只被丟棄，不會回寫畫面。 */
+    async function scannerFetchJson(url, init, timeoutMs) {
+      const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+      let timer;
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new Error("掃碼服務回應逾時，稍後會再讀取狀態");
+          error.name = "TimeoutError";
+          reject(error);
+          if (controller) controller.abort();
+        }, timeoutMs);
+      });
+      const request = (async () => {
+        const options = Object.assign({}, init);
+        if (controller) options.signal = controller.signal;
+        const res = await fetch(url, options);
+        let body;
+        try {
+          body = await res.json();
+        } catch (err) {
+          const failure = new Error("掃碼服務回應格式不正確，尚未確認結果");
+          failure.scannerStatus = res.status; // 4xx 即使不是 JSON 也不能當作斷線重試。
+          throw failure;
+        }
+        return { res, body };
+      })();
       try {
-        const query = new URLSearchParams({
-          provider,
-          rollcall_id: String(rollcallId),
-          account_id: accountId,
-          token
-        });
-        const res = await fetch(`/scanner/status?${query.toString()}`, { cache: "no-store" });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body.error || "狀態讀取失敗");
-        totalCountEl.textContent = String(body.total_count || 0);
-        doneCountEl.textContent = String(body.completed_count || 0);
-        pendingCountEl.textContent = String(body.pending_count || 0);
-        renderList(doneListEl, body.completed_accounts || []);
-        renderList(pendingListEl, body.pending_accounts || []);
-        syncClassProgress(body);
-        syncCountdown(body.expires_in_secs);
-        /* QR_BADGE_PENDING_COUNT_V1：記下這次讀數，給預覽膠囊（掃描中…／✓ 已掃描到 QR）
-           顯示「還有 N 人未點到」用；跟下面三個數字、ALL_DONE_AUTOSTOP_V1 共用同一份 body。 */
-        lastKnownCounts = allDoneCounts(body);
-        /* ALL_DONE_AUTOSTOP_V1：只有「讀成功」的回應才列入讀數（失敗／逾時不算，免得網路抖一下誤判）。 */
-        noteAttendanceProgress(body);
-      } catch (err) {
-        const msg = (err && err.message) || "狀態讀取失敗";
-        /* ROLLCALL_INPUT_COUNTDOWN_V1：後端回報已到期／找不到流程時，直接把倒數切到逾時狀態 */
-        if (/expired|逾時|過期|到期|找不到等待中/i.test(msg) && cdDeadlineMs != null) { cdDeadlineMs = Date.now(); tickCountdown(); }
-        // 狀態輪詢失敗不停止掃描，只在狀態列提示。
-        if (!scanning) return;
-        setStatus(msg, "error");
+        return await Promise.race([request, deadline]);
+      } finally {
+        clearTimeout(timer);
       }
+    }
+
+    function refreshAttendanceStatus() {
+      if (!validScannerParams()) return Promise.resolve(null);
+      // 同一時間只有一份狀態查詢；送出回調與定時輪詢共用，避免舊回應覆蓋新狀態。
+      if (attendanceStatusRequest) return attendanceStatusRequest;
+      const requestEpoch = statusEpoch;
+      attendanceStatusRequest = (async () => {
+        try {
+          const query = new URLSearchParams({
+            provider,
+            rollcall_id: String(rollcallId),
+            account_id: accountId,
+            token
+          });
+          const { res, body } = await scannerFetchJson(
+            `/scanner/status?${query.toString()}`, { cache: "no-store" }, STATUS_TIMEOUT_MS
+          );
+          if (requestEpoch !== statusEpoch) return null;
+          if (!res.ok) {
+            const error = new Error(body.error || "狀態讀取失敗");
+            error.scannerCode = body.code || "";
+            throw error;
+          }
+          totalCountEl.textContent = String(body.total_count || 0);
+          doneCountEl.textContent = String(body.completed_count || 0);
+          pendingCountEl.textContent = String(body.pending_count || 0);
+          renderList(doneListEl, body.completed_accounts || []);
+          renderList(pendingListEl, body.pending_accounts || []);
+          syncClassProgress(body);
+          lastKnownCounts = allDoneCounts(body);
+          noteAttendanceProgress(body);
+          syncCountdown(body.expires_in_secs);
+          if (!allDoneStopped && typeof body.last_error === "string" && body.last_error) {
+            setStatus(body.last_error, "warn");
+          }
+          if ((body.pending_count || 0) > 0) flushQueuedQr();
+          if (allDoneManual && (body.recheck_revision || 0) >= resumeRevision && resumeRevision > 0
+              && !body.rechecking_count && !body.recheck_error_count && allDoneCounts(body).allDone) {
+            setStatus("學校已重新確認同場帳號全部點到；手動開啟的鏡頭保持開啟，可自行按停止。", "ok");
+          }
+          return body;
+        } catch (err) {
+          if (requestEpoch !== statusEpoch) return null;
+          // 失敗不是「全部完成」的持續讀數，也不能沿用失敗前的完成計時。
+          allDoneReading = null;
+          allDoneEndedAt = null;
+          lastKnownCounts = null;
+          if (err && SCANNER_TERMINAL_CODES.indexOf(err.scannerCode) !== -1) {
+            if (scanning) stopCamera();
+            setStatus("掃碼連結已失效或流程已結束；這不代表簽到成功，請回控制台開啟目前的點名連結。", "warn");
+          } else if (!allDoneStopped) {
+            setStatus(((err && err.message) || "狀態讀取失敗") + "；尚未確認完成，請保持掃描，系統會自動重查。", "warn");
+          }
+          return null;
+        }
+      })().finally(() => { attendanceStatusRequest = null; });
+      return attendanceStatusRequest;
     }
 
     /* ─────────── ALL_DONE_AUTOSTOP_V1（fix103）：全部點到就自動收工 ───────────
@@ -1067,7 +1184,8 @@
       const total = Math.max(0, Number(body && body.total_count) || 0);
       const pending = Math.max(0, Number(body && body.pending_count) || 0);
       const completed = Math.max(0, Number(body && body.completed_count) || 0);
-      return { total, pending, completed, allDone: total > 0 && pending === 0 && completed >= total };
+      return { total, pending, completed, allDone: total > 0 && pending === 0 && completed >= total
+        && Number(body && body.rechecking_count || 0) === 0 && Number(body && body.recheck_error_count || 0) === 0 };
     }
 
     /* 每次成功輪詢都走這裡。回傳 true＝這一次真的觸發了自動收工（測試與診斷用）。 */
@@ -1082,11 +1200,20 @@
       }
       const stable = allDoneEndedAt != null && (now - allDoneEndedAt) >= ALL_DONE_CONFIRM_MS;
       if (!s.allDone) {
-        allDoneManual = false;            // 狀態真的變回「有人沒點到」→ 回到自動模式
+        // Manual camera ownership lasts this entire session, including pending -> completed.
+        if (s.pending > 0 && !body.rechecking_count && !body.recheck_error_count) {
+          completionRecheckStarted = false; // require a fresh check after this new attempt finishes
+        }
         if (stable && allDoneStopped && s.pending > 0) backToWaiting(s);
         return false;
       }
-      if (!stable || allDoneStopped || allDoneManual) return false;
+      if (!stable || allDoneStopped || allDoneManual || resumeRequest || submitInFlight) return false;
+      if (!completionRecheckStarted) {
+        if (Date.now() >= nextCompletionCheckAt) requestQrRecheck();
+        return false;
+      }
+      // Three seconds of cached counts is not a fresh school confirmation.
+      if (!resumeRevision || Number(body.recheck_revision || 0) < resumeRevision) return false;
       finishAllDone(s);
       return true;
     }
@@ -1152,15 +1279,19 @@
       };
     }
 
-    async function submitQr(qrData) {
+    async function submitQr(qrData, observation) {
       const now = Date.now();
       if (!qrData) return;
+      const candidate = observation || { data: qrData, observedAt: now, epoch: scanEpoch };
+      if (candidate.epoch !== scanEpoch || now - candidate.observedAt > QUEUED_QR_MAX_AGE_MS) return;
+      const requestScanEpoch = scanEpoch;
       if (!validScannerParams()) {
         setScanHint("掃描連結缺少必要參數，無法回傳（請重新開啟點名頁產生的連結）", "error");
         return;
       }
-      if (submitInFlight) {
-        setScanHint("上一次回傳還在進行中，請稍等…", "warn");
+      if (submitInFlight || resumeRequest) {
+        queuedQr = candidate; // newest observation replaces old queued data, never an unbounded backlog
+        setScanHint("正在回傳／重新核對；已保留最新掃到的QR，完成後接續送出。", "warn");
         return;
       }
       if (qrData === lastSubmittedData && now - lastSubmittedAt < RESUBMIT_SAME_QR_MS) {
@@ -1175,39 +1306,25 @@
 
       /* 送出一次（逾時、keepalive 都在這裡）。外層的 while 負責重試。 */
       async function submitOnce() {
-        const controller = (typeof AbortController !== "undefined") ? new AbortController() : null;
-        const timer = controller
-          ? setTimeout(() => { try { controller.abort(); } catch (err) {} }, SUBMIT_TIMEOUT_MS)
-          : null;
-        try {
-          const init = {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              provider,
-              rollcall_id: rollcallId,
-              account_id: accountId,
-              token,
-              qr_data: qrData
-            }),
-            /* keepalive：送出後就算使用者把分頁切走或關掉，瀏覽器也會把請求送完
-               （本體只有幾百 bytes，遠低於 keepalive 的 64KB 上限）。 */
-            keepalive: true
-          };
-          if (controller) init.signal = controller.signal;
-          const res = await fetch("/scanner/submit", init);
-          const body = await res.json().catch(() => ({}));
-          if (!res.ok) {
-            const failure = new Error(body.error || `回傳失敗（HTTP ${res.status}）`);
-            /* 有狀態碼＝學校系統的明確答案 → submitRetryVerdict 會據此決定不重試。 */
-            failure.scannerStatus = res.status;
-            failure.scannerCode = body.code || "";
-            throw failure;
-          }
-          return body;
-        } finally {
-          if (timer) clearTimeout(timer);
+        const { res, body } = await scannerFetchJson("/scanner/submit", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider,
+            rollcall_id: rollcallId,
+            account_id: accountId,
+            token,
+            qr_data: qrData
+          }),
+          keepalive: true
+        }, SUBMIT_TIMEOUT_MS);
+        if (!res.ok) {
+          const failure = new Error(body.error || `回傳失敗（HTTP ${res.status}）`);
+          failure.scannerStatus = res.status;
+          failure.scannerCode = body.code || "";
+          throw failure;
         }
+        return body;
       }
 
       let body = null;
@@ -1216,6 +1333,10 @@
       let offlineThisTime = false;   /* 離線時要留著白話說明，不要被 "Failed to fetch" 蓋掉 */
       try {
         while (attempts < SUBMIT_ATTEMPTS) {
+          if (requestScanEpoch !== scanEpoch) return;
+          // A changed QR takes precedence over retrying the failed older code.
+          if (attempts > 0 && queuedQr && queuedQr.data !== qrData) return;
+          if (attempts > 0 && Date.now() - candidate.observedAt > QUEUED_QR_MAX_AGE_MS) return;
           attempts += 1;
           try {
             body = await submitOnce();
@@ -1233,6 +1354,7 @@
             await sleepMs(verdict.delay);
           }
         }
+        if (requestScanEpoch !== scanEpoch) return;
         if (failure) throw failure;
         successfulSubmits += 1;
         /* ALL_DONE_AUTOSTOP_V1：送出途中如果已經「全部點到自動收工」，就不要再把狀態列
@@ -1243,22 +1365,32 @@
           setStatus(
             `已送出第 ${successfulSubmits} 次，${body.delivered_count || 0} 個帳號收到 QR Code。`
               + (attempts > 1 ? `（重試 ${attempts - 1} 次後成功）` : "")
-              + "持續掃描中...",
+              + "這是接收回報，尚非簽到成功；等待學校確認。"
+              + (scanning ? "請持續掃描最新的碼。" : "可按「開啟相機」繼續掃描。"),
             "ok"
           );
           reportSubmitOnPreview(true, `✅ 已送出（${body.delivered_count || 0} 個帳號）`);
         }
         refreshAttendanceStatus();
       } catch (err) {
+        if (requestScanEpoch !== scanEpoch) return;
         const aborted = err && (err.name === "AbortError" || err.name === "TimeoutError");
         /* ALL_DONE_AUTOSTOP_V1：已經自動收工就不用再報送出失敗（那時全班都已點到，
            這一輪的失敗已經不影響結果），免得紅色訊息蓋掉完成訊息。 */
-        if (err && NOT_PENDING_CODES.indexOf(err.scannerCode) !== -1) {
-          /* 這個帳號已經不在等待名單（已簽到，或點名已結束）：不是錯誤，不重試，停止掃描。 */
-          setStatus("此帳號已不需要掃碼（可能已簽到，或點名已結束），已停止掃描。", "");
-          if (scanning) {
-            try { stopCamera(); } catch (stopErr) { /* 已經關閉 */ }
+        if (err && err.scannerCode === "account_not_pending") {
+          // 只查整場狀態：連結持有人先點到／短暫切換登記，不是關鏡頭的證據。
+          const state = await refreshAttendanceStatus();
+          if (requestScanEpoch !== scanEpoch) return;
+          if (!allDoneStopped) {
+            const confirmed = state && resumeRevision > 0 && Number(state.recheck_revision || 0) >= resumeRevision
+              && allDoneCounts(state).allDone;
+            setStatus(confirmed
+              ? "學校已重新確認全部點到；已點到者不會重送，手動鏡頭可自行停止。"
+              : "正在核對／恢復待點名流程；請保持鏡頭對準最新QR，已點到者不會重送。", confirmed ? "ok" : "warn");
           }
+        } else if (err && SCANNER_TERMINAL_CODES.indexOf(err.scannerCode) !== -1) {
+          if (scanning) stopCamera();
+          setStatus("掃碼連結已失效或流程已結束；這不代表簽到成功，請回控制台開啟目前的點名連結。", "warn");
         } else if (!allDoneStopped) {
           const tried = attempts > 1 ? `（已嘗試 ${attempts} 次）` : "";
           /* 離線時留著白話說明：原生錯誤（Failed to fetch）對老師沒有任何意義。 */
@@ -1271,7 +1403,8 @@
           reportSubmitOnPreview(false, aborted ? "❌ 送出逾時（仍持續掃描）" : "❌ 送出失敗（仍持續掃描）");
         }
       } finally {
-        submitInFlight = false;   // ← 一定會解鎖，不會再永久卡住
+        submitInFlight = false;   // never create a second simultaneous POST on camera reopen
+        flushQueuedQr();
       }
     }
 
@@ -2544,8 +2677,15 @@ void main() {
         srNoticed = true;
         setScanHint("AI 超分救援：用超解析度重看畫面中央（首次會下載約 17MB，之後會快取）…", "");
       }
+      const rescueEpoch = scanEpoch;
+      const rescueObservedAt = Date.now();
       srRun()
-        .then((hit) => { if (hit) { srRescues += 1; srFound = hit; } })
+        .then((hit) => {
+          if (hit && scanning && rescueEpoch === scanEpoch && Date.now() - rescueObservedAt <= QUEUED_QR_MAX_AGE_MS) {
+            srRescues += 1;
+            srFound = Object.assign(hit, { observedAt: rescueObservedAt, scanEpoch: rescueEpoch });
+          }
+        })
         .catch((err) => { srFail(String((err && err.message) || err)); })
         .then(() => { srBusy = false; updateCamInfo(); });
     }
@@ -3612,6 +3752,8 @@ void main() {
       if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
       decoding = true;
       lastDecodeAt = at;
+      const decodeEpoch = scanEpoch;
+      const decodedFrameAt = Date.now();
       const roundStartAt = nowMs();      /* QR_DECODE_PACING_V1：這一輪忙了多久，看它決定要讓手多久 */
       try {
         /* QR_SCREEN_AVG_V1（fix85）：每個 tick 疊一格平均（拍螢幕去摩爾紋用）。
@@ -3629,6 +3771,7 @@ void main() {
            解碼的總佔用率因此大約壓在 1/(1+PERF_DUTY_RATIO) ≈ 六成五以下，預覽才不會一格一格卡。
            decoding 在這段期間維持 true，所以不會有下一輪插進來把畫面又吃掉。 */
         await perfYield(Math.min(PERF_YIELD_MAX_MS, (nowMs() - roundStartAt) * PERF_DUTY_RATIO));
+        if (!scanning || decodeEpoch !== scanEpoch) return;
         if (found) {
           lastSeenAt = nowMs();
           lastQrAt = lastSeenAt;
@@ -3655,7 +3798,7 @@ void main() {
               `${found.sharpened ? "＋銳化" : ""} 解到${found.via ? "・" + found.via : ""}）`,
             "ok"
           );
-          submitQr(found.data);
+          submitQr(found.data, { data: found.data, observedAt: found.observedAt || decodedFrameAt, epoch: decodeEpoch });
         } else if (scanning && (!lastSeenAt || (nowMs() - lastSeenAt) / 1000 > NO_QR_HINT_SECS)) {
           /* ALL_DONE_AUTOSTOP_V1：這一輪是 await 回來的，中間可能已經「全部點到自動收工」
              （scanning 被 stopCamera 關掉）——那就不要再把提示列蓋回「還沒看到 QR」，
@@ -4744,6 +4887,9 @@ void main() {
     }
 
     function stopCamera() {
+      scanEpoch += 1;
+      statusEpoch += 1;
+      queuedQr = null;
       scanning = false;
       releaseWakeLock();   /* SCANNER_QUALITY_V1：停止掃描就一定要放掉螢幕鎖定 */
       /* PREVIEW_ALIVE_V1／BRIGHT_GUARD_V1：停止時把偵測狀態歸零，下次開相機重新起算。 */
@@ -4787,12 +4933,25 @@ void main() {
       setScanHint("已停止掃描（可按「開啟相機」重新開始）", "");
     }
 
-    /* ALL_DONE_AUTOSTOP_V1：使用者「在已經全部點到的畫面上」自己按了開啟相機
-       → 這一輪不再自動關相機（尊重他的選擇）；等讀數真的變回「有人沒點到」再回到自動模式。
-       反過來說，正常掃描流程中按開啟相機不算覆寫，不然全班點完就不會自動收工了。 */
+    /* QR_MANUAL_CAMERA_V1：明確按開啟／手動送出，立即要求後端同場重查。
+       手動鏡頭在本次使用期間保持開啟，學校重新確認完成後由使用者自行停止。 */
+    function beginManualQrRecovery() {
+      allDoneManual = true;
+      allDoneStopped = false;
+      allDoneReading = null;
+      allDoneEndedAt = null;
+      lastKnownCounts = null;
+      scanEpoch += 1;
+      statusEpoch += 1;
+      queuedQr = null;
+      srFound = null; // a rescue decoded before this manual session is not a new observation
+      lastSubmittedData = "";
+      lastSubmittedAt = 0;
+      requestQrRecheck();
+    }
     document.getElementById("start").addEventListener("click", () => {
-      allDoneManual = allDoneStopped || allDoneReading === true;
-      startCamera();
+      beginManualQrRecovery();
+      startCamera(); // do not wait for school network before asking for camera access
     });
     document.getElementById("stop").addEventListener("click", stopCamera);
     document.getElementById("submitManual").addEventListener("click", () => {
@@ -4801,7 +4960,8 @@ void main() {
         setStatus("請先貼上 QR Code 內容", "error");
         return;
       }
-      setScanHint("手動送出：直接把你貼上的內容交給系統（不經過相機解碼）", "");
+      beginManualQrRecovery();
+      setScanHint("手動送出：重新核對並補送你貼上的內容（不經過相機解碼）", "");
       submitQr(value);
     });
 

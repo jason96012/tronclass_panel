@@ -1245,11 +1245,20 @@ async fn do_poll_and_attend(
     trigger: MonitorTrigger,
 ) -> Result<BatchSummary> {
     // ── 取得簽到列表 ──────────────────────────────────────────────────────────
-    let rollcalls = ctx
-        .api_client
-        .get_rollcalls()
-        .await
-        .wrap_err("取得簽到列表失敗")?;
+    // QR_MANUAL_WAKE_V1: completed QR jobs can re-enter even if school list is now
+    // empty/unknown. Their supervisor must perform a fresh, bounded exact-ID probe.
+    let manual = if let Some(registry) = ctx.scanner_registry.as_ref() {
+        if let Some(account) = ctx.request_account.as_ref() {
+            registry.bind_qr_wake(&ctx.account.provider, account).await;
+        }
+        registry.qr_manual_rollcalls(&ctx.account.provider, &ctx.account.id).await
+    } else { Vec::new() };
+    let manual_recheck = !manual.is_empty();
+    let rollcalls = if manual_recheck {
+        manual
+    } else {
+        ctx.api_client.get_rollcalls().await.wrap_err("取得簽到列表失敗")?
+    };
 
     let total = rollcalls.len();
     let pending_count = rollcalls.iter().filter(|rc| rc.needs_attendance()).count();
@@ -1293,14 +1302,17 @@ async fn do_poll_and_attend(
     // 120 秒內同一 provider+rollcall 只廣播一次（FORCE_CASCADE_DEDUPE_TTL）。
     // 沒修課的帳號被喚醒後 get_rollcalls 為空，不會再 cascade。
     // 不改變 15% 自動送門檻、group_submit 錯開、3 秒 QR 冷卻。
-    if let Some(force_cascade) = ctx.force_cascade.as_ref() {
-        force_cascade
-            .notify_peers_once(
-                &ctx.account.id,
-                &ctx.account.provider,
-                &pending_rollcall_ids,
-            )
-            .await;
+    // Explicit same-rollcall rechecks must not wake unrelated provider accounts.
+    if !manual_recheck {
+        if let Some(force_cascade) = ctx.force_cascade.as_ref() {
+            force_cascade
+                .notify_peers_once(
+                    &ctx.account.id,
+                    &ctx.account.provider,
+                    &pending_rollcall_ids,
+                )
+                .await;
+        }
     }
 
     info!(

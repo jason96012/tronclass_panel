@@ -58,23 +58,102 @@
   .badge.off { background:var(--soft2,#94a3b8); }
   .muted { color:var(--muted,#888); font-size:12px; }
   .empty { padding:24px; text-align:center; color:var(--muted,#888); font-size:13px; }
-  @media (max-width:640px){
-    th, td { font-size:12px; padding:7px 6px; }
+  /* SUSPENSIONS_MOBILE_V1: local selectors isolate shared #accountsBody rules. */
+  #suspensionsPage .nav-link { display:inline-flex; align-items:center; justify-content:center;
+    padding:8px 14px; border:1px solid var(--line,#ccc); border-radius:8px;
+    background:var(--card,#fff); color:var(--text,#333); font-size:13px; text-decoration:none; }
+  #suspensionsPage .cell-label { display:none; }
+  #suspensionsPage .cell-value { min-width:0; overflow-wrap:anywhere; }
+  #suspensionsPage .intro-note { margin:6px 0 0; }
+  #suspensionsPage .form-help { line-height:1.6; }
+  #suspensionsPage :is(button,a,select,input):focus-visible {
+    outline:3px solid var(--primary,#2563eb); outline-offset:3px; }
+  @media (max-width:820px){
+    #suspensionsPage { padding:20px 14px calc(28px + env(safe-area-inset-bottom,0px));
+      padding-top:calc(18px + env(safe-area-inset-top,0px));
+      padding-left:max(14px,env(safe-area-inset-left,0px));
+      padding-right:max(14px,env(safe-area-inset-right,0px)); }
+    #suspensionsPage h1 { font-size:24px!important; font-weight:750; letter-spacing:.02em;
+      margin:4px 0 10px; line-height:1.35; }
+    #suspensionsPage .sub { font-size:14px; line-height:1.75; margin-bottom:18px; }
+    #suspensionsPage .intro-note { padding:10px 12px; margin-top:10px; border-radius:10px;
+      background:var(--soft,#eef2ff); color:var(--text,#334155); }
+    #suspensionsPage .toolbar { display:grid!important; grid-template-columns:repeat(2,minmax(0,1fr));
+      gap:8px!important; margin-bottom:22px; }
+    #suspensionsPage .toolbar .back-link { grid-column:1/-1; grid-row:1; justify-content:flex-start;
+      background:transparent; border-color:transparent; padding-left:0; }
+    #suspensionsPage .toolbar > * { min-width:0; width:100%; }
+    #suspensionsPage .nav-link, #suspensionsPage button { min-height:48px!important;
+      font-size:14px!important; line-height:1.4; padding:12px!important; border-radius:12px!important;
+      touch-action:manipulation; white-space:normal; }
+    #suspensionsPage .card { padding:18px 16px; border:1px solid var(--line,#dbe3ef);
+      border-radius:18px; margin-bottom:20px; box-shadow:0 4px 18px rgba(15,23,42,.04); min-width:0; }
+    #suspensionsPage h2 { margin:0 0 18px; font-size:18px!important; line-height:1.45;
+      display:flex; align-items:center; gap:9px; }
+    #suspensionsPage h2::before { content:''; width:4px; height:18px; flex:none;
+      border-radius:4px; background:var(--primary,#2563eb); }
+    #suspensionsPage .form-grid { grid-template-columns:minmax(0,1fr); gap:18px; }
+    #suspensionsPage .field { min-width:0; gap:8px; font-size:14px; font-weight:600;
+      color:var(--text,#334155); }
+    #suspensionsPage :is(select,input[type=text],input[type=datetime-local]) {
+      min-width:0; max-width:100%; min-height:48px; width:100%; border-radius:12px;
+      padding:12px; font-size:16px!important; line-height:1.5; font-family:inherit; }
+    #suspensionsPage .actions { flex-direction:column; align-items:stretch; gap:12px; margin-top:20px; }
+    #suspensionsPage .form-help { order:-1; font-size:13px; padding:12px;
+      background:var(--soft,#f1f5f9); border-radius:10px; }
+    #suspensionsPage #susSubmit { width:100%; font-weight:700; }
+    #suspensionsPage .msg { font-size:14px; line-height:1.65; overflow-wrap:anywhere; }
+    #suspensionsPage .msg:empty { min-height:0; margin:0; }
+    #suspensionsPage .tbl-wrap { overflow:visible; }
+    #suspensionsPage .sus-table { display:block; width:100%; min-width:0; }
+    /* Keep column headers accessible; do not display:none the thead. */
+    #suspensionsPage .sus-table thead { position:absolute; width:1px; height:1px;
+      padding:0; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
+    #suspensionsPage .sus-table tbody { display:grid!important; gap:12px!important; width:100%; }
+    #suspensionsPage .sus-table tbody tr { display:grid!important; grid-template-columns:minmax(0,1fr);
+      gap:0!important; padding:12px!important; border:1px solid var(--line,#dbe3ef);
+      border-radius:14px!important; background:var(--card,#fff); min-width:0; }
+    #suspensionsPage .sus-table td, #suspensionsPage #accountsBody td {
+      display:grid!important; grid-template-columns:76px minmax(0,1fr); align-items:start!important;
+      gap:10px!important; padding:9px 0!important; border:0!important; min-width:0;
+      font-size:14px!important; line-height:1.65; overflow-wrap:anywhere; }
+    /* Shared dashboard labels are incorrect here (e.g. 最後檢查). */
+    #suspensionsPage #accountsBody td::before { content:none!important; display:none!important; }
+    #suspensionsPage .cell-label { display:block; font-size:12px; font-weight:500;
+      color:var(--muted,#64748b); padding-top:2px; }
+    #suspensionsPage .sus-table td:first-child, #suspensionsPage #accountsBody td:first-child {
+      font-size:16px!important; font-weight:700!important; padding:2px 0 12px!important;
+      margin-bottom:3px; border-bottom:1px solid var(--line2,#e2e8f0)!important; }
+    #suspensionsPage .sus-table .cell-actions, #suspensionsPage #accountsBody .cell-actions {
+      display:block!important; padding:12px 0 0!important; margin-top:5px;
+      border-top:1px solid var(--line2,#e2e8f0)!important; }
+    #suspensionsPage .cell-actions .cell-label { display:none; }
+    #suspensionsPage .cell-actions .cell-value { display:block; }
+    #suspensionsPage .cell-actions button { width:100%; }
+    #suspensionsPage #accountsBody .cell-actions button { min-height:48px!important;
+      font-size:14px!important; padding:12px!important; }
+    #suspensionsPage .badge { max-width:100%; white-space:normal; overflow-wrap:anywhere;
+      font-size:12px; line-height:1.6; padding:4px 9px; margin:2px 4px 2px 0; vertical-align:top; }
+    #suspensionsPage .sus-table td.empty, #suspensionsPage #accountsBody td.empty {
+      display:block!important; margin:0; padding:20px 8px!important; border:0!important;
+      font-size:14px!important; font-weight:400!important; text-align:center; }
   }
 </style>
 </head>
 <body>
-<div class="wrap">
+<main class="wrap" id="suspensionsPage">
   <h1>帳號停權管理</h1>
-  <div class="sub">此頁僅管理員可設定。被停權的帳號無法進入管理後台（包含已登入的裝置，會立即登出）；到期後自動恢復，也可提前解除。停權不影響背景監控。</div>
+  <div class="sub">管理帳號的後台存取權限，到期自動恢復，也可提前解除。
+    <p class="intro-note">停權會登出該帳號已登入的後台裝置，<strong>不影響背景監控</strong>。僅管理員可設定。</p>
+  </div>
   <div class="toolbar">
     <button id="refresh" class="primary" type="button">重新整理</button>
-    <a href="/admin/blacklist"><button type="button">IP 黑名單</button></a>
-    <a href="/admin"><button type="button">返回控制台</button></a>
+    <a class="nav-link" href="/admin/blacklist">IP 黑名單</a>
+    <a class="nav-link back-link" href="/admin">← 返回控制台</a>
   </div>
 
   <div class="card">
-    <h2>新增停權</h2>
+    <h2>設定帳號停權</h2>
     <div class="form-grid">
       <label class="field">帳號
         <select id="susAccount"><option value="">載入中…</option></select>
@@ -92,12 +171,12 @@
         <input type="datetime-local" id="susUntil">
       </label>
       <label class="field">原因（選填，最多 200 字）
-        <input type="text" id="susReason" maxlength="200" autocomplete="off">
+        <input type="text" id="susReason" maxlength="200" autocomplete="off" placeholder="例如：違反使用規範（可留空）">
       </label>
     </div>
     <div class="actions">
       <button id="susSubmit" class="danger" type="button">停權並登出</button>
-      <span class="muted">同一帳號重新設定會覆寫原本的到期時間。最長 365 天。</span>
+      <span class="muted form-help">重新設定同一帳號，將取代原本的到期時間；最長可停權 365 天。送出前會再次請你確認。</span>
     </div>
     <div id="susMsg" class="msg" role="status"></div>
   </div>
@@ -105,9 +184,9 @@
   <div class="card">
     <h2>目前停權中</h2>
     <div class="tbl-wrap">
-      <table>
-        <thead><tr><th>帳號</th><th>到期時間</th><th>剩餘</th><th>原因</th><th>設定者</th><th></th></tr></thead>
-        <tbody id="activeBody"><tr><td colspan="6" class="empty">載入中…</td></tr></tbody>
+      <table class="sus-table" role="table">
+        <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">帳號</th><th scope="col" role="columnheader">到期時間</th><th scope="col" role="columnheader">剩餘</th><th scope="col" role="columnheader">原因</th><th scope="col" role="columnheader">設定者</th><th scope="col" role="columnheader">操作</th></tr></thead>
+        <tbody id="activeBody" role="rowgroup"><tr role="row"><td role="cell" colspan="6" class="empty">載入中…</td></tr></tbody>
       </table>
     </div>
   </div>
@@ -115,12 +194,12 @@
   <div class="card">
     <h2>所有帳號</h2>
     <div class="tbl-wrap">
-      <table>
-        <thead><tr><th>帳號</th><th>提供者</th><th>角色／狀態</th><th></th></tr></thead>
-        <tbody id="accountsBody"><tr><td colspan="4" class="empty">載入中…</td></tr></tbody>
+      <table class="sus-table" role="table">
+        <thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">帳號</th><th scope="col" role="columnheader">提供者</th><th scope="col" role="columnheader">角色／狀態</th><th scope="col" role="columnheader">操作</th></tr></thead>
+        <tbody id="accountsBody" role="rowgroup"><tr role="row"><td role="cell" colspan="4" class="empty">載入中…</td></tr></tbody>
       </table>
     </div>
   </div>
-</div>
+</main>
 </body>
 </html>

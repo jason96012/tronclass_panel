@@ -74,6 +74,7 @@ pub fn build_router(state: LineWebhookState, webhook_path: &str) -> Router {
         .route("/scanner/sr/model.onnx", get(scanner_sr_model_handler))
         .route("/scanner/status", get(scanner_status_handler))
         .route("/scanner/submit", post(scanner_submit_handler))
+        .route("/scanner/resume", post(scanner_resume_handler))
         .route("/number", get(number_page_handler))
         .route("/number/status", get(number_status_handler))
         .route("/number/submit", post(number_submit_handler))
@@ -356,7 +357,7 @@ async fn scanner_status_handler(
         Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e.to_string() })),
+            Json(json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
     }
@@ -450,6 +451,19 @@ async fn radar_submit_handler(
     }
 }
 
+async fn scanner_resume_handler(
+    State(state): State<LineWebhookState>,
+    Json(query): Json<ScannerStatusQuery>,
+) -> Response {
+    let Some(scanner) = state.scanner.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"error": "scanner is not enabled"}))).into_response();
+    };
+    match scanner.request_qr_resume(query).await {
+        Ok(result) => (StatusCode::ACCEPTED, Json(serde_json::json!(result))).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": e.to_string(), "code": e.code() }))).into_response(),
+    }
+}
+
 async fn scanner_submit_handler(
     State(state): State<LineWebhookState>,
     Json(submission): Json<ScannerSubmission>,
@@ -466,7 +480,7 @@ async fn scanner_submit_handler(
         Ok(result) => (StatusCode::OK, Json(json!(result))).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": e.to_string() })),
+            Json(json!({ "error": e.to_string(), "code": e.code() })),
         )
             .into_response(),
     }

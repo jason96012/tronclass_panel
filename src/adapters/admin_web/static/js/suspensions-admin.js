@@ -11,9 +11,25 @@
 
   function el(tag, cls, text) {
     var node = document.createElement(tag);
+    if (tag === 'tr') node.setAttribute('role', 'row');
+    if (tag === 'td') node.setAttribute('role', 'cell');
     if (cls) node.className = cls;
     if (text !== undefined && text !== null) node.textContent = String(text);
     return node;
+  }
+
+  // SUSPENSIONS_MOBILE_V1: one DOM tree for desktop tables and mobile cards.
+  // Move existing nodes (including buttons), retaining all event listeners.
+  function labelRow(row, labels) {
+    Array.prototype.forEach.call(row.children, function (cell, i) {
+      var value = el('span', 'cell-value');
+      while (cell.firstChild) value.appendChild(cell.firstChild);
+      var label = el('span', 'cell-label', labels[i]);
+      label.setAttribute('aria-hidden', 'true'); // semantic column headers remain accessible
+      cell.appendChild(label);
+      cell.appendChild(value);
+      if (i === labels.length - 1) cell.classList.add('cell-actions');
+    });
   }
 
   function nowSecs() {
@@ -144,6 +160,7 @@
       btn.addEventListener('click', function () { clearSuspension(row.account_id, acc ? acc.username : row.account_id); });
       td.appendChild(btn);
       tr.appendChild(td);
+      labelRow(tr, ['帳號', '到期時間', '剩餘時間', '停權原因', '設定者', '操作']);
       body.appendChild(tr);
     });
   }
@@ -195,6 +212,7 @@
         td.appendChild(el('span', 'muted', '（自己）'));
       }
       tr.appendChild(td);
+      labelRow(tr, ['帳號', '提供者', '角色／狀態', '操作']);
       body.appendChild(tr);
     });
   }
