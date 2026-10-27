@@ -189,6 +189,8 @@ impl Default for RuntimeSettings {
             auto_stop_time: None,
             rest_periods: Vec::new(),
             semester_override: None,
+            // PEN_TEST_V1：預設不放行任何來源。
+            pen_test_whitelist: Vec::new(),
         }
     }
 }
@@ -502,6 +504,10 @@ mod tests {
                 end_time: "07:00".to_string(),
             }],
             semester_override: Some("1151".to_string()),
+            pen_test_whitelist: vec![
+                "203.0.113.7".to_string(),
+                "198.51.100.0/24".to_string(),
+            ],
         };
         let text = serde_json::to_string_pretty(&settings).unwrap();
         let back = parse_persisted(&text);
@@ -515,6 +521,11 @@ mod tests {
         assert_eq!(back.auto_stop_time.as_deref(), Some("23:30"));
         assert_eq!(back.rest_periods.len(), 1);
         assert_eq!(back.semester_override.as_deref(), Some("1151"));
+        // PEN_TEST_V1：白名單也要能完整往返，否則重啟後掃描器會突然被擋。
+        assert_eq!(
+            back.pen_test_whitelist,
+            vec!["203.0.113.7".to_string(), "198.51.100.0/24".to_string()]
+        );
     }
 
     /// 缺欄位（舊版設定檔、手寫的檔）＝用預設，**不是 0** —— 0 會變成「不等待、全部同時送出」。
