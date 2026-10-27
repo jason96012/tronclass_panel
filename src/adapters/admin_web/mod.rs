@@ -206,8 +206,18 @@ pub(crate) fn public_error(context: &str, detail: &dyn std::fmt::Display) -> Str
 }
 
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+// PEN_TEST_V1：測試模式放寬登入嘗試上限，讓暴力破解／撞庫類測試能跑完。
+// ⚠️ 風險提醒：這兩個值同時也是「真實使用者帳號」的暴力破解防護。
+//    若在對外服務上以 pen_test 建置，任何人都能對任何帳號無限次嘗試密碼。
+//    測完請務必用不帶 feature 的建置重新部署。
+#[cfg(not(feature = "pen_test"))]
 const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
+#[cfg(feature = "pen_test")]
+const RATE_LIMIT_MAX_ATTEMPTS: u32 = 10000;
+#[cfg(not(feature = "pen_test"))]
 const IP_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
+#[cfg(feature = "pen_test")]
+const IP_RATE_LIMIT_MAX_ATTEMPTS: u32 = 10000;
 const MAX_RATE_LIMIT_KEYS: usize = 4096;
 /// TEST_NOTIFICATION_RATE_LIMIT_V1：各「發送測試」端點每帳號每分鐘上限
 /// （digest_test／push/test／bulletins/test／homework/test-notification 共用同一套邏輯，

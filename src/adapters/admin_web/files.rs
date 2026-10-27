@@ -1837,25 +1837,36 @@ fn pub_rate_exceeded(ip: &str, limit: u32, window_secs: u64) -> bool {
 
 // SHARE_V2: 分享密碼解鎖使用獨立計數（scope 前綴），避免與一般分享頁請求互相影響。
 fn pub_rate_exceeded_scoped(scope: &str, ip: &str, limit: u32, window_secs: u64) -> bool {
-    // PUB_RATE_GROUP_KEY_V1（fix120）：原本以原始 IP 字串當鍵——攻擊者在 IPv6
-    // 隱私位址空間逐請求輪換，即可無限繞過公開端點限速（分享頁 120/分、
-    // 預覽紀錄 10/分），且每次輪換都讓記憶體多長一筆。改成與黑名單／登入節流
-    // 同一把尺（IP_BLACKLIST_V6_GROUP_V1）：IPv6 收斂成 /64、IPv4-mapped 先收斂。
-    let key = format!("{scope}{}", crate::trusted_ip::blacklist_group_key(ip));
-    let now = office_now_secs();
-    let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
-        return false;
-    };
-    if map.len() > 4096 {
-        map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
-    }
-    let entry = map.entry(key).or_insert((now, 0));
-    if now.saturating_sub(entry.0) >= window_secs {
-        *entry = (now, 1);
+    // PEN_TEST_V1：測試模式一律回「未超限」，讓分享連結的 HMAC 簽章測試能跑完
+    // （原本分享頁 120 次/60 秒、預覽紀錄 10 次/60 秒會讓這類測試跑不動）。
+    // 刻意用兩個 cfg 區塊而不是 early return，避免「unreachable code」警告。
+    #[cfg(feature = "pen_test")]
+    {
+        let _ = (scope, ip, limit, window_secs);
         false
-    } else {
-        entry.1 += 1;
-        entry.1 > limit
+    }
+    #[cfg(not(feature = "pen_test"))]
+    {
+        // PUB_RATE_GROUP_KEY_V1（fix120）：原本以原始 IP 字串當鍵——攻擊者在 IPv6
+        // 隱私位址空間逐請求輪換，即可無限繞過公開端點限速（分享頁 120/分、
+        // 預覽紀錄 10/分），且每次輪換都讓記憶體多長一筆。改成與黑名單／登入節流
+        // 同一把尺（IP_BLACKLIST_V6_GROUP_V1）：IPv6 收斂成 /64、IPv4-mapped 先收斂。
+        let key = format!("{scope}{}", crate::trusted_ip::blacklist_group_key(ip));
+        let now = office_now_secs();
+        let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
+            return false;
+        };
+        if map.len() > 4096 {
+            map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
+        }
+        let entry = map.entry(key).or_insert((now, 0));
+        if now.saturating_sub(entry.0) >= window_secs {
+            *entry = (now, 1);
+            false
+        } else {
+            entry.1 += 1;
+            entry.1 > limit
+        }
     }
 }
 

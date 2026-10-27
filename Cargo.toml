@@ -99,6 +99,10 @@ sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 # `--no-default-features` 建置，行為不變。
 default = []
 ocr = ["dep:ddddocr"]
+# PEN_TEST_V1：滲透測試模式。只在明確加 `--features pen_test` 時啟用；
+# 生產建置（`cargo build --release`）不受影響。
+# 注意：ptero-start.sh 用 `--no-default-features` 建置，測試版要自己帶上這個 feature。
+pen_test = []
 
 [dev-dependencies]
 tempfile = "3"
