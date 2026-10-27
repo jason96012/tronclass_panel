@@ -538,6 +538,13 @@ async fn reject_blacklisted_ip_middleware(
         .map(|ci| ci.0.ip());
     let trusted = crate::trusted_ip::trusted_from_global_config();
     let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
+    // PEN_TEST_V1：白名單上的來源一律放行——掃描器不該把自己鎖在門外。
+    // 只繞過本層的「封鎖」，不影響認證與授權（見 is_pen_test_whitelisted 說明）。
+    // 正式建置下 is_pen_test_whitelisted() 恆為 false，這段等於不存在。
+    if crate::trusted_ip::is_pen_test_whitelisted(&ip).await {
+        warn!("🧪 [PEN_TEST] 白名單放行 {ip}（本層不擋）");
+        return next.run(request).await;
+    }
     if ip_is_blacklisted(&state, &ip).await {
         // Do not turn JSON API failures into HTML: frontend fetch handlers
         // depend on `{ "error": "access_denied" }`. Normal document
@@ -740,6 +747,13 @@ async fn reject_foreign_admin_ip_middleware(
         .map(|ci| ci.0.ip());
     let trusted = crate::trusted_ip::trusted_from_global_config();
     let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
+    // PEN_TEST_V1：白名單上的來源一律放行——掃描器不該把自己鎖在門外。
+    // 只繞過本層的「封鎖」，不影響認證與授權（見 is_pen_test_whitelisted 說明）。
+    // 正式建置下 is_pen_test_whitelisted() 恆為 false，這段等於不存在。
+    if crate::trusted_ip::is_pen_test_whitelisted(&ip).await {
+        warn!("🧪 [PEN_TEST] 白名單放行 {ip}（本層不擋）");
+        return next.run(request).await;
+    }
     // IP 都解析不出來（"unknown"）：不是這層該處理的問題，交給其他防線，這裡放行。
     // 區網／私有位址（內部健康檢查、同網段存取）本來就查不出國家，直接放行。
     if ip == "unknown" || blacklist::is_private_or_local_ip(&ip) {
@@ -869,6 +883,13 @@ async fn reject_hosting_ip_middleware(
         .map(|ci| ci.0.ip());
     let trusted = crate::trusted_ip::trusted_from_global_config();
     let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
+    // PEN_TEST_V1：白名單上的來源一律放行——掃描器不該把自己鎖在門外。
+    // 只繞過本層的「封鎖」，不影響認證與授權（見 is_pen_test_whitelisted 說明）。
+    // 正式建置下 is_pen_test_whitelisted() 恆為 false，這段等於不存在。
+    if crate::trusted_ip::is_pen_test_whitelisted(&ip).await {
+        warn!("🧪 [PEN_TEST] 白名單放行 {ip}（本層不擋）");
+        return next.run(request).await;
+    }
     // IP 解析不出來、或區網／私有位址：不是這層該處理的問題，直接放行
     // （道理同 `reject_foreign_admin_ip_middleware`）。
     if ip == "unknown" || blacklist::is_private_or_local_ip(&ip) {
@@ -5461,6 +5482,10 @@ struct AdminActionRequest {
     digest_enabled: Option<bool>,
     #[serde(default)]
     digest_time: Option<String>,
+    /// PEN_TEST_V1：滲透測試白名單（IP 或 CIDR）。
+    /// `None`＝不變；`Some(清單)`＝整份覆蓋（含空清單＝清空）。
+    #[serde(default)]
+    pen_test_whitelist: Option<Vec<String>>,
 }
 
 fn admin_login_redirect(next_path: &str) -> Response {

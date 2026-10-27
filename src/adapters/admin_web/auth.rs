@@ -212,7 +212,9 @@ pub(super) async fn admin_login_handler(
             lock_keys.push(account.username.clone());
         }
         // PEN_TEST_V1：測試模式跳過帳號鎖定，讓連續嘗試不會被 10 分鐘鎖住。
-        let lock_remaining = if PEN_TEST_MODE {
+        let lock_remaining = if PEN_TEST_MODE
+            || crate::trusted_ip::is_pen_test_whitelisted(&ip).await
+        {
             warn!(username = %username, "🧪 [PEN_TEST] 跳過帳號鎖定檢查");
             None
         } else {

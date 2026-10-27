@@ -311,6 +311,101 @@ pub fn trusted_from_global_config() -> TrustedProxies {
     TrustedProxies::from_config(&entries)
 }
 
+/// PEN_TEST_V1：判斷來源 IP 是否在「滲透測試白名單」上。
+///
+/// 白名單上的來源不會被任何**防禦性封鎖**擋下：機房 IP 層、WAF、
+/// IP 黑名單層、境外限制層、登入節流與帳號鎖定。
+///
+/// ## ⚠️ 分界（這是刻意畫的線，不要越過去）
+///
+/// 這個白名單**只繞過封鎖，不繞過認證與授權**。白名單上的 IP 依然要
+/// 正確的帳號密碼才能登入，也不會因此拿到任何額外權限或看得到別人的資料。
+/// 它解決的是「掃描器把自己鎖在門外」，**不是**開一個後門。
+/// 因此不要拿它去繞過 `authorize*`／CSRF／任何權限判斷。
+///
+/// ## 為什麼正式建置永遠回 false
+///
+/// 白名單若留在生產環境，等於那個 IP 永久免疫所有防線——這正是攻擊者
+/// 最想要的東西。所以只在 `--features pen_test` 下才真的去讀設定；
+/// 正式建置連設定都不看，直接回 false。
+///
+/// ## 嚴格比對
+///
+/// 刻意**不**用 `TrustedProxies::from_config`——它會無條件把 loopback 加進去，
+/// 變成「本機永遠在白名單」。這裡只收設定檔明列的項目（支援 IP、CIDR、
+/// 以及 `cloudflare` 關鍵字），行為可預期。
+/// PEN_TEST_V1：驗證一筆白名單項目是否合法（IP、CIDR，或 `cloudflare` 關鍵字）。
+///
+/// 判斷邏輯刻意與 [`TrustedProxies::add_cidr`] 保持一致，所以「這裡說合法」
+/// 的項目丟進 add_cidr 一定會被收下；無效項目則會被 add_cidr 靜默忽略，
+/// 在正規化階段先擋掉，面板上才不會出現「存了但沒生效」的項目。
+pub fn is_valid_cidr_entry(entry: &str) -> bool {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return false;
+    }
+    if entry.eq_ignore_ascii_case("cloudflare") {
+        return true;
+    }
+    let (ip_str, len_str) = match entry.split_once('/') {
+        Some((ip, len)) => (ip.trim(), Some(len.trim())),
+        None => (entry, None),
+    };
+    let Ok(ip) = IpAddr::from_str(ip_str) else {
+        return false;
+    };
+    let max_len = match ip {
+        IpAddr::V4(_) => 32u32,
+        IpAddr::V6(_) => 128u32,
+    };
+    match len_str {
+        None => true,
+        // 與 add_cidr 一致：`/0` 只對 IPv4 有意義。
+        Some(len) => matches!(len.parse::<u32>(), Ok(0) if max_len == 32)
+            || matches!(len.parse::<u32>(), Ok(l) if l <= max_len),
+    }
+}
+
+/// PEN_TEST_V1：判斷來源 IP 是否在「滲透測試白名單」上。
+///
+/// 來源是 `runtime_settings`（面板可改、持久化在 config/runtime_settings.json），
+/// 不是 config.toml——在 Pterodactyl 面板環境改 config.toml 很麻煩，
+/// 而且走執行期設定改完立刻生效、不用重啟。
+pub async fn is_pen_test_whitelisted(ip: &str) -> bool {
+    #[cfg(not(feature = "pen_test"))]
+    {
+        let _ = ip;
+        false
+    }
+    #[cfg(feature = "pen_test")]
+    {
+        let entries = crate::runtime_settings::pen_test_whitelist().await;
+        if entries.is_empty() {
+            return false;
+        }
+        let mut set = TrustedProxies::default();
+        for entry in &entries {
+            // normalize() 已做過去空白、轉小寫與格式驗證，這裡直接比對。
+            match entry.as_str() {
+                // 不加 loopback／localhost：白名單只認明列的項目。
+                "cloudflare" => {
+                    for cidr in CLOUDFLARE_V4 {
+                        set.add_cidr(cidr);
+                    }
+                    for cidr in CLOUDFLARE_V6 {
+                        set.add_cidr(cidr);
+                    }
+                }
+                _ => set.add_cidr(entry),
+            }
+        }
+        match ip.parse::<IpAddr>() {
+            Ok(addr) => set.is_trusted(Some(addr)),
+            Err(_) => false,
+        }
+    }
+}
+
 /// axum extractor: yields the effective client IP string for the request.
 ///
 /// The peer address must have been attached by serving with

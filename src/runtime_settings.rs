@@ -41,6 +41,12 @@ pub const DEFAULT_GROUP_SUBMIT_RADAR_JITTER_MS: u64 = 500;
 /// 基準的硬上限（沿用既有 10 秒上限）。
 pub const MAX_GROUP_SUBMIT_INTERVAL_MS: u64 = 10_000;
 pub const MAX_RUNTIME_REST_PERIODS: usize = 64;
+/// PEN_TEST_V1：滲透測試白名單的筆數上限。
+/// 這是「測試用的便利清單」，不是存取控制清單——限制筆數避免它被拿來當成
+/// 另一套權限系統，也避免有人灌一堆 CIDR 把每次請求的比對成本拉高。
+pub const MAX_PEN_TEST_WHITELIST: usize = 32;
+/// 單筆白名單的最大長度（`"cloudflare"` 或一個 CIDR 都綽綽有餘）。
+pub const MAX_PEN_TEST_WHITELIST_ENTRY_CHARS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]   // 讀檔時缺欄位＝用 Default（送出節奏的預設是 500/500…，不會變成 0）
@@ -86,6 +92,19 @@ pub struct RuntimeSettings {
     /// synchronous [`semester_override`] accessor.
     #[serde(default)]
     pub semester_override: Option<String>,
+    /// PEN_TEST_V1：滲透測試白名單（IP 或 CIDR，也接受 `"cloudflare"` 關鍵字）。
+    ///
+    /// 列出的來源不會被任何**防禦性封鎖**擋下：機房 IP 層、WAF、IP 黑名單層、
+    /// 境外限制層、登入節流與帳號鎖定。用途是讓掃描器不會把自己鎖在門外。
+    ///
+    /// ⚠️ 分界：只繞過**封鎖**，不繞過**認證與授權**。白名單上的 IP 仍然需要
+    ///    正確的帳號密碼才能進後台，也不會拿到任何額外權限（見
+    ///    `trusted_ip::is_pen_test_whitelisted` 的說明）。
+    ///
+    /// ⚠️ 只在 `--features pen_test` 建置下生效。正式建置不會去讀這份清單
+    ///    （程式面直接回 false），所以清單就算留在這裡也不會影響生產環境。
+    #[serde(default)]
+    pub pen_test_whitelist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -241,6 +260,14 @@ pub async fn snapshot() -> RuntimeSettings {
     SETTINGS.read().await.clone()
 }
 
+/// PEN_TEST_V1：目前生效的滲透測試白名單（已正規化）。
+///
+/// 刻意只回傳 `Vec<String>` 而不是整個設定，讓呼叫端不必知道儲存結構。
+/// 呼叫端全都是 async（中介層／handler），所以用 async 讀取 tokio 鎖。
+pub async fn pen_test_whitelist() -> Vec<String> {
+    SETTINGS.read().await.pen_test_whitelist.clone()
+}
+
 /// 更新設定：夾範圍 → **先讓記憶體生效** → 原子寫檔；回傳寫檔結果。
 ///
 /// 為什麼是這個順序：面板的操作不該因為寫檔失敗就當作沒發生（掃描中的那一輪需要它立刻生效），
@@ -357,6 +384,26 @@ fn normalize(mut settings: RuntimeSettings) -> RuntimeSettings {
             Some(value)
         }
     });
+    // PEN_TEST_V1：白名單正規化——去空白、轉小寫、丟掉無效項目、去重、限制筆數。
+    // 目的是避免「存了一堆看起來有設但其實不會生效的項目」，那比沒設更糟。
+    settings.pen_test_whitelist = {
+        let mut out: Vec<String> = Vec::new();
+        for entry in settings.pen_test_whitelist {
+            let entry = entry.trim().to_ascii_lowercase();
+            if entry.is_empty()
+                || entry.chars().count() > MAX_PEN_TEST_WHITELIST_ENTRY_CHARS
+                || !crate::trusted_ip::is_valid_cidr_entry(&entry)
+                || out.contains(&entry)
+            {
+                continue;
+            }
+            out.push(entry);
+            if out.len() >= MAX_PEN_TEST_WHITELIST {
+                break;
+            }
+        }
+        out
+    };
     settings
 }
 

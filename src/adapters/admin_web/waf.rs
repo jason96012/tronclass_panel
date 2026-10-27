@@ -1045,6 +1045,11 @@ pub async fn waf_firewall_middleware(
     let pen_test_mode = true;
     #[cfg(not(feature = "pen_test"))]
     let pen_test_mode = false;
+    // PEN_TEST_V1：白名單上的來源比照測試模式——只記錄不封鎖。
+    // is_pen_test_whitelisted() 在正式建置恆為 false，所以正式建置不受影響
+    // （多一次的函式呼叫會被最佳化掉，沒有實際成本）。
+    let pen_test_mode =
+        pen_test_mode || crate::trusted_ip::is_pen_test_whitelisted(&ip).await;
 
     // 1. 深度威脅特徵、蜜罐、黑客工具與惡意標頭檢測
     if let Some(threat) = inspect_waf_threat(&uri, &method, &headers) {

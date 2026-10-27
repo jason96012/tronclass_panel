@@ -227,6 +227,27 @@
     <div id="semesterMsg" class="tmsg"></div>
   </section>
 
+  <!-- PEN_TEST_V1: 滲透測試白名單（僅管理員；持久化於 config/runtime_settings.json）
+       這個卡片只在 pen_test 建置下出現：前端用 /admin/api/status 回應上的
+       `x-pen-test-mode` 標頭判斷，正式建置不會有那個標頭 → 卡片保持隱藏。
+       這樣就算白名單資料留在設定檔裡，正式版也不會顯示、更不會生效。 -->
+  <section class="card" id="penTestCard" hidden>
+    <h1>滲透測試白名單</h1>
+    <p class="hint">列出的來源不會被任何<b>防禦性封鎖</b>擋下：機房 IP 層、WAF、IP 黑名單層、境外限制層、登入節流與帳號鎖定。用途是讓掃描器（nuclei／sqlmap 等）不會把自己鎖在門外。</p>
+    <p class="hint"><b>只繞過封鎖，不繞過認證與授權。</b>白名單上的 IP 仍然需要正確的帳號密碼才能登入，也不會拿到任何額外權限——這不是後門。</p>
+    <div class="test-row"><span><b>建置模式</b><i id="penTestMode">讀取中…</i></span></div>
+    <div class="test-row"><span><b>目前生效</b><i id="penTestStatus">讀取中…</i></span></div>
+    <div class="test-row wrap">
+      <span class="span-full"><b>白名單</b><i>一行一筆，IP 或 CIDR，例：203.0.113.7、198.51.100.0/24；也可用 cloudflare。最多 32 筆。格式不合法的會被丟掉。</i></span>
+      <textarea id="penTestInput" class="test-input" rows="4" placeholder="203.0.113.7&#10;198.51.100.0/24"></textarea>
+    </div>
+    <div class="test-row wrap">
+      <button id="penTestApply" class="tbtn" type="button">套用</button>
+      <button id="penTestClear" class="ghost" type="button">清空</button>
+    </div>
+    <div id="penTestMsg" class="tmsg"></div>
+  </section>
+
   <!-- GROUP_SUBMIT_RELAY_V1: 多帳號點名送出節奏（僅管理員；走 /admin/api/action runtime_settings，
      設定持久化於 config/runtime_settings.json → 重啟後仍沿用） -->
   <section class="card" id="groupSubmitCard" hidden>
@@ -766,6 +787,87 @@
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();
+})();
+</script>
+
+<script>
+/* PEN_TEST_V1: 滲透測試白名單卡片。
+   只在 pen_test 建置下顯示——判斷依據是 /admin/api/status 回應上的
+   `x-pen-test-mode` 標頭（正式建置不會有）。這樣白名單設定就算留在
+   config/runtime_settings.json 裡，正式版也看不到、更不會生效。 */
+(function () {
+  'use strict';
+  var card = document.getElementById('penTestCard');
+  if (!card) return;
+  var modeEl = document.getElementById('penTestMode');
+  var statusEl = document.getElementById('penTestStatus');
+  var input = document.getElementById('penTestInput');
+  var msg = document.getElementById('penTestMsg');
+
+  function show(text, kind) {
+    if (!msg) return;
+    msg.textContent = text || '';
+    msg.className = 'tmsg' + (kind === 'bad' ? ' bad' : kind === 'ok' ? ' ok' : '');
+  }
+
+  function parseList(text) {
+    return (text || '').split('\n')
+      .map(function (line) { return line.trim(); })
+      .filter(function (line) { return line.length > 0; });
+  }
+
+  async function loadStatus() {
+    try {
+      var res = await fetch('/admin/api/status', { credentials: 'same-origin', headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var body = await res.json();
+      if (!body || !body.is_admin) { card.hidden = true; return; }
+      /* 只有 pen_test 建置會帶這個標頭（見 waf_firewall_middleware）。 */
+      var penBuild = res.headers.get('x-pen-test-mode') === '1';
+      if (!penBuild) { card.hidden = true; return; }
+      card.hidden = false;
+      if (modeEl) modeEl.textContent = 'pen_test 建置（防護已關閉）';
+      var list = (body.settings && Array.isArray(body.settings.pen_test_whitelist))
+        ? body.settings.pen_test_whitelist : [];
+      if (statusEl) statusEl.textContent = list.length ? (list.length + ' 筆：' + list.join('、')) : '（空，未放行任何來源）';
+      if (input && document.activeElement !== input) input.value = list.join('\n');
+    } catch (e) {
+      if (statusEl) statusEl.textContent = '讀取失敗：' + (e && e.message ? e.message : e);
+    }
+  }
+
+  async function save(list) {
+    show('套用中…');
+    try {
+      var res = await fetch('/admin/api/action', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ action: 'runtime_settings', pen_test_whitelist: list })
+      });
+      var body = await res.json().catch(function () { return {}; });
+      if (!res.ok) throw new Error(body.error || body.message || ('HTTP ' + res.status));
+      var saved = body.persist_error ? '，但寫檔失敗：' + body.persist_error : '，已永久保存';
+      show('已套用白名單（即時生效' + saved + '）', body.persist_error ? 'bad' : 'ok');
+      loadStatus();
+    } catch (e) {
+      show('套用失敗：' + (e && e.message ? e.message : e), 'bad');
+    }
+  }
+
+  var applyBtn = document.getElementById('penTestApply');
+  if (applyBtn) applyBtn.addEventListener('click', function () {
+    var list = parseList(input && input.value ? input.value : '');
+    if (!list.length) { show('白名單是空的。若要清空，請按「清空」', 'bad'); return; }
+    if (list.length > 32) { show('最多 32 筆，目前 ' + list.length + ' 筆', 'bad'); return; }
+    save(list);
+  });
+  var clearBtn = document.getElementById('penTestClear');
+  if (clearBtn) clearBtn.addEventListener('click', function () {
+    if (input) input.value = '';
+    save([]);
+  });
+  loadStatus();
 })();
 </script>
 <style id="MOBILE_HIDE_BACK_V1">@media(max-width:820px){.top a[href^="/admin"]{display:none!important}}</style>
