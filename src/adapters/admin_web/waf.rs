@@ -1240,17 +1240,28 @@ pub async fn waf_firewall_middleware(
         request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     }
 
-    // 安全校驗通過，放行至下游處理器
-    let mut response = next.run(request).await;
-
-    // PEN_TEST_V1：標記這是測試建置。`curl -I` 就能確認當前跑的是哪一版，
-    // 不必去猜 build 時有沒有帶 feature。
+    // 安全校驗通過，放行至下游處理器。
+    //
+    // PEN_TEST_V1：測試建置時在回應加 `X-Pen-Test-Mode: 1`，`curl -I` 就能
+    // 確認當前跑的是哪一版，不必去猜 build 時有沒有帶 feature。
     // 注意：上面的 403／429／413 提前回傳路徑不會帶這個標頭，
     // 只有成功放行到下游的回應會帶。
+    //
+    // 刻意拆成兩個互斥的 cfg 區塊，而不是寫 `let mut response = ...` 加
+    // #[allow(unused_mut)]：正式建置下標頭插入被 cfg 掉，`mut` 就會變成
+    // 「不需要的可變」而觸發 unused_mut 警告。拆開後兩種建置都乾淨。
+    // （兩個區塊互斥，留下的那一個一定是函式的尾運算式，型別都是 Response。）
     #[cfg(feature = "pen_test")]
-    response.headers_mut().insert(
-        HeaderName::from_static("x-pen-test-mode"),
-        HeaderValue::from_static("1"),
-    );
-    response
+    {
+        let mut response = next.run(request).await;
+        response.headers_mut().insert(
+            HeaderName::from_static("x-pen-test-mode"),
+            HeaderValue::from_static("1"),
+        );
+        response
+    }
+    #[cfg(not(feature = "pen_test"))]
+    {
+        next.run(request).await
+    }
 }

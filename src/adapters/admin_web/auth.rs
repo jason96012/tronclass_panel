@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// PEN_TEST_V1：測試模式開關。
+/// 刻意做成**模組層級常數**而不是函式內的區域變數：本檔案有多個 handler
+/// （登入、改密碼…）都要用，放在函式內只會讓其他函式 E0425 not found in scope。
+/// 用執行期布林值短路，而不是把整段邏輯包進 #[cfg] 重新縮排（diff 難審、也容易漏 return）。
+#[cfg(feature = "pen_test")]
+const PEN_TEST_MODE: bool = true;
+#[cfg(not(feature = "pen_test"))]
+const PEN_TEST_MODE: bool = false;
+
 #[derive(Debug, Deserialize)]
 pub(super) struct AdminActivityQuery {
     #[serde(default)]
@@ -97,13 +106,6 @@ pub(super) async fn admin_login_handler(
     {
         return response;
     }
-    // PEN_TEST_V1：測試模式開關。與 waf.rs 同一套做法——用執行期布林值短路，
-    // 而不是把整段邏輯包進 #[cfg] 重新縮排（diff 難審、也容易漏 return）。
-    #[cfg(feature = "pen_test")]
-    let pen_test_mode = true;
-    #[cfg(not(feature = "pen_test"))]
-    let pen_test_mode = false;
-
     // PEN_TEST_V1：測試模式跳過 IP 黑名單檢查與 IP 速率限制。
     // ⚠️ 注意（審查發現 C）：`reject_blacklisted_ip_middleware` 是第 11 層，
     //    在 handler **之前**執行，所以已被封鎖的 IP 通常根本到不了這裡。
@@ -148,7 +150,7 @@ pub(super) async fn admin_login_handler(
     // IP_BLACKLIST_V6_GROUP_V1：rate key 取群組鍵，與 login-ip: 計數同一把尺。
     let client = crate::trusted_ip::blacklist_group_key(&ip);
     let rate_key = format!("login:{}:{client}", username.to_lowercase());
-    if !pen_test_mode && !state.rate_limiter.check(&rate_key).await {
+    if !PEN_TEST_MODE && !state.rate_limiter.check(&rate_key).await {
         warn!(username = %username, client = %client, "admin web login rate limited");
         // The sixth request is rejected by the five-attempt login rate limiter
         // before password verification. It must still count as a failed login;
@@ -210,7 +212,7 @@ pub(super) async fn admin_login_handler(
             lock_keys.push(account.username.clone());
         }
         // PEN_TEST_V1：測試模式跳過帳號鎖定，讓連續嘗試不會被 10 分鐘鎖住。
-        let lock_remaining = if pen_test_mode {
+        let lock_remaining = if PEN_TEST_MODE {
             warn!(username = %username, "🧪 [PEN_TEST] 跳過帳號鎖定檢查");
             None
         } else {
@@ -758,7 +760,7 @@ pub(super) async fn admin_password_change_handler(
     // PBKDF2 計算成本減速「試猜目前密碼」，沒有明確嘗試上限；若 session token
     // 外洩，可無限次高速驗證。此處以帳號＋IP 群組鍵限流（與登入端點同一把尺：
     // IPv6 位址輪換不能重置窗口），超限直接回 rate limited。
-    if !pen_test_mode
+    if !PEN_TEST_MODE
         && !state
         .rate_limiter
         .check_limit(
