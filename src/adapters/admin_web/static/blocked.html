@@ -35,52 +35,90 @@
         <li>該 IP 已被管理員手動加入，或由登入安全機制自動加入黑名單。</li>
         <li>目前的網路可能共用相同的公開 IP，其他使用者的異常登入也可能觸發保護措施。</li>
       </ul>
-      <div class="help"><b>需要恢復存取？</b><br>請聯絡系統管理員，請他在 Discord 的安全通知按下「移除黑名單」，或從 Dashboard 的黑名單管理頁解除封鎖。</div>
+<div class="help"><b>需要恢復存取？</b><br>請聯絡系統管理員，請他在 Discord 的安全通知按下「移除黑名單」，或從 Dashboard 的黑名單管理頁解除封鎖。<br>如果你認為這是誤判，也可以按下方按鈕通知管理員申請暫時放行。</div>
+      <div class="contact">
+        <button type="button" id="contactBtn" class="contact-btn">聯絡管理員，申請暫時放行</button>
+        <p id="contactStatus" class="contact-status" role="status" aria-live="polite"></p>
+      </div>
       <p id="statusLine" class="status-line" role="status" aria-live="polite"></p>
       <div class="footer">錯誤代碼：<span class="code">ACCESS_DENIED_IP_BLACKLIST</span></div>
     </div>
   </main>
-<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script>
-<script>
-  (function () {
-    // IP_BLACKLIST_AUTO_REDIRECT_V1：管理員解除封鎖之後，這個分頁不用手動
-    // 重新整理——背景每 5 秒問一次自己還在不在黑名單，不在了就自動跳轉回
-    // 原本要去的頁面（道理跟 geo_blocked.html 的自動跳轉一樣）。
-    var status = document.getElementById('statusLine');
-    if (!status) { return; }
-    var POLL_INTERVAL_MS = 5000;
-    var MAX_POLL_ATTEMPTS = 360; // 5 秒 * 360 = 30 分鐘，避免分頁開著忘了關就無限輪詢。
-    var pollAttempts = 0;
-    var pollTimer = null;
+  <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v4513226cdae34746b4dedf0b4dfa099e1781791509496" integrity="sha512-ZE9pZaUXND66v380QUtch/5sE9tPFh2zg45pR2PB0CVkCtOREv2AJKkSidISWkysEuQ0EH8faUU5du78bx87UQ==" data-cf-beacon='{"version":"2024.11.0","token":"1954b47c125f43f8b4338b3c4f804e4f"}' crossorigin="anonymous"></script>
+  <script>
+    (function () {
+      // IP_BLACKLIST_AUTO_REDIRECT_V1：管理員解除封鎖之後，這個分頁不用手動
+      // 重新整理——背景每 5 秒問一次自己還在不在黑名單，不在了就自動跳轉回
+      // 原本要去的頁面（道理跟 geo_blocked.html 的自動跳轉一樣）。
+      var status = document.getElementById('statusLine');
+      var btn = document.getElementById('contactBtn');
+      var contactStatus = document.getElementById('contactStatus');
+      var POLL_INTERVAL_MS = 5000;
+      var MAX_POLL_ATTEMPTS = 360; // 5 秒 * 360 = 30 分鐘，避免分頁開著忘了關就無限輪詢。
+      var pollAttempts = 0;
+      var pollTimer = null;
 
-    function stopPolling() {
-      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-    }
+      function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      }
 
-    function checkBlacklistStatus() {
-      pollAttempts += 1;
-      fetch('/admin/api/blacklist/status', { cache: 'no-store' })
-        .then(function (res) { return res.json().catch(function () { return {}; }); })
-        .then(function (data) {
-          if (data && data.blacklisted === false) {
-            stopPolling();
-            status.textContent = '已經解除封鎖，正在為你跳轉...';
-            setTimeout(function () { location.reload(); }, 1200);
-            return;
-          }
-          if (pollAttempts >= MAX_POLL_ATTEMPTS) {
-            stopPolling();
-            status.textContent = '等候時間較久，請確認處理進度後手動重新整理頁面。';
-          }
-        })
-        .catch(function () {
-          // 單次輪詢失敗（網路閃斷等）不用特別提示，下一次會再試。
+      function checkBlacklistStatus() {
+        pollAttempts += 1;
+        fetch('/admin/api/blacklist/status', { cache: 'no-store' })
+          .then(function (res) { return res.json().catch(function () { return {}; }); })
+          .then(function (data) {
+            if (data && data.blacklisted === false) {
+              stopPolling();
+              status.textContent = '已經解除封鎖，正在為你跳轉...';
+              setTimeout(function () { location.reload(); }, 1200);
+              return;
+            }
+            if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+              stopPolling();
+              if (!status.textContent) {
+                status.textContent = '等候時間較久，請確認處理進度後手動重新整理頁面。';
+              }
+            }
+          })
+          .catch(function () {
+            // 單次輪詢失敗（網路閃斷等）不用特別提示，下一次會再試。
+          });
+      }
+
+      pollTimer = setInterval(checkBlacklistStatus, POLL_INTERVAL_MS);
+      checkBlacklistStatus();
+
+      if (btn && contactStatus) {
+        btn.addEventListener('click', function () {
+          btn.disabled = true;
+          contactStatus.textContent = '傳送中...';
+          fetch('/admin/api/geo-restrict/request-access', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: '[黑名單] ' + location.pathname })
+          }).then(function (res) {
+            return res.json().catch(function () { return {}; }).then(function (data) {
+              return { ok: res.ok, data: data };
+            });
+          }).then(function (result) {
+            if (result.ok) {
+              contactStatus.textContent = result.data.already_pending
+                ? '已經通知過管理員了，請耐心等候處理（這個頁面會在放行後自動跳轉，不用手動重新整理）。'
+                : '已通知管理員，請耐心等候處理（不會自動放行，需要管理員確認；放行後這個頁面會自動跳轉）。';
+            } else if (result.data && result.data.error === 'too_many_requests') {
+              contactStatus.textContent = '請求太頻繁，請稍後再試。';
+              btn.disabled = false;
+            } else {
+              contactStatus.textContent = '傳送失敗，請稍後再試。';
+              btn.disabled = false;
+            }
+          }).catch(function () {
+            contactStatus.textContent = '傳送失敗，請確認網路連線後再試一次。';
+            btn.disabled = false;
+          });
         });
-    }
-
-    pollTimer = setInterval(checkBlacklistStatus, POLL_INTERVAL_MS);
-    checkBlacklistStatus();
-  })();
-</script>
+      }
+    })();
+  </script>
 </body>
 </html>

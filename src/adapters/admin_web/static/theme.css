@@ -835,9 +835,10 @@ html.tron-auth-logged-out:has(#loginCard[data-animated-login-installed]){visibil
   #rollcallPendingFab{right:16px}
 }
 
-/* ACCOUNTS_TABLET_ACTIONS_V1：平板（寬螢幕 821–1366px 或觸控裝置）帳號操作鈕改成等寬網格，
-   不再因欄寬不足而參差換行、錯位。 */
-@media (min-width:821px) and (max-width:1366px), (min-width:821px) and (pointer:coarse){
+/* ACCOUNTS_DESKTOP_ACTIONS_V1：桌面版（≥821px）帳號操作鈕改成等寬網格，
+   不再因欄寬不足而參差換行、錯位。移除原本 max-width:1366px 限制，
+   讓大螢幕桌面也套用網格，確保按鈕能在一排完整顯示。 */
+@media (min-width:821px){
   /* 操作欄給足最小寬度，網格才不會被表格自動配寬壓成一欄（否則每顆按鈕一列）。 */
   #accountsBody td:last-child{min-width:460px!important}
   #accountsBody .actions-cell{

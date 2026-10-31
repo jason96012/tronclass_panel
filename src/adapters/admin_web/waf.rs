@@ -97,6 +97,20 @@ const WAF_MAX_JSON_DEPTH: usize = 10;
 /// 表單欄位數量上限（防止表單欄位洪水攻擊）。
 const WAF_MAX_FORM_FIELDS: usize = 100;
 
+/// WAF_ANOMALY_WHITELIST_V1：以下路徑預期會回傳 4xx（如地理封鎖頁、黑名單頁的聯絡管理員端點），
+/// 不應計入異常行為偵測。與 `reject_blacklisted_ip_middleware`、`reject_foreign_admin_ip_middleware`、
+/// `reject_hosting_ip_middleware` 的豁免清單保持一致。
+const WAF_ANOMALY_WHITELIST_PATHS: &[&str] = &[
+    "/admin/api/geo-restrict/request-access",
+    "/admin/api/geo-restrict/access-status",
+    "/admin/api/blacklist/status",
+];
+
+/// 判斷路徑是否在異常行為偵測白名單中。
+fn waf_anomaly_whitelisted(path: &str) -> bool {
+    WAF_ANOMALY_WHITELIST_PATHS.iter().any(|&p| path == p || path.starts_with(&format!("{}/", p)))
+}
+
 /// WAF 即時遙測計數器。
 pub struct WafTelemetry {
     pub total_requests: AtomicU64,
@@ -1534,11 +1548,25 @@ pub async fn waf_firewall_middleware(
     // 安全校驗通過，放行至下游處理器。
     let response = next.run(request).await;
 
-    // 9. 異常行為偵測：追蹤 4xx 回應，短時間內異常頻繁則自動封鎖。
-    // 已知搜尋引擎爬蟲豁免，避免 Googlebot/Bingbot 被誤封導致「未建立索引」。
+    // 9. 異常行為偵測：追蹤 4xx 回應（不含 403），短時間內異常頻繁則自動封鎖。
+    // 
+    // 設計考量：
+    // - 403 (FORBIDDEN) 是我們自己的中介層（地理封鎖、機房 IP 封鎖、黑名單、認證失敗）合法回傳的存取控制回應，
+    //   不應視為異常探測行為。若計入會導致正常被封鎖的用戶重複觸發異常偵測而被二次封鎖。
+    // - 真正的掃描器異常行為主要表現為：404 (路徑探測)、400 (惡意請求)、429 (頻率超限) 等。
+    // - 已知搜尋引擎爬蟲豁免，避免 Googlebot/Bingbot 被誤封導致「未建立索引」。
+    // - WAF_ANOMALY_WHITELIST_V1：聯絡管理員端點預期回 403/429，不應計入異常行為；
+    //   與其他中介層的豁免清單保持一致。
     let status = response.status();
     let is_crawler = is_known_crawler(&user_agent);
-    if status.is_client_error() && !is_local_or_trusted_ip(&ip) && !is_crawler {
+    // WAF_ANOMALY_EXCLUDE_403_V1：403 是合法存取控制回應，不計入異常偵測
+    let is_forbidden = status == StatusCode::FORBIDDEN;
+    if status.is_client_error()
+        && !is_forbidden
+        && !is_local_or_trusted_ip(&ip)
+        && !is_crawler
+        && !waf_anomaly_whitelisted(&raw_path)
+    {
         let should_ban = WAF_ANOMALY_TRACKER.record_and_check(&ip.to_string()).await;
         if should_ban {
             WAF_TELEMETRY.anomaly_blocked.fetch_add(1, Ordering::Relaxed);
