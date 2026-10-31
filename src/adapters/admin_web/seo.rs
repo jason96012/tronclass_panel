@@ -186,15 +186,25 @@ pub(super) fn landing_page_response(headers: &HeaderMap) -> Response {
 fn robots_txt(headers: &HeaderMap) -> String {
     let origin = request_origin(headers);
     format!(
-        r#"# jasonserver — 公開介紹頁允許檢索；其餘路徑需登入（見 X-Robots-Tag）。
+        r#"# jasonserver — 公開頁面允許檢索；後台與敏感 API 需登入（見 X-Robots-Tag）。
 User-agent: Bingbot
 Allow: /
 Allow: /favicon.ico
 Allow: /favicon.png
 Allow: /apple-touch-icon.png
+Allow: /og-image.png
 Allow: {indexnow_key_path}
-Disallow: /admin
-Disallow: /pub
+Allow: /admin/radar
+Allow: /admin/bulletins
+Allow: /admin/settings
+Allow: /admin/blacklist
+Disallow: /admin/api/
+Disallow: /admin/logs
+Disallow: /admin/notifications
+Disallow: /admin/password
+Disallow: /admin/passkey
+Disallow: /admin/oidc
+Disallow: /pub/
 Disallow: /api/
 Disallow: /tc/
 Disallow: /static/
@@ -204,7 +214,6 @@ Disallow: /bulletin-list
 Disallow: /homework
 Disallow: /scanner
 Disallow: /number
-Disallow: /radar
 Disallow: /healthz
 Disallow: /manifest.webmanifest
 Disallow: /service-worker.js
@@ -215,9 +224,19 @@ Allow: /
 Allow: /favicon.ico
 Allow: /favicon.png
 Allow: /apple-touch-icon.png
+Allow: /og-image.png
 Allow: {indexnow_key_path}
-Disallow: /admin
-Disallow: /pub
+Allow: /admin/radar
+Allow: /admin/bulletins
+Allow: /admin/settings
+Allow: /admin/blacklist
+Disallow: /admin/api/
+Disallow: /admin/logs
+Disallow: /admin/notifications
+Disallow: /admin/password
+Disallow: /admin/passkey
+Disallow: /admin/oidc
+Disallow: /pub/
 Disallow: /api/
 Disallow: /tc/
 Disallow: /static/
@@ -227,7 +246,6 @@ Disallow: /bulletin-list
 Disallow: /homework
 Disallow: /scanner
 Disallow: /number
-Disallow: /radar
 Disallow: /healthz
 Disallow: /manifest.webmanifest
 Disallow: /service-worker.js

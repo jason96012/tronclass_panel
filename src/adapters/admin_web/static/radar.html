@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#07111f">
-<meta name="robots" content="noindex,nofollow">
+<meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+<link rel="canonical" href="https://dashboard.jasoncloudserver.me/admin/radar">
 <title>雷達點名｜Tronclass</title>
+<meta name="description" content="Tronclass 雷達點名頁面：自動偵測並完成數字點名、雷達點名、QR Code 點名與自主報到。支援輔仁 FJU 與淡江 TKU 學校。">
 <style>
 :root{
   color-scheme:light;
@@ -90,6 +92,8 @@ button.secondary,.btn.secondary{background:var(--rd-soft);color:var(--rd-text);b
 button.ghost{background:transparent;color:var(--rd-muted);border-color:var(--rd-line)}
 button.danger{background:var(--rd-bad);color:#fff}
 button:disabled{opacity:.55;cursor:not-allowed}
+.btn.back{text-decoration:none}
+.btn.back:hover{text-decoration:none!important;color:inherit!important}
 .msgs{margin-top:10px;font-size:13px;min-height:20px}
 .msgs .ok{color:var(--rd-ok)}
 .msgs .bad{color:var(--rd-bad)}
@@ -187,8 +191,6 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
     </div>
     <div class="spacer"></div>
     <span id="sourceBadge" class="badge config">讀取中…</span>
-    <!-- RADAR_INPUT_PAGE_V1（fix71）：點名當下手動輸入座標的頁面（等同數字點名的輸入頁）。 -->
-    <a class="btn secondary" id="manualInputLink" href="/admin/radar/input">手動輸入座標</a>
     <a class="btn secondary back" href="/admin">回 Dashboard</a>
     <button class="secondary" id="reloadBtn" type="button">重新整理</button>
   </header>

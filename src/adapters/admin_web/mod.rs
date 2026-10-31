@@ -4068,6 +4068,19 @@ fn path_is_private_for_search(path: &str) -> bool {
     // `Disallow: /`，所以「不要被收錄」這件事改由這裡（X-Robots-Tag: noindex）與
     // robots.txt 的逐條清單共同保證 —— 兩份清單必須一致，
     // `checks/seo_check.py` 會逐條比對。
+    //
+    // 公開管理頁面（radar、bulletins、settings、blacklist）豁免 noindex，
+    // 允許搜尋引擎收錄。
+    const PUBLIC_ADMIN_PATHS: [&str; 4] = [
+        "/admin/radar",
+        "/admin/bulletins",
+        "/admin/settings",
+        "/admin/blacklist",
+    ];
+    if PUBLIC_ADMIN_PATHS.iter().any(|p| path == *p || path.starts_with(&format!("{p}/"))) {
+        return false;
+    }
+
     const PRIVATE_PREFIXES: [&str; 16] = [
         "/admin",
         "/pub",

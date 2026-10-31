@@ -77,13 +77,19 @@ const WAF_RATE_LIMIT_MAX_IPS: usize = 5000;
 const WAF_MAX_URI_LENGTH: usize = 4096;
 
 /// WAF 異常行為偵測：單一 IP 在視窗內觸發 404/403 的最大次數，超過即自動封鎖。
-const WAF_ANOMALY_MAX_4XX: usize = 15;
+/// 調高至 30 次/5 分鐘，避免正常用戶快速切換頁面被誤判為攻擊。
+const WAF_ANOMALY_MAX_4XX: usize = 30;
 /// WAF 異常行為偵測：視窗長度（秒）。
 const WAF_ANOMALY_WINDOW_SECS: u64 = 300;
 /// WAF 異常行為偵測：異常 IP 黑名單保留時間（秒，30 分鐘）。
 const WAF_ANOMALY_BAN_SECS: u64 = 1800;
 /// 總體請求大小上限（防止超大請求耗盡記憶體與頻寬）。
 const WAF_MAX_REQUEST_SIZE: usize = 64 * 1024 * 1024;
+/// 已知搜尋引擎爬蟲 User-Agent 關鍵字，豁免異常行為偵測與自動封鎖。
+const KNOWN_CRAWLER_UAS: &[&str] = &[
+    "googlebot", "bingbot", "slurp", "duckduckbot", "baidubot",
+    "yandexbot", "sogou", "exabot", "facebot", "twitterbot",
+];
 /// 標頭欄位數量上限（防止標頭洪水攻擊）。
 const WAF_MAX_HEADERS_COUNT: usize = 50;
 /// JSON 最大嵌套深度（防止 JSON 炸彈攻擊）。
@@ -262,6 +268,12 @@ fn request_fingerprint(headers: &HeaderMap) -> String {
         "{}|{}|{}|{}",
         ua, accept_lang, accept_enc, sec_ch_ua
     )
+}
+
+/// 判斷是否為已知搜尋引擎爬蟲，豁免異常行為偵測與自動封鎖。
+fn is_known_crawler(user_agent: &str) -> bool {
+    let ua = user_agent.to_ascii_lowercase();
+    KNOWN_CRAWLER_UAS.iter().any(|&crawler| ua.contains(crawler))
 }
 
 /// 請求指紋追蹤：同一指紋在多個 IP 出現時，提示 IP 輪換攻擊。
@@ -1522,8 +1534,10 @@ pub async fn waf_firewall_middleware(
     let response = next.run(request).await;
 
     // 9. 異常行為偵測：追蹤 4xx 回應，短時間內異常頻繁則自動封鎖。
+    // 已知搜尋引擎爬蟲豁免，避免 Googlebot/Bingbot 被誤封導致「未建立索引」。
     let status = response.status();
-    if status.is_client_error() && !is_local_or_trusted_ip(&ip) {
+    let is_crawler = is_known_crawler(&user_agent);
+    if status.is_client_error() && !is_local_or_trusted_ip(&ip) && !is_crawler {
         let should_ban = WAF_ANOMALY_TRACKER.record_and_check(&ip.to_string()).await;
         if should_ban {
             WAF_TELEMETRY.anomaly_blocked.fetch_add(1, Ordering::Relaxed);

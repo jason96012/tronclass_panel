@@ -476,8 +476,16 @@ fn default_sqlite_busy_timeout_secs() -> u64 {
     15
 }
 
+/// 自動生成審計日誌 HMAC 密鑰（32 位元組 base64），免除營運者手動設定 config.toml。
 fn default_audit_hmac_key() -> String {
-    String::new()
+    use std::fmt::Write;
+    let mut buf = [0u8; 32];
+    getrandom::getrandom(&mut buf).ok();
+    let mut s = String::with_capacity(44);
+    for b in buf {
+        let _ = write!(s, "{:02x}", b);
+    }
+    s
 }
 
 impl Default for AdminWebConfig {

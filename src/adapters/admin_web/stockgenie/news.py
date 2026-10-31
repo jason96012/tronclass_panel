@@ -19,7 +19,12 @@ import defusedxml.ElementTree as ET
 from paths import cache_dir, ensure_dir
 
 CACHE = cache_dir()
-HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; StockGenie/2.0; research)"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "Accept": "application/rss+xml, application/xml, text/xml, */*",
+    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+}
 
 
 def _read_json(path, ttl: float):
@@ -37,6 +42,7 @@ def _read_json(path, ttl: float):
 def _write_json(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"_cached_at": time.time(), "data": data}, ensure_ascii=False, default=str))
+
 
 NEWS_TTL = 4 * 3600
 _MAX_ITEMS = 8
@@ -111,9 +117,26 @@ def _rss_items(text: str, source: str) -> list[dict]:
 
 
 def _fetch_rss(url: str) -> str:
-    r = httpx.get(url, headers=HEADERS, timeout=6.0, follow_redirects=True)
-    r.raise_for_status()
-    return r.text or ""
+    last_err = None
+    for attempt in range(2):  # 重試 2 次
+        try:
+            r = httpx.get(url, headers=HEADERS, timeout=15.0, follow_redirects=True)
+            if r.status_code == 429:
+                time.sleep(2)
+                last_err = Exception(f"HTTP 429 rate limited")
+                continue
+            r.raise_for_status()
+            text = r.text or ""
+            # 快速檢查是否是 XML/RSS 而非 HTML 同意頁面
+            stripped = text.lstrip()
+            if not stripped.lower().startswith("<?xml") and "<rss" not in stripped[:500].lower():
+                last_err = Exception(f"非 RSS 回應（可能是同意/驗證頁面），長度={len(text)}")
+                continue
+            return text
+        except httpx.HTTPError as e:
+            last_err = e
+            time.sleep(1)
+    raise last_err or Exception("未知錯誤")
 
 
 def _sources(symbol: str, name: str | None) -> list[tuple[str, str]]:
@@ -147,10 +170,12 @@ def load_news(symbol: str, name: str | None = None) -> dict[str, Any]:
 
     collected: list[dict] = []
     seen: set[str] = set()
+    errors: list[str] = []
     for source, url in _sources(symbol, name):
         try:
             raw = _fetch_rss(url)
-        except Exception:
+        except Exception as e:
+            errors.append(f"{source}: {e}")
             continue
         for it in _rss_items(raw, source):
             key = it["title"]
@@ -166,7 +191,8 @@ def load_news(symbol: str, name: str | None = None) -> dict[str, Any]:
 
     items = collected[:_MAX_ITEMS]
     if not items:
-        return _empty("抓不到新聞標題（來源逾時或空白）。" + note)
+        err_detail = "；".join(errors) if errors else "來源逾時或空白"
+        return _empty(f"抓不到新聞標題（{err_detail}）。" + note)
 
     net = sum(int(it.get("score") or 0) for it in items)
     if net >= 2:
