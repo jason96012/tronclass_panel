@@ -1093,7 +1093,6 @@ pub async fn waf_firewall_middleware(
                 })),
             )
                 .into_response();
-        }
     }
 
     // 2. 全域 Layer-7 請求限速與防 DoS 洪水防護。
