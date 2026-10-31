@@ -70,6 +70,13 @@ impl ApiClient {
             return Err(miette::miette!(ApiError::Unauthorized));
         }
 
+        // SSRF_DNS_GUARD_V1：對最終請求 URL 執行 DNS 防護，捕捉重新導向後
+        // 指向本機／link-local／雲端 metadata 的目標（redirect 政策為同步，
+        // 無法在其中做非同步 DNS 查詢，因此在此補上最終 URL 的檢查）。
+        if resolves_to_blocked_address(resp.url()).await {
+            return Err(miette::miette!(ApiError::Unauthorized));
+        }
+
         match status {
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                 return Err(miette::miette!(ApiError::Unauthorized));
@@ -206,7 +213,9 @@ pub(crate) async fn resolves_to_blocked_address(url: &reqwest::Url) -> bool {
     let port = url.port_or_known_default().unwrap_or(443);
     match tokio::net::lookup_host((domain, port)).await {
         Ok(addrs) => addrs.into_iter().any(|addr| is_blocked_ip(addr.ip())),
-        Err(_) => false,
+        // DNS 解析失敗時採 fail-closed：寧可攔截合法請求，也不讓惡意或
+        // 不可解析的網域繞過 SSRF 防護（DNS Rebinding / 重新導向目標）。
+        Err(_) => true,
     }
 }
 

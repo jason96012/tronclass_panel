@@ -78,6 +78,7 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
             result TEXT NOT NULL DEFAULT '',
             details TEXT NOT NULL DEFAULT '',
             ip TEXT NOT NULL DEFAULT ''
+            event_hash TEXT NOT NULL DEFAULT ''
         )",
     )
     .execute(pool)

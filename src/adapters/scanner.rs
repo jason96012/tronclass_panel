@@ -1581,6 +1581,58 @@ impl ToolRateLimiter {
 static TOOL_RATE_LIMITER: once_cell::sync::Lazy<ToolRateLimiter> =
     once_cell::sync::Lazy::new(ToolRateLimiter::new);
 
+/// SCANNER_ENDPOINT_RATE_LIMIT_V1：針對 `/scanner/submit`、`/number/submit`、`/radar/submit`
+/// 等「寫入」端點的獨立速率限制，嚴格於全域 4000 次/分鐘洪水門檻，防止單一 IP
+/// 濫用提交端點造成資料庫寫入壓力或 QR/數字/雷達點名輸入頁的濫發。
+const SCANNER_SUBMIT_WINDOW: Duration = Duration::from_secs(60);
+const SCANNER_SUBMIT_MAX_REQUESTS: usize = 60;
+const SCANNER_SUBMIT_MAX_IPS: usize = 10_000;
+
+struct ScannerSubmitRateLimiter {
+    attempts: Mutex<HashMap<String, Vec<Instant>>>,
+}
+
+impl ScannerSubmitRateLimiter {
+    fn new() -> Self {
+        Self {
+            attempts: Mutex::new(HashMap::new()),
+        }
+    }
+
+    async fn check_limit(&self, ip: &str) -> bool {
+        let mut map = self.attempts.lock().await;
+        let now = Instant::now();
+        let window_start = now.checked_sub(SCANNER_SUBMIT_WINDOW).unwrap_or(now);
+
+        let entry = map.entry(ip.to_string()).or_default();
+        entry.retain(|t| *t > window_start);
+
+        if entry.len() >= SCANNER_SUBMIT_MAX_REQUESTS {
+            return false;
+        }
+
+        entry.push(now);
+
+        if map.len() > SCANNER_SUBMIT_MAX_IPS {
+            map.retain(|_, v| {
+                v.retain(|t| *t > window_start);
+                !v.is_empty()
+            });
+        }
+        true
+    }
+}
+
+static SCANNER_SUBMIT_RATE_LIMITER: once_cell::sync::Lazy<ScannerSubmitRateLimiter> =
+    once_cell::sync::Lazy::new(ScannerSubmitRateLimiter::new);
+
+/// 判斷路徑是否為「提交」類端點（寫入操作，需要更嚴格限流）。
+fn is_scanner_submit_path(path: &str) -> bool {
+    path.ends_with("/submit")
+        || path.contains("/submit")
+        || path == "/scanner/resume"
+}
+
 /// TOOL_RATE_LIMIT_V1 中介層：套在 `/scanner`、`/number`、`/radar`、LINE webhook
 /// 這些公開路由上（見 `build_scanner_router_with_admin` 與
 /// `line::webhook::build_router`），不套用在合併進來的 `admin_web` 路由（那邊已經
@@ -1591,10 +1643,27 @@ pub(crate) async fn tool_rate_limit_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    let path = request.uri().path().to_string();
+
+    // 先執行提交端點獨立限流（更嚴格）。
+    if is_scanner_submit_path(&path) && !SCANNER_SUBMIT_RATE_LIMITER.check_limit(&ip).await {
+        warn!(
+            ip = %ip,
+            path = %path,
+            "🛡️ 公開掃碼／報數／雷達提交端點：單一 IP 短時間提交量過高，暫時擋下"
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "too many requests" })),
+        )
+            .into_response();
+    }
+
+    // 再執行全域洪水門檻。
     if !TOOL_RATE_LIMITER.check_limit(&ip).await {
         warn!(
             ip = %ip,
-            path = %request.uri().path(),
+            path = %path,
             "🛡️ 公開掃碼／報數／雷達／LINE webhook 伺服器：單一 IP 短時間請求量過高，暫時擋下"
         );
         return (
@@ -1630,6 +1699,12 @@ pub(crate) async fn tool_security_headers_middleware(
     headers.insert(
         HeaderName::from_static("content-security-policy"),
         HeaderValue::from_static(TOOL_PAGE_CSP),
+    );
+    // F-003 Trusted Types：對公開掃碼頁送 Report-Only CSP，監控 require-trusted-types 違規但不阻斷（避免 inline script/WASM 白屏）。
+    // 生產環境確認無違規後，可將 `content-security-policy-report-only` 提升為正式 `content-security-policy`。
+    headers.insert(
+        HeaderName::from_static("content-security-policy-report-only"),
+        HeaderValue::from_static("require-trusted-types-for 'script'; trusted-types default dompurify; report-uri /csp-report"),
     );
     headers.insert(
         HeaderName::from_static("permissions-policy"),

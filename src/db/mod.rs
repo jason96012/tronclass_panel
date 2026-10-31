@@ -191,7 +191,11 @@ impl AccountsDb {
             .create_if_missing(true)
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Normal)
-            .busy_timeout(Duration::from_secs(15))
+            .busy_timeout(Duration::from_secs(
+                crate::config::try_get_config()
+                    .map(|cfg| cfg.sqlite_busy_timeout_secs)
+                    .unwrap_or(15),
+            ))
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()

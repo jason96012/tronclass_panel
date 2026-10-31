@@ -1,10 +1,15 @@
 //! 登入 / 安全活動事件（含背景批次寫入）。
 
 use chrono::Local;
+use hmac::{Hmac, Mac};
 use miette::{IntoDiagnostic, Result, WrapErr};
 use serde::Serialize;
+use sha2::Sha256;
 use sqlx::{FromRow, SqlitePool};
 use tokio::sync::mpsc;
+use tracing::warn;
+
+type HmacSha256 = Hmac<Sha256>;
 
 use super::{
     truncate_event_text, AccountsDb, EVENT_ACTION_MAX_BYTES, EVENT_DETAILS_MAX_BYTES,
@@ -46,6 +51,10 @@ pub struct ActivityEventRow {
     #[sqlx(default)]
     #[serde(default)]
     pub user_agent: String,
+    /// AUDIT_TAMPER_EVIDENT_V1：每筆事件的 HMAC-SHA256 簽章，用於偵測資料庫層級的竄改。
+    #[sqlx(default)]
+    #[serde(default)]
+    pub event_hash: String,
 }
 
 impl AccountsDb {
@@ -80,7 +89,7 @@ impl AccountsDb {
         let rows = if let Some(kind) = kind.map(str::trim).filter(|v| !v.is_empty() && *v != "all")
         {
             sqlx::query_as::<_, ActivityEventRow>(
-                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent
+                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent, event_hash
                  FROM activity_events WHERE kind = ? ORDER BY id DESC LIMIT ?",
             )
             .bind(kind)
@@ -91,7 +100,7 @@ impl AccountsDb {
             .wrap_err("讀取 activity_events 失敗")?
         } else {
             sqlx::query_as::<_, ActivityEventRow>(
-                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent
+                "SELECT id, timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent, event_hash
                  FROM activity_events ORDER BY id DESC LIMIT ?",
             )
             .bind(limit)
@@ -180,6 +189,17 @@ async fn insert_activity_events_batch(
         return Ok(());
     }
 
+    // AUDIT_TAMPER_EVIDENT_V1：讀取 HMAC 密鑰，用於簽章每筆活動事件。
+    // 未設定時使用預設值並記 warn，生產環境務必設定 TRONCLASS_AUDIT_HMAC_KEY。
+    let hmac_key = std::env::var("TRONCLASS_AUDIT_HMAC_KEY")
+        .unwrap_or_else(|_| {
+            static WARNED: once_cell::sync::OnceCell<()> = once_cell::sync::OnceCell::new();
+            WARNED.get_or_init(|| {
+                warn!("TRONCLASS_AUDIT_HMAC_KEY 未設定，審計日誌防竄改使用預設密鑰，生產環境請設定該環境變數");
+            });
+            "default-audit-hmac-key-change-in-production".to_string()
+        });
+
     let mut tx = pool
         .begin()
         .await
@@ -191,9 +211,25 @@ async fn insert_activity_events_batch(
     let time_str = now.format("%Y-%m-%d %H:%M:%S").to_string();
 
     for event in entries {
+        // 計算 HMAC-SHA256 簽章，涵蓋所有關鍵欄位，防止資料庫層級竄改。
+        let mut mac = HmacSha256::new_from_slice(hmac_key.as_bytes())
+            .expect("HMAC-SHA256 accepts keys of any length");
+        mac.update(timestamp.to_string().as_bytes());
+        mac.update(time_str.as_bytes());
+        mac.update(event.kind.as_bytes());
+        mac.update(event.actor.as_bytes());
+        mac.update(event.action.as_bytes());
+        mac.update(event.account_id.as_bytes());
+        mac.update(event.path.as_bytes());
+        mac.update(event.result.as_bytes());
+        mac.update(event.details.as_bytes());
+        mac.update(event.ip.as_bytes());
+        mac.update(event.user_agent.as_bytes());
+        let event_hash = hex::encode(mac.finalize().into_bytes());
+
         sqlx::query(
-            "INSERT INTO activity_events (timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO activity_events (timestamp, time, kind, actor, action, account_id, path, result, details, ip, user_agent, event_hash)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(timestamp)
         .bind(&time_str)
@@ -206,6 +242,7 @@ async fn insert_activity_events_batch(
         .bind(&event.details)
         .bind(&event.ip)
         .bind(&event.user_agent)
+        .bind(&event_hash)
         .execute(&mut *tx)
         .await
         .into_diagnostic()

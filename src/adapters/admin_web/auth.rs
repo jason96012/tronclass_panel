@@ -2,14 +2,8 @@
 
 use super::*;
 
-/// PEN_TEST_V1：測試模式開關。
-/// 刻意做成**模組層級常數**而不是函式內的區域變數：本檔案有多個 handler
-/// （登入、改密碼…）都要用，放在函式內只會讓其他函式 E0425 not found in scope。
-/// 用執行期布林值短路，而不是把整段邏輯包進 #[cfg] 重新縮排（diff 難審、也容易漏 return）。
-#[cfg(feature = "pen_test")]
-const PEN_TEST_MODE: bool = true;
-#[cfg(not(feature = "pen_test"))]
-const PEN_TEST_MODE: bool = false;
+// PEN_TEST_V1 已移除：登入防護（IP 黑名單、速率限制、帳號鎖定、密碼變更限流）
+// 一律啟動，不再以編譯期 feature 放寬。請勿以 --features pen_test 建置對外服務。
 
 #[derive(Debug, Deserialize)]
 pub(super) struct AdminActivityQuery {
@@ -110,30 +104,24 @@ pub(super) async fn admin_login_handler(
     // ⚠️ 注意（審查發現 C）：`reject_blacklisted_ip_middleware` 是第 11 層，
     //    在 handler **之前**執行，所以已被封鎖的 IP 通常根本到不了這裡。
     //    若要讓黑名單上的 IP 也能測，要改的是那一層的中介層，不是這裡。
-    #[cfg(not(feature = "pen_test"))]
-    {
-        if ip_is_blacklisted(&state, &ip).await {
-            warn!(ip = %ip, "password login rejected for blacklisted IP");
-            return blocked_ip_response();
-        }
-        // IP_BLACKLIST_V6_GROUP_V1：速率限制同樣以群組鍵計數——IPv6 位址輪換
-        // 不能重置 60 秒窗口，也與黑名單／失敗計數用同一個 IP 身分。
-        if !state
-            .rate_limiter
-            .check_limit(
-                &format!("login-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)),
-                IP_RATE_LIMIT_MAX_ATTEMPTS,
-            )
-            .await
-        {
-            warn!(ip = %ip, "login rate limited by ip");
-            alert_abnormal_traffic(&state, "密碼登入", "", &ip).await;
-            return rate_limited_response();
-        }
+    // IP 黑名單與 IP 登入速率限制一律啟動，不再以 pen_test feature 放寬。
+    if ip_is_blacklisted(&state, &ip).await {
+        warn!(ip = %ip, "password login rejected for blacklisted IP");
+        return blocked_ip_response();
     }
-    #[cfg(feature = "pen_test")]
+    // IP_BLACKLIST_V6_GROUP_V1：速率限制同樣以群組鍵計數——IPv6 位址輪換
+    // 不能重置 60 秒窗口，也與黑名單／失敗計數用同一個 IP 身分。
+    if !state
+        .rate_limiter
+        .check_limit(
+            &format!("login-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)),
+            IP_RATE_LIMIT_MAX_ATTEMPTS,
+        )
+        .await
     {
-        warn!(ip = %ip, "🧪 [PEN_TEST] 跳過 IP 黑名單檢查與 IP 登入速率限制");
+        warn!(ip = %ip, "login rate limited by ip");
+        alert_abnormal_traffic(&state, "密碼登入", "", &ip).await;
+        return rate_limited_response();
     }
 
     let username = login.username.trim();
@@ -150,7 +138,7 @@ pub(super) async fn admin_login_handler(
     // IP_BLACKLIST_V6_GROUP_V1：rate key 取群組鍵，與 login-ip: 計數同一把尺。
     let client = crate::trusted_ip::blacklist_group_key(&ip);
     let rate_key = format!("login:{}:{client}", username.to_lowercase());
-    if !PEN_TEST_MODE && !state.rate_limiter.check(&rate_key).await {
+    if !state.rate_limiter.check(&rate_key).await {
         warn!(username = %username, client = %client, "admin web login rate limited");
         // The sixth request is rejected by the five-attempt login rate limiter
         // before password verification. It must still count as a failed login;
@@ -178,11 +166,7 @@ pub(super) async fn admin_login_handler(
                 alert_password_failures(&state, &user, &ip).await;
             });
         }
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({ "error": "too many attempts; please wait" })),
-        )
-            .into_response();
+        return unauthorized_response();
     }
 
     // Try exact account-id match first, then fall back to username search.
@@ -211,15 +195,8 @@ pub(super) async fn admin_login_handler(
             lock_keys.push(account.id.clone());
             lock_keys.push(account.username.clone());
         }
-        // PEN_TEST_V1：測試模式跳過帳號鎖定，讓連續嘗試不會被 10 分鐘鎖住。
-        let lock_remaining = if PEN_TEST_MODE
-            || crate::trusted_ip::is_pen_test_whitelisted(&ip).await
-        {
-            warn!(username = %username, "🧪 [PEN_TEST] 跳過帳號鎖定檢查");
-            None
-        } else {
-            login_lock_remaining(&lock_keys).await
-        };
+        // 帳號鎖定檢查一律啟動，不再以 pen_test feature 放寬。
+        let lock_remaining = login_lock_remaining(&lock_keys).await;
         if let Some(remaining) = lock_remaining {
             warn!(username = %username, client = %client, remaining, "admin web login rejected: account temporarily locked");
             {
@@ -242,14 +219,7 @@ pub(super) async fn admin_login_handler(
                     alert_password_failures(&state, &user, &ip).await;
                 });
             }
-            return (
-                StatusCode::LOCKED,
-                Json(json!({
-                    "error": "account_locked",
-                    "retry_after_secs": remaining,
-                })),
-            )
-                .into_response();
+            return unauthorized_response();
         }
     }
 
@@ -762,8 +732,7 @@ pub(super) async fn admin_password_change_handler(
     // PBKDF2 計算成本減速「試猜目前密碼」，沒有明確嘗試上限；若 session token
     // 外洩，可無限次高速驗證。此處以帳號＋IP 群組鍵限流（與登入端點同一把尺：
     // IPv6 位址輪換不能重置窗口），超限直接回 rate limited。
-    if !PEN_TEST_MODE
-        && !state
+    if !state
         .rate_limiter
         .check_limit(
             &format!(
@@ -784,7 +753,7 @@ pub(super) async fn admin_password_change_handler(
             None,
             "Dashboard 密碼變更觸發速率限制",
         );
-        return rate_limited_response();
+        return unauthorized_response();
     }
 
     let account = match state.accounts_db.get(&session.account_id).await {

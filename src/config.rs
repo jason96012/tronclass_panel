@@ -76,7 +76,16 @@ pub struct AppConfig {
     /// 日誌設定
     pub logging: LoggingConfig,
     /// 監控設定
-    pub monitor: MonitorConfig,}
+    pub monitor: MonitorConfig,
+
+    /// Web Push VAPID `sub` 欄位（JWT claims 中的主體，建議設為管理員聯絡信箱）。
+    /// 未設定時預設 `mailto:admin@example.com`。
+    #[serde(default = "default_vapid_sub")]
+    pub vapid_sub: String,
+
+    /// SQLite 忙逾時（秒），資料庫寫入鎖爭用時最多等待這麼久。
+    #[serde(default = "default_sqlite_busy_timeout_secs")]
+    pub sqlite_busy_timeout_secs: u64,}
 
 // ─── 子設定結構 ───────────────────────────────────────────────────────────────
 
@@ -451,6 +460,14 @@ fn default_login_home_countries() -> Vec<String> {
 
 fn default_csp_style_attr_mode() -> String {
     "report".to_string()
+}
+
+fn default_vapid_sub() -> String {
+    "mailto:admin@example.com".to_string()
+}
+
+fn default_sqlite_busy_timeout_secs() -> u64 {
+    15
 }
 
 impl Default for AdminWebConfig {

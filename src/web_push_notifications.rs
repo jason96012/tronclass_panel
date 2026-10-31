@@ -30,6 +30,7 @@ use crate::adapters::events::{
     AdapterAccountTarget, AdapterMessenger, OutboundMessage, PushSubscriptionExpiredEvent,
 };
 use crate::db::{AccountsDb, WebPushSubscriptionRow};
+use crate::secret_encryption::{is_encryption_enabled, StoreSecret};
 
 const VAPID_PRIVATE_KEY_SETTING: &str = "vapid_private_key_v1";
 const MAX_DEDUPE_ENTRIES: usize = 4096;
@@ -107,6 +108,7 @@ struct WebPushService {
     http: reqwest::Client,
     private_key: String,
     public_key: String,
+    vapid_sub: String,
 }
 
 static SERVICE: OnceCell<Arc<WebPushService>> = OnceCell::new();
@@ -131,15 +133,36 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
             .await?;
         warn!(removed, "已清除舊版可能錯綁帳號的 Web Push 訂閱；需由手機重新明確啟用");
     }
-    let private_key = match db.get_web_push_setting(VAPID_PRIVATE_KEY_SETTING).await? {
-        Some(value) if valid_private_key(&value) => value,
-        _ => {
-            let value = generate_private_key()?;
-            db.set_web_push_setting(VAPID_PRIVATE_KEY_SETTING, &value)
-                .await?;
-            value
+    let private_key = {
+        // F-004：VAPID 私鑰納入 at-rest 加密。未設定 master key 時
+        // 採 fail-closed，不以純文字寫入資料庫。
+        if !is_encryption_enabled() {
+            return Err(miette::miette!(
+                "TRONCLASS_MASTER_KEY 未設定：Web Push VAPID 私鑰需 at-rest 加密，請先設定 master key 後再啟動"
+            ));
+        }
+        match db.get_web_push_setting(VAPID_PRIVATE_KEY_SETTING).await? {
+            Some(value) => {
+                // 優先以 StoreSecret 解密（enc: 信 envelopes）；純文字舊值
+                // 直接透過，相容既有部署，下次寫入自動升級。
+                StoreSecret::from_stored_with_purpose(&value, "web_push.vapid_private_key")
+                    .as_str()
+                    .to_string()
+            }
+            None => {
+                let value = generate_private_key()?;
+                let encrypted = StoreSecret::new(value.as_str())
+                    .store_value_with_purpose("web_push.vapid_private_key");
+                db.set_web_push_setting(VAPID_PRIVATE_KEY_SETTING, &encrypted)
+                    .await?;
+                value
+            }
         }
     };
+    let private_key_for_validation = private_key.clone();
+    if !valid_private_key(&private_key_for_validation) {
+        return Err(miette::miette!("VAPID private key 無效：資料庫內儲存的值無法解析為有效私鑰"));
+    }
     let signing_key = decode_signing_key(&private_key)?;
     let public_key = URL_SAFE_NO_PAD.encode(
         signing_key
@@ -154,11 +177,16 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
         .use_rustls_tls()
         .build()
         .map_err(|error| miette::miette!("建立 Web Push HTTP client 失敗：{error}"))?;
+    // VAPID sub 欄位：從全域設定讀取，未設定則使用預設值。
+    let vapid_sub = crate::config::try_get_config()
+        .map(|cfg| cfg.vapid_sub.clone())
+        .unwrap_or_else(|| "mailto:admin@example.com".to_string());
     let _ = SERVICE.set(Arc::new(WebPushService {
         db,
         http,
         private_key,
         public_key,
+        vapid_sub,
     }));
     Ok(())
 }
@@ -945,7 +973,7 @@ impl WebPushService {
             &subscription.p256dh,
             &subscription.auth,
         )?;
-        let authorization = vapid_authorization(&self.private_key, &self.public_key, &endpoint)?;
+        let authorization = vapid_authorization(&self.private_key, &self.public_key, &self.vapid_sub, &endpoint)?;
         let response = self
             .http
             .post(endpoint)
@@ -1238,6 +1266,7 @@ fn generate_private_key() -> Result<String> {
 fn vapid_authorization(
     private_key: &str,
     public_key: &str,
+    vapid_sub: &str,
     endpoint: &reqwest::Url,
 ) -> Result<String> {
     let host = endpoint
@@ -1254,7 +1283,7 @@ fn vapid_authorization(
         serde_json::to_vec(&json!({
             "aud": audience,
             "exp": chrono::Utc::now().timestamp() + 12 * 60 * 60,
-            "sub": "mailto:admin@example.com"
+            "sub": vapid_sub
         }))
         .map_err(|error| miette::miette!("序列化 VAPID claims 失敗：{error}"))?,
     );
