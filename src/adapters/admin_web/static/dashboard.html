@@ -247,6 +247,9 @@
   .small.fail-hint{color:var(--bad,#f87171);max-width:260px;white-space:normal}
   .fail-msg{opacity:.75;word-break:break-all}
   .item-meta.meta-bad{color:var(--bad,#f87171)}
+  /* 帳號管理表格操作按鈕排成一行，不換行 */
+  .actions-cell{display:flex;gap:4px;flex-wrap:nowrap;align-items:center}
+  .actions-cell button{white-space:nowrap;min-height:30px;padding:0 8px;font-size:12px}
 </style>
 
 <style id="DESKTOP_FIRST_PAINT_V1">
@@ -1369,6 +1372,59 @@
   @media (prefers-color-scheme: dark) {
     .mock-account {
       background: rgba(30, 41, 59, 0.55) !important;
+    }
+  }
+
+  /* --- 模擬點名測試卡片佈局：電腦版左右分欄，避免旁邊空著 --- */
+  @media (min-width:821px){
+    .mock-grid {
+      display: grid;
+      grid-template-columns: minmax(260px, 1fr) minmax(200px, 1.5fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .mock-form {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .mock-form button {
+      min-height: 36px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .mock-accounts-grid {
+      max-height: 320px;
+      overflow-y: auto;
+      border: 1px solid var(--line2);
+      border-radius: 10px;
+      padding: 8px;
+      background: var(--surface);
+    }
+    .mock-account {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .mock-account:hover {
+      background: rgba(255, 255, 255, 0.12);
+    }
+    .mock-account input {
+      flex: 0 0 auto;
+    }
+    .mock-account span {
+      flex: 1;
+      min-width: 0;
+    }
+    .mock-result {
+      margin-top: 8px;
+      padding: 10px;
+      border-radius: 10px;
+      background: var(--soft);
+      border: 1px solid var(--line2);
     }
   }
 

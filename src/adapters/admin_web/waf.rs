@@ -77,8 +77,8 @@ const WAF_RATE_LIMIT_MAX_IPS: usize = 5000;
 const WAF_MAX_URI_LENGTH: usize = 4096;
 
 /// WAF 異常行為偵測：單一 IP 在視窗內觸發 404/403 的最大次數，超過即自動封鎖。
-/// 調高至 30 次/5 分鐘，避免正常用戶快速切換頁面被誤判為攻擊。
-const WAF_ANOMALY_MAX_4XX: usize = 30;
+/// 知識庫 L5 規定：15 次/5 分鐘。
+const WAF_ANOMALY_MAX_4XX: usize = 15;
 /// WAF 異常行為偵測：視窗長度（秒）。
 const WAF_ANOMALY_WINDOW_SECS: u64 = 300;
 /// WAF 異常行為偵測：異常 IP 黑名單保留時間（秒，30 分鐘）。
@@ -291,10 +291,11 @@ impl WafFingerprintTracker {
     }
 
     /// 記錄指紋與 IP。若指紋已在多個不同 IP 出現，回傳 true（懷疑 IP 輪換）。
+    /// 閾值設為 10，避免正常用戶在家裡／公司／手機熱點等不同網路間切換時被誤封。
     pub async fn record_and_check(&self, fingerprint: &str, ip: &str) -> bool {
         let mut map = self.seen.lock().await;
         let entry = entry(fingerprint.to_string(), ip.to_string(), &mut map);
-        entry.len() >= 3
+        entry.len() >= 10
     }
 }
 
