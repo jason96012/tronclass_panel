@@ -77,7 +77,7 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
             path TEXT NOT NULL DEFAULT '',
             result TEXT NOT NULL DEFAULT '',
             details TEXT NOT NULL DEFAULT '',
-            ip TEXT NOT NULL DEFAULT ''
+            ip TEXT NOT NULL DEFAULT '',
             event_hash TEXT NOT NULL DEFAULT ''
         )",
     )
@@ -112,6 +112,15 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
         pool,
         "activity_events",
         "user_agent",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+
+    // AUDIT_TAMPER_EVIDENT_V1：為現有資料庫補上 event_hash 欄位，防竄改簽章。
+    ensure_table_column(
+        pool,
+        "activity_events",
+        "event_hash",
         "TEXT NOT NULL DEFAULT ''",
     )
     .await?;
