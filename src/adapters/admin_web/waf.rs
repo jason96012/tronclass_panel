@@ -31,11 +31,22 @@
 //!      但堅決阻斷惡意高頻掃描與資源耗盡攻擊）。
 //!    - Loopback 與內部受信任代理自動免除限速。
 //!
-//! 4. **WAF 即時遙測與防禦指標統計（WAF Telemetry）**：
-//!    - 即時累計各類攻擊阻斷計數與最後防禦事件。
+//! 4. **Anomaly Detection & Auto-Ban**: track per-IP 404/403 trigger counts;
+//!      abnormally frequent hits in a short window auto-ban the IP, preventing
+//!      scanners from evading WAF signature matching with seemingly-legitimate requests.
+//!      Request fingerprint (UA + Accept-Language etc.) tracks IP rotation attacks;
+//!      the same fingerprint appearing across different IPs raises block likelihood.
+//! 5. **WAF Whitelist**: exempt specific IP, CIDR, or path prefixes from WAF checks,
+//!      to avoid false-positives on internal monitoring, health checks, or known-good clients.
+//! 6. **Total Request Size Limit**: in addition to body scan cap, limit overall request
+//!      size to prevent huge requests exhausting memory and bandwidth.
+//! 7. **WAF Telemetry API**: `/admin/api/waf/stats` exposes real-time WAF statistics
+//!      for the admin dashboard.
+//! 8. **WAF Telemetry**: immediate cumulative attack block counts and last defense events.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -65,6 +76,21 @@ const WAF_RATE_LIMIT_MAX_IPS: usize = 5000;
 /// URI / Query 最大長度限制（防止緩衝區溢位攻擊）。
 const WAF_MAX_URI_LENGTH: usize = 4096;
 
+/// WAF 異常行為偵測：單一 IP 在視窗內觸發 404/403 的最大次數，超過即自動封鎖。
+const WAF_ANOMALY_MAX_4XX: usize = 15;
+/// WAF 異常行為偵測：視窗長度（秒）。
+const WAF_ANOMALY_WINDOW_SECS: u64 = 300;
+/// WAF 異常行為偵測：異常 IP 黑名單保留時間（秒，30 分鐘）。
+const WAF_ANOMALY_BAN_SECS: u64 = 1800;
+/// 總體請求大小上限（防止超大請求耗盡記憶體與頻寬）。
+const WAF_MAX_REQUEST_SIZE: usize = 64 * 1024 * 1024;
+/// 標頭欄位數量上限（防止標頭洪水攻擊）。
+const WAF_MAX_HEADERS_COUNT: usize = 50;
+/// JSON 最大嵌套深度（防止 JSON 炸彈攻擊）。
+const WAF_MAX_JSON_DEPTH: usize = 10;
+/// 表單欄位數量上限（防止表單欄位洪水攻擊）。
+const WAF_MAX_FORM_FIELDS: usize = 100;
+
 /// WAF 即時遙測計數器。
 pub struct WafTelemetry {
     pub total_requests: AtomicU64,
@@ -83,6 +109,9 @@ pub struct WafTelemetry {
     pub smuggling_attempts: AtomicU64,
     pub webshell_attempts: AtomicU64,
     pub rate_limited: AtomicU64,
+    pub anomaly_blocked: AtomicU64,
+    pub fingerprint_blocked: AtomicU64,
+    pub whitelist_bypass: AtomicU64,
 }
 
 impl Default for WafTelemetry {
@@ -104,6 +133,9 @@ impl Default for WafTelemetry {
             smuggling_attempts: AtomicU64::new(0),
             webshell_attempts: AtomicU64::new(0),
             rate_limited: AtomicU64::new(0),
+            anomaly_blocked: AtomicU64::new(0),
+            fingerprint_blocked: AtomicU64::new(0),
+            whitelist_bypass: AtomicU64::new(0),
         }
     }
 }
@@ -160,6 +192,207 @@ impl WafRateLimiter {
 /// 全域單例 WAF 限速器。
 static WAF_GLOBAL_LIMITER: once_cell::sync::Lazy<WafRateLimiter> =
     once_cell::sync::Lazy::new(WafRateLimiter::new);
+
+/// 異常行為偵測：追蹤每個 IP 的 4xx 觸發時間點（滑動窗口）。
+#[derive(Clone, Default)]
+pub struct WafAnomalyTracker {
+    hits: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
+}
+
+impl WafAnomalyTracker {
+    pub fn new() -> Self {
+        Self {
+            hits: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// 記錄一次 4xx 觸發，若超過閾值則回傳 true（應封鎖）。
+    pub async fn record_and_check(&self, ip: &str) -> bool {
+        let mut map = self.hits.lock().await;
+        let now = Instant::now();
+        let window_start = now
+            .checked_sub(Duration::from_secs(WAF_ANOMALY_WINDOW_SECS))
+            .unwrap_or(now);
+
+        // 在區塊內計算 should_ban，讓可變借用在 map.len() 檢查前結束
+        let should_ban = {
+            let entry = map.entry(ip.to_string()).or_default();
+            entry.retain(|t| *t > window_start);
+            entry.push(now);
+            entry.len() > WAF_ANOMALY_MAX_4XX
+        };
+
+        // 清理過舊 IP，控制記憶體
+        if map.len() > 10000 {
+            map.retain(|_, v| {
+                v.retain(|t| *t > window_start);
+                !v.is_empty()
+            });
+        }
+
+        should_ban
+    }
+
+    pub async fn clear(&self, ip: &str) {
+        let mut map = self.hits.lock().await;
+        map.remove(ip);
+    }
+}
+
+/// 單一請求指紋：基於 User-Agent + Accept-Language + Accept-Encoding 等標頭，
+/// 用於偵測同一攻擊者輪換 IP 的情況。
+fn request_fingerprint(headers: &HeaderMap) -> String {
+    let ua = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let accept_lang = headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let accept_enc = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let sec_ch_ua = headers
+        .get(header::HeaderName::from_static("sec-ch-ua"))
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    format!(
+        "{}|{}|{}|{}",
+        ua, accept_lang, accept_enc, sec_ch_ua
+    )
+}
+
+/// 請求指紋追蹤：同一指紋在多個 IP 出現時，提示 IP 輪換攻擊。
+#[derive(Clone, Default)]
+pub struct WafFingerprintTracker {
+    /// 指紋 -> 見過的 IP 集合
+    seen: Arc<Mutex<HashMap<String, Vec<String>>>>,
+}
+
+impl WafFingerprintTracker {
+    pub fn new() -> Self {
+        Self {
+            seen: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// 記錄指紋與 IP。若指紋已在多個不同 IP 出現，回傳 true（懷疑 IP 輪換）。
+    pub async fn record_and_check(&self, fingerprint: &str, ip: &str) -> bool {
+        let mut map = self.seen.lock().await;
+        let entry = entry(fingerprint.to_string(), ip.to_string(), &mut map);
+        entry.len() >= 3
+    }
+}
+
+use std::collections::hash_map::Entry;
+
+fn entry(
+    key: String,
+    value: String,
+    map: &mut HashMap<String, Vec<String>>,
+) -> Vec<String> {
+    match map.entry(key) {
+        Entry::Occupied(mut e) => {
+            if !e.get().contains(&value) {
+                e.get_mut().push(value.clone());
+            }
+            e.get().clone()
+        }
+        Entry::Vacant(e) => {
+            e.insert(vec![value.clone()]);
+            vec![value]
+        }
+    }
+}
+
+/// WAF 白名單：CIDR / IP / 路徑前綴豁免。
+#[derive(Clone, Default)]
+pub struct WafWhitelist {
+    /// 明確允許的 IP 字串（精確比對）
+    ips: Arc<Mutex<Vec<String>>>,
+    /// CIDR 區塊（字串形式，如 "10.0.0.0/8"）
+    cidrs: Arc<Mutex<Vec<String>>>,
+    /// 路徑前綴豁免（如 "/api/health", "/metrics"）
+    paths: Arc<Mutex<Vec<String>>>,
+}
+
+impl WafWhitelist {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub async fn is_ip_whitelisted(&self, ip: &str) -> bool {
+        let ips = self.ips.lock().await;
+        if ips.contains(&ip.to_string()) {
+            return true;
+        }
+        drop(ips);
+
+        // 檢查 CIDR
+        let cidrs = self.cidrs.lock().await;
+        let ip_addr = match IpAddr::from_str(ip) {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        for cidr in cidrs.iter() {
+            if let Some(net) = parse_cidr(cidr) {
+                if ip_addr_matches_cidr(ip_addr, net) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub async fn is_path_whitelisted(&self, path: &str) -> bool {
+        let paths = self.paths.lock().await;
+        paths.iter().any(|p| path.starts_with(p.as_str()))
+    }
+}
+
+/// 解析 CIDR 字串回傳 (network_addr, prefix_len)。
+fn parse_cidr(cidr: &str) -> Option<(IpAddr, u8)> {
+    let parts: Vec<&str> = cidr.split('/').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    let ip = IpAddr::from_str(parts[0]).ok()?;
+    let prefix: u8 = parts[1].parse().ok()?;
+    Some((ip, prefix))
+}
+
+/// 判斷 IP 是否落在 CIDR 區塊內。
+fn ip_addr_matches_cidr(ip: IpAddr, (network, prefix): (IpAddr, u8)) -> bool {
+    match (ip, network) {
+        (IpAddr::V4(a), IpAddr::V4(n)) => {
+            let a_bits = u32::from_be_bytes(a.octets());
+            let n_bits = u32::from_be_bytes(n.octets());
+            let mask: u32 = if prefix == 0 { 0 } else { !((1u32 << (32 - prefix)) - 1) };
+            (a_bits & mask) == (n_bits & mask)
+        }
+        (IpAddr::V6(a), IpAddr::V6(n)) => {
+            let a_bits = u128::from_be_bytes(a.octets());
+            let n_bits = u128::from_be_bytes(n.octets());
+            let mask: u128 = if prefix == 0 { 0 } else { !((1u128 << (128 - prefix)) - 1) };
+            (a_bits & mask) == (n_bits & mask)
+        }
+        _ => false,
+    }
+}
+
+/// 全域單例：異常行為偵測器。
+static WAF_ANOMALY_TRACKER: once_cell::sync::Lazy<WafAnomalyTracker> =
+    once_cell::sync::Lazy::new(WafAnomalyTracker::new);
+
+/// 全域單例：請求指紋追蹤器。
+static WAF_FINGERPRINT_TRACKER: once_cell::sync::Lazy<WafFingerprintTracker> =
+    once_cell::sync::Lazy::new(WafFingerprintTracker::new);
+
+/// 全域單例：WAF 白名單。
+static WAF_WHITELIST: once_cell::sync::Lazy<WafWhitelist> =
+    once_cell::sync::Lazy::new(WafWhitelist::new);
 
 /// 威脅分類。
 #[derive(Debug, Clone, PartialEq)]
@@ -789,6 +1022,27 @@ pub fn inspect_waf_threat(uri: &Uri, method: &Method, headers: &HeaderMap) -> Op
         return Some(WafThreat::SsrfPayload("Cloud Metadata / SSRF Probe".to_string()));
     }
 
+    // 9b. 檢測 SSRF 私有網路段探測（參考 rust-web-security SKILL：封鎖 loopback、私有網路、link-local、metadata 網路）
+    if full_target.contains("10.") || full_target.contains("172.16.") || full_target.contains("172.17.")
+        || full_target.contains("172.18.") || full_target.contains("172.19.") || full_target.contains("172.20.")
+        || full_target.contains("172.21.") || full_target.contains("172.22.") || full_target.contains("172.23.")
+        || full_target.contains("172.24.") || full_target.contains("172.25.") || full_target.contains("172.26.")
+        || full_target.contains("172.27.") || full_target.contains("172.28.") || full_target.contains("172.29.")
+        || full_target.contains("172.30.") || full_target.contains("172.31.") || full_target.contains("192.168.")
+        || full_target.contains("127.") || full_target.contains("169.254.") || full_target.contains("::1")
+        || full_target.contains("fd00:") || full_target.contains("fe80:") || full_target.contains("0.0.0.0")
+        || decoded_target.contains("10.") || decoded_target.contains("172.16.") || decoded_target.contains("172.17.")
+        || decoded_target.contains("172.18.") || decoded_target.contains("172.19.") || decoded_target.contains("172.20.")
+        || decoded_target.contains("172.21.") || decoded_target.contains("172.22.") || decoded_target.contains("172.23.")
+        || decoded_target.contains("172.24.") || decoded_target.contains("172.25.") || decoded_target.contains("172.26.")
+        || decoded_target.contains("172.27.") || decoded_target.contains("172.28.") || decoded_target.contains("172.29.")
+        || decoded_target.contains("172.30.") || decoded_target.contains("172.31.") || decoded_target.contains("192.168.")
+        || decoded_target.contains("127.") || decoded_target.contains("169.254.") || decoded_target.contains("::1")
+        || decoded_target.contains("fd00:") || decoded_target.contains("fe80:") || decoded_target.contains("0.0.0.0")
+    {
+        return Some(WafThreat::SsrfPayload("Private Network SSRF Probe".to_string()));
+    }
+
     // 10. 檢測 Prototype Pollution 原型鏈污染
     if full_target.contains("__proto__")
         || full_target.contains("constructor.prototype")
@@ -999,6 +1253,105 @@ pub async fn waf_firewall_middleware(
         .unwrap_or("")
         .to_string();
 
+    // 0. WAF 白名單：白名單 IP/CIDR 或路徑前綴直接免檢查放行。
+    {
+        let ip_str = ip.to_string();
+        let path_whitelisted = WAF_WHITELIST.is_path_whitelisted(&raw_path).await;
+        let ip_whitelisted = WAF_WHITELIST.is_ip_whitelisted(&ip_str).await;
+        if ip_whitelisted || path_whitelisted {
+            WAF_TELEMETRY.whitelist_bypass.fetch_add(1, Ordering::Relaxed);
+            return next.run(request).await;
+        }
+    }
+
+    // 0b. 總體請求大小限制：依 Content-Length 標頭擋下過大請求。
+    if let Some(len) = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+    {
+        if len > WAF_MAX_REQUEST_SIZE {
+            WAF_TELEMETRY.total_blocked.fetch_add(1, Ordering::Relaxed);
+            warn!(ip = %ip, path = %raw_path, size = %len, "🛡️ [WAF] 請求大小超過上限，已拒絕");
+            return waf_error_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                json!({
+                    "error": "payload_too_large",
+                    "message": "WAF: 請求大小超過系統上限，已拒絕"
+                }),
+            );
+        }
+    }
+
+    // 0c. 標頭欄位數量限制：防止標頭洪水攻擊。
+    if headers.len() > WAF_MAX_HEADERS_COUNT {
+        WAF_TELEMETRY.total_blocked.fetch_add(1, Ordering::Relaxed);
+        warn!(ip = %ip, path = %raw_path, headers = %headers.len(), "🛡️ [WAF] 標頭欄位數量過多，已拒絕");
+        return waf_error_response(
+            StatusCode::BAD_REQUEST,
+            json!({
+                "error": "too_many_headers",
+                "message": "WAF: 請求標頭欄位數量超過上限，已拒絕"
+            }),
+        );
+    }
+
+    // 0c. 記錄請求指紋：偵測 IP 輪換攻擊（同一指紋出現在多個不同 IP）。
+    let fingerprint = request_fingerprint(&headers);
+    let fingerprint_suspicious = WAF_FINGERPRINT_TRACKER
+        .record_and_check(&fingerprint, &ip.to_string())
+        .await;
+    if fingerprint_suspicious {
+        WAF_TELEMETRY.fingerprint_blocked.fetch_add(1, Ordering::Relaxed);
+        let ban_key = crate::trusted_ip::blacklist_group_key(&ip.to_string());
+        let already_banned = state
+            .accounts_db
+            .is_ip_blacklisted(&ban_key)
+            .await
+            .unwrap_or(false);
+        if !already_banned && !is_local_or_trusted_ip(&ip) {
+            let db = state.accounts_db.clone();
+            let block_ip = ban_key.clone();
+            let path_for_log = raw_path.clone();
+            let ua_for_log = user_agent.clone();
+            tokio::spawn(async move {
+                if let Ok(true) = db
+                    .block_ip_with_failure_count(
+                        &block_ip,
+                        "system:waf-firewall-max",
+                        &format!(
+                            "WAF 防火牆自動封鎖（請求指紋 IP 輪換嫌疑）: {}",
+                            fingerprint
+                        ),
+                        1,
+                    )
+                    .await
+                {
+                    let _ = db
+                        .record_activity_event(ActivityEventInput {
+                            kind: "security".to_string(),
+                            actor: "system:waf-firewall-max".to_string(),
+                            action: "waf_fingerprint_blocked".to_string(),
+                            account_id: "unknown".to_string(),
+                            path: path_for_log,
+                            result: "blocked".to_string(),
+                            details: format!(
+                                "WAF 攔截可疑指紋 IP 輪換並自動封鎖: {}",
+                                fingerprint
+                            ),
+                            ip: block_ip.clone(),
+                            user_agent: ua_for_log,
+                        })
+                        .await;
+                }
+            });
+        }
+        return waf_forbidden_response(json!({
+                "error": "waf_access_denied",
+                "message": "WAF: 請求指紋可疑，已被系統防火牆攔截"
+            }));
+    }
+
     // 1. 深度威脅特徵、蜜罐、黑客工具與惡意標頭檢測
     if let Some(threat) = inspect_waf_threat(&uri, &method, &headers) {
         threat.record_telemetry();
@@ -1085,14 +1438,10 @@ pub async fn waf_firewall_middleware(
                 .into_response();
         }
 
-        return (
-            StatusCode::FORBIDDEN,
-                Json(json!({
+        return waf_forbidden_response(json!({
                     "error": "waf_access_denied",
                     "message": "WAF: 請求包含惡意攻擊特徵或探測高危路徑，已被系統最高級防火牆攔截並永久封鎖"
-                })),
-            )
-                .into_response();
+                }));
     }
 
     // 2. 全域 Layer-7 請求限速與防 DoS 洪水防護。
@@ -1161,18 +1510,132 @@ pub async fn waf_firewall_middleware(
                 user_agent.clone(),
             )
             .await;
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({
+            return waf_forbidden_response(json!({
                     "error": "waf_access_denied",
                     "message": "WAF: 請求內容含攻擊特徵，已被攔截"
-                })),
-            )
-                .into_response();
+                }));
         }
         request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     }
 
     // 安全校驗通過，放行至下游處理器。
-    next.run(request).await
+    let response = next.run(request).await;
+
+    // 9. 異常行為偵測：追蹤 4xx 回應，短時間內異常頻繁則自動封鎖。
+    let status = response.status();
+    if status.is_client_error() && !is_local_or_trusted_ip(&ip) {
+        let should_ban = WAF_ANOMALY_TRACKER.record_and_check(&ip.to_string()).await;
+        if should_ban {
+            WAF_TELEMETRY.anomaly_blocked.fetch_add(1, Ordering::Relaxed);
+            let ban_key = crate::trusted_ip::blacklist_group_key(&ip.to_string());
+            let already_banned = state
+                .accounts_db
+                .is_ip_blacklisted(&ban_key)
+                .await
+                .unwrap_or(false);
+            if !already_banned {
+                let db = state.accounts_db.clone();
+                let block_ip = ban_key.clone();
+                let path_for_log = raw_path.clone();
+                let ua_for_log = user_agent.clone();
+                tokio::spawn(async move {
+                    if let Ok(true) = db
+                        .block_ip_with_failure_count(
+                            &block_ip,
+                            "system:waf-firewall-max",
+                            &format!(
+                                "WAF 防火牆自動封鎖（異常 4xx 行為）: {} 觸發",
+                                status
+                            ),
+                            1,
+                        )
+                        .await
+                    {
+                        let _ = db
+                            .record_activity_event(ActivityEventInput {
+                                kind: "security".to_string(),
+                                actor: "system:waf-firewall-max".to_string(),
+                                action: "waf_anomaly_blocked".to_string(),
+                                account_id: "unknown".to_string(),
+                                path: path_for_log,
+                                result: "blocked".to_string(),
+                                details: format!(
+                                    "WAF 攔截異常 4xx 行為並自動封鎖: {} (status={})",
+                                    ip, status
+                                ),
+                                ip: block_ip.clone(),
+                                user_agent: ua_for_log,
+                            })
+                            .await;
+                    }
+                });
+            }
+        }
+    }
+
+    response
+}
+
+
+/// WAF 即時遙測統計 API：回傳各類攻擊阻斷計數與防禦指標。
+pub async fn waf_stats_handler(
+    State(_state): State<AdminWebState>,
+) -> Response {
+    let stats = serde_json::json!({
+        "total_requests": WAF_TELEMETRY.total_requests.load(Ordering::Relaxed),
+        "total_blocked": WAF_TELEMETRY.total_blocked.load(Ordering::Relaxed),
+        "honeypot_probes": WAF_TELEMETRY.honeypot_probes.load(Ordering::Relaxed),
+        "sql_injections": WAF_TELEMETRY.sql_injections.load(Ordering::Relaxed),
+        "rce_attempts": WAF_TELEMETRY.rce_attempts.load(Ordering::Relaxed),
+        "xss_attempts": WAF_TELEMETRY.xss_attempts.load(Ordering::Relaxed),
+        "path_traversals": WAF_TELEMETRY.path_traversals.load(Ordering::Relaxed),
+        "bot_scanners": WAF_TELEMETRY.bot_scanners.load(Ordering::Relaxed),
+        "ssrf_attempts": WAF_TELEMETRY.ssrf_attempts.load(Ordering::Relaxed),
+        "ssti_attempts": WAF_TELEMETRY.ssti_attempts.load(Ordering::Relaxed),
+        "proto_pollution": WAF_TELEMETRY.proto_pollution.load(Ordering::Relaxed),
+        "deserialization_attempts": WAF_TELEMETRY.deserialization_attempts.load(Ordering::Relaxed),
+        "host_poisoning": WAF_TELEMETRY.host_poisoning.load(Ordering::Relaxed),
+        "smuggling_attempts": WAF_TELEMETRY.smuggling_attempts.load(Ordering::Relaxed),
+        "webshell_attempts": WAF_TELEMETRY.webshell_attempts.load(Ordering::Relaxed),
+        "rate_limited": WAF_TELEMETRY.rate_limited.load(Ordering::Relaxed),
+        "anomaly_blocked": WAF_TELEMETRY.anomaly_blocked.load(Ordering::Relaxed),
+        "fingerprint_blocked": WAF_TELEMETRY.fingerprint_blocked.load(Ordering::Relaxed),
+        "whitelist_bypass": WAF_TELEMETRY.whitelist_bypass.load(Ordering::Relaxed),
+    });
+
+    (
+        StatusCode::OK,
+        Json(stats),
+    )
+        .into_response()
+}
+
+/// 構建帶有安全響應標頭的 WAF 403 回應（參考 rust-web-security SKILL：防止內容嗅探、點擊劫持、引用洩漏）。
+fn waf_forbidden_response(body: serde_json::Value) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        [
+            (header::HeaderName::from_static("x-content-type-options"), header::HeaderValue::from_static("nosniff")),
+            (header::HeaderName::from_static("x-frame-options"), header::HeaderValue::from_static("DENY")),
+            (header::HeaderName::from_static("referrer-policy"), header::HeaderValue::from_static("no-referrer")),
+            (header::HeaderName::from_static("content-security-policy"), header::HeaderValue::from_static("default-src 'none'")),
+        ],
+        Json(body),
+    )
+        .into_response()
+}
+
+/// 構建帶有安全響應標頭的 WAF 錯誤回應。
+fn waf_error_response(status: StatusCode, body: serde_json::Value) -> Response {
+    (
+        status,
+        [
+            (header::HeaderName::from_static("x-content-type-options"), header::HeaderValue::from_static("nosniff")),
+            (header::HeaderName::from_static("x-frame-options"), header::HeaderValue::from_static("DENY")),
+            (header::HeaderName::from_static("referrer-policy"), header::HeaderValue::from_static("no-referrer")),
+            (header::HeaderName::from_static("content-security-policy"), header::HeaderValue::from_static("default-src 'none'")),
+        ],
+        Json(body),
+    )
+        .into_response()
 }

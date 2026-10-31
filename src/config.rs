@@ -85,7 +85,13 @@ pub struct AppConfig {
 
     /// SQLite 忙逾時（秒），資料庫寫入鎖爭用時最多等待這麼久。
     #[serde(default = "default_sqlite_busy_timeout_secs")]
-    pub sqlite_busy_timeout_secs: u64,}
+    pub sqlite_busy_timeout_secs: u64,
+
+    /// 審計日誌 HMAC-SHA256 密鑰，用於 activity_events 防竄改簽章。
+    /// 未設定時會退回環境變數 `TRONCLASS_AUDIT_HMAC_KEY`；兩者皆未設定時
+    /// 使用預設值並記錄警告，生產環境務必設定其中一個。
+    #[serde(default = "default_audit_hmac_key")]
+    pub audit_hmac_key: String,}
 
 // ─── 子設定結構 ───────────────────────────────────────────────────────────────
 
@@ -468,6 +474,10 @@ fn default_vapid_sub() -> String {
 
 fn default_sqlite_busy_timeout_secs() -> u64 {
     15
+}
+
+fn default_audit_hmac_key() -> String {
+    String::new()
 }
 
 impl Default for AdminWebConfig {

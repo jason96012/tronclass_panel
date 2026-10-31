@@ -189,12 +189,18 @@ async fn insert_activity_events_batch(
     }
 
     // AUDIT_TAMPER_EVIDENT_V1：讀取 HMAC 密鑰，用於簽章每筆活動事件。
-    // 未設定時使用預設值並記 warn，生產環境務必設定 TRONCLASS_AUDIT_HMAC_KEY。
-    let hmac_key = std::env::var("TRONCLASS_AUDIT_HMAC_KEY")
-        .unwrap_or_else(|_| {
+    // 優先從 config.toml 的 `audit_hmac_key` 讀取；若未設定則退回環境變數
+    // `TRONCLASS_AUDIT_HMAC_KEY`；兩者皆未設定時使用預設值並記 warn。
+    let hmac_key = crate::config::try_get_config()
+        .and_then(|cfg| {
+            let k = cfg.audit_hmac_key.trim();
+            if k.is_empty() { None } else { Some(k.to_string()) }
+        })
+        .or_else(|| std::env::var("TRONCLASS_AUDIT_HMAC_KEY").ok())
+        .unwrap_or_else(|| {
             static WARNED: once_cell::sync::OnceCell<()> = once_cell::sync::OnceCell::new();
             WARNED.get_or_init(|| {
-                tracing::warn!("TRONCLASS_AUDIT_HMAC_KEY 未設定，審計日誌防竄改使用預設密鑰，生產環境請設定該環境變數");
+                tracing::warn!("audit_hmac_key 未設定（config.toml 或 TRONCLASS_AUDIT_HMAC_KEY 環境變數），審計日誌防竄改使用預設密鑰，生產環境請設定");
             });
             "default-audit-hmac-key-change-in-production".to_string()
         });

@@ -3420,6 +3420,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
                 .post(rest_days::update_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
+        // WAF_TELEMETRY_API_V1：WAF 即時遙測統計，供管理後台查看防禦指標。
+        .route(
+            "/admin/api/waf/stats",
+            get(waf::waf_stats_handler).layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         // BULLETINS_V1: 課程公告頁＋API。
         .route("/admin/bulletins", get(bulletins::page_handler))
         .route("/admin/api/bulletins", get(bulletins::list_handler))
