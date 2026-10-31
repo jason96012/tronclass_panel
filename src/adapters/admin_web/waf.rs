@@ -1154,15 +1154,14 @@ pub async fn waf_firewall_middleware(
                 threat = %threat.description(),
                 "🛡️ [最高級 WAF 防火牆] 請求本體含攻擊特徵，已攔截並自動封鎖 IP"
             );
-                ban_for_body_threat(
-                    &state,
-                    &ip,
-                    threat.description(),
-                    raw_path.clone(),
-                    user_agent.clone(),
-                )
-                .await;
-            }
+            ban_for_body_threat(
+                &state,
+                &ip,
+                threat.description(),
+                raw_path.clone(),
+                user_agent.clone(),
+            )
+            .await;
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({
