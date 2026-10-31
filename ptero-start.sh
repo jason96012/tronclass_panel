@@ -37,47 +37,11 @@ if [[ "${RUN_MODE:-}" == "test" ]]; then
   exit 0
 fi
 
-# ─── PEN_TEST_V1：滲透測試建置（關閉防護，僅供受控測試）──────────────────
-# 設 PEN_TEST=1 會讓**所有** cargo build 帶上 `--features pen_test`，效果等同
-# 手動 `cargo build --release --no-default-features --features pen_test`。
-#
-# 面板設定方式（在預設改為 1 之前是這樣開）：
-#   Startup 環境變數加 PEN_TEST=1，或在 Startup 命令前綴
-#   `PEN_TEST=1 ./ptero-start.sh`，然後 Restart。
-#
-# ⚠️ 目前**預設為 1（測試建置）**。這是為了方便正在進行的滲透測試——
-#    每次重啟、每次 watchdog 熱重編都會自動帶上 pen_test，不用一直設環境變數。
-#    ⚠️ 測完一定要關掉，兩種方式（都不用再改這支檔案）：
-#       (a) 面板 Startup 環境變數加 PEN_TEST=0，Restart
-#       (b) 把下面那行的預設值從 1 改回 0
-#    推薦 (a)：改環境變數不用動檔案，出事時關掉最快。
-#
-# 啟用後的行為（詳見 reports/pentest-feature-review-2026-10-27.md）：
-#   · WAF 只偵測不封鎖（遙測與 warn! 紀錄完整保留）
-#   · 全域 L7 限速跳過；不自動寫入 IP 黑名單
-#   · 登入節流 5/20 → 10000；帳號鎖定、密碼變更限速跳過
-#   · /pub/* 分享端點限速（120/60s、10/60s）停用
-#   · WAF 本體掃描上限 32 MB → 64 MB
-#
-# 🚨 這是**關閉防護**的建置，嚴禁用於對外服務：任何人都能對任何帳號
-#    無限次嘗試密碼。
-# ⚠️ 因為預設值現在是 1，**移除 PEN_TEST 變數並不會關閉**——
-#    必須明確設成 PEN_TEST=0 才會回到正式建置。
-#
-# 注意：首次建置（檔案末尾）與 watchdog 熱重編（hot_rebuild_if_needed）
-# **兩邊都會吃到這個值**，所以測試期間熱重編不會讓模式跑掉；
-# 但這也代表只要變數還在，每次重啟都還是測試模式。
-export PEN_TEST="${PEN_TEST:-1}"
-PEN_TEST_FEATURE_ARGS=()
-if [[ "$PEN_TEST" == "1" ]]; then
-  PEN_TEST_FEATURE_ARGS=(--features pen_test)
-  echo "═══════════════════════════════════════════════════════════════"
-  echo "🚨 [ptero-start] PEN_TEST=1 —— 滲透測試建置，防護已關閉"
-  echo "🚨 WAF 不封鎖 / 不限流 / 不自動封禁 / 帳號鎖定已關閉"
-  echo "🚨 嚴禁用於對外服務"
-  echo "🚨 這是目前的**預設值**：測完請在面板加 PEN_TEST=0 並 Restart"
-  echo "═══════════════════════════════════════════════════════════════"
-fi
+# ─── 正式建置：預設不帶任何 feature，防護一律啟動 ────────────────────────
+# 預設直接 `cargo build --release --no-default-features`，所有登入防護、
+# IP 黑名單、速率限制、帳號鎖定、密碼變更限流、WAF 自動封鎖一律啟動。
+# 不再提供 --features pen_test（該 feature 已從 Cargo.toml 移除）。
+export PEN_TEST_FEATURE_ARGS=()
 
 export RUST_LOG="${RUST_LOG:-info}"
 PORT="${SERVER_PORT:-26000}"
@@ -1265,7 +1229,7 @@ hot_rebuild_if_needed() {
   _jobs="${HOT_REBUILD_JOBS:-$(( _nproc > 1 ? _nproc - 1 : 1 ))}"
   command -v nice >/dev/null 2>&1 && _nice=(nice -n 15)
   command -v ionice >/dev/null 2>&1 && _nice+=(ionice -c 3)
-  if ${_nice[@]+"${_nice[@]}"} env CARGO_BUILD_JOBS="$_jobs" cargo build --release --no-default-features ${PEN_TEST_FEATURE_ARGS[@]+"${PEN_TEST_FEATURE_ARGS[@]}"}; then
+  if ${_nice[@]+"${_nice[@]}"} env CARGO_BUILD_JOBS="$_jobs" cargo build --release --no-default-features; then
     printf '%s\n' "$cur" > logs/src-hash
     touch "$bin" 2>/dev/null || true
     touch logs/hot-rebuild.pending
@@ -1439,9 +1403,9 @@ if [[ -f Cargo.toml && -d src ]]; then
       echo "[ptero-start] 請上傳 apply-fix-missing-rs-modules.sh 或該 .rs 後刪 target/release/tronclass_rollcall 再重啟"
     fi
   done
-  echo "[ptero-start] cargo build --release --no-default-features ${PEN_TEST_FEATURE_ARGS[*]:-}"
+  echo "[ptero-start] cargo build --release --no-default-features"
   export TRONCLASS_BUILD_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
-  if cargo build --release --no-default-features ${PEN_TEST_FEATURE_ARGS[@]+"${PEN_TEST_FEATURE_ARGS[@]}"}; then
+  if cargo build --release --no-default-features; then
     mkdir -p logs
     printf '%s\n' "$_cur_hash" > logs/src-hash
     run_bin ./target/release/tronclass_rollcall

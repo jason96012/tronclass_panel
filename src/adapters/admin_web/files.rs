@@ -1846,17 +1846,18 @@ fn pub_rate_exceeded_scoped(scope: &str, ip: &str, limit: u32, window_secs: u64)
     let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
         return false;
     };
-        if map.len() > 4096 {
-            map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
-        }
-        let entry = map.entry(key).or_insert((now, 0));
-        if now.saturating_sub(entry.0) >= window_secs {
-            *entry = (now, 1);
-            false
-        } else {
-            entry.1 += 1;
-            entry.1 > limit
-        }
+
+    if map.len() > 4096 {
+        map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
+    }
+
+    let entry = map.entry(key).or_insert((now, 0));
+    if now.saturating_sub(entry.0) >= window_secs {
+        *entry = (now, 1);
+        false
+    } else {
+        entry.1 += 1;
+        entry.1 > limit
     }
 }
 
