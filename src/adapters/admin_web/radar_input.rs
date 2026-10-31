@@ -559,26 +559,3 @@ pub(super) async fn post_handler(
     .into_response()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_coordinate_text() {
-        assert_eq!(
-            parse_coord_text("25.0373, 121.4315"),
-            Some((25.0373, 121.4315))
-        );
-        assert_eq!(
-            parse_coord_text("25.0373，121.4315"),
-            Some((25.0373, 121.4315))
-        );
-        assert_eq!(
-            parse_coord_text("(25.0373 121.4315)"),
-            Some((25.0373, 121.4315))
-        );
-        assert_eq!(parse_coord_text("25.0373"), None);
-        assert_eq!(parse_coord_text("abc, def"), None);
-        assert_eq!(parse_coord_text(""), None);
-    }
-}

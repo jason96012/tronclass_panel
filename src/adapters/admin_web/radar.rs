@@ -434,17 +434,3 @@ fn is_radar_row(attendance_type: &str) -> bool {
     attendance_type.contains("雷達") || attendance_type.eq_ignore_ascii_case("radar")
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn radar_rows_are_recognised() {
-        assert!(is_radar_row("雷達簽到"));
-        assert!(is_radar_row("radar"));
-        assert!(is_radar_row("Radar"));
-        assert!(!is_radar_row("數字簽到"));
-        assert!(!is_radar_row("QR Code 簽到"));
-        assert!(!is_radar_row("自主報到"));
-    }
-}

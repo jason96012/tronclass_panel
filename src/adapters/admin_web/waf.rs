@@ -59,13 +59,8 @@ use crate::db::ActivityEventInput;
 /// WAF 全域滑動窗口時間跨度（60 秒）。
 const WAF_RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 /// 每外部 IP 每分鐘最大請求上限（240 次 / 分鐘，相當於平均 4 req/sec）。
-#[cfg(not(feature = "pen_test"))]
 const WAF_RATE_LIMIT_MAX_REQUESTS: usize = 240;
-#[cfg(feature = "pen_test")]
-const WAF_RATE_LIMIT_MAX_REQUESTS: usize = 50000;
 /// 滑動窗口快取清理閾值（最多保留 5000 個獨立 IP 記錄）。
-/// PEN_TEST_V1：測試模式已完全跳過限速，此值**刻意不放大** —— 放大只會讓滑動窗口
-/// 為每個 IP 多留一筆而吃記憶體，但 limiter 根本不會跑，沒有任何好處。
 const WAF_RATE_LIMIT_MAX_IPS: usize = 5000;
 /// URI / Query 最大長度限制（防止緩衝區溢位攻擊）。
 const WAF_MAX_URI_LENGTH: usize = 4096;
@@ -212,15 +207,9 @@ impl WafThreat {
     /// UA 類與中段副檔名類誤判率高（WAF 審查 W3／W2），命中時仍回 403，但不封鎖 IP，
     /// 避免一次誤判變成永久鎖定。其餘攻擊特徵維持原本的自動封鎖。
     pub fn allows_auto_ban(&self) -> bool {
-        // PEN_TEST_V1：測試模式一律不寫黑名單，避免把自己的 IP 永久關進去。
-        #[cfg(feature = "pen_test")]
-        {
-            return false;
-        }
-        #[cfg(not(feature = "pen_test"))]
-        {
-            !matches!(self, Self::MaliciousUserAgent(_) | Self::WebshellMasquerade(_))
-        }
+        // WAF_AUTOBAN_NARROW_V1：UA 類與中段副檔名類誤判率高（WAF 審查 W3／W2），命中時仍回 403，但不封鎖 IP，
+        // 避免一次誤判變成永久鎖定。其餘攻擊特徵維持原本的自動封鎖。
+        !matches!(self, Self::MaliciousUserAgent(_) | Self::WebshellMasquerade(_))
     }
 
     pub fn description(&self) -> String {
@@ -295,13 +284,7 @@ impl WafThreat {
 
 /// WAF_BODY_SCAN_V1：本體掃描的單次上限。超過就回 413（不掃描、不放行），
 /// 否則填充到上限之後就能繞過檢查。AI 聊天附件（base64）與 tc_proxy 是本系統最大的 JSON 本體來源。
-/// PEN_TEST_V1：正式建置維持原值 32 MB（原 patch 誤寫成 100 MB，
-/// 會把生產環境的上限悄悄放大三倍）。測試模式只放到 64 MB —— 500 MB 是 15 倍放大，
-/// 幾個並發請求各帶 500 MB 就會把伺服器撐爆，等於自己開一個 DoS 洞。
-#[cfg(not(feature = "pen_test"))]
 const WAF_BODY_SCAN_MAX_BYTES: usize = 32 * 1024 * 1024;
-#[cfg(feature = "pen_test")]
-const WAF_BODY_SCAN_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 /// 本體掃描的高信心特徵。刻意只取少數：完整的 URL 規則（例如 `sleep(`、`powershell`）
 /// 會把程式碼與教材內容誤判，因此不套用到本體。
@@ -985,27 +968,6 @@ fn warn_private_peer_without_trusted_proxies(peer: Option<std::net::IpAddr>) {
     }
 }
 
-/// PEN_TEST_V1：測試模式的「你正在裸奔」警告，每個行程只印一次。
-/// 這是最後一道防呆——上面所有 #[cfg] 都不會阻止你忘記重新部署，
-/// 但至少日誌裡會留下明確痕跡，事後查得到。
-static PEN_TEST_WARNED: AtomicBool = AtomicBool::new(false);
-
-#[cfg(feature = "pen_test")]
-fn warn_pen_test_mode_once() {
-    if !PEN_TEST_WARNED.swap(true, Ordering::Relaxed) {
-        warn!("═══════════════════════════════════════════════════════════════");
-        warn!("🚨 PEN_TEST 模式已啟用");
-        warn!("🚨 WAF 只偵測不封鎖、全域限速跳過、不自動封禁");
-        warn!("🚨 登入節流／帳號鎖定／密碼變更限速 已放寬或跳過");
-        warn!("🚨 此建置嚴禁用於生產環境");
-        warn!("🚨 測完請務必：cargo build --release（不帶 feature）重新部署");
-        warn!("═══════════════════════════════════════════════════════════════");
-    }
-}
-
-#[cfg(not(feature = "pen_test"))]
-fn warn_pen_test_mode_once() {}
-
 /// WAF 防火牆核心中介層。
 pub async fn waf_firewall_middleware(
     State(state): State<AdminWebState>,
@@ -1025,7 +987,6 @@ pub async fn waf_firewall_middleware(
     // 「代理自己的 IP」，真實攻擊者洗成別人；更糟的是自動封鎖會把**代理本身**
     // 關進黑名單 → 全站對所有人斷線。
     let trusted = crate::trusted_ip::trusted_from_global_config();
-    warn_pen_test_mode_once();
     warn_private_peer_without_trusted_proxies(peer);
     let ip = crate::trusted_ip::resolve_client_ip(peer, &headers, &trusted);
     let uri = request.uri().clone();
@@ -1037,19 +998,6 @@ pub async fn waf_firewall_middleware(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_string();
-
-    // PEN_TEST_V1：測試模式開關。刻意用執行期布林值而不是到處 #[cfg] 區塊，
-    // 因為後者要把整段邏輯重新縮排、diff 難以審查，也容易漏掉某個 return。
-    // 所有「封鎖」動作統一由這個值控制，遙測與 warn! 紀錄一律保留。
-    #[cfg(feature = "pen_test")]
-    let pen_test_mode = true;
-    #[cfg(not(feature = "pen_test"))]
-    let pen_test_mode = false;
-    // PEN_TEST_V1：白名單上的來源比照測試模式——只記錄不封鎖。
-    // is_pen_test_whitelisted() 在正式建置恆為 false，所以正式建置不受影響
-    // （多一次的函式呼叫會被最佳化掉，沒有實際成本）。
-    let pen_test_mode =
-        pen_test_mode || crate::trusted_ip::is_pen_test_whitelisted(&ip).await;
 
     // 1. 深度威脅特徵、蜜罐、黑客工具與惡意標頭檢測
     if let Some(threat) = inspect_waf_threat(&uri, &method, &headers) {
@@ -1064,7 +1012,7 @@ pub async fn waf_firewall_middleware(
 
         // 非本機/私網 IP 自動觸發自動黑名單封鎖與安全告警
         let is_local = is_local_or_trusted_ip(&ip) || ip == "unknown";
-        if !pen_test_mode && !is_local && threat.allows_auto_ban() {
+        if !is_local && threat.allows_auto_ban() {
             // WAF_BAN_DEDUP_V1：黑名單中介層在 WAF **之後**才跑，因此已被封鎖的
             // IP 之後的每個請求仍會走到這裡。若不看「是否已封鎖」就照單全收地
             // spawn，攻擊者拿著已封鎖的 IP 對蜜罐路徑狂打，就能造成：
@@ -1126,7 +1074,7 @@ pub async fn waf_firewall_middleware(
             }
         }
 
-        if !pen_test_mode && matches!(threat, WafThreat::DangerousMethod(_)) {
+        if matches!(threat, WafThreat::DangerousMethod(_)) {
             return (
                 StatusCode::METHOD_NOT_ALLOWED,
                 Json(json!({
@@ -1137,16 +1085,8 @@ pub async fn waf_firewall_middleware(
                 .into_response();
         }
 
-        if pen_test_mode {
-            warn!(
-                ip = %ip,
-                path = %raw_path,
-                threat = %threat_desc,
-                "🧪 [PEN_TEST] 偵測到威脅，但測試模式不封鎖、不自動封禁，放行至下游"
-            );
-        } else {
-            return (
-                StatusCode::FORBIDDEN,
+        return (
+            StatusCode::FORBIDDEN,
                 Json(json!({
                     "error": "waf_access_denied",
                     "message": "WAF: 請求包含惡意攻擊特徵或探測高危路徑，已被系統最高級防火牆攔截並永久封鎖"
@@ -1161,10 +1101,7 @@ pub async fn waf_firewall_middleware(
     // 否則攻擊者在同前綴內輪換位址，每換一個位址就是全新的 240/分鐘額度，
     // 全域限速形同虛設。
     let is_exempt = is_local_or_trusted_ip(&ip) || ip == "unknown";
-    if pen_test_mode {
-        WAF_TELEMETRY.total_requests.fetch_add(1, Ordering::Relaxed);
-        warn!(ip = %ip, "🧪 [PEN_TEST] 跳過全域 L7 速率限制");
-    } else if !is_exempt
+    if !is_exempt
         && !WAF_GLOBAL_LIMITER
             .check_limit(&crate::trusted_ip::blacklist_group_key(&ip))
             .await
@@ -1217,13 +1154,6 @@ pub async fn waf_firewall_middleware(
                 threat = %threat.description(),
                 "🛡️ [最高級 WAF 防火牆] 請求本體含攻擊特徵，已攔截並自動封鎖 IP"
             );
-            if pen_test_mode {
-                warn!(
-                    ip = %ip,
-                    path = %raw_path,
-                    "🧪 [PEN_TEST] 本體含攻擊特徵，仍回 403 但不封鎖 IP"
-                );
-            } else {
                 ban_for_body_threat(
                     &state,
                     &ip,
@@ -1246,27 +1176,5 @@ pub async fn waf_firewall_middleware(
     }
 
     // 安全校驗通過，放行至下游處理器。
-    //
-    // PEN_TEST_V1：測試建置時在回應加 `X-Pen-Test-Mode: 1`，`curl -I` 就能
-    // 確認當前跑的是哪一版，不必去猜 build 時有沒有帶 feature。
-    // 注意：上面的 403／429／413 提前回傳路徑不會帶這個標頭，
-    // 只有成功放行到下游的回應會帶。
-    //
-    // 刻意拆成兩個互斥的 cfg 區塊，而不是寫 `let mut response = ...` 加
-    // #[allow(unused_mut)]：正式建置下標頭插入被 cfg 掉，`mut` 就會變成
-    // 「不需要的可變」而觸發 unused_mut 警告。拆開後兩種建置都乾淨。
-    // （兩個區塊互斥，留下的那一個一定是函式的尾運算式，型別都是 Response。）
-    #[cfg(feature = "pen_test")]
-    {
-        let mut response = next.run(request).await;
-        response.headers_mut().insert(
-            HeaderName::from_static("x-pen-test-mode"),
-            HeaderValue::from_static("1"),
-        );
-        response
-    }
-    #[cfg(not(feature = "pen_test"))]
-    {
-        next.run(request).await
-    }
+    next.run(request).await
 }

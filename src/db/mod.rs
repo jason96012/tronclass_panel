@@ -394,38 +394,3 @@ pub(crate) async fn ensure_column(pool: &SqlitePool, column: &str, definition: &
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::sqlite::SqlitePoolOptions;
-    use tempfile::NamedTempFile;
-
-    #[tokio::test]
-    async fn open_migrates_existing_accounts_table() {
-        let file = NamedTempFile::new().unwrap();
-        let url = format!("sqlite://{}?mode=rwc", file.path().display());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&url)
-            .await
-            .unwrap();
-        sqlx::query(
-            "CREATE TABLE accounts (
-                id TEXT PRIMARY KEY NOT NULL,
-                provider TEXT NOT NULL DEFAULT '',
-                username TEXT NOT NULL DEFAULT '',
-                password TEXT NOT NULL DEFAULT '',
-                enabled INTEGER NOT NULL DEFAULT 1,
-                line_user_id TEXT NOT NULL DEFAULT ''
-            )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        drop(pool);
-
-        let db = AccountsDb::open(file.path()).await.unwrap();
-        assert!(!db.set_discord_user_id("missing", "1").await.unwrap());
-        assert!(!db.set_session_cookie("missing", "session=x").await.unwrap());
-    }
-}

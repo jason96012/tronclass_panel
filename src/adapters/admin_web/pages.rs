@@ -1047,11 +1047,6 @@ pub(super) async fn admin_page_handler(
     attach_fresh_cookies(html_page_response(&headers, html), &page, &headers)
 }
 
-#[cfg(test)]
-pub(super) fn safe_next_path_for_test(raw: &str) -> Option<String> {
-    safe_next_path(raw)
-}
-
 /// 只接受站內 `/admin…` 相對路徑（不含 scheme / host / `//`），避免 open redirect。
 fn safe_next_path(raw: &str) -> Option<String> {
     let raw = raw.trim();

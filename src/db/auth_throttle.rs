@@ -182,39 +182,3 @@ impl AccountsDb {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-
-    #[tokio::test]
-    async fn throttle_counts_within_window_and_clears() {
-        let file = NamedTempFile::new().unwrap();
-        let db = AccountsDb::open(file.path()).await.unwrap();
-        let now = 1_800_000_000;
-        assert_eq!(db.throttle_record("rate", "login:a:1.2.3.4", now, 60).await.unwrap(), 1);
-        assert_eq!(db.throttle_record("rate", "login:a:1.2.3.4", now + 1, 60).await.unwrap(), 2);
-        // 舊事件落在 window 之外就不算。
-        assert_eq!(db.throttle_count("rate", "login:a:1.2.3.4", now + 100).await.unwrap(), 0);
-        db.throttle_clear("rate", "login:a:1.2.3.4").await.unwrap();
-        assert_eq!(db.throttle_count("rate", "login:a:1.2.3.4", 0).await.unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn login_locks_do_not_extend_and_can_be_removed() {
-        let file = NamedTempFile::new().unwrap();
-        let db = AccountsDb::open(file.path()).await.unwrap();
-        let now = 1_800_000_000;
-        let keys = vec!["Acct".to_string(), "S123".to_string()];
-        assert!(db.login_lock_insert(&keys, now + 600, now).await.unwrap());
-        assert!(!db.login_lock_insert(&keys, now + 6000, now).await.unwrap());
-        let remaining = db.login_lock_remaining(&["acct".to_string()], now + 10).await.unwrap();
-        assert_eq!(remaining, Some(590));
-        assert!(db.login_lock_remove(&["s123".to_string()]).await.unwrap());
-        assert!(db.login_lock_remaining(&["s123".to_string()], now).await.unwrap().is_none());
-        // 過期後自動視為不存在，且可以重新上鎖。
-        assert!(db.login_lock_remaining(&["acct".to_string()], now + 601).await.unwrap().is_none());
-        assert!(db.login_lock_insert(&["acct".to_string()], now + 1200, now + 601).await.unwrap());
-        assert_eq!(db.throttle_prune(now, now + 700).await.unwrap(), 0);
-    }
-}

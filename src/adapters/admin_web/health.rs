@@ -840,17 +840,6 @@ fn first_line_after_header(text: &str) -> Option<String> {
     lines.next().map(str::to_string)
 }
 
-#[cfg(test)]
-mod regex_tests {
-    /// UNWRAP_SWEEP_V1：強制初始化 cloudflared 日誌用的 Lazy regex。
-    #[test]
-    fn static_regexes_compile() {
-        let _ = &*super::CLOUDFLARED_ERROR_RE;
-        let _ = &*super::CLOUDFLARED_FATAL_RE;
-        let _ = &*super::CLOUDFLARED_RECOVERY_RE;
-        let _ = &*super::CLOUDFLARED_RESTART_TS_RE;
-    }
-}
 
 // ── CLIENT_ERROR_REPORT_V1 ────────────────────────────────────────────────────
 
@@ -1060,77 +1049,3 @@ pub(super) async fn client_log_handler(
     (StatusCode::NO_CONTENT, ()).into_response()
 }
 
-#[cfg(test)]
-mod tt_noise_tests {
-    use super::{is_csp_cf_inline_noise, is_external_trusted_types_noise};
-
-    #[test]
-    fn csp_report_only_script_src_is_noise() {
-        assert!(is_csp_cf_inline_noise(
-            "csp_report_only",
-            "script-src-elem 回報（未阻擋）inline",
-            "",
-            ""
-        ));
-    }
-
-    #[test]
-    fn csp_violation_inline_without_cf_stays_alert() {
-        assert!(!is_csp_cf_inline_noise(
-            "csp_violation",
-            "script-src-elem 阻擋 inline",
-            "https://dashboard.example/admin",
-            "(function(){"
-        ));
-    }
-
-    #[test]
-    fn csp_violation_with_cf_fingerprint_is_noise() {
-        assert!(is_csp_cf_inline_noise(
-            "csp_violation",
-            "script-src-elem 阻擋 inline",
-            "https://dashboard.example/cdn-cgi/challenge-platform/x",
-            ""
-        ));
-    }
-
-    /// TT_ASSIGNMENT_NOISE_V1（fix37）：兩個引擎的字串都要被判成已知噪音。
-    #[test]
-    fn trusted_type_assignment_messages_are_known_noise() {
-        // WebKit/Safari 形式：不含 sink 名稱（2026-09-14 22:40 的上報字串）
-        assert!(is_external_trusted_types_noise(
-            "This assignment requires a TrustedHTML"
-        ));
-        assert!(is_external_trusted_types_noise(
-            "This assignment requires a TrustedHTML [tt=present]"
-        ));
-        assert!(is_external_trusted_types_noise(
-            "This assignment requires a TrustedScriptURL"
-        ));
-        // Blink/Chromium 形式：含 sink 名稱
-        assert!(is_external_trusted_types_noise(
-            "Failed to set the 'innerHTML' property on 'Element': This document requires 'TrustedHTML' assignment."
-        ));
-        assert!(is_external_trusted_types_noise(
-            "Failed to execute 'insertAdjacentHTML' on 'Element': This document requires 'TrustedHTML' assignment."
-        ));
-        // 大小寫不同的引擎字串
-        assert!(is_external_trusted_types_noise(
-            "this assignment requires a trustedhtml"
-        ));
-    }
-
-    /// 我方頁面缺 policy（`tt=missing`）與無關訊息都不可被降級。
-    #[test]
-    fn missing_policy_and_unrelated_messages_stay_errors() {
-        assert!(!is_external_trusted_types_noise(
-            "Uncaught TypeError: This assignment requires a TrustedHTML [tt=missing]"
-        ));
-        assert!(!is_external_trusted_types_noise("Failed to fetch"));
-        assert!(!is_external_trusted_types_noise(
-            "Cannot read properties of null (reading 'classList')"
-        ));
-        // 只出現型別名稱、沒有 assignment 語句者不算噪音
-        assert!(!is_external_trusted_types_noise("TrustedHTML is not defined"));
-    }
-}

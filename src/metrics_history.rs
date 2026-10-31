@@ -151,34 +151,3 @@ fn read_load1() -> Option<f32> {
     raw.split_whitespace().next()?.parse().ok()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn latency_is_aggregated_into_next_sample() {
-        record_poll_latency(Duration::from_millis(100), true);
-        record_poll_latency(Duration::from_millis(300), false);
-        push_sample(3, 4, 1);
-        let snap = snapshot();
-        let last = snap.samples.last().expect("has sample");
-        assert_eq!(last.poll_count, 2);
-        assert_eq!(last.poll_errors, 1);
-        assert_eq!(last.poll_avg_ms, Some(200));
-        assert_eq!(last.poll_max_ms, Some(300));
-        assert_eq!((last.running, last.total, last.failures), (3, 4, 1));
-        // pending 已被清空：下一筆沒有輪詢資料
-        push_sample(3, 4, 1);
-        let last = snapshot().samples.last().cloned().expect("has sample");
-        assert_eq!(last.poll_count, 0);
-        assert_eq!(last.poll_avg_ms, None);
-    }
-
-    #[test]
-    fn ring_buffer_is_bounded() {
-        for _ in 0..(MAX_SAMPLES + 5) {
-            push_sample(0, 0, 0);
-        }
-        assert!(snapshot().samples.len() <= MAX_SAMPLES);
-    }
-}

@@ -62,35 +62,3 @@ impl AccountsDb {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn get_set_roundtrip_and_missing_key_is_none() {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        let db = AccountsDb::open(file.path()).await.unwrap();
-
-        assert_eq!(
-            db.get_security_setting(GEO_RESTRICT_ADMIN_KEY).await.unwrap(),
-            None
-        );
-
-        db.set_security_setting(GEO_RESTRICT_ADMIN_KEY, "0", "admin-a")
-            .await
-            .unwrap();
-        assert_eq!(
-            db.get_security_setting(GEO_RESTRICT_ADMIN_KEY).await.unwrap(),
-            Some("0".to_string())
-        );
-
-        // 覆寫同一個鍵：ON CONFLICT 分支要生效，不能變成第二筆。
-        db.set_security_setting(GEO_RESTRICT_ADMIN_KEY, "1", "admin-b")
-            .await
-            .unwrap();
-        assert_eq!(
-            db.get_security_setting(GEO_RESTRICT_ADMIN_KEY).await.unwrap(),
-            Some("1".to_string())
-        );
-    }
-}

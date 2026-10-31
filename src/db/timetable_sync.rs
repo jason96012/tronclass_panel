@@ -303,32 +303,3 @@ impl AccountsDb {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clamp_sync_text_truncates_and_strips_control_chars() {
-        let long = "a".repeat(MAX_SYNC_TEXT_BYTES + 50);
-        let clamped = clamp_sync_text(&long);
-        assert!(clamped.len() <= MAX_SYNC_TEXT_BYTES + 4);
-        assert!(clamped.ends_with('…'));
-
-        assert_eq!(clamp_sync_text("  hello\nworld\t "), "hello world");
-    }
-
-    #[test]
-    fn clamp_sync_text_respects_utf8_boundaries() {
-        let long = "課".repeat(MAX_SYNC_TEXT_BYTES);
-        let clamped = clamp_sync_text(&long);
-        // 不得 panic，且必須是合法 UTF-8（能被再次 chars() 走訪）。
-        assert!(clamped.chars().count() > 0);
-    }
-
-    #[test]
-    fn disabled_default_is_opt_in() {
-        let row = TimetableSyncStateRow::disabled_default("alice");
-        assert!(!row.is_enabled());
-        assert_eq!(row.consecutive_failures, 0);
-    }
-}

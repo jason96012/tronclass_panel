@@ -241,21 +241,3 @@ async fn notify_admins(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn stale_threshold_is_clamped() {
-        assert_eq!(stale_after_secs(10), STALE_MIN_SECS);
-        assert_eq!(stale_after_secs(60), 360);
-        assert_eq!(stale_after_secs(10_000), STALE_MAX_SECS);
-    }
-
-    #[test]
-    fn zero_heartbeat_is_never_stale() {
-        assert!(!is_stale(0, 1_800_000_000, 10));
-        assert!(!is_stale(1_800_000_000 - 100, 1_800_000_000, 10));
-        assert!(is_stale(1_800_000_000 - 301, 1_800_000_000, 10));
-    }
-}

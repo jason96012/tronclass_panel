@@ -41,12 +41,6 @@ pub const DEFAULT_GROUP_SUBMIT_RADAR_JITTER_MS: u64 = 500;
 /// 基準的硬上限（沿用既有 10 秒上限）。
 pub const MAX_GROUP_SUBMIT_INTERVAL_MS: u64 = 10_000;
 pub const MAX_RUNTIME_REST_PERIODS: usize = 64;
-/// PEN_TEST_V1：滲透測試白名單的筆數上限。
-/// 這是「測試用的便利清單」，不是存取控制清單——限制筆數避免它被拿來當成
-/// 另一套權限系統，也避免有人灌一堆 CIDR 把每次請求的比對成本拉高。
-pub const MAX_PEN_TEST_WHITELIST: usize = 32;
-/// 單筆白名單的最大長度（`"cloudflare"` 或一個 CIDR 都綽綽有餘）。
-pub const MAX_PEN_TEST_WHITELIST_ENTRY_CHARS: usize = 64;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]   // 讀檔時缺欄位＝用 Default（送出節奏的預設是 500/500…，不會變成 0）
@@ -92,19 +86,6 @@ pub struct RuntimeSettings {
     /// synchronous [`semester_override`] accessor.
     #[serde(default)]
     pub semester_override: Option<String>,
-    /// PEN_TEST_V1：滲透測試白名單（IP 或 CIDR，也接受 `"cloudflare"` 關鍵字）。
-    ///
-    /// 列出的來源不會被任何**防禦性封鎖**擋下：機房 IP 層、WAF、IP 黑名單層、
-    /// 境外限制層、登入節流與帳號鎖定。用途是讓掃描器不會把自己鎖在門外。
-    ///
-    /// ⚠️ 分界：只繞過**封鎖**，不繞過**認證與授權**。白名單上的 IP 仍然需要
-    ///    正確的帳號密碼才能進後台，也不會拿到任何額外權限（見
-    ///    `trusted_ip::is_pen_test_whitelisted` 的說明）。
-    ///
-    /// ⚠️ 只在 `--features pen_test` 建置下生效。正式建置不會去讀這份清單
-    ///    （程式面直接回 false），所以清單就算留在這裡也不會影響生產環境。
-    #[serde(default)]
-    pub pen_test_whitelist: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,8 +170,6 @@ impl Default for RuntimeSettings {
             auto_stop_time: None,
             rest_periods: Vec::new(),
             semester_override: None,
-            // PEN_TEST_V1：預設不放行任何來源。
-            pen_test_whitelist: Vec::new(),
         }
     }
 }
@@ -260,14 +239,6 @@ fn refresh_semester_override_cache(raw: Option<&str>) {
 
 pub async fn snapshot() -> RuntimeSettings {
     SETTINGS.read().await.clone()
-}
-
-/// PEN_TEST_V1：目前生效的滲透測試白名單（已正規化）。
-///
-/// 刻意只回傳 `Vec<String>` 而不是整個設定，讓呼叫端不必知道儲存結構。
-/// 呼叫端全都是 async（中介層／handler），所以用 async 讀取 tokio 鎖。
-pub async fn pen_test_whitelist() -> Vec<String> {
-    SETTINGS.read().await.pen_test_whitelist.clone()
 }
 
 /// 更新設定：夾範圍 → **先讓記憶體生效** → 原子寫檔；回傳寫檔結果。
@@ -386,26 +357,6 @@ fn normalize(mut settings: RuntimeSettings) -> RuntimeSettings {
             Some(value)
         }
     });
-    // PEN_TEST_V1：白名單正規化——去空白、轉小寫、丟掉無效項目、去重、限制筆數。
-    // 目的是避免「存了一堆看起來有設但其實不會生效的項目」，那比沒設更糟。
-    settings.pen_test_whitelist = {
-        let mut out: Vec<String> = Vec::new();
-        for entry in settings.pen_test_whitelist {
-            let entry = entry.trim().to_ascii_lowercase();
-            if entry.is_empty()
-                || entry.chars().count() > MAX_PEN_TEST_WHITELIST_ENTRY_CHARS
-                || !crate::trusted_ip::is_valid_cidr_entry(&entry)
-                || out.contains(&entry)
-            {
-                continue;
-            }
-            out.push(entry);
-            if out.len() >= MAX_PEN_TEST_WHITELIST {
-                break;
-            }
-        }
-        out
-    };
     settings
 }
 
@@ -447,124 +398,3 @@ fn parse_hhmm(value: &str) -> Option<NaiveTime> {
     NaiveTime::from_hms_opt(hour, minute, 0)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_semester_override_drops_invalid_and_keeps_valid() {
-        let mk = |value: Option<&str>| RuntimeSettings {
-            semester_override: value.map(str::to_string),
-            ..RuntimeSettings::default()
-        };
-        // 有效值保留（含前後空白 trim）
-        assert_eq!(
-            normalize(mk(Some(" 115-1 "))).semester_override,
-            Some("115-1".to_string())
-        );
-        assert_eq!(normalize(mk(Some("2026 Fall"))).semester_override, Some("2026 Fall".to_string()));
-        // 空字串／格式無效 → None（清除／防禦）
-        assert_eq!(normalize(mk(Some("   "))).semester_override, None);
-        assert_eq!(normalize(mk(Some("not-a-semester"))).semester_override, None);
-        assert_eq!(normalize(mk(Some("115"))).semester_override, None);
-        assert_eq!(normalize(mk(None)).semester_override, None);
-    }
-
-    #[test]
-    fn semester_override_cache_roundtrip_and_clear() {
-        // 單一測試內序列操作全域快取（避免並行測試互相污染），結尾還原。
-        refresh_semester_override_cache(Some("115-1"));
-        assert_eq!(semester_override(), Some((2026, 1)));
-        refresh_semester_override_cache(Some("1142"));
-        assert_eq!(semester_override(), Some((2025, 2)));
-        // 壞值＝清除（與 normalize 的防禦一致）
-        refresh_semester_override_cache(Some("bogus"));
-        assert_eq!(semester_override(), None);
-        refresh_semester_override_cache(None);
-        assert_eq!(semester_override(), None);
-    }
-
-    /* ─────────── PERSISTED_RUNTIME_SETTINGS_V1（fix104）：設定檔往返 ─────────── */
-
-    /// 序列化 → 解析之後每一個欄位都要一模一樣（不然重啟後會悄悄換一組節奏）。
-    #[test]
-    fn persisted_settings_roundtrip_keeps_every_field() {
-        let settings = RuntimeSettings {
-            poll_interval_secs: Some(45),
-            group_submit_interval_ms: 1_200,
-            group_submit_jitter_ms: 300,
-            group_submit_qrcode_interval_ms: 800,
-            group_submit_qrcode_jitter_ms: 200,
-            group_submit_radar_interval_ms: 900,
-            group_submit_radar_jitter_ms: 1_500,
-            auto_stop_time: Some("23:30".to_string()),
-            rest_periods: vec![RuntimeRestPeriod {
-                weekday: RuntimeWeekday::Fri,
-                start_time: "23:00".to_string(),
-                end_time: "07:00".to_string(),
-            }],
-            semester_override: Some("1151".to_string()),
-            pen_test_whitelist: vec![
-                "203.0.113.7".to_string(),
-                "198.51.100.0/24".to_string(),
-            ],
-        };
-        let text = serde_json::to_string_pretty(&settings).unwrap();
-        let back = parse_persisted(&text);
-        assert_eq!(back.poll_interval_secs, Some(45));
-        assert_eq!(back.group_submit_interval_ms, 1_200);
-        assert_eq!(back.group_submit_jitter_ms, 300);
-        assert_eq!(back.group_submit_qrcode_interval_ms, 800);
-        assert_eq!(back.group_submit_qrcode_jitter_ms, 200);
-        assert_eq!(back.group_submit_radar_interval_ms, 900);
-        assert_eq!(back.group_submit_radar_jitter_ms, 1_500);
-        assert_eq!(back.auto_stop_time.as_deref(), Some("23:30"));
-        assert_eq!(back.rest_periods.len(), 1);
-        assert_eq!(back.semester_override.as_deref(), Some("1151"));
-        // PEN_TEST_V1：白名單也要能完整往返，否則重啟後掃描器會突然被擋。
-        assert_eq!(
-            back.pen_test_whitelist,
-            vec!["203.0.113.7".to_string(), "198.51.100.0/24".to_string()]
-        );
-    }
-
-    /// 缺欄位（舊版設定檔、手寫的檔）＝用預設，**不是 0** —— 0 會變成「不等待、全部同時送出」。
-    #[test]
-    fn persisted_settings_missing_fields_fall_back_to_defaults() {
-        let back = parse_persisted("{}");
-        assert_eq!(back.group_submit_interval_ms, DEFAULT_GROUP_SUBMIT_INTERVAL_MS);
-        assert_eq!(back.group_submit_jitter_ms, DEFAULT_GROUP_SUBMIT_JITTER_MS);
-        assert_eq!(
-            back.group_submit_qrcode_jitter_ms,
-            DEFAULT_GROUP_SUBMIT_QRCODE_JITTER_MS
-        );
-        assert_eq!(
-            back.group_submit_radar_interval_ms,
-            DEFAULT_GROUP_SUBMIT_RADAR_INTERVAL_MS
-        );
-        assert_eq!(back.poll_interval_secs, None);
-        assert!(back.rest_periods.is_empty());
-        assert_eq!(back.semester_override, None);
-    }
-
-    /// 壞檔＝整份回預設（服務照樣起得來，只是回到預設節奏）。
-    #[test]
-    fn persisted_settings_garbage_falls_back_to_defaults() {
-        let back = parse_persisted("{ this is not json");
-        assert_eq!(back.group_submit_interval_ms, DEFAULT_GROUP_SUBMIT_INTERVAL_MS);
-        assert_eq!(back.group_submit_jitter_ms, DEFAULT_GROUP_SUBMIT_JITTER_MS);
-    }
-
-    /// 手改檔塞超界值也要被夾回來（不能靠改檔案繞過硬上限）。
-    #[test]
-    fn persisted_settings_are_clamped() {
-        let back = parse_persisted(
-            r#"{"group_submit_interval_ms": 999999, "group_submit_jitter_ms": 999999,
-                "auto_stop_time": "25:99", "semester_override": "not-a-semester"}"#,
-        );
-        assert_eq!(back.group_submit_interval_ms, MAX_GROUP_SUBMIT_INTERVAL_MS);
-        assert_eq!(back.group_submit_jitter_ms, MAX_GROUP_SUBMIT_JITTER_MS);
-        assert_eq!(back.auto_stop_time, None);
-        assert_eq!(back.semester_override, None);
-    }
-}

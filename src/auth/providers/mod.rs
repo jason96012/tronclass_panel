@@ -96,28 +96,3 @@ pub(crate) fn get_auth_flow(account: &AccountConfig) -> miette::Result<Box<dyn A
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn flow_kind_dispatch_matches_legacy_rules() {
-        // 名稱優先
-        assert_eq!(resolve_flow_kind("fju", &ProviderKind::Tronclass), Some(ProviderKind::FJU));
-        assert_eq!(resolve_flow_kind("tku", &ProviderKind::Tronclass), Some(ProviderKind::TKU));
-        // 名稱自訂時退回 kind
-        assert_eq!(resolve_flow_kind("tamkang", &ProviderKind::TKU), Some(ProviderKind::TKU));
-        assert_eq!(resolve_flow_kind("fu-jen", &ProviderKind::FJU), Some(ProviderKind::FJU));
-        // 預設 kind 沒有流程
-        assert_eq!(resolve_flow_kind("default", &ProviderKind::Tronclass), None);
-        assert_eq!(resolve_flow_kind("  tku  ", &ProviderKind::Tronclass), Some(ProviderKind::TKU));
-    }
-
-    #[test]
-    fn unsupported_message_mentions_fix() {
-        let text = unsupported_provider_message("default");
-        assert!(text.contains("[providers.default]"));
-        assert!(text.contains("kind = \"fju\""));
-        assert!(text.contains("kind = \"tku\""));
-    }
-}

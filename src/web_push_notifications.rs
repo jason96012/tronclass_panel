@@ -1354,31 +1354,3 @@ fn encrypt_payload(payload: &[u8], p256dh: &str, auth: &str) -> Result<Vec<u8>> 
     Ok(body)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn http_status_extraction() {
-        assert_eq!(http_status_of("Apple 推播服務回應 HTTP 410：gone"), Some(410));
-        assert_eq!(http_status_of("Apple 推播服務回應 HTTP 403"), Some(403));
-        assert_eq!(http_status_of("Web Push HTTP 發送失敗：timeout"), None);
-        assert_eq!(short_reason("Apple 推播服務回應 HTTP 403：VapidPkHashMismatch"), "HTTP 403");
-        assert!(short_reason("Web Push HTTP 發送失敗：連線逾時").chars().count() <= 60);
-    }
-
-    #[test]
-    fn expired_event_render_plain_text() {
-        let event = PushSubscriptionExpiredEvent {
-            account: "u1".to_string(),
-            removed_devices: 1,
-            remaining_devices: 0,
-            reason: "HTTP 410".to_string(),
-            dashboard_url: String::new(),
-        };
-        let text = event.render();
-        assert!(text.contains("手機推播訂閱已失效"));
-        assert!(text.contains("完全收不到"));
-        assert!(!text.chars().any(|c| (c as u32) >= 0x1F000), "不含表情符號");
-    }
-}

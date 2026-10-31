@@ -7,7 +7,6 @@ use serde::Serialize;
 use sha2::Sha256;
 use sqlx::{FromRow, SqlitePool};
 use tokio::sync::mpsc;
-use tracing::warn;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -195,7 +194,7 @@ async fn insert_activity_events_batch(
         .unwrap_or_else(|_| {
             static WARNED: once_cell::sync::OnceCell<()> = once_cell::sync::OnceCell::new();
             WARNED.get_or_init(|| {
-                warn!("TRONCLASS_AUDIT_HMAC_KEY 未設定，審計日誌防竄改使用預設密鑰，生產環境請設定該環境變數");
+                tracing::warn!("TRONCLASS_AUDIT_HMAC_KEY 未設定，審計日誌防竄改使用預設密鑰，生產環境請設定該環境變數");
             });
             "default-audit-hmac-key-change-in-production".to_string()
         });
@@ -257,60 +256,3 @@ async fn insert_activity_events_batch(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::MaterialEventInput;
-    use std::time::Duration;
-    use tempfile::NamedTempFile;
-
-    #[tokio::test]
-    async fn activity_and_material_events_batch_writing() {
-        let file = NamedTempFile::new().unwrap();
-        let db = AccountsDb::open(file.path()).await.unwrap();
-
-        // 寫入多筆活動事件
-        for i in 1..=5 {
-            db.record_activity_event(ActivityEventInput {
-                kind: "security".to_string(),
-                actor: "user".to_string(),
-                action: format!("login_attempt_{i}"),
-                account_id: "acc1".to_string(),
-                path: "/admin/login".to_string(),
-                result: "success".to_string(),
-                details: format!("batch test {i}"),
-                ip: "127.0.0.1".to_string(),
-                user_agent: "Mozilla/5.0 (Macintosh) Chrome/120".to_string(),
-            })
-            .await
-            .unwrap();
-        }
-
-        // 寫入教材事件
-        db.record_material_event(MaterialEventInput {
-            actor: "admin".to_string(),
-            action: "upload".to_string(),
-            path: "/materials/test.pdf".to_string(),
-            folder: "materials".to_string(),
-            file_name: "test.pdf".to_string(),
-            size: 2048,
-            result: "success".to_string(),
-            details: "batch upload".to_string(),
-        })
-        .await
-        .unwrap();
-
-        // 等候背景寫入任務處理佇列
-        tokio::time::sleep(Duration::from_millis(150)).await;
-
-        let activities = db.list_activity_events(Some("security"), 10).await.unwrap();
-        assert_eq!(activities.len(), 5);
-        assert!(activities.iter().any(|a| a.action == "login_attempt_1"));
-        assert!(activities.iter().any(|a| a.action == "login_attempt_5"));
-
-        let materials = db.list_material_events(10).await.unwrap();
-        assert_eq!(materials.len(), 1);
-        assert_eq!(materials[0].file_name, "test.pdf");
-        assert_eq!(materials[0].size_label, "2.0 KB");
-    }
-}

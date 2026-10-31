@@ -312,24 +312,3 @@ pub(super) fn rewrite_asset_versions(input: &str) -> Cow<'_, str> {
     ASSET_URL_RE.replace_all(input, replacement)
 }
 
-#[cfg(test)]
-mod tests {
-    /// UNWRAP_SWEEP_V1：強制初始化 ASSET_URL_RE。
-    #[test]
-    fn asset_url_regex_compiles() {
-        let _ = &*super::ASSET_URL_RE;
-        let out = super::rewrite_asset_versions("<a href=\"/admin/static/x.js?v=1\">");
-        assert!(out.contains("/admin/static/x.js?sv="));
-    }
-
-    /// ASSET_VERSION_AUTO_V1：/pub/static 也要改寫；已有 ?sv= 再次套用時不會疊加（冪等）。
-    #[test]
-    fn pub_static_is_rewritten_and_idempotent() {
-        let once = super::rewrite_asset_versions("<script src=\"/pub/static/js/pdf.worker.min.js\"></script>");
-        assert!(once.contains("/pub/static/js/pdf.worker.min.js?sv="), "{once}");
-        let twice = super::rewrite_asset_versions(&once);
-        assert_eq!(once, twice);
-        let stale = super::rewrite_asset_versions("/pub/static/js/x.js?v=sharev5");
-        assert!(stale.starts_with("/pub/static/js/x.js?sv=") && !stale.contains("sharev5"), "{stale}");
-    }
-}

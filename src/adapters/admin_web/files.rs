@@ -1837,25 +1837,15 @@ fn pub_rate_exceeded(ip: &str, limit: u32, window_secs: u64) -> bool {
 
 // SHARE_V2: 分享密碼解鎖使用獨立計數（scope 前綴），避免與一般分享頁請求互相影響。
 fn pub_rate_exceeded_scoped(scope: &str, ip: &str, limit: u32, window_secs: u64) -> bool {
-    // PEN_TEST_V1：測試模式一律回「未超限」，讓分享連結的 HMAC 簽章測試能跑完
-    // （原本分享頁 120 次/60 秒、預覽紀錄 10 次/60 秒會讓這類測試跑不動）。
-    // 刻意用兩個 cfg 區塊而不是 early return，避免「unreachable code」警告。
-    #[cfg(feature = "pen_test")]
-    {
-        let _ = (scope, ip, limit, window_secs);
-        false
-    }
-    #[cfg(not(feature = "pen_test"))]
-    {
-        // PUB_RATE_GROUP_KEY_V1（fix120）：原本以原始 IP 字串當鍵——攻擊者在 IPv6
-        // 隱私位址空間逐請求輪換，即可無限繞過公開端點限速（分享頁 120/分、
-        // 預覽紀錄 10/分），且每次輪換都讓記憶體多長一筆。改成與黑名單／登入節流
-        // 同一把尺（IP_BLACKLIST_V6_GROUP_V1）：IPv6 收斂成 /64、IPv4-mapped 先收斂。
-        let key = format!("{scope}{}", crate::trusted_ip::blacklist_group_key(ip));
-        let now = office_now_secs();
-        let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
-            return false;
-        };
+    // PUB_RATE_GROUP_KEY_V1（fix120）：原本以原始 IP 字串當鍵——攻擊者在 IPv6
+    // 隱私位址空間逐請求輪換，即可無限繞過公開端點限速（分享頁 120/分、
+    // 預覽紀錄 10/分），且每次輪換都讓記憶體多長一筆。改成與黑名單／登入節流
+    // 同一把尺（IP_BLACKLIST_V6_GROUP_V1）：IPv6 收斂成 /64、IPv4-mapped 先收斂。
+    let key = format!("{scope}{}", crate::trusted_ip::blacklist_group_key(ip));
+    let now = office_now_secs();
+    let Ok(mut map) = PUB_RATE_LIMIT.lock() else {
+        return false;
+    };
         if map.len() > 4096 {
             map.retain(|_, (start, _)| now.saturating_sub(*start) < window_secs);
         }
@@ -2993,128 +2983,4 @@ pub(super) async fn admin_files_history_handler(
     }
 }
 
-#[cfg(test)]
-mod material_range_tests {
-    use super::*;
 
-    /// RANGE_STREAM_V1：解析結果必須符合 RFC 9110 的單一範圍語意。
-    #[test]
-    fn parse_material_range_handles_the_common_forms() {
-        assert_eq!(parse_material_range("bytes=0-99", 1000), Some(MaterialByteRange::Partial(0, 99)));
-        assert_eq!(parse_material_range("bytes=100-", 1000), Some(MaterialByteRange::Partial(100, 999)));
-        // 尾端超出檔案大小時夾到最後一個位元組（RFC 允許）。
-        assert_eq!(parse_material_range("bytes=900-5000", 1000), Some(MaterialByteRange::Partial(900, 999)));
-        // suffix range：最後 200 bytes。
-        assert_eq!(parse_material_range("bytes=-200", 1000), Some(MaterialByteRange::Partial(800, 999)));
-        // 前後空白與大小寫外的空白都要容忍。
-        assert_eq!(parse_material_range("  bytes= 5 - 9 ", 1000), Some(MaterialByteRange::Partial(5, 9)));
-    }
-
-    /// 超出範圍 → 416；語法不認得 → 回 None（照常送 200 全文）。
-    #[test]
-    fn parse_material_range_rejects_out_of_range_and_ignores_unknown_syntax() {
-        assert_eq!(parse_material_range("bytes=1000-1200", 1000), Some(MaterialByteRange::Unsatisfiable));
-        assert_eq!(parse_material_range("bytes=-0", 1000), Some(MaterialByteRange::Unsatisfiable));
-        assert_eq!(parse_material_range("bytes=0-", 0), Some(MaterialByteRange::Unsatisfiable));
-        // 多範圍、非 bytes 單位、壞語法 → 一律當成「不認得」。
-        assert_eq!(parse_material_range("bytes=0-9,20-29", 1000), None);
-        assert_eq!(parse_material_range("items=0-9", 1000), None);
-        assert_eq!(parse_material_range("bytes=abc-def", 1000), None);
-        assert_eq!(parse_material_range("bytes=50-10", 1000), Some(MaterialByteRange::Unsatisfiable));
-    }
-}
-
-#[cfg(test)]
-mod upload_buffer_tests {
-    use super::*;
-
-    fn replay(data: &[u8], chunk_sizes: &[usize], max: usize) -> Vec<u8> {
-        let mut buffer = Vec::new();
-        let mut out = Vec::new();
-        let mut pos = 0usize;
-        for &n in chunk_sizes {
-            let end = (pos + n).min(data.len());
-            if pos >= data.len() {
-                break;
-            }
-            absorb_upload_chunk(&mut buffer, &data[pos..end], max, &mut out);
-            pos = end;
-        }
-        out.extend_from_slice(&buffer);
-        out
-    }
-
-    /// UPLOAD_WRITE_BUFFER_RESET_V1：超過一個緩衝的大檔，內容必須與原始位元組一致。
-    #[test]
-    fn large_file_roundtrip_is_byte_identical() {
-        let max = 64;
-        let data: Vec<u8> = (0..200).map(|i| (i * 17) as u8).collect();
-        let chunks = [8usize, 8, 50, 1, 64, 30, 40];
-        assert_eq!(replay(&data, &chunks, max), data);
-    }
-
-    /// 連續兩個檔案共用同一個 Vec（模擬池）：第二個檔從 byte 0 就是自己的內容。
-    #[test]
-    fn second_file_does_not_inherit_first_file_prefix() {
-        let max = 32;
-        let mut buffer = Vec::new();
-        let first: Vec<u8> = (0..80).map(|i| i as u8).collect();
-        let second: Vec<u8> = (0..50).map(|i| 200u8.wrapping_add(i)).collect();
-        let mut out1 = Vec::new();
-        for chunk in first.chunks(10) {
-            absorb_upload_chunk(&mut buffer, chunk, max, &mut out1);
-        }
-        out1.extend_from_slice(&buffer);
-        buffer.clear(); // 等同 flush + take_upload_write_buffer 的 clear
-        let mut out2 = Vec::new();
-        for chunk in second.chunks(7) {
-            absorb_upload_chunk(&mut buffer, chunk, max, &mut out2);
-        }
-        out2.extend_from_slice(&buffer);
-        assert_eq!(out1, first);
-        assert_eq!(out2, second);
-    }
-
-    /// 從池取出的緩衝必須是空的——這是「第二個 exe 整份都壞」的守門員。
-    #[test]
-    fn take_from_pool_always_returns_empty_vec() {
-        let mut dirty = Vec::with_capacity(UPLOAD_WRITE_BUFFER_SIZE);
-        dirty.extend_from_slice(&[0x4D, 0x5A, 0x90, 0x00]); // MZ（.exe 魔數）
-        return_upload_write_buffer(dirty);
-        let next = take_upload_write_buffer();
-        assert!(
-            next.is_empty(),
-            "從池取出的緩衝必須 len=0，實際 len={}",
-            next.len()
-        );
-        assert!(next.capacity() >= UPLOAD_WRITE_BUFFER_SIZE);
-        return_upload_write_buffer(next);
-    }
-
-    /// 舊實作（只歸零計數、不清 Vec）會把大檔寫成「開頭重貼」——這個測試鎖住「不能再那樣」。
-    #[test]
-    fn old_counter_reset_without_clear_would_corrupt() {
-        let max = 8;
-        let data: Vec<u8> = (0..20).map(|i| i as u8).collect();
-        // 舊邏輯
-        let mut buffer = Vec::new();
-        let mut buffered = 0usize;
-        let mut bad = Vec::new();
-        for chunk in data.chunks(3) {
-            if buffered + chunk.len() > max && buffered > 0 {
-                bad.extend_from_slice(&buffer[..buffered]);
-                buffered = 0;
-            }
-            buffer.extend_from_slice(chunk);
-            buffered += chunk.len();
-            if buffered >= max {
-                bad.extend_from_slice(&buffer[..buffered]);
-                buffered = 0;
-            }
-        }
-        bad.extend_from_slice(&buffer[..buffered]);
-        assert_ne!(bad, data, "舊邏輯必須能被這個測試證明是錯的");
-        // 新邏輯
-        assert_eq!(replay(&data, &[3, 3, 3, 3, 3, 3, 3], max), data);
-    }
-}

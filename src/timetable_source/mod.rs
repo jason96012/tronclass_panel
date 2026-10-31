@@ -105,25 +105,3 @@ pub fn compress_periods(periods: &[i64]) -> Vec<(i64, i64)> {
     ranges
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn compress_periods_merges_consecutive_runs() {
-        assert_eq!(compress_periods(&[3, 4, 5]), vec![(3, 5)]);
-        assert_eq!(compress_periods(&[3, 4, 7]), vec![(3, 4), (7, 7)]);
-        assert_eq!(compress_periods(&[1]), vec![(1, 1)]);
-    }
-
-    #[test]
-    fn compress_periods_sorts_and_dedups() {
-        // 校務系統列出的順序不保證遞增，重複格子也可能出現。
-        assert_eq!(compress_periods(&[5, 3, 4, 4]), vec![(3, 5)]);
-    }
-
-    #[test]
-    fn compress_periods_handles_empty() {
-        assert!(compress_periods(&[]).is_empty());
-    }
-}

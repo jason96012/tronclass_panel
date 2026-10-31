@@ -985,13 +985,6 @@ pub(super) async fn handle_admin_account_action(
                     Some(value) => Some(value),
                     None => current.semester_override.clone(),
                 },
-                // PEN_TEST_V1：None＝不變、Some(清單)＝整份覆蓋（空清單＝清空）。
-                // 用「整份覆蓋」而不是增減項目，面板端就不用處理增量合併的競態，
-                // 也不會出現「刪不掉」的項目。
-                pen_test_whitelist: action
-                    .pen_test_whitelist
-                    .clone()
-                    .unwrap_or(current.pen_test_whitelist),
             };
             /* PERSISTED_RUNTIME_SETTINGS_V1（fix104）：設定會寫進 config/runtime_settings.json，
                所以這裡要處理「寫檔失敗」：記憶體已經生效，但面板必須講清楚它撐不過重啟。 */

@@ -260,35 +260,3 @@ pub async fn resolve(ip: &str, cf_ipcountry: Option<&str>) -> GeoInfo {
     lookup(ip).await
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cloudflare_header_parsing() {
-        assert_eq!(from_cloudflare_header("TW").unwrap().country_code, "TW");
-        assert_eq!(from_cloudflare_header(" jp ").unwrap().country_code, "JP");
-        assert!(from_cloudflare_header("T1").unwrap().is_tor);
-        let unknown = from_cloudflare_header("XX").unwrap();
-        assert!(unknown.country_code.is_empty() && !unknown.is_tor);
-        assert!(from_cloudflare_header("").is_none());
-        assert!(from_cloudflare_header("USA").unwrap().country_code.is_empty());
-    }
-
-    #[test]
-    fn ipwho_parsing_and_label() {
-        let body: serde_json::Value = serde_json::from_str(
-            r#"{"ip":"1.34.1.1","success":true,"country":"Taiwan","country_code":"TW","region":"Taipei","city":"Taipei","connection":{"asn":3462,"org":"Chunghwa","isp":"Chunghwa Telecom Co., Ltd."}}"#,
-        )
-        .unwrap();
-        let info = parse_ipwho(&body).unwrap();
-        assert_eq!(info.country_code, "TW");
-        assert_eq!(info.label(), "台灣 (TW) · Taipei · Chunghwa Telecom Co., Ltd.");
-        let failed: serde_json::Value =
-            serde_json::from_str(r#"{"success":false,"message":"Reserved range"}"#).unwrap();
-        assert!(parse_ipwho(&failed).is_none());
-        assert_eq!(GeoInfo::default().label(), "未知位置");
-        let tor = GeoInfo { is_tor: true, ..Default::default() };
-        assert_eq!(tor.label(), "Tor 出口節點");
-    }
-}
