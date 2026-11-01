@@ -773,14 +773,16 @@ oc_install() {
       rm -rf "$tmp_dir"
       [[ -x "$OC_BIN" ]] && return 0
     else
-      echo "[opencode] 安裝腳本執行失敗，查看 $install_log"
+      echo "[opencode] 安裝腳本執行失敗，日誌保留在 $install_log"
+      echo "[opencode] 最後 20 行："
+      tail -20 "$install_log" 2>/dev/null || true
     fi
   else
     echo "[opencode] 下載安裝腳本失敗"
   fi
   
-  rm -rf "$tmp_dir"
-  echo "[opencode] 安裝失敗"
+  # 失敗時保留 tmp_dir 供除錯，成功才清理
+  echo "[opencode] 安裝失敗（臨時檔案保留在 $tmp_dir）"
   return 1
 }
 
