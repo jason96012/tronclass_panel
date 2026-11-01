@@ -37,6 +37,17 @@ if [[ "${RUN_MODE:-}" == "test" ]]; then
   exit 0
 fi
 
+# ─── OPENCODE_PROBE_V1：驗證 opencode binary 能在容器跑 ───────────────────
+# 用法：面板 Startup 改為 `RUN_MODE=opencode-probe ./ptero-start.sh`，Restart，看 console。
+# 印出版本號 → 繼續；失敗 → 容器 glibc 不相容，無法進行。
+if [[ "${RUN_MODE:-}" == "opencode-probe" ]]; then
+  echo "[ptero-start] opencode probe：安裝並驗證 binary"
+  curl -fsSL https://opencode.ai/install | bash || { echo "[ptero-start] opencode 安裝失敗"; exit 1; }
+  "$HOME/.opencode/bin/opencode" --version || { echo "[ptero-start] binary 無法執行（glibc/image 不相容）"; exit 1; }
+  echo "[ptero-start] opencode OK"
+  exit 0
+fi
+
 # ─── 正式建置：預設不帶任何 feature，防護一律啟動 ────────────────────────
 # 預設直接 `cargo build --release --no-default-features`，所有登入防護、
 # IP 黑名單、速率限制、帳號鎖定、密碼變更限流、WAF 自動封鎖一律啟動。
@@ -236,6 +247,24 @@ start_tunnel() {
   if [[ ! -x ./cloudflared ]]; then
     echo "[ptero-start] 無法下載 cloudflared，Tunnel 沒啟動"
     return 0
+  fi
+
+  # ── OPENCODE_JAIL_V1：proot 靜態 binary 下載與 ptrace 驗證 ───────────────
+  if [[ ! -x ./proot ]]; then
+    echo "[ptero-start] 下載 proot..."
+    dl "https://proot.gitlab.io/proot/bin/proot" ./proot && chmod +x ./proot || true
+  fi
+  if [[ -x ./proot ]]; then
+    if ./proot -r / -b /proc -b /sys -b /dev -w / true 2>/dev/null; then
+      echo "[opencode] proot ptrace 可用，啟用硬隔離"
+      OC_USE_PROOT=1
+    else
+      echo "[opencode] proot 不可用（ptrace 被擋），退回權限策略"
+      OC_USE_PROOT=0
+    fi
+  else
+    echo "[opencode] proot 下載失敗，退回權限策略"
+    OC_USE_PROOT=0
   fi
 
   echo "[ptero-start] 啟動 Cloudflare Tunnel"
@@ -712,6 +741,17 @@ start_filebrowser
 STOCKGENIE_PORT="${STOCKGENIE_PORT:-18765}"
 STOCKGENIE_DIR="src/adapters/admin_web/stockgenie"
 
+# ── OPENCODE_SIDECAR_V1：opencode AI coding agent sidecar ──────────────────
+# 僅在管理員允許的帳號可存取，透過面板 /admin/api/ai/opencode/* 代理。
+# 沙箱目錄置於 src/ 之外（opencode-workspace/），不觸發熱重編。
+# proot 硬隔離為首選（ptrace），不可用時退回權限策略。
+OPENCODE_ENABLE="${OPENCODE_ENABLE:-1}"
+OPENCODE_PORT="${OPENCODE_PORT:-4097}"
+OC_BIN="$HOME/.opencode/bin/opencode"
+OC_DIR="$PWD/opencode-workspace"
+OC_LOG="$PWD/logs/opencode.log"
+OC_PASS_FILE="$PWD/config/opencode-server.txt"
+
 start_stockgenie() {
   if [[ "${STOCKGENIE_ENABLE:-1}" != "1" ]]; then
     echo "[ptero-start] 智選 sidecar 已關閉（STOCKGENIE_ENABLE=0）"
@@ -778,12 +818,106 @@ start_stockgenie() {
   disown || true
 }
 
+# ── OPENCODE_SIDECAR_V1：opencode 安裝與配置函式 ──────────────────────────
+oc_install() {
+  [[ -x "$OC_BIN" ]] && return 0
+  echo "[opencode] 安裝 opencode V1"
+  curl -fsSL https://opencode.ai/install | bash || return 1
+  [[ -x "$OC_BIN" ]]
+}
+
+oc_ensure_config() {
+  mkdir -p "$OC_DIR"
+  [[ -f "$OC_PASS_FILE" ]] || { umask 077; openssl rand -hex 24 > "$OC_PASS_FILE"; }
+  chmod 600 "$OC_PASS_FILE" 2>/dev/null || true
+  cat > "$OC_DIR/opencode.json" <<'JSON'
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "lsp": false,
+  "snapshot": false,
+  "enabled_providers": ["nvidia"],
+  "model": "nvidia/nemotron-3-super-120b-a12b",
+  "instructions": ["AGENTS.md"],
+  "permission": {
+    "webfetch": "deny",
+    "websearch": "deny",
+    "external_directory": { "*": "deny" },
+    "bash": { "*": "allow", "*/home/container/config*": "deny", "*/home/container/logs*": "deny", "*/home/container/src*": "deny" }
+  },
+  "provider": {
+    "nvidia": {
+      "options": {
+        "baseURL": "https://integrate.api.nvidia.com/v1",
+        "apiKey": "{file:./nvidia.key}"
+      }
+    }
+  }
+}
+JSON
+  [[ -f "$OC_DIR/nvidia.key" ]] || { umask 077; : > "$OC_DIR/nvidia.key"; }
+  [[ -f "$OC_DIR/AGENTS.md" ]] || cat > "$OC_DIR/AGENTS.md" <<'MD'
+# Sandbox rules
+You are confined to this workspace directory. Never read, write, or list anything
+outside it. Do not attempt to access /home/container/config, /home/container/src,
+or any system path.
+MD
+}
+
+start_opencode() {
+  [[ "$OPENCODE_ENABLE" == "1" ]] || return 0
+  mkdir -p logs
+  if curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
+       "http://127.0.0.1:${OPENCODE_PORT}/global/health" 2>/dev/null | grep -q 200; then
+    echo "[opencode] sidecar 已在 127.0.0.1:${OPENCODE_PORT}"; return 0
+  fi
+  oc_install || { echo "[opencode] 安裝失敗，略過"; return 0; }
+  oc_ensure_config
+  local pw; pw="$(tr -d '\r\n' < "$OC_PASS_FILE")"
+  echo "[opencode] 啟動 sidecar 127.0.0.1:${OPENCODE_PORT}（sandbox: $OC_DIR）"
+  if [[ "$OC_USE_PROOT" == "1" ]]; then
+    nohup ./proot -r "$PWD/opencode-jail" \
+      -b /proc -b /sys -b /dev \
+      -b "$OC_DIR:/workspace" \
+      -b "$HOME/.opencode:$HOME/.opencode" \
+      -w /workspace \
+      env HOME=/workspace OPENCODE_SERVER_PASSWORD="$pw" OPENCODE_DISABLE_AUTOUPDATE=1 \
+      "$OC_BIN" serve --hostname 127.0.0.1 --port "$OPENCODE_PORT" \
+      >> "$OC_LOG" 2>&1 &
+  else
+    nohup env \
+      HOME="$HOME" \
+      OPENCODE_SERVER_PASSWORD="$pw" \
+      OPENCODE_DISABLE_AUTOUPDATE=1 \
+      OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
+      "$OC_BIN" serve --hostname 127.0.0.1 --port "$OPENCODE_PORT" \
+      >> "$OC_LOG" 2>&1 &
+  fi
+  echo $! > logs/opencode.pid
+  disown || true
+}
+
+# ── OPENCODE_JAIL_V1：proot 硬隔離建立 ────────────────────────────────────
+oc_ensure_jail() {
+  [[ "$OC_USE_PROOT" == "1" ]] || return 0
+  mkdir -p opencode-jail
+  for d in bin usr lib lib64 sbin etc; do [ -e "/$d" ] && ln -sfn "/$d" "opencode-jail/$d"; done
+  mkdir -p opencode-jail/workspace opencode-jail/tmp opencode-jail/home/container
+}
+
 # STOCKGENIE_BOOT_BG_V1：venv／sidecar 放到背景，不擋面板入口與點名。
 # 已有 run/stockgenie-venv 時 start_stockgenie 幾乎立刻結束；首次安裝才會下載。
 mkdir -p logs run
 echo "[ptero-start] 智選在背景啟動（venv 下載不擋面板）"
 start_stockgenie >> logs/stockgenie-boot.log 2>&1 &
 echo $! > logs/stockgenie-boot.pid
+
+# ── OPENCODE_SIDECAR_V1：proot 監獄建立與啟動 ──────────────────────────────
+oc_ensure_jail
+echo "[ptero-start] opencode 在背景啟動"
+start_opencode >> logs/opencode-boot.log 2>&1 &
+echo $! > logs/opencode-boot.pid
 
 # At-rest encryption master key for the accounts database. Encrypts upstream
 # passwords and session cookies with AES-256-GCM before storing them.
@@ -928,6 +1062,7 @@ watchdog_pid_alive() {
     *filebrowser-caddy.pid) expected='filebrowser|caddy' ;;
     *filebrowser-*.pid) expected='filebrowser' ;;
     *stockgenie.pid) expected='uvicorn|python|bootstrap.sh' ;;
+    *opencode.pid) expected='opencode' ;;
     *dashboard.pid) expected='tronclass_rollcall' ;;
     *) return 0 ;;
   esac
@@ -1096,6 +1231,19 @@ watchdog_start_stockgenie() {
   echo "[watchdog] 智選 sidecar 不存在，重新啟動（$(date -Iseconds)）" >> logs/stockgenie-watchdog.log
   start_stockgenie >> logs/stockgenie-boot.log 2>&1 &
   echo $! > logs/stockgenie-boot.pid
+}
+
+watchdog_start_opencode() {
+  [[ "${OPENCODE_ENABLE:-1}" == "1" ]] || return 0
+  if watchdog_pid_alive logs/opencode.pid; then return 0; fi
+  local now last=0; now="$(date +%s)"
+  last="$(cat logs/opencode-watchdog.last 2>/dev/null || echo 0)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  (( now - last < 30 )) && return 0
+  printf '%s\n' "$now" > logs/opencode-watchdog.last
+  echo "[watchdog] opencode sidecar 不存在，重新啟動" >> logs/opencode-watchdog.log
+  start_opencode >> logs/opencode-boot.log 2>&1 &
+  echo $! > logs/opencode-boot.pid
 }
 
 watchdog_restart_filebrowser() {
@@ -1276,6 +1424,7 @@ watchdog_loop() {
     rotate_logs
     watchdog_start_tunnel
     watchdog_start_stockgenie
+    watchdog_start_opencode
     # HIYORI_SHOP_V1：商店靜態站（26200）健康檢查，掛掉自動重啟
     if declare -F shop_static_watchdog >/dev/null 2>&1; then shop_static_watchdog; fi
     cargo_auto_update_if_due || true

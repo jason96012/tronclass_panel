@@ -1522,25 +1522,18 @@ pub async fn waf_firewall_middleware(
             .unwrap_or(false);
         if let Some(threat) = inspect_waf_body(&String::from_utf8_lossy(&bytes), is_form) {
             threat.record_telemetry();
-            // 只記錄命中的特徵字串，不記錄本體內容。
+            // WAF_BODY_NO_BAN_V1：本體是使用者輸入（程式碼、教材），誤判率高，
+            // 依原註解只回 403，不做永久封鎖（先前誤呼叫 ban_for_body_threat 會誤封 IP）。
             warn!(
                 ip = %ip,
                 path = %raw_path,
                 threat = %threat.description(),
-                "🛡️ [最高級 WAF 防火牆] 請求本體含攻擊特徵，已攔截並自動封鎖 IP"
+                "🛡️ [最高級 WAF 防火牆] 請求本體含攻擊特徵，已攔截（不封鎖）"
             );
-            ban_for_body_threat(
-                &state,
-                &ip,
-                threat.description(),
-                raw_path.clone(),
-                user_agent.clone(),
-            )
-            .await;
             return waf_forbidden_response(json!({
-                    "error": "waf_access_denied",
-                    "message": "WAF: 請求內容含攻擊特徵，已被攔截"
-                }));
+                "error": "waf_access_denied",
+                "message": "WAF: 請求內容含攻擊特徵，已被攔截"
+            }));
         }
         request = axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes));
     }

@@ -50,6 +50,7 @@ use crate::trusted_ip::ClientIp;
 
 mod actions;
 mod ai_chat;
+mod opencode;
 mod asset_versions;
 mod auth;
 mod blacklist;
@@ -3491,6 +3492,14 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route("/admin/api/ai/chat/stop", post(ai_chat::chat_stop_handler))
         .route("/admin/api/ai/threads", post(ai_chat::threads_handler))
+        // OPENCODE_INTEGRATION_V1：opencode AI coding agent sidecar
+        .route("/admin/api/ai/opencode/state", get(opencode::state_handler))
+        .route("/admin/api/ai/opencode/config", post(opencode::config_handler))
+        .route("/admin/api/ai/opencode/access", post(opencode::access_handler))
+        .route(
+            "/admin/api/ai/opencode/chat",
+            post(opencode::chat_handler).layer(DefaultBodyLimit::max(ADMIN_AI_CHAT_BODY_LIMIT)),
+        )
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))

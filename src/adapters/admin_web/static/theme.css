@@ -835,20 +835,26 @@ html.tron-auth-logged-out:has(#loginCard[data-animated-login-installed]){visibil
   #rollcallPendingFab{right:16px}
 }
 
-/* ACCOUNTS_DESKTOP_ACTIONS_V1：桌面版（≥821px）帳號操作鈕改成等寬網格，
-   不再因欄寬不足而參差換行、錯位。移除原本 max-width:1366px 限制，
-   讓大螢幕桌面也套用網格，確保按鈕能在一排完整顯示。 */
+/* ACCOUNTS_ACTIONS_SINGLE_ROW_V1：桌面版（≥821px）帳號操作鈕強制排成單一橫列。
+   先前用 grid auto-fill 會依欄寬自動換行（例如 檢查/重登/暫停/設為管理員/改密碼 一排、
+   設為檢視者/重製密碼 落第二排），看起來凌亂（2026-11-01 回報）。改成 flex nowrap，
+   並給操作欄足夠最小寬度容納最多 7 顆按鈕；視窗過窄時由 .table-wrap 橫向捲動。 */
 @media (min-width:821px){
-  /* 操作欄給足最小寬度，網格才不會被表格自動配寬壓成一欄（否則每顆按鈕一列）。 */
-  #accountsBody td:last-child{min-width:460px!important}
+  #accountsBody td:last-child{min-width:520px!important}
   #accountsBody .actions-cell{
-    display:grid!important;
-    grid-template-columns:repeat(auto-fill,minmax(96px,1fr))!important;
+    display:flex!important;
+    flex-wrap:nowrap!important;
+    align-items:center!important;
+    justify-content:flex-end!important;
     gap:6px!important;
-    min-width:0;
   }
   #accountsBody .actions-cell button{
-    width:100%!important;min-width:0!important;min-height:40px!important;
-    padding:0 8px!important;font-size:13px!important;white-space:nowrap!important;
+    flex:0 0 auto!important;
+    width:auto!important;
+    min-width:0!important;
+    min-height:38px!important;
+    padding:0 12px!important;
+    font-size:13px!important;
+    white-space:nowrap!important;
   }
 }

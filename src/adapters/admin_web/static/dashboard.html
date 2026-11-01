@@ -1376,10 +1376,12 @@
   }
 
   /* --- 模擬點名測試卡片佈局：電腦版左右分欄，避免旁邊空著 --- */
+  /* MOCK_GRID_SIZING_V1：面板已改為橫跨整個 #view-rollcall（見 dashboard-late-fixes.css）。
+     內部分欄改為「表單欄固定窄、帳號清單欄吃掉剩餘寬度」，表單欄不再因等寬而留下大片空白。 */
   @media (min-width:821px){
     .mock-grid {
       display: grid;
-      grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
       gap: 16px;
       align-items: start;
     }

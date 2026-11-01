@@ -204,6 +204,10 @@ html body .animated-login-card-inner .animated-login-field > input{
 #view-rollcall .rc-stats{grid-area:stats;margin:0}
 #view-rollcall .rc-detected{grid-area:detected;margin:0}
 #view-rollcall .rc-results{grid-area:results;margin:0}
+/* MOCK_PANEL_FULLWIDTH_V1：模擬點名測試面板（mock-rollcall.js 動態 append）是
+ * #view-rollcall 這個 CSS grid 的直接子元素，先前沒有指定 grid-area，被自動排到
+ * 左欄、右半邊整片空白（2026-11-01 回報）。讓它橫跨整個 grid（1 / -1）佔滿寬度。 */
+#view-rollcall .mock-panel{grid-column:1 / -1;margin-top:0}
 @media(max-width:900px){
   #view-rollcall.active{
     grid-template-columns:1fr;
