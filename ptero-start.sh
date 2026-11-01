@@ -735,12 +735,6 @@ start_filebrowser() {
 
 start_filebrowser
 
-# STOCKGENIE_BOOT_V1：容器／主機一啟動就拉起智選 sidecar（只聽 127.0.0.1:18765）。
-# 面板經 /admin/stock-api 反代；絕不開 0.0.0.0、不佔頂層 /api（那是 iClass）。
-# 失敗只記 log，不擋點名／Dashboard。STOCKGENIE_ENABLE=0 可關。
-STOCKGENIE_PORT="${STOCKGENIE_PORT:-18765}"
-STOCKGENIE_DIR="src/adapters/admin_web/stockgenie"
-
 # ── OPENCODE_SIDECAR_V1：opencode AI coding agent sidecar ──────────────────
 # 僅在管理員允許的帳號可存取，透過面板 /admin/api/ai/opencode/* 代理。
 # 沙箱目錄置於 src/ 之外（opencode-workspace/），不觸發熱重編。
@@ -751,72 +745,6 @@ OC_BIN="$HOME/.opencode/bin/opencode"
 OC_DIR="$PWD/opencode-workspace"
 OC_LOG="$PWD/logs/opencode.log"
 OC_PASS_FILE="$PWD/config/opencode-server.txt"
-
-start_stockgenie() {
-  if [[ "${STOCKGENIE_ENABLE:-1}" != "1" ]]; then
-    echo "[ptero-start] 智選 sidecar 已關閉（STOCKGENIE_ENABLE=0）"
-    return 0
-  fi
-  if [[ ! -f "$STOCKGENIE_DIR/app.py" ]]; then
-    echo "[ptero-start] 找不到 $STOCKGENIE_DIR/app.py，略過智選"
-    return 0
-  fi
-  mkdir -p logs run
-  # bootstrap.sh 自己判斷：完整就瞬間結束；缺套件才 pip；缺 python 才下載。
-  # STOCKGENIE_PYTHON_BOOTSTRAP_V1／SKIP_IF_PRESENT／PIECEWISE。失敗不擋點名。
-  if ! bash "$STOCKGENIE_DIR/bootstrap.sh" >> logs/stockgenie-bootstrap.log 2>&1; then
-    echo "[ptero-start] 智選 Python 環境安裝失敗（詳見 logs/stockgenie-bootstrap.log）；面板其餘功能不受影響"
-    return 0
-  fi
-  local py=""
-  if [[ -x run/stockgenie-venv/bin/python ]]; then
-    py="$PWD/run/stockgenie-venv/bin/python"
-  elif [[ -x run/stockgenie-venv/bin/python3 ]]; then
-    py="$PWD/run/stockgenie-venv/bin/python3"
-  else
-    py="$(tr -d '\r\n' < run/stockgenie-python-bin.txt 2>/dev/null || true)"
-  fi
-  if [[ ! -x "$py" ]]; then
-    echo "[ptero-start] 智選 python 仍不存在，略過"
-    return 0
-  fi
-  mkdir -p logs
-  local code="000"
-  if command -v curl >/dev/null 2>&1; then
-    code="$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${STOCKGENIE_PORT}/api/health" 2>/dev/null || echo 000)"
-  fi
-  if [[ "$code" == "200" || "$code" == "202" ]]; then
-    echo "[ptero-start] 智選 sidecar 已在 127.0.0.1:${STOCKGENIE_PORT}"
-    return 0
-  fi
-  if [[ -s logs/stockgenie.pid ]]; then
-    local pid
-    pid="$(cat logs/stockgenie.pid 2>/dev/null || true)"
-    if [[ "$pid" =~ ^[0-9]+$ ]]; then
-      kill "$pid" 2>/dev/null || true
-      sleep 0.3
-      kill -9 "$pid" 2>/dev/null || true
-    fi
-    rm -f logs/stockgenie.pid
-  fi
-  echo "[ptero-start] 啟動智選 sidecar（127.0.0.1:${STOCKGENIE_PORT}）"
-  local sg_root sg_log sg_cache
-  sg_root="$PWD/$STOCKGENIE_DIR"
-  sg_log="$PWD/logs/stockgenie.log"
-  sg_cache="$PWD/run/stockgenie-cache"
-  mkdir -p "$sg_cache"
-  # nohup + disown：熱重編只殺 Rust binary，智選繼續跑。
-  # $4＝可寫 cache（不可用內層 $PWD，cd 進 src 後會指到唯讀目錄）。
-  nohup bash -c '
-    cd "$1" || exit 1
-    exec env PYTHONUNBUFFERED=1 STOCKGENIE_EMBED=1 PYTHONNOUSERSITE=1 \
-      DD_TRACE_ENABLED=0 DD_PROFILING_ENABLED=0 STOCKGENIE_CACHE="$4" \
-      "$2" -m uvicorn app:app \
-      --host 127.0.0.1 --port "$3" --log-level warning
-  ' bash "$sg_root" "$py" "$STOCKGENIE_PORT" "$sg_cache" >> "$sg_log" 2>&1 &
-  echo $! > logs/stockgenie.pid
-  disown || true
-}
 
 # ── OPENCODE_SIDECAR_V1：opencode 安裝與配置函式 ──────────────────────────
 oc_install() {
@@ -905,13 +833,6 @@ oc_ensure_jail() {
   for d in bin usr lib lib64 sbin etc; do [ -e "/$d" ] && ln -sfn "/$d" "opencode-jail/$d"; done
   mkdir -p opencode-jail/workspace opencode-jail/tmp opencode-jail/home/container
 }
-
-# STOCKGENIE_BOOT_BG_V1：venv／sidecar 放到背景，不擋面板入口與點名。
-# 已有 run/stockgenie-venv 時 start_stockgenie 幾乎立刻結束；首次安裝才會下載。
-mkdir -p logs run
-echo "[ptero-start] 智選在背景啟動（venv 下載不擋面板）"
-start_stockgenie >> logs/stockgenie-boot.log 2>&1 &
-echo $! > logs/stockgenie-boot.pid
 
 # ── OPENCODE_SIDECAR_V1：proot 監獄建立與啟動 ──────────────────────────────
 oc_ensure_jail
@@ -1061,7 +982,6 @@ watchdog_pid_alive() {
     *cloudflared.pid) expected='cloudflared' ;;
     *filebrowser-caddy.pid) expected='filebrowser|caddy' ;;
     *filebrowser-*.pid) expected='filebrowser' ;;
-    *stockgenie.pid) expected='uvicorn|python|bootstrap.sh' ;;
     *opencode.pid) expected='opencode' ;;
     *dashboard.pid) expected='tronclass_rollcall' ;;
     *) return 0 ;;
@@ -1203,36 +1123,6 @@ watchdog_start_tunnel() {
   fi
 }
 
-watchdog_start_stockgenie() {
-  [[ "${STOCKGENIE_ENABLE:-1}" == "1" ]] || return 0
-  [[ -f src/adapters/admin_web/stockgenie/app.py ]] || return 0
-  if watchdog_pid_alive logs/stockgenie.pid; then
-    return 0
-  fi
-  # 首次 venv 安裝中：不要再同步跑一次 bootstrap，以免看門狗卡住數分鐘。
-  if [[ -d run/stockgenie-bootstrap.lock ]]; then
-    return 0
-  fi
-  if [[ -s logs/stockgenie-boot.pid ]]; then
-    local boot_pid
-    boot_pid="$(cat logs/stockgenie-boot.pid 2>/dev/null || true)"
-    if [[ "$boot_pid" =~ ^[0-9]+$ ]] && kill -0 "$boot_pid" 2>/dev/null; then
-      return 0
-    fi
-  fi
-  local now last=0
-  now="$(date +%s)"
-  last="$(cat logs/stockgenie-watchdog.last 2>/dev/null || echo 0)"
-  [[ "$last" =~ ^[0-9]+$ ]] || last=0
-  if (( now - last < ${STOCKGENIE_RESTART_BACKOFF_SECS:-30} )); then
-    return 0
-  fi
-  printf '%s\n' "$now" > logs/stockgenie-watchdog.last
-  echo "[watchdog] 智選 sidecar 不存在，重新啟動（$(date -Iseconds)）" >> logs/stockgenie-watchdog.log
-  start_stockgenie >> logs/stockgenie-boot.log 2>&1 &
-  echo $! > logs/stockgenie-boot.pid
-}
-
 watchdog_start_opencode() {
   [[ "${OPENCODE_ENABLE:-1}" == "1" ]] || return 0
   if watchdog_pid_alive logs/opencode.pid; then return 0; fi
@@ -1273,10 +1163,7 @@ watchdog_check_filebrowser() {
 # 因此改比對「內容 hash」：任何 .rs / static / Cargo 檔的內容或增刪都會被偵測。
 src_hash() {
   local h
-  # STOCKGENIE_SRC_HASH_SKIP_V1：智選 Python／HTML 從磁碟讀、不編進 binary。
-  # 只換 stockgenie 時不要觸發 cargo（否則每次 overlay zip 都要等數分鐘才能進面板）。
   h="$(find src Cargo.toml Cargo.lock -type f \
-        ! -path 'src/adapters/admin_web/stockgenie/*' \
         -print0 2>/dev/null \
         | xargs -0 sha256sum 2>/dev/null \
         | sort \
@@ -1423,7 +1310,6 @@ watchdog_loop() {
     # 就 copytruncate 輪替，最多保留 LOG_ROTATE_KEEP（預設 5）份 → 每個 log 上限約 60 MB。
     rotate_logs
     watchdog_start_tunnel
-    watchdog_start_stockgenie
     watchdog_start_opencode
     # HIYORI_SHOP_V1：商店靜態站（26200）健康檢查，掛掉自動重啟
     if declare -F shop_static_watchdog >/dev/null 2>&1; then shop_static_watchdog; fi
