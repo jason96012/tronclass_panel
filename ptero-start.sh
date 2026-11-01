@@ -763,13 +763,20 @@ oc_install() {
   local tmp_dir="$PWD/.opencode-install-tmp"
   mkdir -p "$tmp_dir"
   local install_sh="$tmp_dir/install.sh"
+  local install_log="$tmp_dir/install.log"
   
+  # 下載安裝腳本（靜默模式）
   if curl -fsSL --retry 3 --retry-delay 2 -o "$install_sh" https://opencode.ai/install; then
     chmod +x "$install_sh"
-    if HOME="$HOME" "$install_sh"; then
+    # 執行安裝，將輸出重導向到日誌檔，避免管道/終端問題
+    if HOME="$HOME" "$install_sh" >>"$install_log" 2>&1; then
       rm -rf "$tmp_dir"
       [[ -x "$OC_BIN" ]] && return 0
+    else
+      echo "[opencode] 安裝腳本執行失敗，查看 $install_log"
     fi
+  else
+    echo "[opencode] 下載安裝腳本失敗"
   fi
   
   rm -rf "$tmp_dir"
