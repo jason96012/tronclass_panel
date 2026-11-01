@@ -749,7 +749,7 @@ OC_PASS_FILE="$PWD/config/opencode-server.txt"
 # ── OPENCODE_SIDECAR_V1：opencode 安裝與配置函式 ──────────────────────────
 oc_install() {
   [[ -x "$OC_BIN" ]] && return 0
-  echo "[opencode] 安裝 opencode V1"
+  echo "[opencode] 安裝 opencode V1（直接下載 binary）"
   
   # 檢查磁碟空間（至少需要 100MB）
   local avail_kb
@@ -759,29 +759,53 @@ oc_install() {
     return 1
   fi
   
-  # 使用專案目錄下載，避免 /tmp 空間問題
+  # 取得最新版本號
+  local version
+  version=$(curl -fsSL --max-time 10 "https://api.github.com/repos/anomalyco/opencode/releases/latest" 2>/dev/null | grep -o '"tag_name": *"v[^"]*"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')
+  [[ -n "$version" ]] || version="1.19.5"  # fallback
+  
+  # 下載 binary（linux x86_64 glibc）
+  local arch="x86_64"
+  local filename="opencode-${arch}-unknown-linux-gnu.tar.gz"
+  local url="https://github.com/anomalyco/opencode/releases/download/v${version}/${filename}"
+  
+  echo "[opencode] 下載 v${version} 從 ${url}"
+  
   local tmp_dir="$PWD/.opencode-install-tmp"
   mkdir -p "$tmp_dir"
-  local install_sh="$tmp_dir/install.sh"
-  local install_log="$tmp_dir/install.log"
+  local tar_path="$tmp_dir/${filename}"
   
-  # 下載安裝腳本（靜默模式）
-  if curl -fsSL --retry 3 --retry-delay 2 -o "$install_sh" https://opencode.ai/install; then
-    chmod +x "$install_sh"
-    # 執行安裝，將輸出重導向到日誌檔，避免管道/終端問題
-    if HOME="$HOME" "$install_sh" >>"$install_log" 2>&1; then
-      rm -rf "$tmp_dir"
-      [[ -x "$OC_BIN" ]] && return 0
+  if curl -fL --retry 3 --retry-delay 2 -o "$tar_path" "$url"; then
+    echo "[opencode] 解壓縮..."
+    if tar -xzf "$tar_path" -C "$tmp_dir" 2>/dev/null; then
+      # binary 通常在解壓後的根目錄或 opencode/ 目錄下
+      local bin_path
+      if [[ -x "$tmp_dir/opencode" ]]; then
+        bin_path="$tmp_dir/opencode"
+      elif [[ -x "$tmp_dir/opencode/opencode" ]]; then
+        bin_path="$tmp_dir/opencode/opencode"
+      else
+        bin_path=$(find "$tmp_dir" -name "opencode" -type f -executable 2>/dev/null | head -1)
+      fi
+      
+      if [[ -x "$bin_path" ]]; then
+        mkdir -p "$(dirname "$OC_BIN")"
+        cp "$bin_path" "$OC_BIN"
+        chmod +x "$OC_BIN"
+        rm -rf "$tmp_dir"
+        echo "[opencode] 安裝成功：$OC_BIN"
+        return 0
+      else
+        echo "[opencode] 找不到 binary，解壓內容："
+        find "$tmp_dir" -type f 2>/dev/null | head -20
+      fi
     else
-      echo "[opencode] 安裝腳本執行失敗，日誌保留在 $install_log"
-      echo "[opencode] 最後 20 行："
-      tail -20 "$install_log" 2>/dev/null || true
+      echo "[opencode] 解壓縮失敗"
     fi
   else
-    echo "[opencode] 下載安裝腳本失敗"
+    echo "[opencode] 下載失敗"
   fi
   
-  # 失敗時保留 tmp_dir 供除錯，成功才清理
   echo "[opencode] 安裝失敗（臨時檔案保留在 $tmp_dir）"
   return 1
 }
