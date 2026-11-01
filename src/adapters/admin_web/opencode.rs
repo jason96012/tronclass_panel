@@ -15,7 +15,7 @@ use axum::{
     response::IntoResponse,
     Json,
 };
-use base64::{engine::general_purpose::STANDARD as BASE64};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
