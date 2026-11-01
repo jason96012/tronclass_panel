@@ -764,9 +764,8 @@ oc_install() {
   version=$(curl -fsSL --max-time 10 "https://api.github.com/repos/anomalyco/opencode/releases/latest" 2>/dev/null | grep -o '"tag_name": *"v[^"]*"' | head -1 | sed 's/.*"v\([^"]*\)".*/\1/')
   [[ -n "$version" ]] || version="1.19.5"  # fallback
   
-  # 下載 binary（linux x86_64 glibc）
-  local arch="x86_64"
-  local filename="opencode-${arch}-unknown-linux-gnu.tar.gz"
+  # 下載 binary（linux x86_64 glibc，release asset 命名為 opencode-linux-x64.tar.gz）
+  local filename="opencode-linux-x64.tar.gz"
   local url="https://github.com/anomalyco/opencode/releases/download/v${version}/${filename}"
   
   echo "[opencode] 下載 v${version} 從 ${url}"
