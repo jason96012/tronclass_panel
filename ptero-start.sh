@@ -750,8 +750,31 @@ OC_PASS_FILE="$PWD/config/opencode-server.txt"
 oc_install() {
   [[ -x "$OC_BIN" ]] && return 0
   echo "[opencode] 安裝 opencode V1"
-  curl -fsSL https://opencode.ai/install | bash || return 1
-  [[ -x "$OC_BIN" ]]
+  
+  # 檢查磁碟空間（至少需要 100MB）
+  local avail_kb
+  avail_kb=$(df "$HOME" | awk 'NR==2 {print $4}')
+  if [[ "$avail_kb" -lt 102400 ]]; then
+    echo "[opencode] 磁碟空間不足（${avail_kb}KB < 100MB），略過安裝"
+    return 1
+  fi
+  
+  # 使用專案目錄下載，避免 /tmp 空間問題
+  local tmp_dir="$PWD/.opencode-install-tmp"
+  mkdir -p "$tmp_dir"
+  local install_sh="$tmp_dir/install.sh"
+  
+  if curl -fsSL --retry 3 --retry-delay 2 -o "$install_sh" https://opencode.ai/install; then
+    chmod +x "$install_sh"
+    if HOME="$HOME" "$install_sh"; then
+      rm -rf "$tmp_dir"
+      [[ -x "$OC_BIN" ]] && return 0
+    fi
+  fi
+  
+  rm -rf "$tmp_dir"
+  echo "[opencode] 安裝失敗"
+  return 1
 }
 
 oc_ensure_config() {
