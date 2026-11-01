@@ -50,7 +50,6 @@ use crate::trusted_ip::ClientIp;
 
 mod actions;
 mod ai_chat;
-mod opencode;
 mod asset_versions;
 mod auth;
 mod blacklist;
@@ -85,6 +84,17 @@ pub(crate) fn start_morning_digest(state: AdminWebState) {
 pub(crate) fn start_indexnow_auto_submit() {
     indexnow::start_auto_submit();
 }
+
+/// STOCKGENIE_BOOT_V1：面板 process 起來就接上（或補啟動）智選 sidecar。
+/// ptero-start 才是主機級監工；這裡只做 health 探測＋舊腳本 fallback，不擋點名。
+pub(crate) fn start_stockgenie_embed() {
+    tokio::spawn(async {
+        match stock::ensure_stock_sidecar().await {
+            Ok(()) => tracing::info!("stockgenie sidecar ready"),
+            Err(e) => tracing::warn!(error = %e, "stockgenie sidecar start failed"),
+        }
+    });
+}
 mod files;
 mod materials_import;
 mod homework;
@@ -108,6 +118,8 @@ mod status;
 // ROLLCALL_ATTENDANCE_V1（fix66）：點名出席統計與送出者查詢。
 mod rollcall_stats;
 mod credits;
+// STOCKGENIE_EMBED_V1：智選股 sidecar（/admin/stock + /admin/stock-api → 127.0.0.1:18765）。
+mod stock;
 // ACCOUNT_SUSPEND_V1：帳號暫時停權（管理頁＋API）。
 mod suspensions;
 mod timetable;
@@ -3479,14 +3491,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         )
         .route("/admin/api/ai/chat/stop", post(ai_chat::chat_stop_handler))
         .route("/admin/api/ai/threads", post(ai_chat::threads_handler))
-        // OPENCODE_INTEGRATION_V1：opencode AI coding agent sidecar
-        .route("/admin/api/ai/opencode/state", get(opencode::state_handler))
-        .route("/admin/api/ai/opencode/config", post(opencode::config_handler))
-        .route("/admin/api/ai/opencode/access", post(opencode::access_handler))
-        .route(
-            "/admin/api/ai/opencode/chat",
-            post(opencode::chat_handler).layer(DefaultBodyLimit::max(ADMIN_AI_CHAT_BODY_LIMIT)),
-        )
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))
@@ -3969,6 +3973,16 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .route(
             "/admin/credits",
             axum::routing::get(pages::admin_credits_page_handler),
+        )
+        // STOCKGENIE_EMBED_V1：智選頁與 JSON 代理。不掛頂層 /api（那是 iClass）。
+        .route(
+            "/admin/stock",
+            axum::routing::get(stock::admin_stock_page_handler),
+        )
+        .route(
+            "/admin/stock-api/{*path}",
+            axum::routing::any(stock::admin_stock_api_proxy)
+                .layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
         )
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         // ADMIN_GEO_RESTRICT_V1：刻意放在 IP 黑名單檢查「之內」（layer 疊加順序下，
@@ -4825,6 +4839,13 @@ fn same_origin_request(headers: &HeaderMap) -> bool {
 /// token = HMAC-SHA256(行程密鑰, account_id)——綁在帳號而非單一 access/refresh
 /// token 上，背景靜默刷新（`/admin/api/session/refresh` 換發新 access token）
 /// 不會讓頁面上已經嵌入的 `data-csrf` 失效，使用者不需要整頁重新整理。
+///
+/// 範圍刻意只到 `/admin/api/*`，不含 `/admin/stock-api/*`：StockGenie
+/// 側車（`stock.rs`）是獨立前端（`stockgenie/static/index.html`），刻意跳過
+/// `inject_theme`／`session-security.js` 等整套面板資產（見 `stock_page_html`
+/// 與 `STOCK_SECURITY_HEADERS_V1` 的說明），沒有管道能拿到 `data-csrf`；把它
+/// 一併納入會直接打斷現有功能。這段既有的 Origin／Sec-Fetch-Site 比對不變，
+/// 新增的顯式 token 檢查就不擴及這個子路由。
 async fn admin_same_origin_middleware(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
@@ -5061,6 +5082,14 @@ fn is_tc_proxy_path(path: &str) -> bool {
         || path.starts_with("/bulletin-list/")
 }
 
+/// STOCKGENIE_EMBED_V1：智選頁用 innerHTML，不能套 require-trusted-types-for。
+/// 與 iClass 代理一樣跳過面板 CSP；頁面 handler 自行送較鬆的 CSP。
+fn is_stock_embed_path(path: &str) -> bool {
+    path == "/admin/stock"
+        || path == "/admin/stock-api"
+        || path.starts_with("/admin/stock-api/")
+}
+
 /// PERMISSIONS_POLICY_PATH_V1：強大瀏覽器 API 預設關閉。
 ///
 /// 舊值 `camera=(self), geolocation=()` 有兩頭不對：
@@ -5096,7 +5125,7 @@ async fn admin_security_headers_middleware(
     // innerHTML 會整頁拋 TypeError（與 2026-09-14 /admin/homework 回報的
     // TrustedHTML 錯誤同型）。代理回應在 tc_proxy 內已做上游 header 白名單，
     // 這裡直接原樣放行，不加任何面板安全標頭。
-    if is_tc_proxy_path(path) {
+    if is_tc_proxy_path(path) || is_stock_embed_path(path) {
         return next.run(request).await;
     }
     let is_admin_path = path.starts_with("/admin")

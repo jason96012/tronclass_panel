@@ -231,7 +231,6 @@
     <div class="side-foot">
       <button class="sbtn" id="keysBtn" type="button">🔑 <span>API 密鑰</span><span class="tag" id="keyTag">—</span></button>
       <button class="sbtn" id="setBtn" type="button">⚙️ <span>對話設定</span></button>
-      <button class="sbtn" id="ocBtn" type="button">🧑‍💻 <span>opencode</span><span class="tag" id="ocTag">—</span></button>
       <a class="sbtn" href="/admin/dashboard">← <span>回主控台</span></a>
     </div>
   </aside>
@@ -241,7 +240,6 @@
       <button class="iconbtn menubtn" id="menuBtn" type="button">☰</button>
       <h1 id="title">新對話</h1>
       <select class="modelpick" id="modelPick" aria-label="選擇模型"></select>
-      <button class="iconbtn" id="opencodeToggle" type="button" title="切換 opencode 模式" style="display:none">🧑‍💻</button>
       <button class="iconbtn" id="renameBtn" type="button">重新命名</button>
     </div>
     <div class="stream" id="stream"><div class="inner" id="inner"></div></div>
@@ -404,54 +402,6 @@
   </div>
 </section>
 
-<!-- opencode 面板 -->
-<section class="panel" id="ocPanel">
-  <div class="ptop"><h2>opencode 設定</h2><span class="chip dead">管理員限定</span><button class="iconbtn" data-close="1" type="button">關閉</button></div>
-  <div class="pbody">
-    <div class="sect">
-      <h3>連線設定</h3>
-      <div class="desc">opencode sidecar 運行在容器內（127.0.0.1:4097），面板代理請求並驗證權限。API Key 只存在後端（config/ai_opencode.json，權限 0600）。</div>
-      <div class="field">
-        <label>啟用 opencode</label>
-        <select id="ocEnabled">
-          <option value="0">停用</option>
-          <option value="1">啟用</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>Base URL</label>
-        <input id="ocBaseUrl" type="text" placeholder="https://integrate.api.nvidia.com/v1">
-      </div>
-      <div class="field">
-        <label>Model</label>
-        <input id="ocModel" type="text" placeholder="nvidia/nemotron-3-super-120b-a12b">
-      </div>
-      <div class="field">
-        <label>NVIDIA API Key</label>
-        <input id="ocApiKey" type="password" placeholder="輸入新 Key（留空不更動）" autocomplete="off">
-        <div class="note">Key 會被加密存放，前端只顯示遮蔽字串。</div>
-      </div>
-      <div class="field">
-        <label>狀態</label>
-        <div id="ocStatus" class="note">載入中...</div>
-      </div>
-      <div class="btnrow">
-        <button class="btn primary" id="ocSaveBtn" type="button">儲存設定</button>
-        <button class="btn" id="ocTestBtn" type="button">測試連線</button>
-      </div>
-    </div>
-
-    <div class="sect">
-      <h3>存取名單</h3>
-      <div class="desc">只有列在名單裡的帳號（或管理員）才能使用 opencode。從下方勾選要授權的帳號。</div>
-      <div id="ocAccountList" class="desc">載入中...</div>
-      <div class="btnrow">
-        <button class="btn primary" id="ocSaveAccessBtn" type="button">儲存授權</button>
-      </div>
-    </div>
-  </div>
-</section>
-
 <div class="toast" id="toast"></div>
 
 <script id="AI_CHAT_PAGE_V1">
@@ -501,10 +451,9 @@
   }
 
   // ── 狀態 ───────────────────────────────────────────────
-  var STATE={keys:[],settings:{},threads:[],providers:[],models:[],can_manage:false,usable_keys:0,usable_models:0,opencode:{enabled:false,healthy:false,allowed:false,can_manage:false,base_url:'',model:'',key_masked:'',allowed_accounts:[]}};
+  var STATE={keys:[],settings:{},threads:[],providers:[],models:[],can_manage:false,usable_keys:0,usable_models:0};
   var currentModel='';
   var currentThread='';
-  var useOpencode=false;
   var currentMessages=[];
   var editingKey='';
   var activeJob=null;
@@ -928,11 +877,6 @@
     if(!text&&!pending.length)return;
     if(pending.some(function(a){return !a.ready;})){toast('檔案還在讀取，請稍候再送出');return;}
 
-    if(useOpencode){
-      sendOpencode(text);
-      return;
-    }
-
     var payload=pending.map(function(a){
       return a.kind==='image'
         ? {name:a.name,mime:a.mime,kind:'image',data:a.data}
@@ -972,58 +916,6 @@
       activeJob=r.job_id;
       POLL_MS=r.poll_ms||350;
       startStream(bubble,aiNode._who);
-    });
-  }
-
-  function sendOpencode(text){
-    var input=q('input');
-    var payload=pending.map(function(a){
-      return a.kind==='image'
-        ? {name:a.name,mime:a.mime,kind:'image',data:a.data}
-        : {name:a.name,mime:a.mime||'text/plain',kind:'text',text:a.text};
-    });
-    var names=pending.map(function(a){return a.name;});
-    pending=[];
-    renderAttachBar();
-
-    input.value='';
-    autoGrow();
-
-    var inner=q('inner');
-    if(!currentMessages.length)clear(inner);
-    var shown=text||(payload.some(function(a){return a.kind==='image';})?'（請看這張圖片）':'（請看附件）');
-    currentMessages.push({role:'user',content:shown});
-    inner.appendChild(messageNode('user',shown,'',names));
-
-    var aiNode=messageNode('assistant','','');
-    var bubble=aiNode._bubble;
-    clear(bubble);
-    var thinking=el('p');
-    thinking.appendChild(el('span','cursor'));
-    bubble.appendChild(thinking);
-    inner.appendChild(aiNode);
-    scrollDown(true);
-    setSending(true);
-
-    postJson('/admin/api/ai/opencode/chat',{thread_id:currentThread,message:text},function(r){
-      if(r.error){
-        setSending(false);
-        showError(bubble,r);
-        return;
-      }
-      currentThread=r.thread_id||currentThread;
-      // opencode 不回傳 model_id
-      activeJob=r.job_id||'opencode';
-      // opencode 同步回應，直接完成
-      if(r.ok){
-        renderMarkdown(bubble,r.text||'（沒有內容）');
-        currentMessages.push({role:'assistant',content:r.text,key_name:'opencode',model:STATE.opencode?.model||'opencode'});
-        refreshState();
-        setSending(false);
-      }else{
-        showError(bubble,{ok:false,error:r.error||'opencode 回應失敗'});
-        setSending(false);
-      }
     });
   }
 
@@ -1391,95 +1283,6 @@
     });
   }
 
-  // ── opencode 面板 ────────────────────────────────────────
-  function loadOpencodePanel(){
-    var oc=STATE.opencode||{};
-    q('ocEnabled').value=oc.enabled?'1':'0';
-    q('ocBaseUrl').value=oc.base_url||'';
-    q('ocModel').value=oc.model||'';
-    q('ocApiKey').value='';
-    q('ocStatus').textContent=oc.healthy?'🟢 健康':'🔴 離線';
-    if(oc.healthy)q('ocStatus').style.color='var(--ok)';
-    else q('ocStatus').style.color='var(--bad)';
-
-    // 載入帳號列表做授權（從 /admin/api/status 取得）
-    var accounts=STATE.accounts||[];
-    var allowed=new Set(oc.allowed_accounts||[]);
-    var list=q('ocAccountList');
-    clear(list);
-    if(!accounts.length){
-      list.textContent='載入帳號中...';
-      getJson('/admin/api/status',function(r){
-        if(r.error)return;
-        STATE.accounts=r.accounts||[];
-        renderOpencodeAccounts(STATE.accounts,allowed);
-      });
-      return;
-    }
-    renderOpencodeAccounts(accounts,allowed);
-  }
-
-  function renderOpencodeAccounts(accounts,allowed){
-    var list=q('ocAccountList');
-    clear(list);
-    accounts.forEach(function(a){
-      var row=el('div','foundrow');
-      row.style.padding='8px';
-      row.style.margin='4px 0';
-      row.style.background='var(--card)';
-      row.style.borderRadius='8px';
-      var cb=el('input');cb.type='checkbox';cb.checked=allowed.has(a.account_id);
-      cb.dataset.account=a.account_id;
-      cb.style.width='18px';cb.style.height='18px';
-      row.appendChild(cb);
-      var name=el('span',null,a.account_id+(a.name?' · '+a.name:''));
-      name.style.flex='1';
-      row.appendChild(name);
-      list.appendChild(row);
-    });
-  }
-
-  function saveOpencodeConfig(){
-    postJson('/admin/api/ai/opencode/config',{
-      enabled:q('ocEnabled').value==='1',
-      base_url:q('ocBaseUrl').value,
-      model:q('ocModel').value,
-      api_key:q('ocApiKey').value
-    },function(r){
-      if(r.error){toast(r.error,true);return;}
-      toast(r.message||'已儲存');
-      loadOpencodePanel();
-      refreshState();
-    });
-  }
-
-  function testOpencodeConnection(){
-    var btn=q('ocTestBtn');
-    btn.disabled=true;btn.textContent='測試中...';
-    postJson('/admin/api/ai/opencode/config',{
-      enabled:true,
-      base_url:q('ocBaseUrl').value,
-      model:q('ocModel').value,
-      api_key:q('ocApiKey').value
-    },function(r){
-      btn.disabled=false;btn.textContent='測試連線';
-      if(r.error){toast(r.error,true);return;}
-      toast('連線測試成功');
-      loadOpencodePanel();
-      refreshState();
-    });
-  }
-
-  function saveOpencodeAccess(){
-    var checks=q('ocAccountList').querySelectorAll('input[type=checkbox]:checked');
-    var accounts=Array.prototype.map.call(checks,function(c){return c.dataset.account;});
-    postJson('/admin/api/ai/opencode/access',{allowed_accounts:accounts},function(r){
-      if(r.error){toast(r.error,true);return;}
-      toast('授權已更新');
-      refreshState();
-    });
-  }
-
   // ── 狀態同步 ───────────────────────────────────────────
   function refreshState(){
     getJson('/admin/api/ai/state',function(r){
@@ -1505,49 +1308,21 @@
       q('setBtn').style.display=r.is_admin?'flex':'none';
       if(!currentMessages.length)renderThread();
     });
-    // 載入 opencode 狀態
-    getJson('/admin/api/ai/opencode/state',function(r){
-      if(r.error)return;
-      STATE.opencode=r;
-      var t=q('opencodeToggle');
-      var btn=q('ocBtn');
-      var tag=q('ocTag');
-      if(r.enabled && r.healthy){
-        t.style.display='inline-flex';
-        btn.style.display='flex';
-        if(r.allowed){
-          t.className='iconbtn';
-          t.title='opencode 模式：啟用';
-          tag.textContent='可用';
-          tag.className='tag';
-        }else{
-          t.className='iconbtn';
-          t.title='opencode 模式：未授權';
-          tag.textContent='未授權';
-          tag.className='tag warn';
-        }
-      }else{
-        t.style.display='none';
-        btn.style.display='none';
-        tag.textContent='停用';
-        tag.className='tag warn';
-      }
-    });
   }
 
   // ── 面板與側欄抽屜開關 ─────────────────────────────────
   // 手機側欄滑開後會蓋住右上角的 ☰，所以除了 ☰ 切換，還提供：
   // 1) 抽屜內 brand 列的 ✕（視覺明確）；2) 點擊遮罩（mask）關閉整體。
   function isSideOpen(){return q('side').className.indexOf('open')>=0;}
-  function panelIsOpen(){return q('keyPanel').className.indexOf('open')>=0||q('setPanel').className.indexOf('open')>=0||q('ocPanel').className.indexOf('open')>=0;}
-  // 遮罩在「任一浮層」(側欄或密鑰/設定/opencode面板) 開啟時才出現；關閉任一就同步隱藏，
+  function panelIsOpen(){return q('keyPanel').className.indexOf('open')>=0||q('setPanel').className.indexOf('open')>=0;}
+  // 遮罩在「任一浮層」(側欄或密鑰/設定面板) 開啟時才出現；關閉任一就同步隱藏，
   // 避免點掉側欄後蓋住整個畫面的半透明黑幕還留著。
   function syncMask(){q('mask').className=(panelIsOpen()||isSideOpen())?'mask open':'mask';}
   function openPanel(id){q(id).className='panel open';syncMask();}
-  function closePanels(){q('keyPanel').className='panel';q('setPanel').className='panel';q('ocPanel').className='panel';syncMask();}
+  function closePanels(){q('keyPanel').className='panel';q('setPanel').className='panel';syncMask();}
   function setSide(open){q('side').className=open?'side open':'side';syncMask();}
   function closeSide(){setSide(false);}
-  function closeAll(){q('side').className='side';q('keyPanel').className='panel';q('setPanel').className='panel';q('ocPanel').className='panel';syncMask();}
+  function closeAll(){q('side').className='side';q('keyPanel').className='panel';q('setPanel').className='panel';syncMask();}
 
   // ── 輸入框 ─────────────────────────────────────────────
   function autoGrow(){
@@ -1612,15 +1387,6 @@
   });
   q('keysBtn').addEventListener('click',function(){resetForm();openPanel('keyPanel');});
   q('setBtn').addEventListener('click',function(){fillSettings();openPanel('setPanel');});
-  q('ocBtn').addEventListener('click',function(){loadOpencodePanel();openPanel('ocPanel');});
-  q('opencodeToggle').addEventListener('click',function(){
-    var enabled=STATE.opencode.enabled && STATE.opencode.healthy && STATE.opencode.allowed;
-    if(!enabled){toast('opencode 未啟用或未授權',true);return;}
-    useOpencode=!useOpencode;
-    q('opencodeToggle').className=useOpencode?'iconbtn active':'iconbtn';
-    toast(useOpencode?'已切換到 opencode 模式':'已切換到一般模式');
-    if(!currentThread)startNewThread();
-  });
   q('mask').addEventListener('click',closeAll);
   Array.prototype.forEach.call(document.querySelectorAll('[data-close]'),function(b){
     b.addEventListener('click',closePanels);
@@ -1644,10 +1410,6 @@
       startNewThread();refreshState();toast('已清空');
     });
   });
-  // opencode panel
-  q('ocSaveBtn').addEventListener('click',saveOpencodeConfig);
-  q('ocTestBtn').addEventListener('click',testOpencodeConnection);
-  q('ocSaveAccessBtn').addEventListener('click',saveOpencodeAccess);
   q('fProvider').addEventListener('change',syncProviderHints);
   q('modelPick').addEventListener('change',function(){
     currentModel=q('modelPick').value;

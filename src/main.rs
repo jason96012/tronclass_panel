@@ -1524,6 +1524,8 @@ async fn main() -> Result<()> {
         adapters::admin_web::start_morning_digest(state);
         // INDEXNOW_V1（fix105）：啟動後主動把公開首頁提交給 Bing（IndexNow；24 小時內只送一次）。
         adapters::admin_web::start_indexnow_auto_submit();
+        // STOCKGENIE_BOOT_V1：主程式起來就接智選（ptero-start 已拉起則只探測）。
+        adapters::admin_web::start_stockgenie_embed();
     }
 
     let webhook_handle = if line_bot.is_some() {
