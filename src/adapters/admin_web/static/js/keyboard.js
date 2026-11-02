@@ -145,11 +145,17 @@ export function createGlobalShortcuts(context) {
   return kb;
 }
 
+// 沒有明確設定時，以系統偏好為準（與 opencode.css 的 prefers-color-scheme 一致）。
 function toggleTheme() {
   const html = document.documentElement;
-  const current = html.dataset.theme || 'dark';
+  const system = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  const current = html.dataset.theme || system;
   html.dataset.theme = current === 'dark' ? 'light' : 'dark';
-  localStorage.setItem('theme', html.dataset.theme);
+  try {
+    localStorage.setItem('theme', html.dataset.theme);
+  } catch {
+    // 無法寫入儲存空間時，本次頁面仍生效
+  }
 }
 
 function showShortcutsHelp() {

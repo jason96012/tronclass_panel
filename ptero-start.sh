@@ -851,7 +851,10 @@ MD
 start_opencode() {
   [[ "$OPENCODE_ENABLE" == "1" ]] || return 0
   mkdir -p logs
-  if curl -sS --max-time 2 -o /dev/null -w '%{http_code}' \
+  # OPENCODE_PROBE_AUTH_V1：健康檢查要帶 Basic auth（帳號 opencode），否則有密碼時
+  # 永遠回 401，會誤判為未啟動而再啟一個搶不到埠的程序，覆寫 opencode.pid。
+  local probe_pw; probe_pw="$(tr -d '\r\n' < "$OC_PASS_FILE" 2>/dev/null)"
+  if curl -sS --max-time 2 -o /dev/null -w '%{http_code}' -u "opencode:${probe_pw}" \
        "http://127.0.0.1:${OPENCODE_PORT}/global/health" 2>/dev/null | grep -q 200; then
     echo "[opencode] sidecar 已在 127.0.0.1:${OPENCODE_PORT}"; return 0
   fi
@@ -860,12 +863,19 @@ start_opencode() {
   local pw; pw="$(tr -d '\r\n' < "$OC_PASS_FILE")"
   echo "[opencode] 啟動 sidecar 127.0.0.1:${OPENCODE_PORT}（sandbox: $OC_DIR）"
   if [[ "$OC_USE_PROOT" == "1" ]]; then
-    nohup ./proot -r "$PWD/opencode-jail" \
-      -b /proc -b /sys -b /dev \
+    # OPENCODE_JAIL_BIND_V2：系統目錄用 bind mount（存在才綁）；環境變數直接由
+    # proot 程序繼承，不再用 env 包裝（監獄內沒有 env 也能跑）。
+    local -a oc_binds=()
+    local bd
+    for bd in /usr /bin /sbin /lib /lib64 /etc /proc /sys /dev; do
+      [ -e "$bd" ] && oc_binds+=(-b "$bd")
+    done
+    HOME=/workspace OPENCODE_SERVER_PASSWORD="$pw" OPENCODE_DISABLE_AUTOUPDATE=1 \
+      nohup ./proot -r "$PWD/opencode-jail" \
+      "${oc_binds[@]}" \
       -b "$OC_DIR:/workspace" \
       -b "$HOME/.opencode:$HOME/.opencode" \
       -w /workspace \
-      env HOME=/workspace OPENCODE_SERVER_PASSWORD="$pw" OPENCODE_DISABLE_AUTOUPDATE=1 \
       "$OC_BIN" serve --hostname 127.0.0.1 --port "$OPENCODE_PORT" \
       >> "$OC_LOG" 2>&1 &
   else
@@ -882,11 +892,13 @@ start_opencode() {
 }
 
 # ── OPENCODE_JAIL_V1：proot 硬隔離建立 ────────────────────────────────────
+# OPENCODE_JAIL_BIND_V2：不再用「絕對路徑符號連結」建立監獄。proot 會把絕對連結
+# 解析到監獄內部，結果 /usr -> /usr 指回自己，連 env、/bin/sh 都找不到（實測
+# "proot error: 'env' not found"，sidecar 因此永遠起不來）。改為掛載點目錄，
+# 由 start_opencode 用 proot -b 把宿主的系統目錄綁進去。
 oc_ensure_jail() {
   [[ "$OC_USE_PROOT" == "1" ]] || return 0
-  mkdir -p opencode-jail
-  for d in bin usr lib lib64 sbin etc; do [ -e "/$d" ] && ln -sfn "/$d" "opencode-jail/$d"; done
-  mkdir -p opencode-jail/workspace opencode-jail/tmp opencode-jail/home/container
+  mkdir -p opencode-jail/{bin,usr,lib,lib64,sbin,etc,proc,sys,dev,workspace,tmp,home/container}
 }
 
 # ── OPENCODE_SIDECAR_V1：proot 監獄建立與啟動 ──────────────────────────────

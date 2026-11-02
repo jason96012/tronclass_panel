@@ -3,14 +3,14 @@
  * 使用 createElement/textContent 避免 innerHTML 注入風險
  */
 
-function el(tag, className, text) {
+export function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text != null) node.textContent = String(text);
   return node;
 }
 
-function clear(node) {
+export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 

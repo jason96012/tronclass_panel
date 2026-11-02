@@ -5,6 +5,7 @@
 import { appState } from './state.js';
 import { api } from './api.js';
 import { el, clear } from './markdown.js';
+import { icon } from './icons.js';
 
 const MAX_FILES = 6;
 const MAX_IMG_SIZE = 4 * 1024 * 1024;
@@ -48,14 +49,17 @@ function createAttachmentChip(attachment, onRemove) {
     img.alt = attachment.name;
     chip.appendChild(img);
   } else {
-    chip.appendChild(el('div', 'icon', '📄'));
+    const fileIcon = el('div', 'icon');
+    fileIcon.innerHTML = icon('file', 20);
+    chip.appendChild(fileIcon);
   }
   const box = el('div');
   box.style.minWidth = '0';
   box.appendChild(el('div', 'name', attachment.name));
   box.appendChild(el('div', 'size', humanSize(attachment.size)));
   chip.appendChild(box);
-  const removeBtn = el('button', 'remove', '✕');
+  const removeBtn = el('button', 'remove');
+  removeBtn.innerHTML = icon('x', 14);
   removeBtn.type = 'button';
   removeBtn.title = '移除';
   removeBtn.addEventListener('click', onRemove);
@@ -63,7 +67,8 @@ function createAttachmentChip(attachment, onRemove) {
   return chip;
 }
 
-export function createComposer(attachBtn, fileInput, dropzone, input, sendBtn, stopBtn, onSend) {
+export function createComposer(attachBtn, fileInput, dropzone, input, sendBtn, stopBtn, onSend, onStop) {
+  let sending = false;
   let pendingAttachments = [];
 
   function renderAttachments() {
@@ -184,13 +189,16 @@ export function createComposer(attachBtn, fileInput, dropzone, input, sendBtn, s
   }
 
   function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    // 輸入法組字中（e.isComposing）按 Enter 是選字，不能送出。
+    if (e.key === 'Enter' && !e.isComposing && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       send();
     }
   }
 
   async function send() {
+    // 生成中不接受新送出；先擋住，避免輸入框被清空而文字遺失。
+    if (sending) return;
     const text = input.value.trim();
     if (!text && !pendingAttachments.length) return;
     if (pendingAttachments.some(a => !a.ready)) {
@@ -217,14 +225,19 @@ export function createComposer(attachBtn, fileInput, dropzone, input, sendBtn, s
   }
 
   function setSending(on) {
+    sending = on;
     sendBtn.classList.toggle('hidden', on);
     stopBtn.classList.toggle('hidden', !on);
     input.disabled = on;
   }
 
+  // 停止：交給外部（opencode.js）處理。舊版在這裡呼叫 stopBtn.click()，
+  // 而 stopBtn 的 click 又綁到 stop()，會無限遞迴。
   function stop() {
-    // 觸發停止邏輯
-    stopBtn.click();
+    if (onStop) onStop();
+  }
+  function isStreaming() {
+    return sending;
   }
 
   function reset() {
@@ -274,6 +287,7 @@ export function createComposer(attachBtn, fileInput, dropzone, input, sendBtn, s
   return {
     send,
     stop,
+    isStreaming,
     reset,
     getValue,
     setValue,
@@ -302,7 +316,8 @@ export function createOpencodeComposer(input, sendBtn, stopBtn, onSend) {
   }
 
   function handleKeyDown(e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    // 輸入法組字中（e.isComposing）按 Enter 是選字，不能送出。
+    if (e.key === 'Enter' && !e.isComposing && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
       e.preventDefault();
       send();
     }

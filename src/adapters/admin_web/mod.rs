@@ -3487,6 +3487,8 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/ai/opencode/chat",
             post(opencode::chat_handler).layer(DefaultBodyLimit::max(ADMIN_AI_CHAT_BODY_LIMIT)),
         )
+        // AI_PAGE_LAYOUT_V2：AI 頁面的獨立 CSS／JS（見 ai_chat::ai_static_handler）。
+        .route("/admin/static/ai/{*path}", get(ai_chat::ai_static_handler))
         .route("/admin/push-status", get(web_push::page_handler))
         .route("/admin/health", get(health::admin_health_page_handler))
         .route("/admin/mock", get(mock::admin_mock_page_handler))

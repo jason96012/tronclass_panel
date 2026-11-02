@@ -2676,6 +2676,47 @@ pub(super) async fn page_handler(
     )
 }
 
+/// AI_PAGE_LAYOUT_V2：AI 頁面的獨立樣式與腳本。
+///
+/// 為什麼不用 inline：CSP 的 `style-src 'self'`／`script-src 'self'` 不接受
+/// 任意 inline 樣式；頁面原本的 `<style>` 與 `style="…"` 屬性在嚴格模式下會被擋。
+/// 因此檔案全部放在 `/admin/static/ai/…`，走和其他面板資源一樣的快取與
+/// 版號改寫，並且 `/admin/static/` 不需登入（與其他面板資源相同）。
+const AI_STATIC_OPENCODE_CSS: &str = include_str!("static/opencode.css");
+const AI_STATIC_JS: &[(&str, &str)] = &[
+    ("state.js", include_str!("static/js/state.js")),
+    ("api.js", include_str!("static/js/api.js")),
+    ("markdown.js", include_str!("static/js/markdown.js")),
+    ("composer.js", include_str!("static/js/composer.js")),
+    ("timeline.js", include_str!("static/js/timeline.js")),
+    ("panels.js", include_str!("static/js/panels.js")),
+    ("command-palette.js", include_str!("static/js/command-palette.js")),
+    ("keyboard.js", include_str!("static/js/keyboard.js")),
+    ("opencode.js", include_str!("static/js/opencode.js")),
+    ("icons.js", include_str!("static/js/icons.js")),
+];
+
+/// GET /admin/static/ai/{*path}：只服務上面列出的檔案，其他一律 404。
+pub(super) async fn ai_static_handler(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> Response {
+    if path == "opencode.css" {
+        return super::static_assets::admin_static_asset(
+            "text/css; charset=utf-8",
+            AI_STATIC_OPENCODE_CSS,
+        );
+    }
+    if let Some(name) = path.strip_prefix("js/") {
+        if let Some((_, body)) = AI_STATIC_JS.iter().find(|(file, _)| *file == name) {
+            return super::static_assets::admin_static_asset(
+                "application/javascript; charset=utf-8",
+                body,
+            );
+        }
+    }
+    StatusCode::NOT_FOUND.into_response()
+}
+
 /// 目前狀態：密鑰（遮蔽後）、設定、對話串清單。
 pub(super) async fn state_handler(
     State(state): State<AdminWebState>,

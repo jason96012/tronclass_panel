@@ -108,7 +108,7 @@ export function createCommandPalette(palette, input, results, commands, onClose)
       item.innerHTML = `
         <div>
           <strong>${escapeHtml(cmd.name)}</strong>
-          ${cmd.description ? `<span style="color:var(--text-muted);margin-left:var(--space-2);font-size:var(--font-size-sm)">${escapeHtml(cmd.description)}</span>` : ''}
+          ${cmd.description ? `<span class="cmd-desc">${escapeHtml(cmd.description)}</span>` : ''}
         </div>
         ${cmd.keybind ? `<kbd>${escapeHtml(cmd.keybind)}</kbd>` : ''}
       `;
@@ -128,8 +128,18 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+/**
+ * 命令清單。每個命令只呼叫 context 內「實際存在」的函式，避免點了才 TypeError。
+ * context 形狀：
+ *   sessions: { create, deleteCurrent, renameCurrent, clearAll }
+ *   composer: { send, stop, attach, focus }
+ *   timeline: { scrollToTop, scrollToBottom, search }
+ *   panels:   { toggleLeftSidebar, toggleRightSidebar, toggleBottomPanel, closeAll }
+ *   models:   { openPicker }
+ *   opencode: { open }
+ */
 export function createDefaultCommands(context) {
-  const { timeline, composer, panels, api, sessions, models } = context;
+  const { timeline, composer, panels, sessions, models, opencode } = context;
 
   return [
     { name: '新會話', description: '建立新的對話會話', section: '會話', keybind: '⌘N', action: () => sessions.create() },
@@ -141,31 +151,36 @@ export function createDefaultCommands(context) {
     { name: '切換右側欄', description: '顯示/隱藏上下文面板', section: '介面', keybind: '⌘⌥\\', action: () => panels.toggleRightSidebar() },
     { name: '切換底部面板', description: '顯示/隱藏終端機面板', section: '介面', keybind: '⌘J', action: () => panels.toggleBottomPanel() },
     { name: '切換主題', description: '切換深色/淺色模式', section: '介面', keybind: '⌘⇧T', action: () => toggleTheme() },
+    { name: '收合所有面板', description: '關閉側邊欄與浮層', section: '介面', keybind: 'Esc', action: () => panels.closeAll() },
 
     { name: '選擇模型', description: '開啟模型選擇器', section: 'AI', keybind: '⌘M', action: () => models.openPicker() },
-    { name: '新增 API 金鑰', description: '設定新的 API 金鑰', section: 'AI', action: () => api.keys.add() },
-    { name: '管理模型', description: '管理可用模型列表', section: 'AI', action: () => models.openManager() },
+    { name: '開啟 opencode 面板', description: '查看 opencode 連線與存取名單', section: 'AI', action: () => opencode.open() },
 
     { name: '發送訊息', description: '發送當前輸入的訊息', section: '編輯器', keybind: 'Enter', action: () => composer.send() },
     { name: '停止生成', description: '停止 AI 回覆生成', section: '編輯器', keybind: 'Esc', action: () => composer.stop() },
     { name: '附加檔案', description: '上傳圖片或文字檔案', section: '編輯器', keybind: '⌘U', action: () => composer.attach() },
-    { name: '新行', description: '在編輯器中換行', section: '編輯器', keybind: 'Shift+Enter', action: () => composer.newline() },
+    { name: '聚焦輸入框', description: '把游標移到訊息輸入框', section: '編輯器', keybind: '⌘L', action: () => composer.focus() },
 
-    { name: '搜尋訊息', description: '在當前會話中搜尋', section: '搜尋', keybind: '⌘F', action: () => timeline.search() },
+    { name: '搜尋會話', description: '在左側會話清單中搜尋', section: '搜尋', keybind: '⌘F', action: () => timeline.search() },
     { name: '跳轉到頂部', description: '捲動到對話頂部', section: '導航', keybind: '⌘↑', action: () => timeline.scrollToTop() },
     { name: '跳轉到底部', description: '捲動到對話底部', section: '導航', keybind: '⌘↓', action: () => timeline.scrollToBottom() },
 
-    { name: '開啟設定', description: '開啟 AI 設定面板', section: '設定', keybind: '⌘,', action: () => panels.openSettings() },
     { name: '鍵盤快捷鍵', description: '顯示所有快捷鍵', section: '說明', keybind: '⌘/', action: () => showKeyboardShortcuts() },
     { name: '關於', description: '關於此應用程式', section: '說明', action: () => showAbout() }
   ];
 }
 
+// 沒有明確設定時，以系統偏好為準（與 opencode.css 的 prefers-color-scheme 一致）。
 function toggleTheme() {
   const html = document.documentElement;
-  const current = html.dataset.theme || 'dark';
+  const system = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  const current = html.dataset.theme || system;
   html.dataset.theme = current === 'dark' ? 'light' : 'dark';
-  localStorage.setItem('theme', html.dataset.theme);
+  try {
+    localStorage.setItem('theme', html.dataset.theme);
+  } catch {
+    // 無法寫入儲存空間時，本次頁面仍生效
+  }
 }
 
 function showKeyboardShortcuts() {

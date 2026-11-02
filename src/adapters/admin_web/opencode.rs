@@ -65,7 +65,11 @@ fn default_model() -> String {
 /// opencode server 狀態回傳
 #[derive(Debug, Serialize)]
 struct OpencodeStateResponse {
+    /// 合併健康狀態後的「實際可用」（config.enabled && healthy）。
     enabled: bool,
+    /// 設定檔裡的開關原值（AI_PAGE_LAYOUT_V2 新增）：前端表單用它，
+    /// 避免 sidecar 暫時離線時把「已啟用」誤存成停用。
+    config_enabled: bool,
     healthy: bool,
     allowed: bool,
     can_manage: bool,
@@ -220,6 +224,7 @@ pub(super) async fn state_handler(
         StatusCode::OK,
         Json(json!(OpencodeStateResponse {
             enabled: config.enabled && healthy,
+            config_enabled: config.enabled,
             healthy,
             allowed,
             can_manage,

@@ -93,7 +93,8 @@ export function createResource(fetcher) {
   const [latest, setLatest] = createSignal(0);
 
   const load = async (...args) => {
-    const requestId = ++latest();
+    const requestId = latest() + 1;
+    setLatest(requestId);
     setLoading(true);
     setError(null);
     try {
@@ -219,7 +220,7 @@ export function createEventEmitter() {
   };
 }
 
-export const appState = {
+const rawAppState = {
   sessions: createSignal([]),
   currentSessionId: createSignal(null),
   messages: createSignal([]),
@@ -257,6 +258,19 @@ export const appState = {
     buffer: ''
   })
 };
+
+// 每個欄位包成函式：appState.x() 讀取、appState.x(v) 或 appState.x(fn) 寫入。
+// （createSignal 本身回傳 [read, write]，直接呼叫會是 TypeError。）
+function asSignal([read, write]) {
+  const fn = (...args) => (args.length ? write(args[0]) : read());
+  fn.get = read;
+  fn.set = write;
+  return fn;
+}
+
+export const appState = Object.fromEntries(
+  Object.entries(rawAppState).map(([key, signal]) => [key, asSignal(signal)])
+)
 
 export function getState() {
   const state = {};

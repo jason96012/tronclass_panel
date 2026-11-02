@@ -2,6 +2,9 @@
  * 面板管理模組 - 側邊欄、底部面板、調整大小
  */
 
+import { el } from './markdown.js';
+import { icon } from './icons.js';
+
 import { appState } from './state.js';
 
 export function createPanelManager(elements) {
@@ -53,6 +56,8 @@ export function createPanelManager(elements) {
     const mobile = isMobile();
     const open = force !== undefined ? force : !leftSidebar.classList.contains('open');
     if (mobile) {
+      // 手機抽屜靠 transform 進出場；hidden 屬性若殘留會讓抽屜永遠看不到。
+      leftSidebar.hidden = false;
       leftSidebar.classList.toggle('open', open);
       sidebarOverlay.classList.toggle('open', open);
       rightSidebar.classList.remove('open');
@@ -66,6 +71,7 @@ export function createPanelManager(elements) {
     const mobile = isMobile();
     const open = force !== undefined ? force : !rightSidebar.classList.contains('open');
     if (mobile) {
+      rightSidebar.hidden = false;
       rightSidebar.classList.toggle('open', open);
       sidebarOverlay.classList.toggle('open', open);
       leftSidebar.classList.remove('open');
@@ -158,10 +164,11 @@ export function createPanelManager(elements) {
   // 綁定事件
   menuBtn?.addEventListener('click', () => toggleLeftSidebar());
   rightSidebarToggle?.addEventListener('click', () => toggleRightSidebar());
-  opencodeToggle?.addEventListener('click', () => toggleRightSidebar());
   leftSidebarClose?.addEventListener('click', () => toggleLeftSidebar(false));
   rightSidebarClose?.addEventListener('click', () => toggleRightSidebar(false));
   bottomPanelClose?.addEventListener('click', () => toggleBottomPanel(false));
+  // 手機模式：點遮罩關閉抽屜（規格：Overlay 點擊關閉側邊欄）
+  sidebarOverlay?.addEventListener('click', () => closeAllSidebars());
   sidebarOverlay?.addEventListener('click', closeAllSidebars);
 
   resizeLeft?.addEventListener('mousedown', e => startResize(e, 'left'));
@@ -173,11 +180,21 @@ export function createPanelManager(elements) {
   // 初始化
   updateMobileState();
 
+  function isAnyOpen() {
+    if (isMobile()) return leftSidebar.classList.contains('open') || rightSidebar.classList.contains('open');
+    return !rightSidebar.hidden;
+  }
+  function closeAll() {
+    closeAllSidebars();
+    if (!isMobile()) rightSidebar.hidden = true;
+  }
   return {
     toggleLeftSidebar,
     toggleRightSidebar,
     toggleBottomPanel,
     closeAllSidebars,
+    isAnyOpen,
+    closeAll,
     setupTabs,
     get leftWidth() { return leftWidth; },
     get rightWidth() { return rightWidth; },
@@ -189,27 +206,62 @@ export function createPanelManager(elements) {
 }
 
 export function createSessionList(panel, sessions, currentId, onSelect, onDelete, onRename) {
-  function render() {
+  function render(list = sessions, current = currentId) {
     clear(panel);
-    if (!sessions.length) {
-      panel.innerHTML = '<div class="empty-state" style="padding:var(--space-4);"><div class="empty-state-icon">💬</div><div class="empty-state-title">還沒有對話</div><div class="empty-state-desc">點擊「新會話」開始</div></div>';
+    if (!list.length) {
+      panel.innerHTML = `<div class="empty-state empty-state-sm"><div class="empty-state-icon">${icon('message-square', 26)}</div><div class="empty-state-title">還沒有對話</div><div class="empty-state-desc">點擊「新會話」開始</div></div>`;
       return;
     }
-    sessions.forEach(session => {
-      const item = el('div', 'session-item' + (session.id === currentId ? ' active' : ''));
+    list.forEach(session => {
+      const item = el('div', 'session-item' + (session.id === current ? ' active' : ''));
       item.innerHTML = `
-        <span class="session-item-icon">${session.id === currentId ? '●' : '○'}</span>
+        <span class="session-item-icon">${session.id === current ? '●' : '○'}</span>
         <span class="session-item-title" title="${escapeHtml(session.title)}">${escapeHtml(session.title)}</span>
-        <span class="session-item-time">${formatTime(session.updatedAt)}</span>
+        <span class="session-item-time">${formatTime(session.updated ?? session.updatedAt)}</span>
       `;
-      item.addEventListener('click', () => onSelect(session.id));
+      const openMenu = (x, y) => showContextMenu(x, y, [
+        { label: '重新命名', action: () => onRename(session.id) },
+        { label: '刪除', action: () => onDelete(session.id), danger: true }
+      ]);
+      let pressTimer = null;
+      let longPressed = false;
+      const cancelPress = () => {
+        if (pressTimer) {
+          clearTimeout(pressTimer);
+          pressTimer = null;
+        }
+      };
+      item.addEventListener('click', (e) => {
+        if (longPressed) {
+          // 長按剛開過選單：這次點擊不選取會話
+          longPressed = false;
+          e.preventDefault();
+          return;
+        }
+        onSelect(session.id);
+      });
       item.addEventListener('contextmenu', e => {
         e.preventDefault();
-        showContextMenu(e.clientX, e.clientY, [
-          { label: '重新命名', action: () => onRename(session.id) },
-          { label: '刪除', action: () => onDelete(session.id), danger: true }
-        ]);
+        openMenu(e.clientX, e.clientY);
       });
+      // 觸控長按（手機沒有右鍵）：約 500ms 開選單；移動即取消
+      item.addEventListener('touchstart', e => {
+        const t = e.touches[0];
+        longPressed = false;
+        cancelPress();
+        pressTimer = setTimeout(() => {
+          pressTimer = null;
+          longPressed = true;
+          openMenu(t.clientX, t.clientY);
+        }, 500);
+      }, { passive: true });
+      item.addEventListener('touchmove', cancelPress, { passive: true });
+      item.addEventListener('touchcancel', cancelPress, { passive: true });
+      item.addEventListener('touchend', e => {
+        cancelPress();
+        // 長按結束時吃掉合成的 click，避免選單剛開就被關掉
+        if (longPressed) e.preventDefault();
+      }, { passive: false });
       panel.appendChild(item);
     });
   }
@@ -230,7 +282,7 @@ export function createSessionList(panel, sessions, currentId, onSelect, onDelete
     existing?.remove();
 
     const menu = el('div', 'context-menu');
-    menu.style.cssText = `position:fixed;left:${x}px;top:${y}px;background:var(--bg-elevated);border:1px solid var(--border-base);border-radius:var(--radius-md);padding:var(--space-1);z-index:var(--z-tooltip);min-width:160px;box-shadow:var(--shadow-lg);`;
+    menu.style.cssText = `position:fixed;left:${Math.max(8, Math.min(x, window.innerWidth - 170))}px;top:${Math.max(8, Math.min(y, window.innerHeight - 120))}px;background:var(--bg-elevated);border:1px solid var(--border-base);border-radius:var(--radius-md);padding:var(--space-1);z-index:var(--z-tooltip);min-width:160px;box-shadow:var(--shadow-lg);`;
     items.forEach(item => {
       const btn = el('div', 'btn btn-secondary btn-sm w-full text-left' + (item.danger ? ' text-error' : ''), item.label);
       btn.style.cssText = 'width:100%;justify-content:flex-start;padding:var(--space-2) var(--space-3);';
@@ -259,7 +311,7 @@ export function createModelPicker(container, models, currentModel, onSelect) {
   function render() {
     clear(container);
     const autoOpt = el('div', 'model-option' + (currentModel === 'auto' ? ' selected' : ''));
-    autoOpt.innerHTML = '<span>⚡</span><div class="model-option-info"><div class="model-option-name">自動</div><div class="model-option-provider">依問題自動選擇最適合模型</div></div>';
+    autoOpt.innerHTML = `<span class="model-option-glyph">${icon('zap', 16)}</span><div class="model-option-info"><div class="model-option-name">自動</div><div class="model-option-provider">依問題自動選擇最適合模型</div></div>`;
     autoOpt.addEventListener('click', () => onSelect('auto'));
     container.appendChild(autoOpt);
 
@@ -282,13 +334,13 @@ export function createToolsPanel(panel, tools, onToolClick) {
   function render() {
     clear(panel);
     if (!tools.length) {
-      panel.innerHTML = '<div class="empty-state" style="padding:var(--space-4);"><div class="empty-state-icon">🔧</div><div class="empty-state-title">無可用工具</div><div class="empty-state-desc">安裝 opencode 插件以獲得更多工具</div></div>';
+      panel.innerHTML = `<div class="empty-state" style="padding:var(--space-4);"><div class="empty-state-icon">${icon('wrench', 26)}</div><div class="empty-state-title">無可用工具</div><div class="empty-state-desc">安裝 opencode 插件以獲得更多工具</div></div>`;
       return;
     }
     tools.forEach(tool => {
       const item = el('div', 'tool-item');
       item.innerHTML = `
-        <div class="tool-item-icon">${tool.icon || '⚙️'}</div>
+        <div class="tool-item-icon">${icon(tool.icon || 'settings', 18)}</div>
         <div class="tool-item-info">
           <div class="tool-item-name">${escapeHtml(tool.name)}</div>
           <div class="tool-item-desc">${escapeHtml(tool.description || '')}</div>

@@ -1,328 +1,212 @@
-<!doctype html>
-<html lang="zh-Hant" data-theme="dark">
+<!DOCTYPE html>
+<html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>AI 對話</title>
-<link rel="stylesheet" href="/static/opencode.css?v=1">
-<style>
-  /* 頁面特定樣式 - 稍後會移至獨立 CSS */
-  .opencode-app { display: flex; height: 100%; min-height: 0; }
-  .sidebar { flex: 0 0 var(--sidebar-width); min-width: var(--sidebar-min); max-width: var(--sidebar-max); background: var(--bg-elevated); border-right: 1px solid var(--border-base); display: flex; flex-direction: column; position: relative; }
-  .sidebar.right { flex: 0 0 var(--right-sidebar-width); min-width: var(--right-sidebar-min); max-width: var(--right-sidebar-max); border-right: none; border-left: 1px solid var(--border-base); }
-  .sidebar-header { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border-base); display: flex; align-items: center; justify-content: space-between; }
-  .sidebar-tabs { display: flex; border-bottom: 1px solid var(--border-base); overflow-x: auto; }
-  .sidebar-content { flex: 1; overflow: auto; min-height: 0; padding: var(--space-3); }
-  .chat-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
-  .chat-header { height: var(--header-height); padding: 0 var(--space-4); border-bottom: 1px solid var(--border-base); display: flex; align-items: center; justify-content: space-between; background: var(--bg-base); flex-shrink: 0; }
-  .timeline { flex: 1; overflow: auto; min-height: 0; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4); }
-  .composer-dropzone { padding: 0 var(--space-4) var(--space-2); min-height: 0; }
-  .composer { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border-base); background: var(--bg-base); flex-shrink: 0; }
-  .composer-wrap { display: flex; gap: var(--space-2); align-items: flex-end; background: var(--bg-elevated); border: 1px solid var(--border-base); border-radius: var(--radius-xl); padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4); transition: border-color var(--transition-fast); }
-  .composer-wrap:focus-within { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--accent-muted); }
-  .composer textarea { flex: 1; min-height: 40px; max-height: 200px; resize: none; background: transparent; border: none; outline: none; line-height: var(--line-height); padding: var(--space-1) 0; font-size: var(--font-size-ui); }
-  .composer-actions { display: flex; gap: var(--space-1); flex-shrink: 0; }
-  .bottom-panel { height: var(--bottom-panel-height); min-height: var(--bottom-panel-min); max-height: var(--bottom-panel-max); border-top: 1px solid var(--border-base); background: var(--bg-elevated); display: flex; flex-direction: column; position: relative; }
-  .bottom-panel.hidden { display: none; }
-  .command-palette { position: fixed; top: 20%; left: 50%; transform: translateX(-50%); width: 600px; max-width: 90vw; background: var(--bg-elevated); border: 1px solid var(--border-base); border-radius: var(--radius-xl); box-shadow: var(--shadow-xl); z-index: var(--z-modal + 10); overflow: hidden; display: none; }
-  .command-palette.open { display: block; animation: dialogIn var(--transition-normal); }
-  .cmd-input { width: 100%; padding: var(--space-3) var(--space-4); font-size: var(--font-size-lg); background: var(--bg-base); border: none; border-bottom: 1px solid var(--border-base); outline: none; }
-  .cmd-results { max-height: 400px; overflow: auto; }
-  .cmd-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-4); cursor: pointer; }
-  .cmd-item:hover, .cmd-item.selected { background: var(--bg-hover); }
-  .cmd-item kbd { background: var(--bg-base); border: 1px solid var(--border-base); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); font-size: var(--font-size-xs); color: var(--text-muted); margin-left: auto; }
-  .cmd-section { padding: var(--space-2) var(--space-4); font-size: var(--font-size-xs); font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; border-top: 1px solid var(--border-base); }
-  .cmd-section:first-child { border-top: none; }
-  .attachment-chip { display: inline-flex; align-items: center; gap: var(--space-1); background: var(--bg-base); border: 1px solid var(--border-base); border-radius: var(--radius-md); padding: var(--space-1) var(--space-2) var(--space-1) var(--space-1); font-size: var(--font-size-sm); max-width: 100%; }
-  .attachment-chip img { width: 28px; height: 28px; object-fit: cover; border-radius: var(--radius-sm); }
-  .attachment-chip .icon { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; background: var(--border-base); border-radius: var(--radius-sm); font-size: var(--font-size-lg); }
-  .attachment-chip .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
-  .attachment-chip .size { color: var(--text-muted); font-size: var(--font-size-xs); margin-left: auto; }
-  .attachment-chip .remove { color: var(--text-muted); padding: var(--space-1); border-radius: var(--radius-sm); }
-  .attachment-chip .remove:hover { background: var(--bg-hover); color: var(--error); }
-  .message { display: flex; gap: var(--space-3); animation: messageIn var(--transition-normal); }
-  @keyframes messageIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-  .message-avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; font-size: var(--font-size-sm); font-weight: 700; }
-  .message.user .message-avatar { background: var(--accent-muted); color: var(--accent); }
-  .message.assistant .message-avatar { background: var(--success-muted); color: var(--success); }
-  .message-body { flex: 1; min-width: 0; }
-  .message-header { display: flex; align-items: center; gap: var(--space-2); margin-bottom: var(--space-1); font-size: var(--font-size-sm); }
-  .message-role { font-weight: 600; }
-  .message-model { font-size: var(--font-size-xs); color: var(--text-muted); background: var(--bg-base); padding: var(--space-1) var(--space-2); border-radius: var(--radius-full); border: 1px solid var(--border-base); }
-  .message-content { font-size: var(--font-size-ui); line-height: var(--line-height); }
-  .message-content p { margin: var(--space-2) 0; }
-  .message-content p:first-child { margin-top: 0; }
-  .message-content p:last-child { margin-bottom: 0; }
-  .message-content code.inline { background: var(--bg-base); border: 1px solid var(--border-base); border-radius: var(--radius-sm); padding: 0.15em 0.4em; font-size: 0.9em; }
-  .message-content pre { background: var(--bg-base); border: 1px solid var(--border-base); border-radius: var(--radius-md); overflow: auto; margin: var(--space-3) 0; }
-  .message-content pre code { display: block; padding: var(--space-3); line-height: var(--line-height); }
-  .message-content blockquote { border-left: 3px solid var(--border-base); padding-left: var(--space-3); margin: var(--space-2) 0; color: var(--text-secondary); }
-  .message-content ul, .message-content ol { margin: var(--space-2) 0; padding-left: var(--space-5); }
-  .message-content li { margin: var(--space-1) 0; }
-  .message-attachments { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
-  .tool-call { background: var(--bg-base); border: 1px solid var(--border-base); border-radius: var(--radius-md); margin: var(--space-2) 0; overflow: hidden; }
-  .tool-call-header { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); background: var(--bg-hover); border-bottom: 1px solid var(--border-base); font-size: var(--font-size-sm); }
-  .tool-call-name { font-weight: 600; font-family: var(--font-mono); }
-  .tool-call-args { padding: var(--space-2) var(--space-3); font-size: var(--font-size-xs); font-family: var(--font-mono); max-height: 200px; overflow: auto; }
-  .tool-call-result { padding: var(--space-2) var(--space-3); font-size: var(--font-size-xs); font-family: var(--font-mono); border-top: 1px solid var(--border-base); max-height: 200px; overflow: auto; background: var(--bg-base); }
-  .session-item { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); cursor: pointer; transition: background var(--transition-fast); }
-  .session-item:hover { background: var(--bg-hover); }
-  .session-item.active { background: var(--accent-muted); }
-  .session-item-icon { width: 20px; height: 20px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: var(--font-size-sm); color: var(--text-muted); }
-  .session-item-title { flex: 1; font-size: var(--font-size-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .session-item-time { font-size: var(--font-size-xs); color: var(--text-muted); }
-  .tool-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); cursor: pointer; transition: background var(--transition-fast); }
-  .tool-item:hover { background: var(--bg-hover); }
-  .tool-item-icon { width: 24px; height: 24px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: var(--bg-base); border: 1px solid var(--border-base); border-radius: var(--radius-md); font-size: var(--font-size-lg); }
-  .tool-item-info { flex: 1; min-width: 0; }
-  .tool-item-name { font-weight: 500; font-size: var(--font-size-sm); }
-  .tool-item-desc { font-size: var(--font-size-xs); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; text-align: center; padding: var(--space-6); color: var(--text-muted); }
-  .empty-state-icon { font-size: 48px; margin-bottom: var(--space-3); opacity: 0.5; }
-  .empty-state-title { font-size: var(--font-size-lg); font-weight: 600; color: var(--text-primary); margin-bottom: var(--space-1); }
-  .empty-state-desc { font-size: var(--font-size-sm); max-width: 300px; line-height: var(--line-height); }
-  .model-option { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); cursor: pointer; transition: background var(--transition-fast); }
-  .model-option:hover { background: var(--bg-hover); }
-  .model-option.selected { background: var(--accent-muted); }
-  .model-option-info { flex: 1; min-width: 0; }
-  .model-option-name { font-weight: 500; }
-  .model-option-provider { font-size: var(--font-size-xs); color: var(--text-muted); }
-  .streaming-cursor { display: inline-block; width: 8px; height: 1.2em; background: var(--accent); margin-left: 2px; vertical-align: text-bottom; animation: blink 1s step-end infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
-  .thinking-indicator { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); color: var(--text-muted); font-size: var(--font-size-sm); }
-  .thinking-dots { display: flex; gap: 4px; }
-  .thinking-dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: thinkingPulse 1.4s ease-in-out infinite both; }
-  .thinking-dots span:nth-child(2) { animation-delay: 0.2s; }
-  .thinking-dots span:nth-child(3) { animation-delay: 0.4s; }
-  @keyframes thinkingPulse { 0%, 80%, 100% { transform: scale(0.8); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
-
-  /* 行動裝置 */
-  @media (max-width: 900px) {
-    .sidebar:not(.right) { position: fixed; top: 0; left: 0; bottom: 0; z-index: var(--z-panel); transform: translateX(-100%); transition: transform var(--transition-normal); }
-    .sidebar:not(.right).open { transform: translateX(0); }
-    .sidebar.right { position: fixed; top: 0; right: 0; bottom: 0; z-index: var(--z-panel); transform: translateX(100%); transition: transform var(--transition-normal); }
-    .sidebar.right.open { transform: translateX(0); }
-    .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: calc(var(--z-panel) - 1); opacity: 0; visibility: hidden; transition: all var(--transition-normal); }
-    .sidebar-overlay.open { opacity: 1; visibility: visible; }
-    .chat-header .mobile-menu-btn { display: flex; }
-    .bottom-panel { position: fixed; bottom: 0; left: 0; right: 0; z-index: var(--z-panel); max-height: 70vh; }
-  }
-  @media (min-width: 901px) {
-    .chat-header .mobile-menu-btn { display: none; }
-    .sidebar-overlay { display: none; }
-  }
-  .mobile-menu-btn { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-md); color: var(--text-secondary); }
-  .mobile-menu-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-</style>
+<link rel="stylesheet" href="/admin/static/ai/opencode.css?v=2">
 </head>
 <body>
-<div class="opencode-app" id="app">
-  <!-- 左側邊欄：會話與工具 -->
-  <aside class="sidebar" data-panel="left" id="leftSidebar">
-    <div class="sidebar-header">
-      <h2 class="font-semibold text-lg">AI 對話</h2>
-      <button class="icon-btn" id="leftSidebarClose" aria-label="關閉側邊欄">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-    <nav class="sidebar-tabs" role="tablist" id="leftTabs">
-      <button class="tab active" role="tab" data-tab="sessions" aria-selected="true">會話</button>
-      <button class="tab" role="tab" data-tab="tools" aria-selected="false">工具</button>
-      <button class="tab" role="tab" data-tab="opencode" aria-selected="false">opencode</button>
-    </nav>
-    <div class="sidebar-content" id="leftContent">
-      <!-- 會話列表 -->
-      <div class="tab-panel" data-panel="sessions" id="sessionsPanel">
-        <div class="flex gap-2 mb-3">
-          <button class="btn btn-primary flex-1" id="newSessionBtn">＋ 新會話</button>
-        </div>
-        <div id="sessionList"></div>
-        <div class="empty-state" id="sessionsEmpty" style="display:none;">
-          <div class="empty-state-icon">💬</div>
-          <div class="empty-state-title">還沒有對話</div>
-          <div class="empty-state-desc">點擊「新會話」開始與 AI 聊天</div>
-        </div>
-      </div>
-      <!-- 工具列表 -->
-      <div class="tab-panel hidden" data-panel="tools" id="toolsPanel">
-        <div id="toolsList"></div>
-      </div>
-      <!-- opencode 面板 -->
-      <div class="tab-panel hidden" data-panel="opencode" id="opencodePanel">
-        <div class="card mb-3">
-          <h3 class="font-semibold mb-3">連線設定</h3>
-          <div class="field mb-3">
-            <label class="block text-sm font-medium text-muted mb-1">啟用 opencode</label>
-            <select class="input" id="ocEnabled">
-              <option value="0">停用</option>
-              <option value="1">啟用</option>
-            </select>
-          </div>
-          <div class="field mb-3">
-            <label class="block text-sm font-medium text-muted mb-1">Base URL</label>
-            <input class="input" id="ocBaseUrl" type="text" placeholder="https://integrate.api.nvidia.com/v1">
-          </div>
-          <div class="field mb-3">
-            <label class="block text-sm font-medium text-muted mb-1">Model</label>
-            <input class="input" id="ocModel" type="text" placeholder="nvidia/nemotron-3-super-120b-a12b">
-          </div>
-          <div class="field mb-3">
-            <label class="block text-sm font-medium text-muted mb-1">NVIDIA API Key</label>
-            <input class="input" id="ocApiKey" type="password" placeholder="輸入新 Key（留空不更動）" autocomplete="off">
-            <div class="text-xs text-muted mt-1">Key 會被加密存放，前端只顯示遮蔽字串</div>
-          </div>
-          <div class="field mb-3">
-            <label class="block text-sm font-medium text-muted mb-1">狀態</label>
-            <div id="ocStatus" class="text-sm text-muted">載入中...</div>
-          </div>
-          <div class="flex gap-2">
-            <button class="btn btn-primary" id="ocSaveBtn">儲存設定</button>
-            <button class="btn btn-secondary" id="ocTestBtn">測試連線</button>
-          </div>
-        </div>
-        <div class="card">
-          <h3 class="font-semibold mb-3">存取名單</h3>
-          <div class="text-sm text-muted mb-3">只有列在名單裡的帳號（或管理員）才能使用 opencode</div>
-          <div id="ocAccountList" class="text-sm text-muted">載入中...</div>
-          <div class="mt-3">
-            <button class="btn btn-primary" id="ocSaveAccessBtn">儲存授權</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </aside>
+<!-- 版面規格：static/ai-interface-layout.md（v1.0）。樣式在 opencode.css，行為在 js/opencode.js。 -->
+<div class="app">
+  <div class="app-body">
 
-  <!-- 右側邊欄遮罩 -->
-  <div class="sidebar-overlay" id="sidebarOverlay" aria-hidden="true"></div>
+    <!-- 左側欄（桌機 280px；手機為抽屜） -->
+    <aside class="sidebar" id="leftSidebar" data-panel="left">
+      <div class="sidebar-header">
+        <h2 class="sidebar-title">AI 對話</h2>
+        <button class="icon-btn icon-btn-sm sidebar-close" id="leftSidebarClose" type="button" aria-label="關閉側邊欄">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <nav class="sidebar-tabs" role="tablist" id="leftTabs">
+        <button class="tab active" role="tab" data-tab="sessions" aria-selected="true" type="button">會話</button>
+        <button class="tab" role="tab" data-tab="tools" aria-selected="false" type="button">工具</button>
+        <button class="tab" role="tab" data-tab="opencode" aria-selected="false" type="button">opencode</button>
+      </nav>
+      <div class="sidebar-content" id="leftContent">
 
-  <!-- 中央聊天面板 -->
-  <main class="chat-panel" id="chatPanel">
-    <header class="chat-header">
-      <div class="flex items-center gap-2">
-        <button class="icon-btn mobile-menu-btn" id="menuBtn" aria-label="開啟選單">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
-        </button>
-        <h1 id="chatTitle" class="font-semibold truncate">新對話</h1>
-      </div>
-      <div class="flex items-center gap-2">
-        <div class="relative" id="modelPickerContainer">
-          <button class="btn btn-secondary btn-sm flex items-center gap-2" id="modelPickerBtn" aria-haspopup="listbox">
-            <span id="currentModelName">自動</span>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
-          </button>
-          <div class="absolute right-0 top-full mt-1 hidden" id="modelPickerDropdown" role="listbox" style="min-width: 280px; max-height: 300px;">
-            <!-- 模型選項由 JS 動態渲染 -->
+        <section class="tab-panel sessions-panel" data-panel="sessions" id="sessionsPanel">
+          <button class="btn btn-primary btn-block" id="newSessionBtn" type="button">+ 新會話</button>
+          <div class="session-list" id="sessionList" role="list"></div>
+          <input class="input input-sm session-search" id="sessionSearch" type="search" placeholder="搜尋對話…" aria-label="搜尋對話">
+        </section>
+
+        <section class="tab-panel hidden" data-panel="tools" id="toolsPanel">
+          <label class="toggle-row">
+            <input type="checkbox" id="agentMode">
+            <span>Agent 模式（允許工具實際執行）</span>
+          </label>
+          <div class="tool-list" id="toolsList"></div>
+        </section>
+
+        <section class="tab-panel hidden" data-panel="opencode" id="opencodePanel">
+          <div class="card">
+            <h3 class="card-title">連線設定</h3>
+            <div class="field">
+              <label class="field-label" for="ocEnabled">啟用</label>
+              <select class="input input-sm" id="ocEnabled">
+                <option value="1">啟用</option>
+                <option value="0">停用</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocBaseUrl">Base URL</label>
+              <input class="input input-sm" id="ocBaseUrl" type="text" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocModel">模型</label>
+              <input class="input input-sm" id="ocModel" type="text" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocApiKey">API Key</label>
+              <input class="input input-sm" id="ocApiKey" type="password" placeholder="輸入新金鑰（留空不更動）" autocomplete="off">
+              <div class="field-hint" id="ocKeyHint">載入中…</div>
+            </div>
+            <div class="field-status" id="ocStatus" aria-live="polite">載入中…</div>
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" id="ocSaveBtn" type="button">儲存設定</button>
+              <button class="btn btn-secondary btn-sm" id="ocTestBtn" type="button">測試連線</button>
+            </div>
           </div>
-        </div>
-        <button class="icon-btn" id="opencodeToggle" aria-label="切換 opencode 面板" title="opencode">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13M9 18l-2-2 4-4-4-4 2-2 4 4 4-4-2 2"/><circle cx="6" cy="18" r="3"/></svg>
-        </button>
-        <button class="icon-btn" id="rightSidebarToggle" aria-label="切換右側面板">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 21h16M12 3v18"/></svg>
-        </button>
+
+          <div class="card">
+            <h3 class="card-title">存取名單</h3>
+            <p class="field-hint">只有列在名單裡的帳號（或管理員）才能使用 opencode。</p>
+            <div class="account-chips" id="ocAccountChips"></div>
+            <div class="row-actions">
+              <input class="input input-sm" id="ocAccountInput" type="text" placeholder="帳號 ID" autocomplete="off" aria-label="新增帳號 ID">
+              <button class="btn btn-secondary btn-sm" id="ocAddAccountBtn" type="button">新增</button>
+            </div>
+            <div class="field-hint" id="ocAccessNote"></div>
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" id="ocSaveAccessBtn" type="button">儲存授權</button>
+            </div>
+          </div>
+        </section>
+
       </div>
-    </header>
-    <div class="timeline" id="timeline" role="log" aria-live="polite" aria-label="對話訊息">
-      <!-- 空狀態 -->
-      <div class="empty-state flex-1" id="emptyState">
-        <div class="empty-state-icon">💬</div>
-        <div class="empty-state-title">歡迎使用 AI 對話</div>
-        <div class="empty-state-desc" id="emptyStateDesc">選擇模型並開始輸入訊息</div>
-        <div class="flex gap-2 mt-4 flex-wrap justify-center" id="suggestions"></div>
-      </div>
-    </div>
-    <div class="composer-dropzone" id="dropzone"></div>
-    <div class="composer">
-      <div class="composer-wrap" id="composerWrap">
-        <button class="icon-btn" id="attachBtn" aria-label="附加檔案" title="附加檔案 (Ctrl+U)">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
-        </button>
-        <textarea id="composerInput" rows="1" placeholder="輸入訊息… (Enter 發送，Shift+Enter 換行)" aria-label="訊息輸入"></textarea>
-        <div class="composer-actions">
-          <button class="icon-btn" id="sendBtn" aria-label="發送訊息" title="發送 (Enter)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+    </aside>
+
+    <div class="resize-handle resize-handle-v" id="resizeLeft" data-resize="left" role="separator" aria-orientation="vertical" aria-label="調整左側面板寬度"></div>
+
+    <!-- 中央聊天區（flex: 1） -->
+    <main class="chat-panel" id="chatPanel">
+      <header class="chat-header">
+        <div class="chat-header-left">
+          <button class="icon-btn mobile-menu-btn" id="menuBtn" type="button" aria-label="開啟選單">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
           </button>
-          <button class="icon-btn hidden" id="stopBtn" aria-label="停止生成">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          <h1 class="chat-title" id="chatTitle">新對話</h1>
+        </div>
+        <div class="chat-header-right">
+          <div class="model-picker" id="modelPickerContainer">
+            <button class="btn btn-secondary btn-sm model-picker-btn" id="modelPickerBtn" type="button" aria-haspopup="listbox">
+              <span id="currentModelName">自動</span>
+              <span aria-hidden="true">▾</span>
+            </button>
+            <div class="model-dropdown hidden" id="modelPickerDropdown" role="listbox"></div>
+          </div>
+          <button class="icon-btn" id="opencodeToggle" type="button" aria-label="開啟 opencode 面板" title="opencode"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
+          <button class="icon-btn" id="rightSidebarToggle" type="button" aria-label="切換右側面板" title="上下文">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
           </button>
         </div>
-      </div>
-      <input type="file" id="fileInput" multiple class="hidden" accept="image/*,text/*,.pdf,.md,.txt,.json,.js,.ts,.py,.rs,.java,.cpp,.c,.h,.css,.html,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.csv,.sql,.sh,.bash,.zsh,.fish">
-    </div>
-  </main>
+      </header>
 
-  <!-- 右側邊欄：上下文/插件 -->
-  <aside class="sidebar right" data-panel="right" id="rightSidebar" hidden>
-    <div class="sidebar-header">
-      <h2 class="font-semibold text-lg">上下文</h2>
-      <button class="icon-btn" id="rightSidebarClose" aria-label="關閉右側面板">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
-    <nav class="sidebar-tabs" role="tablist" id="rightTabs">
-      <button class="tab active" role="tab" data-tab="files" aria-selected="true">檔案</button>
-      <button class="tab" role="tab" data-tab="symbols" aria-selected="false">符號</button>
-      <button class="tab" role="tab" data-tab="plugins" aria-selected="false">插件</button>
-    </nav>
-    <div class="sidebar-content" id="rightContent">
-      <div class="tab-panel" data-panel="files" id="filesPanel">
-        <div class="empty-state">
-          <div class="empty-state-icon">📁</div>
-          <div class="empty-state-title">尚未開啟專案</div>
-          <div class="empty-state-desc">在 opencode 中開啟專案以查看檔案</div>
+      <div class="timeline" id="timeline" role="log" aria-live="polite" aria-label="對話訊息">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+          <div class="empty-state-title">歡迎使用 AI 對話</div>
+          <div class="empty-state-desc" id="emptyStateDesc">選擇模型並開始輸入訊息</div>
+          <div class="suggestions" id="suggestions"></div>
         </div>
       </div>
-      <div class="tab-panel hidden" data-panel="symbols" id="symbolsPanel">
-        <div class="empty-state">
-          <div class="empty-state-icon">🔍</div>
-          <div class="empty-state-title">無符號資料</div>
-          <div class="empty-state-desc">開啟程式碼檔案以查看符號</div>
-        </div>
-      </div>
-      <div class="tab-panel hidden" data-panel="plugins" id="pluginsPanel">
-        <div class="empty-state">
-          <div class="empty-state-icon">🔌</div>
-          <div class="empty-state-title">無可用插件</div>
-          <div class="empty-state-desc">安裝 opencode 插件以擴充功能</div>
-        </div>
-      </div>
-    </div>
-  </aside>
 
-  <!-- 底部面板：終端機/輸出 -->
-  <section class="bottom-panel hidden" id="bottomPanel">
-    <div class="flex items-center justify-between p-2 border-b border-base">
-      <span class="font-medium text-sm">終端機</span>
-      <div class="flex items-center gap-1">
-        <button class="icon-btn icon-btn-sm" id="bottomPanelClose" aria-label="關閉底部面板">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      <div class="composer-dropzone" id="dropzone"></div>
+
+      <div class="composer">
+        <div class="composer-wrap" id="composerWrap">
+          <button class="icon-btn" id="attachBtn" type="button" aria-label="附加檔案" title="附加檔案 (Ctrl+U)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+          <textarea id="composerInput" rows="1" placeholder="輸入訊息… (Enter 發送，Shift+Enter 換行)" aria-label="訊息輸入"></textarea>
+          <div class="composer-actions">
+            <button class="icon-btn send-btn" id="sendBtn" type="button" aria-label="發送訊息" title="發送 (Enter)">↑</button>
+            <button class="icon-btn stop-btn hidden" id="stopBtn" type="button" aria-label="停止生成" title="停止 (Esc)">■</button>
+          </div>
+        </div>
+        <input type="file" id="fileInput" multiple class="hidden" aria-hidden="true" tabindex="-1"
+               accept="image/*,text/*,.md,.txt,.json,.js,.ts,.py,.rs,.java,.cpp,.c,.h,.css,.html,.xml,.yaml,.yml,.toml,.ini,.cfg,.csv,.log">
+      </div>
+    </main>
+
+    <div class="resize-handle resize-handle-v" id="resizeRight" data-resize="right" role="separator" aria-orientation="vertical" aria-label="調整右側面板寬度"></div>
+
+    <!-- 右側欄：上下文（預設隱藏，寬 320px） -->
+    <aside class="sidebar sidebar-right" id="rightSidebar" data-panel="right" hidden>
+      <div class="sidebar-header">
+        <h2 class="sidebar-title">上下文</h2>
+        <button class="icon-btn icon-btn-sm sidebar-close" id="rightSidebarClose" type="button" aria-label="關閉右側面板">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
         </button>
       </div>
-    </div>
-    <div class="flex-1 overflow-auto p-3 font-mono text-sm" id="terminalOutput" style="background: var(--bg-base);">
-      <div class="text-muted">終端機輸出將顯示在這裡</div>
-    </div>
-  </section>
+      <nav class="sidebar-tabs" role="tablist" id="rightTabs">
+        <button class="tab active" role="tab" data-tab="files" aria-selected="true" type="button">檔案</button>
+        <button class="tab" role="tab" data-tab="symbols" aria-selected="false" type="button">符號</button>
+        <button class="tab" role="tab" data-tab="plugins" aria-selected="false" type="button">插件</button>
+      </nav>
+      <div class="sidebar-content" id="rightContent">
+        <section class="tab-panel" data-panel="files" id="filesPanel">
+          <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+            <div class="empty-state-title">尚未開啟專案</div>
+            <div class="empty-state-desc">在 opencode 中開啟專案以查看檔案</div>
+          </div>
+        </section>
+        <section class="tab-panel hidden" data-panel="symbols" id="symbolsPanel">
+          <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+            <div class="empty-state-title">無符號資料</div>
+            <div class="empty-state-desc">開啟程式碼檔案以查看符號</div>
+          </div>
+        </section>
+        <section class="tab-panel hidden" data-panel="plugins" id="pluginsPanel">
+          <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/></svg></div>
+            <div class="empty-state-title">無可用插件</div>
+            <div class="empty-state-desc">安裝 opencode 插件以擴充功能</div>
+          </div>
+        </section>
+      </div>
+    </aside>
 
-  <!-- 調整手柄 -->
-  <div class="resize-handle" data-resize="left" id="resizeLeft" aria-label="調整左側面板寬度"></div>
-  <div class="resize-handle" data-resize="right" id="resizeRight" aria-label="調整右側面板寬度"></div>
-  <div class="resize-handle" data-resize="bottom" id="resizeBottom" aria-label="調整底部面板高度"></div>
-
-  <!-- 命令面板 -->
-  <div class="command-palette" id="commandPalette" role="dialog" aria-modal="true" aria-label="命令面板">
-    <input type="text" class="cmd-input" id="cmdInput" placeholder="輸入命令或搜尋… (⌘K)" autocomplete="off" spellcheck="false">
-    <div class="cmd-results" id="cmdResults"></div>
   </div>
 
-  <!-- 吐司通知容器 -->
-  <div class="toast-container" id="toastContainer"></div>
-
-  <!-- 檔案輸入 -->
-  <input type="file" id="composerFileInput" multiple class="hidden" accept="image/*,text/*,.pdf,.md,.txt,.json,.js,.ts,.py,.rs,.java,.cpp,.c,.h,.css,.html,.xml,.yaml,.yml,.toml,.ini,.cfg,.conf,.log,.csv,.sql,.sh,.bash,.zsh,.fish">
+  <!-- 底部面板：終端機／工具步驟輸出（全寬，預設隱藏，高 200px） -->
+  <div class="resize-handle resize-handle-h" id="resizeBottom" data-resize="bottom" role="separator" aria-orientation="horizontal" aria-label="調整底部面板高度"></div>
+  <section class="bottom-panel hidden" id="bottomPanel" aria-label="終端機">
+    <div class="bottom-panel-header">
+      <span class="bottom-panel-title">終端機</span>
+      <button class="icon-btn icon-btn-sm" id="bottomPanelClose" type="button" aria-label="關閉底部面板">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="terminal-output" id="terminalOutput">
+      <div class="term-empty">Agent 工具步驟會顯示在這裡</div>
+    </div>
+  </section>
 </div>
 
-<script type="module" src="/static/js/opencode.js?v=1"></script>
+<div class="sidebar-overlay" id="sidebarOverlay" aria-hidden="true"></div>
+
+<!-- 命令面板（Cmd/Ctrl+K） -->
+<div class="command-palette" id="commandPalette" role="dialog" aria-modal="true" aria-label="命令面板">
+  <input type="text" class="cmd-input" id="cmdInput" placeholder="輸入命令或搜尋… (⌘K)" autocomplete="off" spellcheck="false">
+  <div class="cmd-results" id="cmdResults"></div>
+</div>
+
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+<script type="module" src="/admin/static/ai/js/opencode.js?v=2"></script>
 </body>
 </html>

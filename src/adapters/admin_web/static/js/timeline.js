@@ -4,6 +4,7 @@
 
 import { appState } from './state.js';
 import { renderMarkdown, el, clear } from './markdown.js';
+import { icon } from './icons.js';
 
 function createMessageElement(message) {
   const wrap = el('div', 'message ' + (message.role === 'user' ? 'user' : 'assistant'));
@@ -36,7 +37,10 @@ function createMessageElement(message) {
   if (message.attachments?.length) {
     const attRow = el('div', 'message-attachments');
     message.attachments.forEach(name => {
-      attRow.appendChild(el('span', '', '📎 ' + name));
+      const chip = el('span');
+      chip.innerHTML = icon('paperclip', 12) + ' ';
+      chip.appendChild(document.createTextNode(name));
+      attRow.appendChild(chip);
     });
     body.appendChild(attRow);
   }
@@ -180,13 +184,17 @@ export function createTimeline(container, options = {}) {
   }
 
   function showError(messageId, error) {
-    const element = messageElements.get(messageId);
-    if (!element) return;
+    // 串流中的泡泡不在 messageElements 內，所以也要接受 streamingMessage。
+    const element = messageElements.get(messageId) || streamingMessage;
+    if (!element || !element._content) return;
     const errorBox = el('div', 'errbox');
-    errorBox.innerHTML = `<div class="errbox-h">⚠ 生成失敗</div><div class="errbox-m">${escapeHtml(error.message || '未知錯誤')}</div>`;
+    const errHead = el('div', 'errbox-h');
+    errHead.innerHTML = icon('alert-triangle', 14) + ' ';
+    errHead.appendChild(document.createTextNode('生成失敗'));
+    errorBox.appendChild(errHead);
+    errorBox.appendChild(el('div', 'errbox-m', (error && error.message) || '未知錯誤'));
     element._content.appendChild(errorBox);
   }
-
   function replaceMessage(messageId, newMessage) {
     const oldElement = messageElements.get(messageId);
     if (oldElement) {
@@ -201,7 +209,6 @@ export function createTimeline(container, options = {}) {
     messages = [];
     messageElements.forEach(el => el.remove());
     messageElements.clear();
-    streamingMessage = null;
     if (streamingMessage) { streamingMessage.remove(); streamingMessage = null; }
   }
 
@@ -273,7 +280,9 @@ export function createEmptyState(container, options = {}) {
   } = options;
 
   const emptyState = el('div', 'empty-state flex-1');
-  emptyState.appendChild(el('div', 'empty-state-icon', '💬'));
+  const emptyIcon = el('div', 'empty-state-icon');
+  emptyIcon.innerHTML = icon('message-square', 26);
+  emptyState.appendChild(emptyIcon);
   emptyState.appendChild(el('div', 'empty-state-title', title));
   emptyState.appendChild(el('div', 'empty-state-desc', description));
 

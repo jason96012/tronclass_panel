@@ -1,174 +1,75 @@
 /**
- * API 模組 - 後端通訊層
+ * API 模組 - 後端通訊層（AI 頁面）
+ *
+ * 所有路徑都對應 src/adapters/admin_web/mod.rs 內實際註冊的路由。
+ * 認證靠 same-origin cookie，不需要自己帶 token。
+ *
+ * 路由對照（方法 + 路徑 → 後端 handler）：
+ *   GET  /admin/api/ai/state                 → ai_chat::state_handler（keys/settings/threads/models）
+ *   POST /admin/api/ai/chat                  → ai_chat::chat_handler（202 + job_id）
+ *   GET  /admin/api/ai/chat/status?job=      → ai_chat::chat_status_handler（完整文字 text）
+ *   GET  /admin/api/ai/chat/stream?job=      → ai_chat::chat_stream_handler（SSE：meta/step/delta/done/gone）
+ *   POST /admin/api/ai/chat/stop             → ai_chat::chat_stop_handler（body: { job }）
+ *   POST /admin/api/ai/threads               → ai_chat::threads_handler（action: get/rename/delete/clear）
+ *   GET  /admin/api/ai/opencode/state        → opencode::state_handler
+ *   POST /admin/api/ai/opencode/config       → opencode::config_handler（僅管理員）
+ *   POST /admin/api/ai/opencode/access       → opencode::access_handler（body: { allowed_accounts }，僅管理員）
  */
 
-const API_BASE = '/admin/api';
+const API_BASE = '/admin/api/ai';
 
-async function request(path, options = {}) {
-  const url = `${API_BASE}${path}`;
-  const config = {
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      ...options.headers
-    },
-    ...options
-  };
-
-  if (config.body && typeof config.body === 'object') {
-    config.body = JSON.stringify(config.body);
+async function request(path, { method = 'GET', body } = {}) {
+  const init = { method, credentials: 'same-origin', headers: {} };
+  if (body !== undefined) {
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
   }
-
-  const response = await fetch(url, config);
+  const response = await fetch(`${API_BASE}${path}`, init);
   const text = await response.text();
-
   let data = null;
   try {
     data = text ? JSON.parse(text) : null;
   } catch {
     data = text;
   }
-
   if (!response.ok) {
-    const error = new Error(data?.error || `HTTP ${response.status}`);
+    const error = new Error((data && (data.error || data.message)) || `HTTP ${response.status}`);
     error.status = response.status;
-    error.code = data?.code;
+    error.code = data && data.code;
     error.data = data;
     throw error;
   }
-
   return data;
 }
 
 export const api = {
-  // 聊天相關
+  /** 初始資料：threads 摘要、模型清單、設定、權限旗標。 */
+  state: () => request('/state'),
+
   chat: {
-    send: (payload) => request('/ai/chat', { method: 'POST', body: payload }),
-    poll: (jobId) => request(`/ai/chat/poll/${jobId}`),
-    stop: (jobId) => request(`/ai/chat/stop/${jobId}`, { method: 'POST' }),
-    stream: (payload) => {
-      return new Promise((resolve, reject) => {
-        const controller = new AbortController();
-        fetch(`${API_BASE}/ai/chat/stream`, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal
-        }).then(response => {
-          if (!response.ok) {
-            response.text().then(text => {
-              try { reject(JSON.parse(text)); } catch { reject(new Error(text || `HTTP ${response.status}`)); }
-            });
-            return;
-          }
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          const read = () => reader.read().then(({ done, value }) => {
-            if (done) { resolve(); return; }
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop();
-            lines.forEach(line => {
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-                  resolve(data);
-                } catch { }
-              }
-            });
-            read();
-          });
-          read();
-        }).catch(reject);
-        return { abort: () => controller.abort() };
-      });
-    }
+    /** 送出訊息。回傳 { job_id, thread_id, model_id, auto_reason, poll_ms }。 */
+    send: (payload) => request('/chat', { method: 'POST', body: payload }),
+    /** 輪詢完整狀態（SSE 不可用時的後備）。 */
+    status: (jobId) => request(`/chat/status?job=${encodeURIComponent(jobId)}`),
+    /** SSE 端點網址（給 EventSource 用，需同源 cookie）。 */
+    streamUrl: (jobId) => `${API_BASE}/chat/stream?job=${encodeURIComponent(jobId)}`,
+    stop: (jobId) => request('/chat/stop', { method: 'POST', body: { job: jobId } })
   },
 
-  // 會話/線程管理
   threads: {
-    list: () => request('/ai/threads'),
-    get: (id) => request(`/ai/threads/${id}`),
-    create: (title) => request('/ai/threads', { method: 'POST', body: { action: 'create', title } }),
-    delete: (id) => request('/ai/threads', { method: 'POST', body: { action: 'delete', id } }),
-    rename: (id, title) => request('/ai/threads', { method: 'POST', body: { action: 'rename', id, title } }),
-    clearAll: () => request('/ai/threads', { method: 'POST', body: { action: 'clear_all' } })
+    /** 讀取單一對話完整內容（含 messages）。回傳 { ok, thread }。 */
+    get: (id) => request('/threads', { method: 'POST', body: { action: 'get', id } }),
+    rename: (id, title) => request('/threads', { method: 'POST', body: { action: 'rename', id, title } }),
+    delete: (id) => request('/threads', { method: 'POST', body: { action: 'delete', id } }),
+    clear: () => request('/threads', { method: 'POST', body: { action: 'clear' } })
   },
 
-  // 模型管理
-  models: {
-    list: () => request('/ai/models'),
-    add: (payload) => request('/ai/models', { method: 'POST', body: { action: 'add', ...payload } }),
-    remove: (id) => request('/ai/models', { method: 'POST', body: { action: 'remove', id } }),
-    enable: (id, enabled) => request('/ai/models', { method: 'POST', body: { action: 'enable', id, enabled } }),
-    bulkAdd: (payload) => request('/ai/models', { method: 'POST', body: { action: 'bulk_add', ...payload } }),
-    clean: () => request('/ai/models', { method: 'POST', body: { action: 'clean' } }),
-    removeOrphans: () => request('/ai/models', { method: 'POST', body: { action: 'remove_orphans' } }),
-    reset: () => request('/ai/models', { method: 'POST', body: { action: 'reset' } })
-  },
-
-  // API 金鑰管理
-  keys: {
-    list: () => request('/ai/keys'),
-    add: (payload) => request('/ai/keys', { method: 'POST', body: { action: 'add', ...payload } }),
-    update: (id, payload) => request('/ai/keys', { method: 'POST', body: { action: 'update', id, ...payload } }),
-    delete: (id) => request('/ai/keys', { method: 'POST', body: { action: 'delete', id } }),
-    reorder: (ids) => request('/ai/keys', { method: 'POST', body: { action: 'reorder', ids } }),
-    test: (id) => request('/ai/keys', { method: 'POST', body: { action: 'test', id } })
-  },
-
-  // 設定
-  settings: {
-    get: () => request('/ai/settings'),
-    save: (payload) => request('/ai/settings', { method: 'POST', body: payload }),
-    saveTokens: (payload) => request('/ai/settings/tokens', { method: 'POST', body: payload })
-  },
-
-  // 供應商
-  providers: {
-    list: () => request('/ai/providers')
-  },
-
-  // opencode 專用
   opencode: {
     state: () => request('/opencode/state'),
-    config: () => request('/opencode/config'),
     saveConfig: (payload) => request('/opencode/config', { method: 'POST', body: payload }),
-    access: () => request('/opencode/access'),
-    saveAccess: (accounts) => request('/opencode/access', { method: 'POST', body: { accounts } }),
-    chat: (payload) => request('/opencode/chat', { method: 'POST', body: payload })
-  },
-
-  // 通用
-  health: () => request('/health'),
-  version: () => request('/version')
+    saveAccess: (allowedAccounts) =>
+      request('/opencode/access', { method: 'POST', body: { allowed_accounts: allowedAccounts } })
+  }
 };
-
-export async function uploadFile(file) {
-  const formData = new FormData();
-  formData.append('file', file);
-  const response = await fetch(`${API_BASE}/ai/upload`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    body: formData
-  });
-  if (!response.ok) throw new Error('上傳失敗');
-  return response.json();
-}
-
-export function createApiClient(baseUrl = API_BASE) {
-  return {
-    request: (path, options) => request(path, options),
-    chat: api.chat,
-    threads: api.threads,
-    models: api.models,
-    keys: api.keys,
-    settings: api.settings,
-    providers: api.providers,
-    opencode: api.opencode
-  };
-}
 
 export default api;
