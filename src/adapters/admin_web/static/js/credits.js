@@ -345,7 +345,6 @@
 
     q('content').classList.remove('hidden-init');
     q('emptyCard').classList.add('hidden-init');
-    q('reloadBtn').hidden = false;
 
     // 總覽
     var st = report.student || {};
@@ -755,7 +754,6 @@
     await fillAccountSelect(sel);
     sel.onchange = function () { loadReport(sel.value); };
     q('syncBtn').onclick = runSync;
-    q('reloadBtn').onclick = function () { loadReport(q('accountSel').value); };
     if (sel.value) loadReport(sel.value);
     else showEmpty();
   }

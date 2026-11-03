@@ -5,149 +5,181 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
 <link rel="canonical" href="https://dashboard.jasoncloudserver.me/admin/settings">
-<title>外觀與設定｜Tronclass Dashboard</title>
-<meta name="description" content="Tronclass 外觀與設定頁面：自訂主題色、字體、動畫偏好與介面顯示選項。">
+<title>設定｜Tronclass Dashboard</title>
+<meta name="description" content="Tronclass 設定：外觀、學期判定、點名節奏、通知與帳號安全。">
 <style>
-  :root{color-scheme:light dark;--bg:#f4f7fb;--card:#fff;--text:#172033;--muted:#64748b;--line:#dbe3ef;--soft:#f1f5f9;--primary:#2563eb;--ok:#15803d}
-  @media(prefers-color-scheme:dark){:root{--bg:#090d16;--card:#131b2a;--text:#f1f5f9;--muted:#94a3b8;--line:#334155;--soft:#1e293b;--primary:#3b82f6}}
+  :root{color-scheme:light dark;--bg:#f4f6fa;--card:#ffffff;--text:#152033;--muted:#5b6b82;--line:#e1e7f0;--soft:#f5f7fb;--primary:#2563eb;--ok:#15803d;--bad:#b91c1c;--radius:16px}
+  @media(prefers-color-scheme:dark){:root{--bg:#0b1020;--card:#131b2d;--text:#eef2fa;--muted:#9aa8bf;--line:#2a3750;--soft:#1b2639;--primary:#3b82f6}}
   *{box-sizing:border-box}
-  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif}
-  /* TOP_HEADER_V2: 與點名偵測排程頁相同之 header 樣式 */
-  .top{max-width:720px;margin:0 auto;padding:22px 16px 10px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+  html,body{margin:0;min-height:100%;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;font-size:15px;line-height:1.55;-webkit-text-size-adjust:100%}
+  body{padding-top:env(safe-area-inset-top,0px)}
+  [hidden]{display:none!important}
+
+  /* 頁首 */
+  .top{max-width:960px;margin:0 auto;padding:18px 16px 6px;display:flex;align-items:center;justify-content:space-between;gap:12px}
   .brand{display:flex;align-items:center;gap:12px;min-width:0}
-  .brand b{color:var(--text)}
-  .brand .meta{color:var(--muted);font-size:13px;margin-top:3px;line-height:1.4}
-  .logo{width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg,#38bdf8,#4f46e5);display:grid;place-items:center;color:#fff;font-weight:900;box-shadow:0 10px 26px rgba(37,99,235,.28);flex:0 0 auto}
-  .top a{display:inline-flex;align-items:center;justify-content:center;min-height:42px;color:var(--text)!important;text-decoration:none;border:1px solid var(--line)!important;background:var(--card)!important;padding:0 16px;border-radius:999px;font-weight:760;box-shadow:0 1px 2px rgba(15,23,42,.03);white-space:nowrap}
-  .top a:hover{border-color:#60a5fa!important;color:#2563eb!important}
-  main{max-width:720px;margin:0 auto;padding:18px 16px 48px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:22px;padding:20px 18px 18px;box-shadow:0 16px 40px rgba(15,23,42,.08);margin-bottom:16px}
-  h1{margin:0 0 6px;font-size:22px}
-  h2{margin:18px 0 8px;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-  p.hint{margin:0 0 6px;color:var(--muted);font-size:13px;line-height:1.55;font-weight:650}
-  /* ── 主題選擇卡 ── */
-  .theme-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:4px}
-  .theme-card{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:16px;border:2px solid var(--line);background:var(--soft);color:var(--text);cursor:pointer;font:inherit;text-align:left}
-  .theme-card:hover{filter:brightness(.98)}
-  .theme-card.active{border-color:var(--primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 22%,transparent)}
-  .theme-card b{font-size:14px;font-weight:850}
-  .theme-card i{font-style:normal;font-size:12px;color:var(--muted);font-weight:650}
-  .mini{display:block;height:64px;border-radius:10px;overflow:hidden;border:1px solid var(--line);position:relative;background:#F6F8FC}
-  .mini .bar{position:absolute;top:0;left:0;right:0;height:14px;background:#FFFFFF;border-bottom:1px solid #E2E8F0}
-  .mini .dot{position:absolute;top:4px;left:8px;width:22px;height:6px;border-radius:99px;background:#CBD5E1}
-  .mini .line{position:absolute;width:46%;height:6px;border-radius:99px;background:#E2E8F0}
-  .mini .l1{top:26px;left:10px}.mini .l2{top:38px;left:10px}.mini .l3{top:50px;left:10px}
-  .mini .blk{position:absolute;top:24px;right:10px;bottom:8px;width:32%;border-radius:8px;background:#FFFFFF;border:1px solid #E2E8F0}
-  .mini.dark{background:#0B0F19;border-color:#334155}
-  .mini.dark .bar{background:#182232;border-bottom-color:#334155}
-  .mini.dark .dot{background:#475569}
-  .mini.dark .line{background:#1E293B}
-  .mini.dark .blk{background:#182232;border-color:#334155}
-  .mini.auto .half-l{position:absolute;inset:0;background:#F6F8FC}
-  .mini.auto .half-d{position:absolute;top:0;bottom:0;right:0;width:50%;background:#0B0F19;border-left:2px solid var(--line)}
-  /* ── 強調色 ── */
-  .swatches{display:flex;flex-wrap:wrap;gap:12px;margin-top:4px}
-  .swatch{width:38px;height:38px;border-radius:50%;border:2px solid transparent;background:var(--sw);cursor:pointer;padding:0;position:relative}
-  .swatch:hover{transform:scale(1.06)}
-  .swatch.active{outline:3px solid color-mix(in srgb,var(--sw) 45%,transparent);outline-offset:2px;border-color:var(--text)}
-  /* CSP_STYLE_ATTR_STAGED_V1：色票顏色原為 inline style="--sw:…"，
-     會觸發 Report-Only 標頭的 style-src-attr 回報；改由既有的
-     data-set-accent 屬性選擇器供給，外觀計算結果完全相同。 */
-  .swatch[data-set-accent="blue"]{--sw:#2563EB}
-  .swatch[data-set-accent="indigo"]{--sw:#6366F1}
-  .swatch[data-set-accent="green"]{--sw:#059669}
-  .swatch[data-set-accent="amber"]{--sw:#D97706}
-  .swatch[data-set-accent="purple"]{--sw:#7C3AED}
-  .swatch[data-set-accent="rose"]{--sw:#E11D48}
-  .swatch[data-set-accent="cyan"]{--sw:#0E7490}
-  /* ── 字體大小分段控制 ── */
-  .seg{display:inline-flex;border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-top:2px}
-  .seg button{min-width:88px;min-height:42px;border:0;background:var(--soft);color:var(--text);font:inherit;font-weight:800;font-size:14px;cursor:pointer;padding:0 16px}
+  .logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(135deg,#38bdf8,#4f46e5);color:#fff;display:grid;place-items:center;font-weight:800;flex:0 0 auto}
+  .brand b{display:block;font-size:16px}
+  .brand .meta{font-size:12px;color:var(--muted)}
+  body .top a.back{display:inline-flex;align-items:center;min-height:40px;padding:0 16px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--text);text-decoration:none;font-size:14px;font-weight:700;white-space:nowrap}
+  body .top a.back:hover{border-color:var(--primary);color:var(--primary)}
+
+  /* 說明區 */
+  .intro{max-width:960px;margin:0 auto;padding:10px 16px 0}
+  .intro h1{margin:0 0 4px;font-size:24px;letter-spacing:-.01em}
+  .intro p{margin:0;color:var(--muted);font-size:14px}
+
+  /* 分類快速跳轉（捲動時固定在頂部） */
+  .quicknav{position:sticky;top:0;z-index:5;margin-top:14px;background:var(--bg);border-bottom:1px solid var(--line)}
+  .quicknav-inner{max-width:960px;margin:0 auto;padding:10px 16px;display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+  .quicknav-inner::-webkit-scrollbar{display:none}
+  body .quicknav-inner a{flex:0 0 auto;display:inline-flex;align-items:center;min-height:36px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--text);text-decoration:none;font-size:13px;font-weight:700}
+  body .quicknav-inner a:hover{border-color:var(--primary);color:var(--primary)}
+
+  /* 主體 */
+  main#appSettingsRoot{max-width:960px;margin:0 auto;padding:4px 16px 56px}
+  .group{scroll-margin-top:64px;margin-top:24px}
+  .group:not(:has(.card:not([hidden]))){display:none}
+  .group-head{margin:0 2px 10px}
+  .group-head h2{margin:0;font-size:15px;font-weight:800}
+  .group-head p{margin:2px 0 0;font-size:13px;color:var(--muted)}
+  .cards{display:grid;gap:12px}
+  @media(min-width:900px){
+    .cards{grid-template-columns:1fr 1fr;align-items:start}
+    .cards>.card.wide{grid-column:1/-1}
+  }
+
+  /* 卡片 */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;box-shadow:0 1px 2px rgba(15,23,42,.04);min-width:0}
+  .card-head h3{margin:0;font-size:16px;font-weight:750}
+  .card-head p{margin:4px 0 0;color:var(--muted);font-size:13.5px}
+  .card-body{margin-top:10px}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;border-top:1px solid var(--line)}
+  .card-body>.row:first-child{border-top:0;padding-top:0}
+  .row-text{min-width:0}
+  .row-text b{display:block;font-size:14.5px;font-weight:650}
+  .row-text small{display:block;margin-top:2px;font-size:12.5px;color:var(--muted);overflow-wrap:anywhere}
+  .row-value{font-size:14px;font-weight:600;text-align:right;overflow-wrap:anywhere;min-width:0}
+  /* 有狀態文字的列：標題在上、內容在下靠左，長文字不會把標題擠斷 */
+  .row:has(.row-value){flex-direction:column;align-items:flex-start;gap:4px}
+  .row:has(.row-value) .row-value{text-align:left;width:100%;font-weight:500;color:var(--muted)}
+  .card-foot{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}
+  .tmsg{margin-top:10px;font-size:13px;font-weight:700;color:var(--muted);white-space:pre-line;overflow-wrap:anywhere}
+  .tmsg:empty{display:none}
+  .tmsg.ok{color:var(--ok)}
+  .tmsg.bad{color:var(--bad)}
+  .hint-note{margin:12px 0 0;font-size:12.5px;color:var(--muted)}
+
+  /* 按鈕與輸入框 */
+  .tbtn,.ghost{min-height:40px;padding:0 18px;border-radius:10px;font:inherit;font-size:14px;font-weight:700;cursor:pointer;white-space:nowrap}
+  .tbtn{border:0;background:var(--primary);color:#fff}
+  .tbtn:hover{filter:brightness(1.06)}
+  .tbtn:disabled{opacity:.55;cursor:default}
+  .ghost{border:1px solid var(--line);background:var(--card);color:var(--text);font-weight:650}
+  .ghost:hover{border-color:var(--primary);color:var(--primary)}
+  .input{height:40px;width:150px;min-width:0;padding:0 12px;border-radius:10px;border:1px solid var(--line);background:var(--soft);color:var(--text);font:inherit;font-size:14px}
+  .input:focus{outline:2px solid color-mix(in srgb,var(--primary) 45%,transparent);outline-offset:1px}
+  textarea.input{width:100%;height:auto;padding:10px 12px;margin-top:8px;resize:vertical}
+  .chk{width:22px;height:22px;accent-color:var(--primary);flex:0 0 auto}
+
+  /* 字體大小分段控制 */
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:12px;overflow:hidden;max-width:100%}
+  .seg button{min-width:84px;min-height:40px;border:0;background:var(--soft);color:var(--text);font:inherit;font-size:14px;font-weight:700;cursor:pointer;padding:0 14px}
   .seg button+button{border-left:1px solid var(--line)}
   .seg button.active{background:var(--primary);color:#fff}
-  /* ── 減少動畫開關 ── */
-  .switch-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-top:4px;cursor:pointer}
-  .switch-row b{display:block;font-size:14px;font-weight:850}
-  .switch-row i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
+
+  /* 開關 */
   .switch-wrap{position:relative;width:52px;height:30px;flex:0 0 auto}
-  .switch-wrap input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
+  .switch-wrap input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer;z-index:1}
   .slider{position:absolute;inset:0;border-radius:99px;background:var(--line);transition:background .15s;pointer-events:none}
   .slider::after{content:'';position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.3);transition:transform .15s}
   .switch-wrap input:checked+.slider{background:var(--primary)}
   .switch-wrap input:checked+.slider::after{transform:translateX(22px)}
-  /* ── 其他設定連結 ── */
-  .links{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:8px;margin-top:4px}
-  .links a{display:flex;align-items:center;gap:8px;min-height:46px;padding:0 14px;border-radius:14px;border:1px solid var(--line);background:var(--soft);color:var(--text);text-decoration:none;font-weight:750;font-size:14px}
-  .links a:hover{filter:brightness(.97)}
-  .foot-row{margin-top:14px;display:flex;justify-content:flex-end}
-  button.ghost{min-height:40px;padding:0 16px;border-radius:12px;border:1px solid var(--line);background:transparent;color:var(--muted);font:inherit;font-weight:800;font-size:13px;cursor:pointer}
-  button.ghost:hover{color:var(--text);filter:brightness(.98)}
-  p.note{margin:14px 0 0;color:var(--muted);font-size:12px;line-height:1.6;font-weight:650}
-  @media(max-width:560px){.links{grid-template-columns:1fr}.seg{width:100%}.seg button{flex:1;min-width:0}}
-  /* SETTINGS_RESPONSIVE_V1: 電腦版/手機版雙版型 */
-  .pref-duo{display:block}
-  @media(min-width:960px){
-    .top{max-width:1000px;padding:26px 24px 12px}
-    main{max-width:1000px;padding:26px 24px 56px}
-    .card{padding:28px 26px 24px;margin-bottom:18px}
-    h1{font-size:26px}
-    .theme-grid{grid-template-columns:repeat(3,1fr);gap:16px}
-    .mini{height:96px}
-    .pref-duo{display:grid;grid-template-columns:1fr 1fr;column-gap:36px;align-items:start}
-    .pref-col+.pref-col{border-left:1px solid var(--line);padding-left:36px}
-    .links{grid-template-columns:repeat(2,1fr)}
-  }
-  @media(max-width:640px){
-    main{padding:14px 12px 44px}
-    .card{padding:18px 14px 16px;border-radius:18px;margin-bottom:14px}
-    h1{font-size:20px}
-    .theme-grid{grid-template-columns:1fr}
-    .mini{height:76px}
-    .swatch{width:42px;height:42px}
-  }
-  @media(max-width:760px){.top{min-height:70px;padding:14px 12px 8px}.brand{gap:13px}.logo{width:48px;height:48px;font-size:20px}.brand b{display:block;font-size:19px;line-height:1.2}.brand .meta{font-size:13px;margin-top:3px}.top a{min-height:46px;padding:0 16px;font-size:14px}}
-  @media(max-width:390px){.top{padding-inline:12px}.brand{gap:9px}.logo{width:44px;height:44px}.brand b{font-size:17px}.brand .meta{font-size:11px}.top a{min-height:42px;padding:0 11px;font-size:12px}}
-  /* ── 測試通知卡（TEST_NOTIFICATION_CARD_V1）── */
-  .test-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px;border:1px solid var(--line);border-radius:16px;background:var(--soft);margin-top:4px}
-  .test-row+.test-row{margin-top:10px}
-  .test-row b{display:block;font-size:14px;font-weight:850}
-  .test-row i{display:block;font-style:normal;font-size:12px;color:var(--muted);font-weight:650;margin-top:2px;line-height:1.5}
-  /* CSP_STYLE_ATTR_STAGED_V1：以下 class 取代原本的 inline style 屬性
-     （避免 Report-Only 標頭的 style-src-attr 回報）；宣告內容逐一對應原 inline 值。 */
-  .test-row.wrap{flex-wrap:wrap;gap:8px}
-  .test-row .span-full{flex:1 1 100%}
-  .test-row .test-input{flex:0 0 140px;min-height:40px;padding:0 12px;border-radius:12px;border:1px solid var(--line);background:var(--card);color:var(--text);font:inherit}
-  .test-row .chk{width:22px;min-height:22px}
-  .test-row.end{justify-content:flex-end}
-  .tbtn{flex:0 0 auto;min-height:40px;padding:0 18px;border:0;border-radius:999px;background:var(--primary);color:#fff;font:inherit;font-weight:800;font-size:13px;cursor:pointer}
-  .tbtn:hover{filter:brightness(1.08)}
-  .tbtn:disabled{opacity:.55;cursor:default}
-  .tmsg{min-height:18px;margin-top:10px;font-size:13px;font-weight:800;color:var(--muted);white-space:pre-line}
-  .tmsg.ok{color:var(--ok)}
-  .tmsg.bad{color:#b91c1c}
-  @media(max-width:640px){.test-row{flex-direction:column;align-items:stretch}.tbtn{width:100%}}
-  /* MOBILE_OVERFLOW_V1（fix107）：卡片裡的網址與 IndexNow 金鑰是「沒有空白的長字串」，
-     預設不會斷行 → 整張卡（連帶整頁）被撐出畫面（手機實測 320px 寬時溢出 189px）。
-     ① .test-row 是 flex；子項的 min-width:auto 讓它無法縮到比「最長的不可斷行字串」更窄 → 給 0。
-     ② overflow-wrap:anywhere 讓長字串能在任何位置斷行；它同時會影響 min-content 寬度，
-        所以①的縮小才真的有效（overflow-wrap:break-word 不會影響 min-content）。 */
-  .test-row>span{min-width:0}
-  .test-row i,.test-row b,.test-row .test-input,p.hint{overflow-wrap:anywhere}
-  /* ── SETTINGS_PICKER_VISIBILITY_V1：深色下 theme.css 通用按鈕規則會蓋掉本頁樣式，以更高優先權還原 ── */
-  html[data-theme="dark"] button.theme-card{background:var(--soft)!important;color:var(--text)!important}
-  html[data-theme="dark"] button.theme-card.active{background:var(--card)!important;border-color:var(--primary)!important;box-shadow:0 0 0 3px rgba(59,130,246,.35)!important}
-  html[data-theme="dark"] button.swatch.swatch.swatch{background:var(--sw)!important}
-  html[data-theme="dark"] button.swatch.swatch.swatch.active{border-color:var(--text)!important}
+  label.row{cursor:pointer}
+
+  /* 學期快速選擇 */
+  .presets{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:6px}
+  .presets-title{width:100%;font-size:13px;font-weight:650;color:var(--muted)}
+  .presets .ghost{min-height:36px;font-size:13px}
+
+  /* 點名節奏對照表 */
+  .tune{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:10px 12px;align-items:center;margin-top:6px}
+  .tune-head{font-size:12.5px;font-weight:700;color:var(--muted)}
+  .tune-mode{font-size:14.5px;font-weight:650}
+  .tune-cell{min-width:0}
+  .tune-cell .input{width:100%}
+  .tune-cell::before{display:none}
+
+  /* 連結列 */
+  .links{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:8px}
+  body .links a{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:0 14px;border-radius:12px;border:1px solid var(--line);background:var(--soft);color:var(--text);text-decoration:none;font-size:14px;font-weight:650}
+  body .links a::after{content:'›';color:var(--muted);font-size:18px;line-height:1}
+  body .links a:hover{border-color:var(--primary);color:var(--primary)}
+
+  /* 說明折疊 */
+  details.more{margin-top:12px;font-size:13px;color:var(--muted)}
+  details.more summary{cursor:pointer;min-height:32px;display:flex;align-items:center;color:var(--primary);font-weight:650}
+  details.more p{margin:4px 0 0;line-height:1.6}
+
+  /* 深色模式：覆蓋全站按鈕規則（與 app-settings 的 data-theme 同步） */
+  html[data-theme="dark"] .tbtn{background:var(--primary)!important;color:#fff!important}
+  html[data-theme="dark"] .ghost{background:var(--soft)!important;color:var(--text)!important;border-color:var(--line)!important}
   html[data-theme="dark"] .seg button{background:var(--soft)!important;color:var(--text)!important}
-  html[data-theme="dark"] .seg button.active{background:var(--primary)!important;color:#fff!important;border-color:var(--primary)!important}
-  html[data-theme="dark"] button.tbtn{background:var(--primary)!important;color:#fff!important}
-  /* 所有模式：未選卡片降透明度、選中卡片加「使用中」徽章，一眼可辨 */
-  .theme-card{position:relative;opacity:.6}
-  .theme-card:hover{opacity:.85}
-  .theme-card.active{opacity:1;border-color:var(--primary)!important;box-shadow:0 0 0 3px rgba(59,130,246,.30)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 35%,transparent)}
-  .theme-card.active::after{content:'使用中';position:absolute;top:10px;right:10px;padding:3px 10px;border-radius:999px;background:var(--primary);color:#fff;font-size:11px;font-weight:850;letter-spacing:.02em}
-  .swatch:not(.active){opacity:.8}
-  .swatch.active{border-color:var(--text)!important;box-shadow:0 0 0 3px rgba(120,120,128,.32)!important}
+  html[data-theme="dark"] .seg button.active{background:var(--primary)!important;color:#fff!important}
+  html[data-theme="dark"] .input{background:var(--soft)!important;color:var(--text)!important}
+  html[data-theme="dark"] body .links a,html[data-theme="dark"] body .quicknav-inner a,html[data-theme="dark"] body .top a.back{background:var(--card)!important;color:var(--text)!important}
+
+  /* 手機 */
+  @media(max-width:640px){
+    .top{padding:14px 12px 4px}
+    .intro{padding:8px 12px 0}
+    .intro h1{font-size:21px}
+    main#appSettingsRoot{padding:4px 12px 44px}
+    .card{padding:16px 14px;border-radius:16px}
+    .row{flex-direction:column;align-items:stretch;gap:8px}
+    .row-value{text-align:left}
+    .row .input,.row .tbtn,.row .ghost{width:100%}
+    .card-foot{flex-direction:column-reverse;align-items:stretch}
+    .card-foot .tbtn,.card-foot .ghost{width:100%}
+    .seg{width:100%}
+    .seg button{flex:1;min-width:0;padding:0 8px}
+    label.row{flex-direction:row;align-items:center}
+    .tune{grid-template-columns:1fr 1fr}
+    .tune-head{display:none}
+    .tune-mode{grid-column:1/-1;margin-top:4px}
+    .tune-cell::before{display:block;content:attr(data-label);font-size:12px;font-weight:700;color:var(--muted);margin-bottom:4px}
+    .links{grid-template-columns:1fr}
+  }
+  @media(max-width:390px){
+    .top a.back{padding:0 12px;font-size:13px}
+    .brand .meta{font-size:11px}
+  }
+  /* SETTINGS_DEVICE_TIERS_V1：依裝置分三種版面（電腦三欄寬版／平板兩欄填滿／手機單欄）。
+     theme.css 在 821px 以上會把 .cards 強制改成 4 欄（!important），這裡用更高特異性覆蓋。 */
+  @media(min-width:641px) and (max-width:1099px){
+    .top,.intro,.quicknav-inner,main#appSettingsRoot{max-width:none}
+    main#appSettingsRoot .cards{grid-template-columns:repeat(2,minmax(0,1fr)) !important;align-items:start;column-gap:16px;row-gap:16px}
+    main#appSettingsRoot .cards>.card.wide{grid-column:1/-1}
+  }
+  @media(min-width:1100px){
+    .top,.intro,.quicknav-inner,main#appSettingsRoot{max-width:1200px}
+    main#appSettingsRoot .cards{grid-template-columns:repeat(3,minmax(0,1fr)) !important;align-items:start;column-gap:16px;row-gap:16px}
+    main#appSettingsRoot .cards>.card.wide{grid-column:1/-1}
+  }
+  /* SETTINGS_TOPBAR_TIERS_V2：電腦版頂部列改為課表式橫列（貼齊上緣、與內容欄對齊、兩行 20px 品名）；
+     卡片依實際可見數量撐滿最後一列（data-span 由 SETTINGS_FILL_ROWS_V1 設定），避免右側留白。 */
+  :root{--st-e:max(0px,calc((100vw - 1200px) / 2))}
+  @media(min-width:1100px){
+    header.top{position:sticky;top:0;z-index:20;max-width:none;margin:0;padding:14px calc(16px + var(--st-e));background:color-mix(in srgb,var(--bg) 94%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-bottom:1px solid var(--line2)}
+    header.top .logo{width:44px;height:44px;border-radius:16px;font-size:20px}
+    header.top .brand b,header.top .brand .meta{font-size:20px;font-weight:950;line-height:1.1;letter-spacing:-.03em;color:var(--text)}
+    header.top .brand .meta{margin-top:0}
+  }
+  /* 同一列的卡片等高（短卡片不再在下方留空白）；電腦／平板同列卡片之間保留 16px 間距（SETTINGS_PAIR_GAP_V1） */
+  main#appSettingsRoot .cards{align-items:stretch}
+  main#appSettingsRoot .cards[data-cols="2"]{grid-template-columns:repeat(2,minmax(0,1fr)) !important}
+  main#appSettingsRoot .cards>.card[data-span="2"]{grid-column:span 2}
+  main#appSettingsRoot .cards>.card[data-span="3"]{grid-column:span 3}
 </style>
 <style id="SAFE_AREA_TOP_V1">
   /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
@@ -156,221 +188,256 @@
 </style>
 </head>
 <body>
-<header class="top"><div class="brand"><div class="logo">D</div><div><b>Tronclass</b><div class="meta">Settings</div></div></div><a href="/admin#overview" aria-label="返回 Dashboard 總覽">返回 Dashboard</a></header>
+<header class="top">
+  <div class="brand"><div class="logo">D</div><div><b>Tronclass</b><div class="meta">設定</div></div></div>
+  <a class="back" href="/admin#overview" aria-label="返回 Dashboard 總覽">返回 Dashboard</a>
+</header>
+
+<div class="intro">
+  <h1>設定</h1>
+  <p>外觀只存在這台裝置。其他設定會儲存到伺服器，按下「套用」或「儲存」後立即生效。</p>
+</div>
+
+<nav class="quicknav" aria-label="設定分類"><div class="quicknav-inner">
+  <a href="#grp-ui">外觀</a>
+  <a href="#grp-school">學校與課程</a>
+  <a href="#grp-roll">點名</a>
+  <a href="#grp-notify">通知</a>
+  <a href="#grp-security">帳號與安全</a>
+  <a href="#grp-seo">搜尋引擎</a>
+  <a href="#grp-misc">其他</a>
+</div></nav>
+
 <main id="appSettingsRoot">
-  <section class="card">
-    <h1>外觀</h1>
-    <p class="hint">變更立即套用，並自動套用到此裝置上的所有 Dashboard 頁面。</p>
 
-    <h2>主題</h2>
-    <div class="theme-grid">
-      <button class="theme-card" data-set-theme="auto" type="button">
-        <span class="mini auto" aria-hidden="true"><span class="half-l"></span><span class="half-d"></span></span>
-        <b>跟隨系統</b><i>自動切換深淺色</i>
-      </button>
-      <button class="theme-card" data-set-theme="light" type="button">
-        <span class="mini" aria-hidden="true"><span class="bar"><span class="dot"></span></span><span class="line l1"></span><span class="line l2"></span><span class="line l3"></span><span class="blk"></span></span>
-        <b>淺色</b><i>明亮背景</i>
-      </button>
-      <button class="theme-card" data-set-theme="dark" type="button">
-        <span class="mini dark" aria-hidden="true"><span class="bar"><span class="dot"></span></span><span class="line l1"></span><span class="line l2"></span><span class="line l3"></span><span class="blk"></span></span>
-        <b>深色</b><i>暗夜背景</i>
-      </button>
+  <!-- 外觀（只存在此裝置） -->
+  <div class="group" id="grp-ui">
+    <div class="group-head"><h2>外觀</h2><p>只影響這台裝置。主題與強調色請用 Dashboard 右上角的齒輪按鈕切換。</p></div>
+    <div class="cards">
+      <section class="card">
+        <div class="card-head"><h3>字體大小</h3><p>調整文字大小，立即生效。</p></div>
+        <div class="card-body">
+          <div class="seg" role="group" aria-label="字體大小">
+            <button data-set-fontscale="std" type="button">標準</button>
+            <button data-set-fontscale="lg" type="button">大</button>
+            <button data-set-fontscale="xl" type="button">特大</button>
+          </div>
+        </div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h3>動畫與重設</h3></div>
+        <div class="card-body">
+          <label class="row">
+            <span class="row-text"><b>減少動畫</b><small>停用轉場與動畫，適合容易暈眩或偏好靜態介面的使用者</small></span>
+            <span class="switch-wrap">
+              <input id="motionToggle" type="checkbox" role="switch">
+              <span class="slider"></span>
+            </span>
+          </label>
+        </div>
+        <div class="card-foot"><button id="resetBtn" class="ghost" type="button">回復外觀預設值</button></div>
+        <p class="hint-note">外觀偏好只存在此瀏覽器（localStorage），清除瀏覽器資料時會一併清除。</p>
+      </section>
     </div>
+  </div>
 
-    <div class="pref-duo">
-    <div class="pref-col">
-    <h2>強調色</h2>
-    <div class="swatches">
-      <button class="swatch" data-set-accent="blue"   type="button" aria-label="藍色（預設）" title="藍色（預設）"></button>
-      <button class="swatch" data-set-accent="indigo" type="button" aria-label="靛色" title="靛色"></button>
-      <button class="swatch" data-set-accent="green"  type="button" aria-label="綠色" title="綠色"></button>
-      <button class="swatch" data-set-accent="amber"  type="button" aria-label="琥珀色" title="琥珀色"></button>
-      <button class="swatch" data-set-accent="purple" type="button" aria-label="紫色" title="紫色"></button>
-      <button class="swatch" data-set-accent="rose"   type="button" aria-label="玫瑰色" title="玫瑰色"></button>
-      <button class="swatch" data-set-accent="cyan"   type="button" aria-label="青色" title="青色"></button>
-    </div>
-    </div>
-    <div class="pref-col">
-    <h2>字體大小</h2>
-    <div class="seg">
-      <button data-set-fontscale="std" type="button">標準</button>
-      <button data-set-fontscale="lg" type="button">大</button>
-      <button data-set-fontscale="xl" type="button">特大</button>
-    </div>
+  <!-- 學校與課程（僅管理員） -->
+  <div class="group" id="grp-school">
+    <div class="group-head"><h2>學校與課程</h2><p>決定作業、課程與課表以哪個學期為準。</p></div>
+    <div class="cards">
+      <section class="card" id="semesterCard" hidden>
+        <div class="card-head"><h3>學期判定</h3><p>手動指定學期，或恢復依日期自動判定。</p></div>
+        <div class="card-body">
+          <div class="presets" id="semesterPresets"><span class="presets-title">快速選擇（點一下填入，國曆年自動換算民國學年）</span></div>
+          <div class="row">
+            <span class="row-text"><b>目前生效</b></span>
+            <span class="row-value" id="semesterStatus">讀取中…</span>
+          </div>
+          <div class="row">
+            <span class="row-text"><b>學期覆蓋</b><small>例：1151、115-2、115上、2026 Fall</small></span>
+            <input id="semesterInput" class="input" type="text" inputmode="text" placeholder="例：1151">
+          </div>
+        </div>
+        <div class="card-foot">
+          <button id="semesterAuto" class="ghost" type="button">恢復自動</button>
+          <button id="semesterApply" class="tbtn" type="button">套用</button>
+        </div>
+        <div id="semesterMsg" class="tmsg"></div>
+        <details class="more"><summary>說明</summary><p>變更立即生效並永久保存，重啟後仍沿用。「恢復自動」會退回 config.toml 的設定（若有），否則依日期自動推算。</p></details>
+      </section>
 
-    <h2>動畫</h2>
-    <label class="switch-row">
-      <span><b>減少動畫</b><i>停用轉場與動畫效果，適合容易暈眩或偏好靜態介面的使用者。</i></span>
-      <span class="switch-wrap">
-        <input id="motionToggle" type="checkbox" role="switch">
-        <span class="slider"></span>
-      </span>
-    </label>
     </div>
-    </div>
-  </section>
+  </div>
 
-  <!-- RUNTIME_SEMESTER_OVERRIDE_V1: 網頁即時調整學期判定（僅管理員；持久化於 config/runtime_settings.json） -->
-  <section class="card" id="semesterCard" hidden>
-    <h1>學期判定</h1>
-    <p class="hint">決定作業學期過濾、課程學期判定與淡江課表同步以哪個學期為準。調整即時生效並永久保存（重啟後仍沿用）；按「恢復自動」才會退回 config.toml 設定（若有的話）或依日期自動推算。</p>
-    <div class="test-row"><span><b>目前生效</b><i id="semesterStatus">讀取中…</i></span></div>
-    <div class="test-row wrap" id="semesterPresets">
-      <span class="span-full"><b>快速選擇</b><i>點一下填入下方欄位（國曆年自動換算民國學年）</i></span>
-    </div>
-    <div class="test-row">
-      <span><b>學期覆蓋</b><i>格式例：1151、115-2、115上、115下、2026-1、2026 Fall</i></span>
-      <input id="semesterInput" class="test-input" type="text" inputmode="text" placeholder="例：1151">
-    </div>
-    <div class="test-row wrap">
-      <button id="semesterApply" class="tbtn" type="button">套用</button>
-      <button id="semesterAuto" class="ghost" type="button">恢復自動</button>
-    </div>
-    <div id="semesterMsg" class="tmsg"></div>
-  </section>
+  <!-- 點名（僅管理員） -->
+  <div class="group" id="grp-roll">
+    <div class="group-head"><h2>點名</h2><p>多帳號同時點名時的送出節奏。</p></div>
+    <div class="cards">
+      <section class="card wide" id="groupSubmitCard" hidden>
+        <div class="card-head"><h3>多帳號點名送出節奏</h3><p>多個帳號同時點名時，錯開送出時間，避免同時送出。</p></div>
+        <div class="card-body">
+          <div class="row">
+            <span class="row-text"><b>目前生效</b></span>
+            <span class="row-value" id="gsStatus">讀取中…</span>
+          </div>
+          <div class="tune">
+            <div class="tune-head">點名方式</div>
+            <div class="tune-head">基準間隔（毫秒）</div>
+            <div class="tune-head">隨機上限（毫秒）</div>
 
-  <!-- PEN_TEST_V1: 滲透測試白名單（僅管理員；持久化於 config/runtime_settings.json）
-       這個卡片只在 pen_test 建置下出現：前端用 /admin/api/status 回應上的
-       `x-pen-test-mode` 標頭判斷，正式建置不會有那個標頭 → 卡片保持隱藏。
-       這樣就算白名單資料留在設定檔裡，正式版也不會顯示、更不會生效。 -->
-  <section class="card" id="penTestCard" hidden>
-    <h1>滲透測試白名單</h1>
-    <p class="hint">列出的來源不會被任何<b>防禦性封鎖</b>擋下：機房 IP 層、WAF、IP 黑名單層、境外限制層、登入節流與帳號鎖定。用途是讓掃描器（nuclei／sqlmap 等）不會把自己鎖在門外。</p>
-    <p class="hint"><b>只繞過封鎖，不繞過認證與授權。</b>白名單上的 IP 仍然需要正確的帳號密碼才能登入，也不會拿到任何額外權限——這不是後門。</p>
-    <div class="test-row"><span><b>建置模式</b><i id="penTestMode">讀取中…</i></span></div>
-    <div class="test-row"><span><b>目前生效</b><i id="penTestStatus">讀取中…</i></span></div>
-    <div class="test-row wrap">
-      <span class="span-full"><b>白名單</b><i>一行一筆，IP 或 CIDR，例：203.0.113.7、198.51.100.0/24；也可用 cloudflare。最多 32 筆。格式不合法的會被丟掉。</i></span>
-      <textarea id="penTestInput" class="test-input" rows="4" placeholder="203.0.113.7&#10;198.51.100.0/24"></textarea>
-    </div>
-    <div class="test-row wrap">
-      <button id="penTestApply" class="tbtn" type="button">套用</button>
-      <button id="penTestClear" class="ghost" type="button">清空</button>
-    </div>
-    <div id="penTestMsg" class="tmsg"></div>
-  </section>
+            <div class="tune-mode">數字點名</div>
+            <div class="tune-cell" data-label="基準間隔（毫秒）"><input id="gsBaseInput" class="input" type="number" min="0" max="10000" step="50" placeholder="600" aria-label="數字點名基準間隔（毫秒）"></div>
+            <div class="tune-cell" data-label="隨機上限（毫秒）"><input id="gsJitterInput" class="input" type="number" min="0" max="5000" step="100" placeholder="2000" aria-label="數字點名隨機上限（毫秒）"></div>
 
-  <!-- GROUP_SUBMIT_RELAY_V1: 多帳號點名送出節奏（僅管理員；走 /admin/api/action runtime_settings，
-     設定持久化於 config/runtime_settings.json → 重啟後仍沿用） -->
-  <section class="card" id="groupSubmitCard" hidden>
-    <h1>多帳號點名送出節奏</h1>
-    <p class="hint">同一場點名由多個帳號送出時，用「下一個可送出時間」的游標把時間錯開：第一位立即送出，之後每位間隔 <b>基準 + 隨機(0～上限)</b> 毫秒。順序不會亂，且兩人至少間隔「基準」；若某人回應較慢，也不會卡住後面的人。<b>數字、QR Code、雷達</b>各有自己的參數；同一個帳號在同一場點名重試不會重新排隊。設定即時生效並<b>永久保存</b>（<code>config/runtime_settings.json</code>），服務重啟後仍會沿用；要回預設請按「恢復預設」。</p>
-    <div class="test-row"><span><b>目前生效</b><i id="gsStatus">讀取中…</i></span></div>
-    <div class="test-row">
-      <span><b>數字點名：基準間隔（毫秒）</b><i>600 ＝ 0.6 秒；0 ＝ 不等待（多位會同時送出，僅建議單帳號）</i></span>
-      <input id="gsBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
-    </div>
-    <div class="test-row">
-      <span><b>數字點名：隨機上限（毫秒）</b><i>實際間隔會在「基準 ～ 基準＋此值」之間隨機；0 ＝ 固定間隔</i></span>
-      <input id="gsJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="2000">
-    </div>
-    <div class="test-row">
-      <span><b>QR Code：基準間隔（毫秒）</b><i>QR 預設與數字相同（600），但隨機上限較小</i></span>
-      <input id="gsQrBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
-    </div>
-    <div class="test-row">
-      <span><b>QR Code：隨機上限（毫秒）</b><i>建議維持較小（例如 600）；送出前會自動改用<strong>最新的 QR payload</strong>，不會送過期的碼</i></span>
-      <input id="gsQrJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="600">
-    </div>
-    <div class="test-row">
-      <span><b>雷達點名：基準間隔（毫秒）</b><i>雷達也跟著「每位間隔」走：同一場點名第一位立即送出，之後每位間隔這個基準 + 隨機值</i></span>
-      <input id="gsRadarBaseInput" class="test-input" type="number" min="0" max="10000" step="50" placeholder="600">
-    </div>
-    <div class="test-row">
-      <span><b>雷達點名：隨機上限（毫秒）</b><i>0 ＝ 固定間隔；雷達的等待最多 30 秒就會送出，不會因為帳號多而無限延後</i></span>
-      <input id="gsRadarJitterInput" class="test-input" type="number" min="0" max="5000" step="100" placeholder="2000">
-    </div>
-    <div class="test-row wrap">
-      <button id="gsApply" class="tbtn" type="button">套用</button>
-      <button id="gsReset" class="ghost" type="button">恢復預設</button>
-    </div>
-    <div id="gsMsg" class="tmsg"></div>
-  </section>
+            <div class="tune-mode">QR Code</div>
+            <div class="tune-cell" data-label="基準間隔（毫秒）"><input id="gsQrBaseInput" class="input" type="number" min="0" max="10000" step="50" placeholder="600" aria-label="QR Code 基準間隔（毫秒）"></div>
+            <div class="tune-cell" data-label="隨機上限（毫秒）"><input id="gsQrJitterInput" class="input" type="number" min="0" max="5000" step="100" placeholder="600" aria-label="QR Code 隨機上限（毫秒）"></div>
 
-  <!-- INDEXNOW_V1: 搜尋引擎收錄（Bing）——僅管理員；走 /admin/api/action indexnow_submit -->
-  <section class="card" id="seoCard" hidden>
-    <h1>搜尋引擎收錄（Bing）</h1>
-    <p class="hint">Google 會自己找到首頁；<b>Bing 不會</b>——這裡用 Bing 官方支援的 <b>IndexNow</b> 主動告訴它「首頁在這裡」，按一下就會送出（同一個網址一天最多自動送一次；手動不受限）。送出後通常幾小時～幾天內會出現在 Bing 的搜尋結果。想看收錄狀況與提交 sitemap，請到 Bing Webmaster Tools 驗證站台：把它給的字串設成部署環境變數 <code>BING_SITE_VERIFICATION</code>，重新編譯並重啟後，下面會顯示「已設定」。</p>
-    <div class="test-row"><span><b>要提交的網址</b><i id="seoLanding">讀取中…</i></span></div>
-    <div class="test-row"><span><b>Bing 站台驗證</b><i id="seoBing">讀取中…</i></span></div>
-    <div class="test-row"><span><b>Google 站台驗證</b><i id="seoGoogle">讀取中…</i></span></div>
-    <div class="test-row"><span><b>IndexNow 金鑰</b><i id="seoKey">讀取中…</i></span></div>
-    <div class="test-row"><span><b>最近一次提交</b><i id="seoLast">讀取中…</i></span></div>
-    <div class="test-row wrap">
-      <button id="seoSubmit" class="tbtn" type="button">立即提交給 Bing</button>
-      <button id="seoWmt" class="ghost" type="button">開啟 Bing Webmaster Tools</button>
+            <div class="tune-mode">雷達點名</div>
+            <div class="tune-cell" data-label="基準間隔（毫秒）"><input id="gsRadarBaseInput" class="input" type="number" min="0" max="10000" step="50" placeholder="600" aria-label="雷達點名基準間隔（毫秒）"></div>
+            <div class="tune-cell" data-label="隨機上限（毫秒）"><input id="gsRadarJitterInput" class="input" type="number" min="0" max="5000" step="100" placeholder="2000" aria-label="雷達點名隨機上限（毫秒）"></div>
+          </div>
+        </div>
+        <div class="card-foot">
+          <button id="gsReset" class="ghost" type="button">恢復預設</button>
+          <button id="gsApply" class="tbtn" type="button">套用</button>
+        </div>
+        <div id="gsMsg" class="tmsg"></div>
+        <details class="more"><summary>說明</summary><p>第一位立即送出，之後每位間隔「基準 + 隨機（0 到上限）」毫秒。順序不會亂，回應慢的帳號也不會卡住後面的人。基準填 0 表示不等待（多帳號會同時送出，僅建議單一帳號）。QR Code 送出前會自動改用最新的 QR 內容。雷達的等待最多 30 秒。設定保存在 config/runtime_settings.json。</p></details>
+      </section>
     </div>
-    <div id="seoMsg" class="tmsg"></div>
-  </section>
+  </div>
 
-  <!-- MORNING_DIGEST_V1: 晨間摘要推送設定（僅管理員；持久化於 config/digest.json） -->
-  <section class="card" id="digestCard" hidden>
-    <h1>晨間摘要推送</h1>
-    <p class="hint">每天定時推送一則摘要：48 小時內截止作業與最新公告（送到各帳號已訂閱推播的裝置）。週六、週日不發送；各帳號可在「通知設定」頁個別關閉。資料取自背景快取，不對學校發額外請求；設定即時生效並永久保存。</p>
-    <div class="test-row">
-      <span><b>啟用</b><i>關閉後完全不發送晨間摘要</i></span>
-      <input id="digestEnabled" class="chk" type="checkbox" checked>
-    </div>
-    <div class="test-row">
-      <span><b>通知時間</b><i>伺服器本地時間（HH:MM）。小技巧：把時間設為「下一分鐘」即可立即測試推送</i></span>
-      <input id="digestTime" class="test-input" type="time" value="08:00">
-    </div>
-    <!-- DIGEST_SAVE_RIGHT_V1：儲存鈕靠右；測試鈕已移至下方「測試通知」卡（DIGEST_TEST_IN_TEST_CARD_V1） -->
-    <div class="test-row end">
-      <button id="digestSave" class="tbtn" type="button">儲存</button>
-    </div>
-    <div id="digestMsg" class="tmsg"></div>
-  </section>
+  <!-- 通知 -->
+  <div class="group" id="grp-notify">
+    <div class="group-head"><h2>通知</h2><p>晨間摘要、各管道測試與通知頁面。</p></div>
+    <div class="cards">
+      <section class="card" id="digestCard" hidden>
+        <div class="card-head"><h3>晨間摘要</h3><p>每天定時推送 48 小時內的截止作業與最新公告。</p></div>
+        <div class="card-body">
+          <div class="row">
+            <span class="row-text"><b>啟用</b><small>關閉後不發送</small></span>
+            <input id="digestEnabled" class="chk" type="checkbox" checked aria-label="啟用晨間摘要">
+          </div>
+          <div class="row">
+            <span class="row-text"><b>通知時間</b><small>伺服器本地時間。週六、週日不發送</small></span>
+            <input id="digestTime" class="input" type="time" value="08:00">
+          </div>
+        </div>
+        <div class="card-foot"><button id="digestSave" class="tbtn" type="button">儲存</button></div>
+        <div id="digestMsg" class="tmsg"></div>
+        <details class="more"><summary>說明</summary><p>各帳號可在「通知設定」頁個別關閉。資料取自背景快取，不會對學校發出額外請求。</p></details>
+      </section>
 
-  <!-- TEST_NOTIFICATION_CARD_V1: 集中所有測試通知按鈕 -->
-  <section class="card">
-    <h1>測試通知</h1>
-    <p class="hint">集中各管道的測試按鈕，快速確認通知是否暢通。</p>
-    <div class="test-row">
-      <span><b>Discord / LINE 測試通知</b><i>以一則測試作業走真實通知路徑（含偏好檢查），確認綁定與通知偏好設定正確。</i></span>
-      <button id="testDiscordBtn" class="tbtn" type="button">發送測試</button>
+      <section class="card wide">
+        <div class="card-head"><h3>測試通知</h3><p>確認各管道是否能正常送達。</p></div>
+        <div class="card-body">
+          <div class="row">
+            <span class="row-text"><b>Discord / LINE</b><small>以測試作業走真實通知路徑（含偏好檢查）</small></span>
+            <button id="testDiscordBtn" class="tbtn" type="button">發送測試</button>
+          </div>
+          <div class="row">
+            <span class="row-text"><b>iPhone 背景推播</b><small>10 秒後送出。按下後請把 App 從多工畫面滑掉</small></span>
+            <button id="testPushBtn" class="tbtn" type="button">發送測試</button>
+          </div>
+          <div class="row">
+            <span class="row-text"><b>課程公告推播</b><small>確認有新公告時，手機能收到通知並開啟公告頁</small></span>
+            <button id="testBulletinBtn" class="tbtn" type="button">發送測試</button>
+          </div>
+          <div class="row" id="testDigestRow">
+            <span class="row-text"><b>晨間摘要推送</b><small>立即推送真實摘要到此帳號已訂閱的裝置，不受週末與開關限制</small></span>
+            <button id="testDigestBtn" class="tbtn" type="button">發送測試</button>
+          </div>
+          <div class="row">
+            <span class="row-text"><b>點名提示音</b><small>以此裝置目前的音效與音量播放</small></span>
+            <button id="testSoundBtn" class="tbtn" type="button">播放音效</button>
+          </div>
+        </div>
+        <div id="testNotifyMsg" class="tmsg"></div>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h3>通知頁面</h3><p>設定各管道的通知渠道與推播狀態。</p></div>
+        <div class="card-body links">
+          <a href="/admin/notifications">通知渠道設定</a>
+          <a href="/admin/push-status">手機推播狀態</a>
+        </div>
+      </section>
     </div>
-    <div class="test-row">
-      <span><b>iPhone 背景推播測試</b><i>安排 10 秒後發送推播；按下後請立刻把 App 從多工畫面往上滑掉，以測試背景送達。</i></span>
-      <button id="testPushBtn" class="tbtn" type="button">發送測試</button>
+  </div>
+
+  <!-- 帳號與安全 -->
+  <div class="group" id="grp-security">
+    <div class="group-head"><h2>帳號與安全</h2><p>密碼、通行密鑰與登入裝置。</p></div>
+    <div class="cards">
+      <section class="card" id="penTestCard" hidden>
+        <div class="card-head"><h3>滲透測試白名單</h3><p>白名單內的來源不會被防禦性封鎖擋下，但仍需要正確的帳號密碼，不會取得額外權限。</p></div>
+        <div class="card-body">
+          <div class="row"><span class="row-text"><b>建置模式</b></span><span class="row-value" id="penTestMode">讀取中…</span></div>
+          <div class="row"><span class="row-text"><b>目前生效</b></span><span class="row-value" id="penTestStatus">讀取中…</span></div>
+          <div class="row">
+            <span class="row-text"><b>白名單</b><small>一行一筆，IP 或 CIDR，也可用 cloudflare。最多 32 筆，格式不合法的會被丟棄。</small></span>
+          </div>
+          <textarea id="penTestInput" class="input" rows="4" placeholder="203.0.113.7&#10;198.51.100.0/24"></textarea>
+        </div>
+        <div class="card-foot">
+          <button id="penTestClear" class="ghost" type="button">清空</button>
+          <button id="penTestApply" class="tbtn" type="button">套用</button>
+        </div>
+        <div id="penTestMsg" class="tmsg"></div>
+        <details class="more"><summary>說明</summary><p>列出的來源不會被機房 IP、WAF、IP 黑名單、境外限制、登入節流與帳號鎖定擋下，用途是讓掃描器不會把自己鎖在門外。</p></details>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h3>帳號與登入</h3><p>管理面板密碼、通行密鑰與登入中的裝置。</p></div>
+        <div class="card-body links">
+          <a href="/admin/password">變更 Dashboard 密碼</a>
+          <a href="/admin/passkey">通行密鑰（Passkey）</a>
+          <a href="/admin/devices">登入裝置管理</a>
+        </div>
+      </section>
     </div>
-    <div class="test-row">
-      <span><b>課程公告通知測試</b><i>走真實公告推播路徑，確認有新公告時手機能收到「新公告」通知並開啟公告頁。</i></span>
-      <button id="testBulletinBtn" class="tbtn" type="button">發送測試</button>
+  </div>
+
+  <!-- 搜尋引擎（僅管理員） -->
+  <div class="group" id="grp-seo">
+    <div class="group-head"><h2>搜尋引擎</h2><p>Google 會自行找到首頁；Bing 需要主動提交。</p></div>
+    <div class="cards">
+      <section class="card" id="seoCard" hidden>
+        <div class="card-head"><h3>Bing 收錄（IndexNow）</h3><p>按下後會把首頁網址提交給 Bing。同一網址一天最多自動送出一次，手動提交不受限制。</p></div>
+        <div class="card-body">
+          <div class="row"><span class="row-text"><b>要提交的網址</b></span><span class="row-value" id="seoLanding">讀取中…</span></div>
+          <div class="row"><span class="row-text"><b>Bing 站台驗證</b></span><span class="row-value" id="seoBing">讀取中…</span></div>
+          <div class="row"><span class="row-text"><b>Google 站台驗證</b></span><span class="row-value" id="seoGoogle">讀取中…</span></div>
+          <div class="row"><span class="row-text"><b>IndexNow 金鑰</b></span><span class="row-value" id="seoKey">讀取中…</span></div>
+          <div class="row"><span class="row-text"><b>最近一次提交</b></span><span class="row-value" id="seoLast">讀取中…</span></div>
+        </div>
+        <div class="card-foot">
+          <button id="seoWmt" class="ghost" type="button">開啟 Bing Webmaster Tools</button>
+          <button id="seoSubmit" class="tbtn" type="button">立即提交給 Bing</button>
+        </div>
+        <div id="seoMsg" class="tmsg"></div>
+        <details class="more"><summary>如何驗證站台</summary><p>要查看收錄狀況或提交 sitemap，請到 Bing Webmaster Tools 驗證站台，並把它給的字串設為部署環境變數 BING_SITE_VERIFICATION。重新編譯並重啟後，這裡會顯示「已設定」。</p></details>
+      </section>
     </div>
-    <!-- DIGEST_TEST_IN_TEST_CARD_V1：晨間摘要測試推送（送到目前登入者已訂閱推播的裝置） -->
-    <div class="test-row" id="testDigestRow">
-      <span><b>晨間摘要推送測試</b><i>立即以真實摘要內容（48 小時內作業、最新公告）推送到此帳號已訂閱背景推播的裝置；不受週末與每帳號開關限制。</i></span>
-      <button id="testDigestBtn" class="tbtn" type="button">發送測試</button>
+  </div>
+
+  <!-- 其他 -->
+  <div class="group" id="grp-misc">
+    <div class="group-head"><h2>其他</h2></div>
+    <div class="cards">
+      <section class="card">
+        <div class="card-head"><h3>更多頁面</h3></div>
+        <div class="card-body links">
+          <a href="/admin/rest-days">休息日與寒暑假</a>
+          <a href="/admin/update-times">資料更新時間</a>
+        </div>
+      </section>
     </div>
-    <div class="test-row">
-      <span><b>點名提示音測試</b><i>以此裝置目前儲存的音效與音量播放，與控制台及通知頁的提示音設定共用。</i></span>
-      <button id="testSoundBtn" class="tbtn" type="button">播放音效</button>
-    </div>
-    <div id="testNotifyMsg" class="tmsg"></div>
-  </section>
-  <section class="card">
-    <h1>其他設定</h1>
-    <p class="hint">通知、推播與帳號安全等功能設定在各自的頁面。</p>
-    <div class="links">
-      <a href="/admin/notifications">通知設定</a>
-      <a href="/admin/push-status">手機推播狀態</a>
-      <a href="/admin/password">變更 Dashboard 密碼</a>
-      <a href="/admin/passkey">通行密鑰（Passkey）</a>
-      <!-- REST_DAY_PAGE_V1：休息日與寒暑假（週末／國定假日／寒暑假不自動輪詢） -->
-      <a href="/admin/rest-days">休息日與寒暑假</a>
-      <!-- LOGIN_DEVICES_V1：列出所有有效登入，可登出其他裝置 -->
-      <a href="/admin/devices">登入裝置管理</a>
-      <!-- UPDATE_TIMES_PAGE_V1：公告／作業／課表／點名輪詢與各排程器的最後更新時間 -->
-      <a href="/admin/update-times">資料更新時間</a>
-    </div>
-    <div class="foot-row">
-      <button id="resetBtn" class="ghost" type="button">回復外觀預設值</button>
-    </div>
-    <p class="note">以上外觀偏好僅儲存在此裝置的瀏覽器（localStorage），不會上傳到伺服器，也不會影響其他裝置。清除瀏覽器資料時會一併清除。</p>
-  </section>
+  </div>
+
 </main>
+
 <script src="/admin/static/app-settings.js"></script>
 
 <script>
@@ -937,5 +1004,57 @@
     main{padding-bottom:calc(132px + env(safe-area-inset-bottom,0px))!important}
   }
 </style>
+<script id="SETTINGS_FILL_ROWS_V1">
+/* 依實際可見的卡片數量，讓每組最後一列撐滿：電腦 3 欄、平板 2 欄；手機單欄不處理。
+   只設定 data-span 屬性（不寫 style），群組內「寬卡」會把列切斷。 */
+(function(){
+  'use strict';
+  var root=document.getElementById('appSettingsRoot');
+  if(!root)return;
+  function colsNow(){
+    if(window.matchMedia('(min-width:1100px)').matches)return 3;
+    if(window.matchMedia('(min-width:641px)').matches)return 2;
+    return 1;
+  }
+  function fillRows(){
+    var cols=colsNow();
+    root.querySelectorAll('.cards').forEach(function(box){
+      [].slice.call(box.querySelectorAll(':scope > .card[data-span]')).forEach(function(c){c.removeAttribute('data-span');});
+      box.removeAttribute('data-cols');
+      if(cols<2)return;
+      var kids=[].slice.call(box.children).filter(function(c){
+        return c.classList.contains('card') && !c.hidden && getComputedStyle(c).display!=='none';
+      });
+      var hasWide=kids.some(function(c){return c.classList.contains('wide');});
+      var eff=cols;
+      // 三欄時若只剩 2 張（或 5 張）卡：改用兩欄，兩張等寬，不會 1:2 不對稱。
+      if(!hasWide && cols===3 && kids.length%3===2){eff=2;box.setAttribute('data-cols','2');}
+      var run=[];
+      function flush(){
+        if(run.length){
+          var rem=run.length%eff;
+          if(rem){run[run.length-1].setAttribute('data-span',String(eff-rem+1));}
+        }
+        run=[];
+      }
+      kids.forEach(function(c){
+        if(c.classList.contains('wide')){flush();return;}
+        run.push(c);
+        if(run.length===eff){run=[];}
+      });
+      flush();
+    });
+  }
+  var raf=0;
+  function schedule(){
+    if(raf)return;
+    raf=requestAnimationFrame(function(){raf=0;fillRows();});
+  }
+  new MutationObserver(schedule).observe(root,{subtree:true,childList:true,attributes:true,attributeFilter:['hidden','class']});
+  window.addEventListener('resize',schedule);
+  window.addEventListener('load',schedule);
+  fillRows();
+})();
+</script>
 </body>
 </html>

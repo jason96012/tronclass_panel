@@ -1849,7 +1849,8 @@ async function loadStatus(withHistory){try{/* STATUS_SLIM_V1：精簡回應（�
 try{var refreshed=false;if(typeof window.__tronTryRefresh==='function'){try{refreshed=!!(await window.__tronTryRefresh())}catch(_){refreshed=false}}
 if(refreshed){status=await fetchStatusSlim(withHistory);if(status&&status.must_change_password){location.replace('/admin/password?first=1');return}showApp(status.current_account_id);renderAll();maybeShowTkuNotice();return}
 showLogin('登入狀態失效，請重新登入。')}catch(retryErr){if(retryErr.status===401){showLogin('登入狀態失效，請重新登入。')}else toast(retryErr.message||'讀取狀態失敗',false)}}else toast(e.message||'讀取狀態失敗',false)}}function acctList(){return(status&&status.accounts)||[]}function detected(){/*ROLLCALL_DETECT_SHARED_V1:分組/完成判斷交給rollcall-detect.js(inject_theme保證排在本頁inline script之前)，原本這裡的recent()/done()/detected()已收進共用模組，避免跟rollcall-pending-fab.js、health.html三邊各自維護一份、悄悄分岔*/return window.TronclassRollcallDetect?window.TronclassRollcallDetect.detect(acctList(),{windowSecs:1800}):[]}function histories(){const out=[];acctList().forEach(a=>(a.rollcall_history||[]).forEach(h=>out.push(Object.assign({account_id:a.account_id},h))));return out.sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0))}function fmt(ts){if(!ts)return'尚未';return new Date(Number(ts)*1000).toLocaleString()}function renderStats(){const a=acctList(),run=a.filter(x=>x.is_running).length,det=detected().length,fail=a.reduce((s,x)=>s+Number(x.consecutive_failures||0),0);q('statTotal').textContent=a.length;/* REST_DAY_STAT_CARD_V1：休息日（週末／國定假日／寒暑假）沒有自動偵測，第二張卡直接顯示 */const restReason=status&&status.rest_day;const runCard=q('statRunning').closest('.stat');if(runCard)runCard.classList.toggle('rest-day',!!restReason);const runLabel=runCard?runCard.querySelector('.stat-label'):null;if(restReason){if(runLabel)runLabel.textContent='自動偵測';q('statRunning').textContent='未啟動';q('statPaused').textContent='今天是'+restReason+'・'+run+' 個帳號待上課日恢復'}else{if(runLabel)runLabel.textContent='運行中';q('statRunning').textContent=run;q('statPaused').textContent='暫停 '+(a.length-run)}q('statDetected').textContent=det;q('statFailures').textContent=fail;q('lastUpdated').textContent='更新：'+new Date().toLocaleTimeString();/* REST_DAY_NO_POLL_V1：休息日狀態不在總覽提示顯示（可到設定 → 其他設定 → 休息日與寒暑假查看） */}function renderDetected(id,opts){opts=opts||{};const el=q(id),items=detected();el.innerHTML=items.length?items.map(it=>{/* STUCK_ACCOUNT_RESTART_V1：opts.showAccounts 時列出這場點名裡的每個帳號，卡住（未送出）的帳號旁直接放「重啟監控」，不用切去帳號分頁找同一個帳號 */const accountsHtml=opts.showAccounts?('<div class="item-accounts">'+it.accounts.map(function(accId){const acct=acctList().find(function(x){return x.account_id===accId});const done=window.TronclassRollcallDetect?window.TronclassRollcallDetect.accountDone(acct,it.rid):false;const canRestart=!!(status&&status.is_admin&&!done);return'<div class="item-account-row"><span class="pill '+(done?'good':'warn')+'">'+esc(accId)+(done?' 已送出':' 未送出')+'</span>'+(canRestart?'<button class="secondary" data-action="restart_monitor" data-account="'+esc(accId)+'" title="若這個帳號卡在這場點名（例如數字碼／QR Code 都還沒過期，卻一直沒送出），按這個會中止卡住的流程並重新登入、重新偵測">重啟監控</button>':'')+'</div>'}).join('')+'</div>'):'';return'<div class="item"><div class="item-top"><span>'+esc(it.course)+' #'+esc(it.rid||'-')+'</span><span class="pill warn">'+it.accounts.length+' 帳號</span></div><div class="item-meta">完成 '+it.done+'/'+it.total+'</div>'+accountsHtml+(safeHttpUrl(it.url)?'<div class="item-footer"><a class="button secondary" href="'+esc(safeHttpUrl(it.url))+'" target="_blank" rel="noopener noreferrer">開啟點名頁</a></div>':'')+'</div>'}).join(''):'<div class="empty">目前沒有進行中的點名。</div>'}function renderRecent(){const list=histories().slice(0,8);q('recentResults').innerHTML=list.length?list.map(h=>'<div class="item"><div class="item-top"><span>'+esc(h.course_name||'-')+'</span><span class="pill '+(h.success?'good':'bad')+'">'+(h.success?'成功':'未成功')+'</span></div><div class="item-meta">'+esc(h.account_id)+'｜'+fmt(h.timestamp)+'</div></div>').join(''):'<div class="empty">目前沒有近期點名紀錄。</div>'}/* ACCOUNTS_TABLE_COURSE_OVERFLOW_V1：課程名稱長短不一，之前直接塞進儲存格，遇到長課程名會把這一欄撐很寬、擠壞整張表（auto table layout 下，欄寬取決於
- 內容最寬的那一格）。改成外面包一層有 max-width + 超出省略號的 span，並用 title 屬性在 hover 時顯示完整課程名，欄寬就不會再被撐爆。*/function courseCell(text){var v=esc(text);return '<span class="cell-ellipsis" title="'+v+'">'+v+'</span>'}function renderAccounts(){let arr=acctList(),needle=q('accountSearch').value.trim().toLowerCase();if(needle)arr=arr.filter(a=>((a.account_id||'')+' '+(a.user_name||a.username||'')).toLowerCase().includes(needle));q('accountsSummary').textContent='顯示 '+arr.length+' / '+acctList().length+' 個帳號';q('accountsBody').innerHTML=arr.map(a=>'<tr><td><span class="pill '+(a.is_running?'good':'bad')+'">'+(a.is_running?'運行中':'暫停')+'</span></td><td><b>'+esc(a.account_id)+'</b><div class="small">'+esc(a.user_name||a.username||'')+'</div></td><td><span class="pill '+(a.account_admin?'good':'')+'">'+(a.account_admin?'管理員':a.account_viewer?'檢視者':'一般帳號')+'</span></td><td>'+fmt(a.last_poll_timestamp)+'</td><td>'+courseCell(a.last_success_course||'尚未')+'</td><td>'+courseCell(a.last_detected_course||'無近期點名')+'</td><td>'+esc(a.consecutive_failures||0)+failureHint(a)+reauthHint(a)+'</td><td><div class="actions-cell"><button data-action="force" data-account="'+esc(a.account_id)+'">檢查</button><button class="secondary" data-action="reauth" data-account="'+esc(a.account_id)+'">重登</button>'+'<button class="secondary" data-action="'+(a.is_running?'stop':'start')+'" data-account="'+esc(a.account_id)+'">'+(a.is_running?'暫停':'恢復')+'</button>'+(status&&status.is_admin?'<button class="secondary" data-action="'+(a.account_admin?'unset_admin':'set_admin')+'" data-account="'+esc(a.account_id)+'">'+(a.account_admin?'取消管理員':'設為管理員')+'</button>':'')+(status&&status.is_admin&&!a.account_viewer?'<button class="secondary" data-action="set_password" data-account="'+esc(a.account_id)+'">改密碼</button>':'')+(status&&status.is_admin&&!a.account_admin?'<button class="secondary" data-action="'+(a.account_viewer?'unset_viewer':'set_viewer')+'" data-account="'+esc(a.account_id)+'">'+(a.account_viewer?'取消檢視者':'設為檢視者')+'</button>':'')+(status&&status.is_admin?'<button class="secondary" data-action="reset_password" data-account="'+esc(a.account_id)+'">重製密碼</button>':'')+'</div></td></tr>').join('')||'<tr><td colspan="8">沒有帳號</td></tr>';renderInactiveAccounts()}/* FAILURE_DIAGNOSIS_V1：連續失敗欄下方顯示分類與自助建議（成功後後端會清空） */function failureHint(a){const d=a&&a.last_failure;if(!d||!Number(a.consecutive_failures||0))return'';return'<div class="small fail-hint"><b>'+esc(d.label||'')+'</b><div>'+esc(d.advice||'')+'</div>'+(d.message?'<div class="fail-msg">'+esc(d.message)+'</div>':'')+'</div>'}/* REAUTH_VISIBLE_V1：連續失敗欄下方顯示最近一次重新認證（自動／手動）的時間與結果 */function reauthHint(a){const r=a&&a.last_reauth;if(!r||!r.at)return'';const ok=!!r.ok;const who=r.trigger==='auto'?'自動重登':'手動重登';return'<div class="small reauth-hint '+(ok?'reauth-ok':'reauth-bad')+'"><span class="pill '+(ok?'good':'bad')+'">'+who+(ok?'成功':'失敗')+'</span> '+esc(fmt(r.at))+(!ok&&r.message?'<div class="reauth-msg">'+esc(r.message)+'</div>':'')+'</div>'}/* ACCOUNT_HOT_ADD_FEEDBACK_V1 */function renderInactiveAccounts(){const box=q('inactiveAccountsBox'),list=q('inactiveAccountsList');if(!box||!list)return;const items=(status&&status.is_admin&&Array.isArray(status.inactive_accounts))?status.inactive_accounts:[];if(!items.length){box.classList.add('hidden-init');list.innerHTML='';return}box.classList.remove('hidden-init');list.innerHTML=items.map(it=>{/* VIEWER_NO_SCHOOL_API_V1：檢視者依設計不監控，顯示中性徽章與「取消檢視者」 */if(it.is_viewer){return'<div class="item"><div class="item-top"><span><b>'+esc(it.account_id)+'</b> <span class="small">'+esc(it.username||'')+'｜'+esc(it.provider||'')+'</span></span><span class="pill">檢視者（不監控）</span></div><div class="item-meta">此帳號為唯讀檢視者：不登入學校系統、不做點名監控。取消檢視者後需按「啟動監控」或重啟服務才會開始監控。</div><button class="secondary" data-action="unset_viewer" data-account="'+esc(it.account_id)+'">取消檢視者</button></div>'}return'<div class="item"><div class="item-top"><span><b>'+esc(it.account_id)+'</b> <span class="small">'+esc(it.username||'')+'｜'+esc(it.provider||'')+'</span></span><span class="pill bad">未監控</span></div><div class="item-meta meta-bad">'+(it.diagnosis?'<b>'+esc(it.diagnosis.label||'')+'</b>｜'+esc(it.diagnosis.advice||'')+'<br>':'')+esc(it.last_error||'尚未嘗試啟動（例如以 CLI 新增後尚未啟動）')+'</div><button data-action="start_monitor" data-account="'+esc(it.account_id)+'">啟動監控</button></div>'}).join('')}/* ROLLCALL_ATTENDANCE_V1（fix66）：出席統計。資料來源＝/admin/api/rollcalls/stats
+ 內容最寬的那一格）。改成外面包一層有 max-width + 超出省略號的 span，並用 title 屬性在 hover 時顯示完整課程名，欄寬就不會再被撐爆。*//* ACCOUNTS_COURSE_MAX_CHARS_V1：課程名稱只顯示前 N 個字，超過的以「…」結尾；完整名稱放在 title（hover 可見）。N 可依需要調整。 */
+var ACCOUNTS_COURSE_MAX_CHARS=10;function courseCell(text){var full=String(text==null?'':text);var chars=Array.from(full);var shown=chars.length>ACCOUNTS_COURSE_MAX_CHARS?chars.slice(0,ACCOUNTS_COURSE_MAX_CHARS).join('')+'…':full;return '<span class="cell-ellipsis" title="'+esc(full)+'">'+esc(shown)+'</span>'}function renderAccounts(){let arr=acctList(),needle=q('accountSearch').value.trim().toLowerCase();if(needle)arr=arr.filter(a=>((a.account_id||'')+' '+(a.user_name||a.username||'')).toLowerCase().includes(needle));q('accountsSummary').textContent='顯示 '+arr.length+' / '+acctList().length+' 個帳號';q('accountsBody').innerHTML=arr.map(a=>'<tr><td><span class="pill '+(a.is_running?'good':'bad')+'">'+(a.is_running?'運行中':'暫停')+'</span></td><td><b>'+esc(a.account_id)+'</b><div class="small">'+esc(a.user_name||a.username||'')+'</div></td><td><span class="pill '+(a.account_admin?'good':'')+'">'+(a.account_admin?'管理員':a.account_viewer?'檢視者':'一般帳號')+'</span></td><td>'+fmt(a.last_poll_timestamp)+'</td><td>'+courseCell(a.last_success_course||'尚未')+'</td><td>'+courseCell(a.last_detected_course||'無近期點名')+'</td><td>'+esc(a.consecutive_failures||0)+failureHint(a)+reauthHint(a)+'</td><td><div class="actions-cell"><button data-action="force" data-account="'+esc(a.account_id)+'">檢查</button><button class="secondary" data-action="reauth" data-account="'+esc(a.account_id)+'">重登</button>'+'<button class="secondary" data-action="'+(a.is_running?'stop':'start')+'" data-account="'+esc(a.account_id)+'">'+(a.is_running?'暫停':'恢復')+'</button>'+(status&&status.is_admin?'<button class="secondary" data-action="'+(a.account_admin?'unset_admin':'set_admin')+'" data-account="'+esc(a.account_id)+'">'+(a.account_admin?'取消管理員':'設為管理員')+'</button>':'')+(status&&status.is_admin&&!a.account_viewer?'<button class="secondary" data-action="set_password" data-account="'+esc(a.account_id)+'">改密碼</button>':'')+(status&&status.is_admin&&!a.account_admin?'<button class="secondary" data-action="'+(a.account_viewer?'unset_viewer':'set_viewer')+'" data-account="'+esc(a.account_id)+'">'+(a.account_viewer?'取消檢視者':'設為檢視者')+'</button>':'')+(status&&status.is_admin?'<button class="secondary" data-action="reset_password" data-account="'+esc(a.account_id)+'">重製密碼</button>':'')+'</div></td></tr>').join('')||'<tr><td colspan="8">沒有帳號</td></tr>';renderInactiveAccounts()}/* FAILURE_DIAGNOSIS_V1：連續失敗欄下方顯示分類與自助建議（成功後後端會清空） */function failureHint(a){const d=a&&a.last_failure;if(!d||!Number(a.consecutive_failures||0))return'';return'<div class="small fail-hint"><b>'+esc(d.label||'')+'</b><div>'+esc(d.advice||'')+'</div>'+(d.message?'<div class="fail-msg">'+esc(d.message)+'</div>':'')+'</div>'}/* REAUTH_VISIBLE_V1：連續失敗欄下方顯示最近一次重新認證（自動／手動）的時間與結果 */function reauthHint(a){const r=a&&a.last_reauth;if(!r||!r.at)return'';const ok=!!r.ok;const who=r.trigger==='auto'?'自動重登':'手動重登';return'<div class="small reauth-hint '+(ok?'reauth-ok':'reauth-bad')+'"><span class="pill '+(ok?'good':'bad')+'">'+who+(ok?'成功':'失敗')+'</span> '+esc(fmt(r.at))+(!ok&&r.message?'<div class="reauth-msg">'+esc(r.message)+'</div>':'')+'</div>'}/* ACCOUNT_HOT_ADD_FEEDBACK_V1 */function renderInactiveAccounts(){const box=q('inactiveAccountsBox'),list=q('inactiveAccountsList');if(!box||!list)return;const items=(status&&status.is_admin&&Array.isArray(status.inactive_accounts))?status.inactive_accounts:[];if(!items.length){box.classList.add('hidden-init');list.innerHTML='';return}box.classList.remove('hidden-init');list.innerHTML=items.map(it=>{/* VIEWER_NO_SCHOOL_API_V1：檢視者依設計不監控，顯示中性徽章與「取消檢視者」 */if(it.is_viewer){return'<div class="item"><div class="item-top"><span><b>'+esc(it.account_id)+'</b> <span class="small">'+esc(it.username||'')+'｜'+esc(it.provider||'')+'</span></span><span class="pill">檢視者（不監控）</span></div><div class="item-meta">此帳號為唯讀檢視者：不登入學校系統、不做點名監控。取消檢視者後需按「啟動監控」或重啟服務才會開始監控。</div><button class="secondary" data-action="unset_viewer" data-account="'+esc(it.account_id)+'">取消檢視者</button></div>'}return'<div class="item"><div class="item-top"><span><b>'+esc(it.account_id)+'</b> <span class="small">'+esc(it.username||'')+'｜'+esc(it.provider||'')+'</span></span><span class="pill bad">未監控</span></div><div class="item-meta meta-bad">'+(it.diagnosis?'<b>'+esc(it.diagnosis.label||'')+'</b>｜'+esc(it.diagnosis.advice||'')+'<br>':'')+esc(it.last_error||'尚未嘗試啟動（例如以 CLI 新增後尚未啟動）')+'</div><button data-action="start_monitor" data-account="'+esc(it.account_id)+'">啟動監控</button></div>'}).join('')}/* ROLLCALL_ATTENDANCE_V1（fix66）：出席統計。資料來源＝/admin/api/rollcalls/stats
    （後端 rollcall_events 資料表，每次送出後累積，重啟不消失）。 */
 var attStats=null,attRecords=[],attDays=90,attLoading=false,attError='',attLoadedAt=0;
 function attNumber(v){return Number.isFinite(Number(v))?Number(v):0}
@@ -3065,6 +3066,293 @@ html[data-theme="dark"] .maint-final-check,html[data-theme="dark"] .maint-final-
 html[data-theme="dark"] .maint-final-title,html[data-theme="dark"] .maint-final-k{color:#F1F5F9!important}
 html[data-theme="dark"] .maint-final-sub,html[data-theme="dark"] .maint-final-v,html[data-theme="dark"] .maint-final-h{color:#94A3B8!important}
 html[data-theme="dark"] .maint-final-bar{background:#1E293B!important}</style>
+
+<!-- QUICK_SETTINGS_V1：齒輪按鈕開啟的常用設定面板（外觀、AI 助理、通知入口）。其餘設定在 /admin/settings。 -->
+<style id="tqs-style">
+  .tqs-backdrop{position:fixed;inset:0;z-index:2147483647;background:transparent;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:16px;touch-action:none;overscroll-behavior:contain}
+  html.tqs-open,html.tqs-open body{overflow:hidden!important}
+  html.tqs-open body{position:fixed!important;left:0!important;right:0!important;width:100%!important}
+  /* 快捷面板開啟時，「更多」面板直接不畫出來（它原本就只是另一個選單）。底部導覽列保留，被遮罩蓋住且 inert，點不到。 */
+  html.tqs-open #mobileMoreFinalV2,html.tqs-open #mobileSheet,html.tqs-open .mobile-sheet{display:none!important;visibility:hidden!important;pointer-events:none!important}
+  .tqs-backdrop[hidden]{display:none}
+  .tqs-panel{width:min(440px,100%);max-height:88vh;overflow:auto;background:var(--card,#fff);color:var(--text,#172033);border:1px solid var(--line,#dbe3ef);border-radius:20px;box-shadow:0 25px 60px rgba(0,0,0,.3);padding:16px 18px 14px}
+  .tqs-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:2px}
+  .tqs-head h2{margin:0;font-size:18px;font-weight:850;color:inherit;letter-spacing:0;text-transform:none}
+  .tqs-panel .tqs-close{width:36px;height:36px;min-height:36px;border-radius:50%;border:1px solid var(--line,#dbe3ef);background:transparent;color:inherit;font-size:20px;line-height:1;cursor:pointer;padding:0}
+  .tqs-sec{padding:12px 0;border-top:1px solid var(--line,#dbe3ef)}
+  .tqs-sec h3{margin:0 0 8px;font-size:13px;font-weight:800;color:var(--muted,#64748b);letter-spacing:.02em}
+  .tqs-panel .tqs-seg{display:flex;border:1px solid var(--line,#dbe3ef);border-radius:12px;overflow:hidden}
+  .tqs-panel .tqs-seg button{flex:1;min-height:38px;border:0;border-radius:0;background:transparent;color:inherit;font:inherit;font-weight:750;font-size:13px;cursor:pointer;padding:0 8px}
+  .tqs-panel .tqs-seg button+button{border-left:1px solid var(--line,#dbe3ef)}
+  .tqs-panel .tqs-seg button.on{background:var(--primary,#2563eb);color:#fff}
+  .tqs-swatches{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+  .tqs-panel .tqs-sw{width:34px;height:34px;min-height:34px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+  .tqs-panel .tqs-sw.on{outline:3px solid rgba(120,120,128,.35);outline-offset:2px;border-color:var(--text,#172033)}
+  .tqs-panel .tqs-sw[data-tqs-accent="blue"]{background:#2563EB}
+  .tqs-panel .tqs-sw[data-tqs-accent="indigo"]{background:#6366F1}
+  .tqs-panel .tqs-sw[data-tqs-accent="green"]{background:#059669}
+  .tqs-panel .tqs-sw[data-tqs-accent="amber"]{background:#D97706}
+  .tqs-panel .tqs-sw[data-tqs-accent="purple"]{background:#7C3AED}
+  .tqs-panel .tqs-sw[data-tqs-accent="rose"]{background:#E11D48}
+  .tqs-panel .tqs-sw[data-tqs-accent="cyan"]{background:#0E7490}
+  .tqs-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;font-size:14px;font-weight:700}
+  .tqs-panel .tqs-select{min-height:38px;max-width:62%;min-width:0;border-radius:10px;border:1px solid var(--line,#dbe3ef);background:var(--soft,#f1f5f9);color:inherit;padding:0 10px;font:inherit;font-size:14px}
+  .tqs-panel .tqs-select:disabled{opacity:.6}
+  .tqs-note{min-height:16px;margin-top:4px;font-size:12px;line-height:1.5;color:var(--muted,#64748b);font-weight:650}
+  .tqs-note.bad{color:#b91c1c}
+  .tqs-panel .tqs-link{display:inline-flex;align-items:center;min-height:38px;color:var(--primary,#2563eb);font-weight:800;text-decoration:none;font-size:14px}
+  .tqs-panel .tqs-btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:46px;box-sizing:border-box;border-radius:12px;border:1.5px solid var(--primary,#2563eb);background:transparent;color:var(--primary,#2563eb);font:inherit;font-size:15px;font-weight:800;cursor:pointer;padding:0 12px}
+  .tqs-panel .tqs-btn:disabled{opacity:.5;cursor:default}
+  .tqs-foot{border-top:1px solid var(--line,#dbe3ef);padding-top:12px}
+  /* 特異性需高於全域 a:not(.button):not(.tab):not([role="button"]) 規則，否則文字會變成與背景同色 */
+  #tqsBackdrop .tqs-panel a.tqs-more{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-height:60px;box-sizing:border-box;border-radius:14px;background:var(--primary,#2563eb);color:#fff;text-decoration:none;padding:10px 18px}
+  .tqs-panel .tqs-more-text{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .tqs-panel .tqs-more-text strong{font-size:17px;font-weight:850}
+  .tqs-panel .tqs-more-text small{font-size:12px;font-weight:650;opacity:.92;line-height:1.4}
+  .tqs-panel .tqs-more-arrow{font-size:22px;font-weight:700;flex:none}
+</style>
+<div id="tqsBackdrop" class="tqs-backdrop" hidden>
+  <div class="tqs-panel" role="dialog" aria-modal="true" aria-labelledby="tqsTitle">
+    <div class="tqs-head"><h2 id="tqsTitle">常用設定</h2><button id="tqsClose" class="tqs-close" type="button" aria-label="關閉">×</button></div>
+    <section class="tqs-sec" aria-labelledby="tqsAppearance">
+      <h3 id="tqsAppearance">外觀（只在此裝置生效）</h3>
+      <div class="tqs-seg" role="group" aria-label="主題">
+        <button type="button" data-tqs-theme="auto">跟隨系統</button>
+        <button type="button" data-tqs-theme="light">淺色</button>
+        <button type="button" data-tqs-theme="dark">深色</button>
+      </div>
+      <div class="tqs-swatches" role="group" aria-label="強調色">
+        <button type="button" class="tqs-sw" data-tqs-accent="blue" aria-label="藍色（預設）" title="藍色（預設）"></button>
+        <button type="button" class="tqs-sw" data-tqs-accent="indigo" aria-label="靛色" title="靛色"></button>
+        <button type="button" class="tqs-sw" data-tqs-accent="green" aria-label="綠色" title="綠色"></button>
+        <button type="button" class="tqs-sw" data-tqs-accent="amber" aria-label="琥珀色" title="琥珀色"></button>
+        <button type="button" class="tqs-sw" data-tqs-accent="purple" aria-label="紫色" title="紫色"></button>
+        <button type="button" class="tqs-sw" data-tqs-accent="rose" aria-label="玫瑰色" title="玫瑰色"></button>
+        <button type="button" class="tqs-sw" data-tqs-accent="cyan" aria-label="青色" title="青色"></button>
+      </div>
+    </section>
+    <section class="tqs-sec" aria-labelledby="tqsAiTitle">
+      <h3 id="tqsAiTitle">AI 助理（opencode）</h3>
+      <label class="tqs-row"><span>啟用</span>
+        <select id="tqsAiEnabled" class="tqs-select"><option value="1">啟用</option><option value="0">停用</option></select>
+      </label>
+      <label class="tqs-row"><span>預設模型（NVIDIA）</span>
+        <select id="tqsAiModel" class="tqs-select"></select>
+      </label>
+      <div id="tqsAiNote" class="tqs-note" aria-live="polite">載入中…</div>
+    </section>
+    <section class="tqs-sec" aria-labelledby="tqsPushTitle">
+      <h3 id="tqsPushTitle">手機推播（iPhone）</h3>
+      <button id="tqsPushBtn" class="tqs-btn" type="button" data-enable-web-push="1">綁定 Web Push</button>
+      <div id="tqsPushNote" class="tqs-note" aria-live="polite"></div>
+    </section>
+    <div class="tqs-foot">
+      <a id="tqsMore" class="tqs-more" href="/admin/settings">
+        <span class="tqs-more-text"><strong>更多設定</strong><small>字體、學期判定、點名節奏、測試通知</small></span>
+        <span class="tqs-more-arrow" aria-hidden="true">→</span>
+      </a>
+    </div>
+  </div>
+</div>
+<script id="tqs-script">
+(function () {
+  'use strict';
+  var backdrop = document.getElementById('tqsBackdrop');
+  if (!backdrop) return;
+  var enabledSel = document.getElementById('tqsAiEnabled');
+  var modelSel = document.getElementById('tqsAiModel');
+  var note = document.getElementById('tqsAiNote');
+  var lastModel = '';
+
+  function appSettings() { return window.TronclassAppSettings || null; }
+  function currentSettings() {
+    var a = appSettings();
+    return a ? a.get() : { theme: 'auto', accent: 'blue' };
+  }
+  function syncAppearance() {
+    var s = currentSettings();
+    backdrop.querySelectorAll('[data-tqs-theme]').forEach(function (b) {
+      var on = b.getAttribute('data-tqs-theme') === s.theme;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    backdrop.querySelectorAll('[data-tqs-accent]').forEach(function (b) {
+      var on = b.getAttribute('data-tqs-accent') === s.accent;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+  }
+  function setNote(text, bad) {
+    note.textContent = text || '';
+    note.classList.toggle('bad', !!bad);
+  }
+  function parseResponse(res) {
+    return res.text().then(function (text) {
+      var data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+      if (!res.ok) throw new Error((data && (data.message || data.error)) || ('HTTP ' + res.status));
+      return data;
+    });
+  }
+  function renderAi(data) {
+    enabledSel.value = data.config_enabled ? '1' : '0';
+    while (modelSel.firstChild) modelSel.removeChild(modelSel.firstChild);
+    (data.models || []).forEach(function (id) {
+      var opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = id;
+      modelSel.appendChild(opt);
+    });
+    lastModel = data.model || '';
+    modelSel.value = lastModel;
+    var writable = !!data.can_manage;
+    enabledSel.disabled = !writable;
+    modelSel.disabled = !writable || !(data.models || []).length;
+    if (!writable) setNote('只有管理員可以修改 AI 設定。');
+    else if (!data.config_enabled) setNote('AI 助理已停用。');
+    else if (!data.healthy) setNote('已啟用，但 sidecar 無法連線。', true);
+    else setNote('');
+  }
+  function loadAi() {
+    setNote('載入中…');
+    fetch('/admin/api/ai/opencode/state', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'Accept': 'application/json' }
+    }).then(parseResponse).then(renderAi).catch(function (error) {
+      setNote('無法讀取 AI 設定：' + error.message, true);
+    });
+  }
+  function postJson(path, body) {
+    return fetch('/admin/api/ai/opencode/' + path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify(body)
+    }).then(parseResponse);
+  }
+
+  enabledSel.addEventListener('change', function () {
+    var on = enabledSel.value === '1';
+    enabledSel.disabled = true;
+    postJson('config', { enabled: on }).then(function () {
+      setNote('已儲存，sidecar 將自動重啟（約 1 分鐘）。');
+    }).catch(function (error) {
+      enabledSel.value = on ? '0' : '1';
+      setNote('儲存失敗：' + error.message, true);
+    }).then(function () { enabledSel.disabled = false; });
+  });
+  modelSel.addEventListener('change', function () {
+    var next = modelSel.value;
+    modelSel.disabled = true;
+    postJson('models', { action: 'default', model: next, provider: 'nvidia' }).then(function (data) {
+      lastModel = data.model || next;
+      setNote('預設模型已更新，sidecar 將自動重啟（約 1 分鐘）。');
+    }).catch(function (error) {
+      modelSel.value = lastModel;
+      setNote('儲存失敗：' + error.message, true);
+    }).then(function () { modelSel.disabled = false; });
+  });
+
+  var pushBtn = document.getElementById('tqsPushBtn');
+  var pushNote = document.getElementById('tqsPushNote');
+  var PUSH_LABEL = '綁定 Web Push';
+  function isIosDevice() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+  // 按鈕的實際綁定流程由 web-push.js 處理（data-enable-web-push）。這裡只負責顯示狀態。
+  function refreshPush() {
+    if (!pushBtn || !pushNote) return;
+    var wp = window.TronclassWebPush;
+    var bound = !!(wp && typeof wp.explicitlyBoundAccount === 'function' && wp.explicitlyBoundAccount());
+    var ios = isIosDevice();
+    pushBtn.disabled = !ios;
+    pushBtn.textContent = bound ? '重新綁定 Web Push' : PUSH_LABEL;
+    if (!ios) pushNote.textContent = '此功能只支援 iPhone 或 iPad 的主畫面 App。';
+    else if (bound) pushNote.textContent = '此裝置已綁定推播。';
+    else pushNote.textContent = '按下後會要求通知權限；需從主畫面的 App 開啟。';
+  }
+
+  // 手機「更多」面板不能和快捷面板同時開著：開啟時先關掉。
+  function closeMobileSheets() {
+    ['mobileMoreFinalV2', 'mobileSheet'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.classList.remove('visible');
+    });
+    document.querySelectorAll('.mobile-sheet').forEach(function (el) { el.classList.remove('visible'); });
+  }
+  // 背景互動鎖：除了本面板以外的 body 直接子元素全部 inert，點不到也聚焦不到。
+  var lockedScrollY = 0;
+  function lockBackground(on) {
+    var kids = document.body.children;
+    for (var i = 0; i < kids.length; i++) {
+      var el = kids[i];
+      if (el === backdrop) continue;
+      if (on) {
+        if (!el.hasAttribute('inert')) { el.setAttribute('inert', ''); el.setAttribute('data-tqs-inert', '1'); }
+      } else if (el.getAttribute('data-tqs-inert') === '1') {
+        el.removeAttribute('inert');
+        el.removeAttribute('data-tqs-inert');
+      }
+    }
+    var root = document.documentElement;
+    if (on && !root.classList.contains('tqs-open')) {
+      lockedScrollY = window.pageYOffset || root.scrollTop || 0;
+      document.body.style.top = (-lockedScrollY) + 'px';
+      root.classList.add('tqs-open');
+    } else if (!on && root.classList.contains('tqs-open')) {
+      root.classList.remove('tqs-open');
+      document.body.style.top = '';
+      window.scrollTo(0, lockedScrollY);
+    }
+  }
+
+  function open() {
+    closeMobileSheets();
+    lockBackground(true);
+    backdrop.hidden = false;
+    syncAppearance();
+    refreshPush();
+    loadAi();
+    var close = document.getElementById('tqsClose');
+    if (close) close.focus();
+  }
+  function close() { backdrop.hidden = true; lockBackground(false); }
+  window.TronclassQuickSettings = { open: open, close: close };
+
+  document.getElementById('tqsClose').addEventListener('click', close);
+  backdrop.addEventListener('click', function (event) {
+    if (event.target === backdrop) close();
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && !backdrop.hidden) close();
+  });
+  backdrop.querySelectorAll('[data-tqs-theme]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var a = appSettings();
+      if (a) a.set({ theme: b.getAttribute('data-tqs-theme') });
+      syncAppearance();
+    });
+  });
+  backdrop.querySelectorAll('[data-tqs-accent]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var a = appSettings();
+      if (a) a.set({ accent: b.getAttribute('data-tqs-accent') });
+      syncAppearance();
+    });
+  });
+  // 手機「更多」面板的設定入口（由下方的 moreSettingsFinalV2 產生）：改開快捷面板。
+  document.addEventListener('click', function (event) {
+    var target = event.target;
+    var link = target && target.closest ? target.closest('#moreSettingsFinalV2') : null;
+    if (link) {
+      event.preventDefault();
+      open();
+    }
+  }, true);
+})();
+</script>
 
 </body>
 </html>

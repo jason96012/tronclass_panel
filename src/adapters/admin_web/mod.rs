@@ -40,7 +40,7 @@ use uuid::Uuid;
 use crate::account::RawAccountConfig;
 use crate::adapters::events::{
     AdapterMessenger, NumberCodeRequest, OutboundMessage, QrCodeRequest, RollcallHistoryEntry,
-    SecurityAlertEvent,
+    SecurityAlertEvent, WafBlockInfo,
 };
 use crate::adapters::requests::{AccountRegistry, NumberCodeInput, RequestAccountState};
 use crate::adapters::scanner::QrScannerRegistry;
@@ -447,7 +447,23 @@ fn blocked_ip_response() -> Response {
 /// Browser navigations receive an explanation page, while API callers retain
 /// the compact JSON error contract expected by the dashboard frontend.
 fn blacklisted_browser_response() -> Response {
-    let mut response = (StatusCode::FORBIDDEN, Html(ADMIN_BLOCKED_HTML)).into_response();
+    blocked_page_response(StatusCode::FORBIDDEN, ADMIN_BLOCKED_HTML)
+}
+
+/// BLOCKED_PAGE_CSP_HASH_V1：被擋頁面（黑名單／地區／機房）的內嵌 `<script>`、
+/// `<style>` 必須用 sha256 雜湊放行。原本這三支直接回傳原始 HTML、沒有帶 CSP，
+/// 於是全域中介層套上「不允許任何內嵌程式碼」的嚴格 CSP：「聯絡管理員」按鈕的
+/// 點擊處理、自動跳轉輪詢都不會執行，整頁樣式也會被擋掉。這裡與
+/// `html_page_response` 相同，依最終 HTML 計算雜湊後才送出。
+fn blocked_page_response(status: StatusCode, html: &str) -> Response {
+    let hashes = collect_inline_csp_hashes(html);
+    let csp = format_csp(&hashes.script, &hashes.style, csp_style_attr_allow());
+    let mut response = (status, Html(html.to_string())).into_response();
+    if let Ok(value) = csp.parse::<HeaderValue>() {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_SECURITY_POLICY, value);
+    }
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -467,9 +483,24 @@ async fn ip_is_blacklisted(state: &AdminWebState, ip: &str) -> bool {
         return false;
     }
     match state.accounts_db.is_ip_blacklisted(ip).await {
-        Ok(blocked) => blocked,
+        Ok(true) => !ip_has_temporary_access(state, ip).await,
+        Ok(false) => false,
         Err(error) => {
             warn!(ip = %ip, error = %error, "讀取 IP 黑名單失敗，暫不拒絕請求");
+            false
+        }
+    }
+}
+
+/// BLACKLIST_CONTACT_APPROVAL_V1：管理員核准「聯絡管理員」申請後，該 IP 在放行
+/// 時限內（`GEO_ACCESS_ALLOW_SECONDS`）暫時不受黑名單擋下。與地區／機房限制共用
+/// `geo_access_requests` 表。這裡只影響請求層判斷，**不刪除** `ip_blacklist` 的列，
+/// 時限過後原本的封鎖仍然生效；WAF 的重複封鎖判斷也不受影響。
+async fn ip_has_temporary_access(state: &AdminWebState, ip: &str) -> bool {
+    match state.accounts_db.geo_access_is_ip_allowed(ip).await {
+        Ok(allowed) => allowed,
+        Err(error) => {
+            warn!(ip = %ip, error = %error, "查詢暫時放行狀態失敗，退回黑名單判斷");
             false
         }
     }
@@ -654,11 +685,7 @@ fn geo_escape_html(value: &str) -> String {
 fn geo_blocked_browser_response(geo: &crate::geoip::GeoInfo) -> Response {
     let page = ADMIN_GEO_BLOCKED_HTML
         .replace("__GEO_LOCATION__", &geo_escape_html(&geo.label()));
-    let mut response = (StatusCode::FORBIDDEN, Html(page)).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    blocked_page_response(StatusCode::FORBIDDEN, &page)
 }
 
 fn geo_blocked_json_response() -> Response {
@@ -780,11 +807,7 @@ async fn reject_foreign_admin_ip_middleware(
 
 fn hosting_blocked_browser_response(info: &crate::hosting_ip::HostingInfo) -> Response {
     let page = ADMIN_HOSTING_BLOCKED_HTML.replace("__HOSTING_LOCATION__", &geo_escape_html(&info.label()));
-    let mut response = (StatusCode::FORBIDDEN, Html(page)).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    blocked_page_response(StatusCode::FORBIDDEN, &page)
 }
 
 fn hosting_blocked_json_response() -> Response {
@@ -1315,6 +1338,78 @@ pub(super) async fn notify_admins_security_alert(state: &AdminWebState, event: S
     }
 }
 
+/// WAF_AUTO_BLOCK_NOTIFY_V2：同一個黑名單鍵（IPv4 或 IPv6 /64）24 小時內只通知一次。
+/// 全網掃描器會反覆被封鎖；去重可避免每次都打擾管理員，同時仍保留第一次的通知與按鈕。
+const WAF_NOTICE_COOLDOWN: Duration = Duration::from_secs(24 * 60 * 60);
+/// 去重表的上限，超過就整個清空（只影響通知次數，不影響封鎖本身）。
+const WAF_NOTICE_MAX_KEYS: usize = 5000;
+static WAF_NOTICE_LAST: std::sync::Mutex<Option<HashMap<String, Instant>>> =
+    std::sync::Mutex::new(None);
+
+/// 回傳 true 代表這個 IP 現在可以發通知（並記下時間）。
+fn waf_notice_should_send(ip: &str) -> bool {
+    let Ok(mut guard) = WAF_NOTICE_LAST.lock() else {
+        return false;
+    };
+    let map = guard.get_or_insert_with(HashMap::new);
+    let now = Instant::now();
+    map.retain(|_, at| now.saturating_duration_since(*at) < WAF_NOTICE_COOLDOWN);
+    if map.contains_key(ip) {
+        return false;
+    }
+    if map.len() >= WAF_NOTICE_MAX_KEYS {
+        map.clear();
+    }
+    map.insert(ip.to_string(), now);
+    true
+}
+
+/// WAF_AUTO_BLOCK_NOTIFY_V2：WAF 剛新建立一筆自動封鎖時，只通知 `admin_user_id`（Discord）。
+/// 按鈕也只允許這個帳號解除，所以不發給其他管理員，避免按了沒有效果。
+/// 不發 LINE、不發 Web Push。呼叫端只在「這次真的新增了黑名單列」時呼叫。
+pub(super) async fn notify_waf_auto_block(
+    state: &AdminWebState,
+    ip: &str,
+    reason: &str,
+    path: &str,
+    permanent: bool,
+) {
+    if !waf_notice_should_send(ip) {
+        return;
+    }
+    let Some(messenger) = state.messenger.clone() else {
+        warn!("WAF 自動封鎖通知略過：沒有 Discord messenger");
+        return;
+    };
+    let admin = messenger.admin_user_id().trim().to_string();
+    if admin.is_empty() {
+        warn!("WAF 自動封鎖通知略過：沒有 admin Discord user id");
+        return;
+    }
+    let event = SecurityAlertEvent {
+        username: String::new(),
+        ip: ip.to_string(),
+        user_failures: 0,
+        ip_failures: 0,
+        timestamp: security_now_label(),
+        ip_is_blacklisted: true,
+        account_id: String::new(),
+        allow_owner_unblock: false,
+        login_locked: false,
+        waf_block: Some(WafBlockInfo {
+            reason: reason.to_string(),
+            path: path.to_string(),
+            permanent,
+        }),
+    };
+    if let Err(error) = messenger
+        .push(&admin, &OutboundMessage::SecurityAlert(event))
+        .await
+    {
+        warn!(to = %admin, error = %error, "WAF 自動封鎖 Discord 通知推送失敗");
+    }
+}
+
 /// ADMIN_GEO_RESTRICT_V1：通知管理員「有國外 IP 申請暫時放行」——與
 /// `notify_admins_security_alert` 同一種雙渠道寫法（Discord 按鈕＋Web Push），
 /// 只有送達對象、文案、偏好鍵（`geo_access_request`）、落地頁不同。只在
@@ -1508,6 +1603,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                         ip_is_blacklisted: true,
                         allow_owner_unblock: true,
                         login_locked: false,
+                        waf_block: None,
                     };
                     notify_admins_security_alert(state, event.clone()).await;
                     // The account holder receives the same Discord component,
@@ -1571,6 +1667,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                 account_id: owner_account_id.clone(),
                 allow_owner_unblock: false,
                 login_locked: true,
+                waf_block: None,
             };
             // 持有人先收到（Discord 有「取消這次鎖定」／「封鎖此 IP」按鈕；LINE 收純文字）。
             if let Some(messenger) = state.messenger.as_ref() {
@@ -1611,6 +1708,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                         account_id: owner_account_id.clone(),
                         allow_owner_unblock: false,
                         login_locked: true,
+                        waf_block: None,
                     },
                 )
                 .await;
@@ -1631,6 +1729,7 @@ async fn alert_password_failures(state: &AdminWebState, username: &str, ip: &str
                     account_id: owner_account_id.clone(),
                     allow_owner_unblock: false,
                     login_locked: false,
+                    waf_block: None,
                 },
             )
             .await;
@@ -3067,6 +3166,8 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         // 只會攔到這個檔名 —— 其餘根目錄請求照舊走原本的路由／404。
         .route(indexnow::key_path(), get(indexnow::key_file_handler))
         .route("/healthz", get(health::healthz_handler))
+        // CSP_REPORT_SINK_V1：report-uri /csp-report 必須有路由（回 204）；原本 404 會被 WAF 當成異常計數。
+        .route("/csp-report", post(health::csp_report_handler))
         // TRONCLASS_PROXY_JUMP_V1：iClass 反向代理。SPA 資源是根絕對路徑
         //（/static/...），因此頂層 /static、/api、/course、/uploads 也掛代理；
         // 面板自己不用這些頂層路徑（面板資源在 /admin/static、API 在 /admin/api）。
@@ -3454,35 +3555,28 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/bulletins/translate/selftest",
             get(bulletins::translate_selftest_handler),
         )
-        // AI_CHAT_V1：ChatGPT 風格對話頁。密鑰存後端並自動輪替，
-        // 生成走「背景 job + 輪詢」避免反向代理逾時回 502。
+        // AI 頁面（opencode）。公告 AI 摘要改用 opencode 的 NVIDIA 金鑰（Turn 8 追加）。
         .route("/admin/ai", get(ai_chat::page_handler))
-        .route("/admin/api/ai/state", get(ai_chat::state_handler))
-        .route("/admin/api/ai/keys", post(ai_chat::keys_handler))
-        .route("/admin/api/ai/keys/test", post(ai_chat::key_test_handler))
-        .route("/admin/api/ai/settings", post(ai_chat::settings_handler))
-        .route("/admin/api/ai/models", post(ai_chat::models_handler))
-        // BULLETIN_AI_SUMMARY_V1：公告 AI 摘要（與聊天共用密鑰輪替與 status 輪詢）。
+        // BULLETIN_AI_SUMMARY_V1：公告 AI 摘要。summarize 回 job_id，前端輪詢 chat/status。
         .route(
             "/admin/api/ai/summarize",
             post(ai_chat::summarize_handler).layer(DefaultBodyLimit::max(ADMIN_JSON_BODY_LIMIT)),
         )
-        .route(
-            "/admin/api/ai/chat",
-            post(ai_chat::chat_handler).layer(DefaultBodyLimit::max(ADMIN_AI_CHAT_BODY_LIMIT)),
-        )
         .route("/admin/api/ai/chat/status", get(ai_chat::chat_status_handler))
-        .route("/admin/api/ai/chat/stream", get(ai_chat::chat_stream_handler))
-        .route(
-            "/admin/api/ai/workspace/file",
-            get(ai_chat::workspace_file_handler),
-        )
-        .route("/admin/api/ai/chat/stop", post(ai_chat::chat_stop_handler))
-        .route("/admin/api/ai/threads", post(ai_chat::threads_handler))
         // OPENCODE_INTEGRATION_V1：opencode AI coding agent sidecar
         .route("/admin/api/ai/opencode/state", get(opencode::state_handler))
         .route("/admin/api/ai/opencode/config", post(opencode::config_handler))
+        // CUSTOM_PROVIDER_V1：自訂 OpenAI 相容供應商（Base URL、金鑰；模型走 /models）
+        .route("/admin/api/ai/opencode/custom", post(opencode::custom_provider_handler))
         .route("/admin/api/ai/opencode/access", post(opencode::access_handler))
+        // OPENCODE_AGENT_ONLY_V2：模型清單管理（僅管理員）、對話清單／歷史／改名／刪除、中止
+        .route("/admin/api/ai/opencode/models", post(opencode::models_handler))
+        .route(
+            "/admin/api/ai/opencode/sessions",
+            get(opencode::sessions_list_handler).post(opencode::sessions_action_handler),
+        )
+        .route("/admin/api/ai/opencode/abort", post(opencode::abort_handler))
+        .route("/admin/api/ai/opencode/chat/status", get(opencode::chat_status_handler))
         .route(
             "/admin/api/ai/opencode/chat",
             post(opencode::chat_handler).layer(DefaultBodyLimit::max(ADMIN_AI_CHAT_BODY_LIMIT)),

@@ -1172,7 +1172,7 @@ pub(super) async fn admin_homework_file_handler(
 }
 
 /// HOMEWORK_DETAIL_V1（fix41）：`Content-Disposition` 的 RFC 5987 檔名編碼。
-/// 與 `ai_chat::percent_encode_filename` 同一個規則（各自模組內私有，避免跨模組耦合）。
+/// 與 `utils::percent_encode_filename` 逐字相同（本模組保留私有副本，不改動既有呼叫端）。
 fn percent_encode_filename(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     for byte in name.as_bytes() {

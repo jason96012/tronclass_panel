@@ -52,6 +52,14 @@ body{
 a{color:inherit}
 .wrap{max-width:1180px;margin:0 auto;padding:18px 18px 40px}
 /* ── 頁首 ─────────────────────────────────────────────────────────────── */
+/* RADAR_TOPBAR_LIKE_TIMETABLE_V1：頂部列樣式同課表頁（sticky 半透明橫列、D 圖示＋品名、右側按鈕）；設定來源標籤已移除（JS 以 null 判斷保護）。 */
+.top-header{position:sticky;top:0;z-index:30;background:color-mix(in srgb,var(--rd-bg) 94%,transparent);backdrop-filter:blur(14px);border-bottom:1px solid var(--rd-line)}
+.top-inner{max-width:1180px;margin:0 auto;padding:14px 18px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.top-brand{display:flex;align-items:center;gap:12px;min-width:0}
+.top-logo{width:44px;height:44px;border-radius:16px;background:#dfe8ff;color:#2563eb;display:grid;place-items:center;font-size:20px;font-weight:950}
+.top-title{font-size:20px;font-weight:950;line-height:1.1;letter-spacing:-.03em;color:var(--rd-text)}
+.top-actions{display:flex;gap:8px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+@media(max-width:820px){.top-inner{padding:12px 12px}.top-title{font-size:17px}.top-logo{width:42px;height:42px;border-radius:14px}.top-header .back{display:none}}
 .head{
   display:flex;align-items:center;gap:12px;flex-wrap:wrap;
   background:linear-gradient(135deg,var(--rd-hero-a),var(--rd-hero-b));
@@ -126,6 +134,16 @@ button:disabled{opacity:.55;cursor:not-allowed}
 .item .top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .item .top b{font-size:14px}
 .item .meta{color:var(--rd-muted);font-size:12.5px;margin-top:3px;word-break:break-word}
+/* RADAR_BOUNDED_LISTS_V1：目前狀態、送出紀錄不再無限延伸頁面，改為區塊內捲動。
+   表頭固定在捲動區頂端，捲動時仍看得到欄位名稱。 */
+#accountStatus{max-height:440px;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
+.tbl-wrap{max-height:520px;overflow:auto;overscroll-behavior:contain}
+.tbl-wrap thead th{position:sticky;top:0;z-index:1;background:var(--rd-card);box-shadow:0 1px 0 var(--rd-line)}
+/* RADAR_HISTORY_FIT_V1：送出紀錄表格在卡片寬度內排得下（不再左右捲動）。時間可換行、長字串可斷開、內距縮小。 */
+.tbl-wrap table{table-layout:auto}
+.tbl-wrap th,.tbl-wrap td{padding:7px 6px;overflow-wrap:anywhere}
+.tbl-wrap td.num{white-space:normal}
+.tbl-wrap th:nth-child(3),.tbl-wrap td:nth-child(3),.tbl-wrap th:nth-child(4),.tbl-wrap td:nth-child(4){white-space:nowrap}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th,td{text-align:left;padding:8px 8px;border-bottom:1px solid var(--rd-line)}
 th{color:var(--rd-muted);font-size:12px;font-weight:600}
@@ -134,6 +152,8 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 .mobile-only{display:none}
 #saveBarMobile{display:none}
 @media(max-width:820px){
+  #accountStatus{max-height:360px}
+  #historyBox{max-height:460px;overflow-y:auto;overscroll-behavior:contain;padding-right:4px}
   .wrap{padding:12px 12px calc(250px + env(safe-area-inset-bottom,0px))}
   .desktop-only{display:none!important}
   .mobile-only{display:block}
@@ -183,17 +203,8 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
 </style>
 </head>
 <body>
+<header class="top-header"><div class="top-inner"><div class="top-brand"><div class="top-logo">D</div><div><div class="top-title">Tronclass<br>雷達點名</div></div></div><div class="top-actions"><button class="secondary" id="reloadBtn" type="button">重新整理</button><button class="secondary back" id="dashBtn" type="button">回 Dashboard</button></div></div></header>
 <div class="wrap">
-  <header class="head">
-    <div>
-      <h1>雷達點名</h1>
-      <div class="sub">設定送出的座標、把「我的位置」列入考量，並查看雷達簽到的狀態與紀錄。</div>
-    </div>
-    <div class="spacer"></div>
-    <span id="sourceBadge" class="badge config">讀取中…</span>
-    <a class="btn secondary back" href="/admin">回 Dashboard</a>
-    <button class="secondary" id="reloadBtn" type="button">重新整理</button>
-  </header>
 
   <div id="pageMsg" class="msgs"></div>
 
@@ -641,6 +652,7 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
       rows.forEach(function(row){ box.appendChild(historyCard(row)); });
     } else {
       var wrap = document.createElement('div');
+      wrap.className = 'tbl-wrap';
       wrap.style.overflowX = 'auto';
       var table = document.createElement('table');
       var thead = document.createElement('thead');
@@ -786,16 +798,18 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
         $('maxCoords').textContent = state.config.max_coords || 20;
         var source = state.config.source === 'panel';
         var badge = $('sourceBadge');
-        badge.className = 'badge ' + (source ? 'panel' : 'config');
-        badge.textContent = source
-          ? ('設定來源：面板（' + (state.config.effective_coords || []).length + ' 組座標生效）')
-          : '設定來源：設定檔 config.toml';
+        if (badge) {
+          badge.className = 'badge ' + (source ? 'panel' : 'config');
+          badge.textContent = source
+            ? ('設定來源：面板（' + (state.config.effective_coords || []).length + ' 組座標生效）')
+            : '設定來源：設定檔 config.toml';
+        }
         state.lastSavedAt = state.config.updated_at || 0;
         renderDeviceState();
       } else {
         state.coords = [];
         state.deviceLocation = null;
-        $('sourceBadge').textContent = '沒有可用的 provider';
+        if ($('sourceBadge')) $('sourceBadge').textContent = '沒有可用的 provider';
       }
 
       fillProviders();
@@ -918,6 +932,7 @@ td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
   $('resetBtn').addEventListener('click', resetToConfig);
   $('saveBarReset').addEventListener('click', resetToConfig);
   $('reloadBtn').addEventListener('click', function(){ load(state.provider); });
+  $('dashBtn').addEventListener('click', function(){ location.href = '/admin'; });
   $('addCoordBtn').addEventListener('click', function(){
     if (state.coords.length >= (state.config && state.config.max_coords ? state.config.max_coords : 20)){
       say($('pageMsg'), '座標最多 ' + (state.config.max_coords || 20) + ' 組。', 'warn');

@@ -272,7 +272,12 @@ export function createComposer(attachBtn, fileInput, dropzone, input, sendBtn, s
 
   // 綁定事件
   attachBtn.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', e => addFiles(e.target.files));
+  fileInput.addEventListener('change', e => {
+    // 先複製出清單再清空 input：否則選同一個檔案（移除晶片後再附加）瀏覽器不會再觸發 change。
+    const picked = Array.from(e.target.files || []);
+    e.target.value = '';
+    addFiles(picked);
+  });
   input.addEventListener('input', autoGrow);
   input.addEventListener('keydown', handleKeyDown);
   input.addEventListener('paste', handlePaste);
@@ -307,61 +312,4 @@ function showToast(message, isError) {
   setTimeout(() => toast.remove(), 3000);
 }
 
-export function createOpencodeComposer(input, sendBtn, stopBtn, onSend) {
-  let streaming = false;
-
-  function autoGrow() {
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 200) + 'px';
-  }
-
-  function handleKeyDown(e) {
-    // 輸入法組字中（e.isComposing）按 Enter 是選字，不能送出。
-    if (e.key === 'Enter' && !e.isComposing && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      e.preventDefault();
-      send();
-    }
-  }
-
-  async function send() {
-    const text = input.value.trim();
-    if (!text) return;
-
-    input.value = '';
-    autoGrow();
-    setSending(true);
-
-    try {
-      await onSend(text);
-    } finally {
-      setSending(false);
-    }
-  }
-
-  function setSending(on) {
-    streaming = on;
-    sendBtn.classList.toggle('hidden', on);
-    stopBtn.classList.toggle('hidden', !on);
-    input.disabled = on;
-  }
-
-  function stop() {
-    // 觸發停止邏輯
-  }
-
-  function reset() {
-    input.value = '';
-    autoGrow();
-    setSending(false);
-  }
-
-  input.addEventListener('input', autoGrow);
-  input.addEventListener('keydown', handleKeyDown);
-  sendBtn.addEventListener('click', send);
-  stopBtn.addEventListener('click', stop);
-  autoGrow();
-
-  return { send, stop, reset, autoGrow, setSending, focus: () => input.focus() };
-}
-
-export default { createComposer, createOpencodeComposer };
+export default { createComposer };

@@ -107,7 +107,7 @@ pub use accounts::SecretRotationReport;
 #[allow(unused_imports)]
 pub use activity::{ActivityEventInput, ActivityEventRow};
 #[allow(unused_imports)]
-pub use blacklist::IpBlacklistRow;
+pub use blacklist::{IpBlacklistRow, WAF_ANOMALY_REASON_PREFIX};
 #[allow(unused_imports)]
 pub use geo_access_requests::{GeoAccessRequestRow, GEO_ACCESS_ALLOW_SECONDS, GEO_ACCESS_NOTIFY_MUTED_KEY};
 // MaterialEventInput 有外部呼叫端（files.rs／activity.rs 測試／mod.rs 的 material_tx），

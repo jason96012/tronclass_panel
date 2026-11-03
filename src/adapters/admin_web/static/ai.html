@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <title>AI 對話</title>
-<link rel="stylesheet" href="/admin/static/ai/opencode.css?v=2">
+<link rel="stylesheet" href="/admin/static/ai/opencode.css?v=3">
 </head>
 <body>
 <!-- 版面規格：static/ai-interface-layout.md（v1.0）。樣式在 opencode.css，行為在 js/opencode.js。 -->
@@ -22,7 +22,7 @@
       </div>
       <nav class="sidebar-tabs" role="tablist" id="leftTabs">
         <button class="tab active" role="tab" data-tab="sessions" aria-selected="true" type="button">會話</button>
-        <button class="tab" role="tab" data-tab="tools" aria-selected="false" type="button">工具</button>
+        <button class="tab" role="tab" data-tab="models" aria-selected="false" type="button">模型</button>
         <button class="tab" role="tab" data-tab="opencode" aria-selected="false" type="button">opencode</button>
       </nav>
       <div class="sidebar-content" id="leftContent">
@@ -33,12 +33,25 @@
           <input class="input input-sm session-search" id="sessionSearch" type="search" placeholder="搜尋對話…" aria-label="搜尋對話">
         </section>
 
-        <section class="tab-panel hidden" data-panel="tools" id="toolsPanel">
-          <label class="toggle-row">
-            <input type="checkbox" id="agentMode">
-            <span>Agent 模式（允許工具實際執行）</span>
-          </label>
-          <div class="tool-list" id="toolsList"></div>
+        <section class="tab-panel hidden" data-panel="models" id="modelsPanel">
+          <div class="row-actions" role="group" aria-label="模型供應商">
+            <button class="btn btn-primary btn-sm" id="ocManageNvidia" type="button" aria-pressed="true">NVIDIA</button>
+            <button class="btn btn-secondary btn-sm" id="ocManageCustom" type="button" aria-pressed="false">自訂供應商</button>
+          </div>
+          <div class="card">
+            <h3 class="card-title" id="ocModelTitle">NVIDIA 模型</h3>
+            <p class="field-hint">清單會寫入 opencode 設定。預設模型用於新訊息；聊天時可在右上角切換清單內的模型。</p>
+            <div class="model-manage-list" id="ocModelList" role="list"></div>
+            <div class="field-hint" id="ocModelNote" aria-live="polite"></div>
+          </div>
+          <div class="card" id="ocModelAddCard">
+            <h3 class="card-title">新增模型</h3>
+            <p class="field-hint" id="ocModelAddHint">請輸入 NVIDIA 的完整模型 ID（廠商/模型名），例如 nvidia/nemotron-3-super-120b-a12b</p>
+            <div class="row-actions">
+              <input class="input input-sm" id="ocModelInput" type="text" placeholder="nvidia/模型名" autocomplete="off" aria-label="新增模型 ID">
+              <button class="btn btn-secondary btn-sm" id="ocModelAddBtn" type="button">新增</button>
+            </div>
+          </div>
         </section>
 
         <section class="tab-panel hidden" data-panel="opencode" id="opencodePanel">
@@ -55,12 +68,9 @@
               <label class="field-label" for="ocBaseUrl">Base URL</label>
               <input class="input input-sm" id="ocBaseUrl" type="text" autocomplete="off">
             </div>
+            <div class="field-hint">模型請在「模型」分頁管理。</div>
             <div class="field">
-              <label class="field-label" for="ocModel">模型</label>
-              <input class="input input-sm" id="ocModel" type="text" autocomplete="off">
-            </div>
-            <div class="field">
-              <label class="field-label" for="ocApiKey">API Key</label>
+              <label class="field-label" for="ocApiKey">NVIDIA API Key（所有 NVIDIA 模型共用）</label>
               <input class="input input-sm" id="ocApiKey" type="password" placeholder="輸入新金鑰（留空不更動）" autocomplete="off">
               <div class="field-hint" id="ocKeyHint">載入中…</div>
             </div>
@@ -68,6 +78,28 @@
             <div class="row-actions">
               <button class="btn btn-primary btn-sm" id="ocSaveBtn" type="button">儲存設定</button>
               <button class="btn btn-secondary btn-sm" id="ocTestBtn" type="button">測試連線</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">自訂供應商（OpenAI 相容）</h3>
+            <p class="field-hint">任何提供 OpenAI 相容 /chat/completions 的服務都可以，例如 OpenRouter 或自架的 vLLM、Ollama。模型清單請在「模型」分頁切換到「自訂供應商」管理。</p>
+            <div class="field">
+              <label class="field-label" for="ocCustomName">顯示名稱</label>
+              <input class="input input-sm" id="ocCustomName" type="text" maxlength="40" placeholder="自訂供應商" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocCustomBaseUrl">Base URL</label>
+              <input class="input input-sm" id="ocCustomBaseUrl" type="text" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocCustomApiKey">API Key（此供應商的模型共用）</label>
+              <input class="input input-sm" id="ocCustomApiKey" type="password" placeholder="輸入新金鑰（留空不更動）" autocomplete="off">
+              <div class="field-hint" id="ocCustomKeyHint">載入中…</div>
+            </div>
+            <div class="field-status" id="ocCustomStatus" aria-live="polite"></div>
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" id="ocCustomSaveBtn" type="button">儲存自訂供應商</button>
             </div>
           </div>
 
@@ -103,7 +135,7 @@
         <div class="chat-header-right">
           <div class="model-picker" id="modelPickerContainer">
             <button class="btn btn-secondary btn-sm model-picker-btn" id="modelPickerBtn" type="button" aria-haspopup="listbox">
-              <span id="currentModelName">自動</span>
+              <span id="currentModelName">載入中…</span>
               <span aria-hidden="true">▾</span>
             </button>
             <div class="model-dropdown hidden" id="modelPickerDropdown" role="listbox"></div>
@@ -119,7 +151,7 @@
         <div class="empty-state" id="emptyState">
           <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
           <div class="empty-state-title">歡迎使用 AI 對話</div>
-          <div class="empty-state-desc" id="emptyStateDesc">選擇模型並開始輸入訊息</div>
+          <div class="empty-state-desc" id="emptyStateDesc">輸入需求，opencode agent 會在工作區內協助你</div>
           <div class="suggestions" id="suggestions"></div>
         </div>
       </div>

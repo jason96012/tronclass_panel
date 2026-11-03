@@ -528,6 +528,20 @@ pub struct SecurityAlertEvent {
     /// LOGIN_TIERED_LOCKOUT_V1：第一層鎖定（帳號密碼登入暫時鎖住、IP 尚未封鎖）。
     /// Discord 端據此改渲染「取消這次鎖定」＋「封鎖此 IP」兩顆按鈕給帳號持有人。
     pub login_locked: bool,
+    /// WAF_AUTO_BLOCK_NOTIFY_V2：WAF 自動封鎖的附加資訊。只有 WAF 告警會帶值，
+    /// 登入失敗告警為 None（渲染與按鈕完全沿用原本的行為）。
+    pub waf_block: Option<WafBlockInfo>,
+}
+
+/// WAF_AUTO_BLOCK_NOTIFY_V2：WAF 自動封鎖的說明，供 Discord 告警顯示。
+#[derive(Debug, Clone, PartialEq)]
+pub struct WafBlockInfo {
+    /// 觸發原因（給人看的描述）。
+    pub reason: String,
+    /// 觸發封鎖的請求路徑。
+    pub path: String,
+    /// true：攻擊特徵類，永久封鎖；false：異常 4xx 類，30 分鐘後自動解除。
+    pub permanent: bool,
 }
 
 /// ADMIN_GEO_RESTRICT_V1：訪客在「僅限台灣地區存取」頁按「聯絡管理員」後產生。

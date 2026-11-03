@@ -60,10 +60,8 @@ use serde_json::json;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-// WAF_AUTO_BLOCK_SILENT_V1：WAF 自動封鎖已改成不再透過 notify_admins_security_alert
-// 推播 Discord／Web Push（原因見下方 waf_firewall_middleware 內的註解），
-// 這裡不再需要 security_now_label／SecurityAlertEvent，只保留寫黑名單與活動日誌
-// 需要用到的型別。
+// WAF_AUTO_BLOCK_NOTIFY_V2：WAF 新建立自動封鎖時，透過 notify_waf_auto_block 只發 Discord 給
+// admin_user_id（同一 IP 24 小時去重），附「解除封鎖」按鈕。不發 LINE、不發 Web Push。
 use super::AdminWebState;
 use crate::db::ActivityEventInput;
 
@@ -81,8 +79,8 @@ const WAF_MAX_URI_LENGTH: usize = 4096;
 const WAF_ANOMALY_MAX_4XX: usize = 15;
 /// WAF 異常行為偵測：視窗長度（秒）。
 const WAF_ANOMALY_WINDOW_SECS: u64 = 300;
-/// WAF 異常行為偵測：異常 IP 黑名單保留時間（秒，30 分鐘）。
-const WAF_ANOMALY_BAN_SECS: u64 = 1800;
+// 異常 IP 黑名單保留時間（30 分鐘）定義在 `db/blacklist.rs`，
+// 由 `AccountsDb::is_ip_blacklisted` 強制到期；這裡不再重複定義。
 /// 總體請求大小上限（防止超大請求耗盡記憶體與頻寬）。
 const WAF_MAX_REQUEST_SIZE: usize = 64 * 1024 * 1024;
 /// 已知搜尋引擎爬蟲 User-Agent 關鍵字，豁免異常行為偵測與自動封鎖。
@@ -1411,7 +1409,9 @@ pub async fn waf_firewall_middleware(
                 let block_ip = ban_key.clone();
                 let alert_desc = threat_desc.clone();
                 let path_for_log = raw_path.clone();
+                let path_for_notice = raw_path.clone();
                 let ua_for_log = user_agent.clone();
+                let alert_state = state.clone();
 
                 tokio::spawn(async move {
                     // 自動將惡意攻擊者 IP 寫入永久黑名單；只有「新建立」的封鎖
@@ -1441,14 +1441,18 @@ pub async fn waf_firewall_middleware(
                             })
                             .await;
 
-                        // WAF_AUTO_BLOCK_SILENT_V1：這裡以前每次自動封鎖都會額外發一則
-                        // Discord／Web Push 安全告警。但 WAF 本來就是「全自動」防線——
-                        // 全網掃描器（例如 Palo Alto Networks Cortex Xpanse 這類資安研究
-                        // 用途的善意全網掃描，幾乎任何對外服務都會定期被掃到，並非針對性
-                        // 攻擊）每天都會打到好幾次，每次都跳通知等於不斷打擾管理員，
-                        // 但其實不需要他採取任何動作（已經自動擋下了）。改成不再主動推播，
-                        // 只保留上面寫進 ip_blacklist／activity_events 的紀錄——
-                        // 要查的話去 /admin/blacklist 頁面看得到完整列表與封鎖原因。
+                        // WAF_AUTO_BLOCK_NOTIFY_V2：只有「新建立」的封鎖才通知（上面 Ok(true) 已保證）。
+                        // 攻擊特徵類為永久封鎖，因此通知說明「需按按鈕才會解除」。
+                        // 同一 IP 24 小時內只通知一次（去重在 notify_waf_auto_block 內），
+                        // 避免全網掃描器反覆觸發。
+                        super::notify_waf_auto_block(
+                            &alert_state,
+                            &block_ip,
+                            &alert_desc,
+                            &path_for_notice,
+                            true,
+                        )
+                        .await;
                     }
                 });
             }
@@ -1573,14 +1577,17 @@ pub async fn waf_firewall_middleware(
                 let db = state.accounts_db.clone();
                 let block_ip = ban_key.clone();
                 let path_for_log = raw_path.clone();
+                let path_for_notice = raw_path.clone();
                 let ua_for_log = user_agent.clone();
+                let anomaly_state = state.clone();
                 tokio::spawn(async move {
                     if let Ok(true) = db
                         .block_ip_with_failure_count(
                             &block_ip,
                             "system:waf-firewall-max",
                             &format!(
-                                "WAF 防火牆自動封鎖（異常 4xx 行為）: {} 觸發",
+                                "{}: {} 觸發",
+                                crate::db::WAF_ANOMALY_REASON_PREFIX,
                                 status
                             ),
                             1,
@@ -1603,6 +1610,15 @@ pub async fn waf_firewall_middleware(
                                 user_agent: ua_for_log,
                             })
                             .await;
+                        // WAF_AUTO_BLOCK_NOTIFY_V2：異常 4xx 類 30 分鐘後自動解除，通知說明這點。
+                        super::notify_waf_auto_block(
+                            &anomaly_state,
+                            &block_ip,
+                            &format!("異常 4xx 行為（HTTP {}）", status),
+                            &path_for_notice,
+                            false,
+                        )
+                        .await;
                     }
                 });
             }

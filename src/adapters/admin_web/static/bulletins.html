@@ -13,7 +13,11 @@
   body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
   .wrap{max-width:960px;margin:0 auto;padding:16px 14px 60px}
   header.top{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--bg) 86%,transparent);backdrop-filter:blur(10px);display:flex;align-items:center;gap:10px;padding:12px 2px;border-bottom:1px solid var(--line2)}
-  header.top h1{font-size:18px;font-weight:800;flex:1}
+  .bl-brand{flex:1;display:flex;align-items:center;gap:10px;min-width:0}
+  .bl-logo{flex:0 0 auto;width:34px;height:34px;border-radius:10px;display:grid;place-items:center;color:#fff;font-weight:800;font-size:15px;background:linear-gradient(135deg,#60a5fa,#6366f1);box-shadow:0 4px 12px rgba(99,102,241,.25)}
+  .bl-brand h1{font-size:14px;font-weight:800;line-height:1.2;margin:0}
+  .bl-brand small{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+  header.top a.back{border-radius:12px;font-weight:700;padding:8px 12px}
   .count{font-size:12px;color:var(--muted);background:var(--card);border:1px solid var(--line2);border-radius:999px;padding:4px 10px;white-space:nowrap}
   a.back,.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:13px;cursor:pointer;min-height:38px}
   .btn.primary{background:var(--primary);border-color:var(--primary);color:var(--primaryText)}
@@ -80,7 +84,6 @@
   @media(max-width:760px){
     .wrap{padding:8px 12px calc(132px + env(safe-area-inset-bottom))}
     header.top{padding:10px 0;border-bottom:none}
-    header.top h1{font-size:17px}
     a.back{border-radius:999px;width:38px;padding:0}
     a.back .txt{display:none}
     .filters{flex-wrap:nowrap;overflow-x:auto;-webkit-overflow-scrolling:touch;padding:2px 0 8px;scrollbar-width:none;margin:8px 0 2px}
@@ -183,6 +186,54 @@
     @media(max-width:640px){ .blp-box{max-height:96dvh} }
   }
   .hidden-init{display:none}
+  /* BULLETIN_SCAN_V1：快速辨識版面——課程色條、長公告收合、白底色塊不顯示（只影響顯示，不改內容） */
+  .card{border-left:4px solid var(--accent,var(--line2));padding-left:18px}
+  .card[data-tone="0"]{--accent:#2563eb}
+  .card[data-tone="1"]{--accent:#059669}
+  .card[data-tone="2"]{--accent:#d97706}
+  .card[data-tone="3"]{--accent:#7c3aed}
+  .card[data-tone="4"]{--accent:#e11d48}
+  .card[data-tone="5"]{--accent:#0891b2}
+  .card:not(.read){box-shadow:0 2px 12px color-mix(in srgb,var(--accent,#2563eb) 16%,transparent)}
+  .card .row1{gap:6px}
+  .card .badge{color:var(--accent);background:color-mix(in srgb,var(--accent) 13%,transparent);border-color:color-mix(in srgb,var(--accent) 40%,transparent);font-weight:700;font-size:12px}
+  .card h2{font-size:17px;font-weight:800;margin:8px 0 2px}
+  .card .meta{margin-bottom:8px}
+  .card .content.clamp{max-height:10.5em;overflow:hidden;position:relative}
+  .card .content.clamp::after{content:'';position:absolute;left:0;right:0;bottom:0;height:3em;background:linear-gradient(to bottom,transparent,var(--card));pointer-events:none}
+  .card.expanded .content.clamp{max-height:none;overflow:visible}
+  .card.expanded .content.clamp::after{display:none}
+  .card .moretbtn{display:inline-flex;align-items:center;background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:10px;padding:6px 12px;font-size:12.5px;font-weight:600;cursor:pointer;min-height:34px;margin-top:8px}
+  .card .moretbtn:hover{color:var(--accent);border-color:var(--accent)}
+  /* BULLETIN_MASONRY_V1：桌機雙欄改為瀑布式，矮卡片下方不留空格 */
+  @media(min-width:900px){
+    .list.cols{display:flex;flex-direction:row;align-items:flex-start;gap:14px}
+    .list.cols>.mcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:14px}
+  }
+  /* BULLETIN_TIER_LAYOUT_V1：三種裝置各自版面（只影響排版，不改內容）
+     電腦 ≥1100px：置中 1240px 寬、三欄瀑布式；頂部列為課表式橫列（貼齊上緣、D 圖示＋兩行品名）。
+     平板 761–1099px：全寬、兩欄瀑布式（欄數由 JS colCount() 決定）。
+     手機 ≤760px：單欄，沿用原本樣式。 */
+  :root{--bl-e:max(0px,calc((100vw - 1240px) / 2))}
+  @media(min-width:1100px){
+    .wrap{max-width:1240px}
+    header.top{
+      margin:-16px calc(-14px - var(--bl-e)) 18px;
+      padding:14px calc(14px + var(--bl-e));
+      background:color-mix(in srgb,var(--bg) 94%,transparent);
+      backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+    }
+    .bl-logo{width:44px;height:44px;border-radius:16px;font-size:20px}
+    .bl-brand h1,.bl-brand small{font-size:20px;font-weight:950;line-height:1.1;color:var(--text);margin:0;letter-spacing:-.03em}
+    .bl-brand small{margin-top:0}
+    .list.cols{gap:14px}
+    .list.cols>.mcol{gap:14px}
+  }
+  @media(min-width:761px) and (max-width:1099px){
+    .wrap{max-width:none;padding:16px 20px 60px}
+    .list.cols{display:flex;flex-direction:row;align-items:flex-start;gap:14px}
+    .list.cols>.mcol{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:14px}
+  }
 </style>
 <style id="SAFE_AREA_TOP_V1">
   /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
@@ -197,11 +248,11 @@
 <body>
 <div class="wrap">
   <header class="top">
-    <a class="back" href="/admin/dashboard" title="回控制台">←<span class="txt"> 回控制台</span></a>
-    <h1>課程公告</h1>
+    <div class="bl-brand"><span class="bl-logo" aria-hidden="true">D</span><div><h1>Tronclass</h1><small>課程公告</small></div></div>
     <span class="count" id="count"></span>
     <button class="btn hidden-init" id="publishBtn" type="button">＋ 發佈</button>
     <button class="btn primary" id="refresh" type="button">重新整理</button>
+    <a class="back" href="/admin/dashboard" title="回控制台"><span class="txt">回控制台</span></a>
   </header>
   <div class="pubform hidden-init" id="pubForm">
     <input id="pubTitle" placeholder="公告標題" maxlength="80">
@@ -1019,8 +1070,72 @@
     // 檢視附件時先把「已閱讀」停用：避免誤按造成畫面重畫、把檢視器蓋掉。
     if(read){read.disabled=true;}
   }
+  /* BULLETIN_SCAN_V1 helpers */
+  var TONE_N=6;
+  function toneOf(name){var s=String(name||''),h=0;for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0;}return Math.abs(h)%TONE_N;}
+  var colorProbe=null;
+  function rgbOf(v){
+    if(!colorProbe){colorProbe=document.createElement('span');colorProbe.style.display='none';document.body.appendChild(colorProbe);}
+    colorProbe.style.color='';colorProbe.style.color=v;
+    if(!colorProbe.style.color)return null;
+    var m=getComputedStyle(colorProbe).color.match(/[\d.]+/g);
+    if(!m||m.length<3)return null;
+    return [+m[0],+m[1],+m[2]];
+  }
+  function lumOf(rgb){return (0.2126*rgb[0]+0.7152*rgb[1]+0.0722*rgb[2])/255;}
+  // 公告正文常帶 inline 白底（從 iClass 貼過來），深色主題下會變成白色色塊；只清掉淺色底，文字深色也一併還原為主題色
+  function normalizeLightBg(root){
+    root.querySelectorAll('[style]').forEach(function(el){
+      var bg=el.style.backgroundColor||el.style.background;
+      if(!bg)return;
+      var rgb=rgbOf(bg);
+      if(!rgb||lumOf(rgb)<=0.85)return;
+      el.style.backgroundColor='';el.style.background='';
+      var fg=el.style.color?rgbOf(el.style.color):null;
+      if(fg&&lumOf(fg)<0.35)el.style.color='';
+    });
+    root.querySelectorAll('[bgcolor]').forEach(function(el){
+      var rgb=rgbOf(el.getAttribute('bgcolor'));
+      if(rgb&&lumOf(rgb)>0.85)el.removeAttribute('bgcolor');
+    });
+  }
+  // BULLETIN_MASONRY_V1：桌機雙欄瀑布式排列，依原順序放入較矮的欄
+  // BULLETIN_TIER_LAYOUT_V1：依裝置寬度決定欄數——電腦 ≥1100px 三欄、平板 761–1099px 兩欄、手機 ≤760px 單欄。
+  function colCount(){
+    if(window.matchMedia('(min-width:1100px)').matches)return 3;
+    if(window.matchMedia('(min-width:761px)').matches)return 2;
+    return 1;
+  }
+  function packCols(){
+    var cards=[].slice.call(list.querySelectorAll('.card'));
+    cards.sort(function(a,b){return (+a.dataset.seq)-(+b.dataset.seq);});
+    list.querySelectorAll('.mcol').forEach(function(col){col.remove();});
+    cards.forEach(function(c){list.appendChild(c);});
+    var n=colCount();
+    if(!list.classList.contains('cols')||n<2||cards.length<2)return;
+    var cols=[];
+    for(var i=0;i<n;i++){var col=document.createElement('div');col.className='mcol';list.appendChild(col);cols.push(col);}
+    cards.forEach(function(c){
+      var target=cols[0];
+      for(var j=1;j<cols.length;j++){if(cols[j].offsetHeight<target.offsetHeight)target=cols[j];}
+      target.appendChild(c);
+    });
+  }
+  var rzTimer=null;
+  window.addEventListener('resize',function(){clearTimeout(rzTimer);rzTimer=setTimeout(packCols,120);});
+  // 長公告預設收合，超出高度才顯示「展開全文」
+  function fitClamp(c){
+    var ct=c.querySelector('.content');
+    var old=c.querySelector('.moretbtn');if(old)old.remove();
+    if(!ct||!ct.classList.contains('clamp'))return;
+    if(ct.scrollHeight<=ct.clientHeight+4){ct.classList.remove('clamp');return;}
+    var b=document.createElement('button');b.type='button';b.className='moretbtn';b.textContent='展開全文';
+    b.onclick=function(){var open=c.classList.toggle('expanded');b.textContent=open?'收合':'展開全文';packCols();};
+    ct.insertAdjacentElement('afterend',b);
+  }
   function card(it){
     var c=document.createElement('article');c.className='card'+(it.read?' read':'');
+    c.dataset.tone=String(toneOf(it.course_name));
     var r1=document.createElement('div');r1.className='row1';
     if(it.course_name){var b=document.createElement('span');b.className='badge';b.textContent=it.course_name;r1.appendChild(b);}
     if(it.pinned){var p=document.createElement('span');p.className='pin';p.textContent='置頂';r1.appendChild(p);}
@@ -1029,7 +1144,7 @@
     c.appendChild(r1);
     var h=document.createElement('h2');h.textContent=it.title||'(無標題)';c.appendChild(h);
     var m=document.createElement('div');m.className='meta';var meta=[];if(it.author)meta.push(it.author);meta.push(rel(it.ts));m.textContent=meta.join('・');c.appendChild(m);
-    var ct=document.createElement('div');ct.className='content';setContent(ct,it.content);c.appendChild(ct);
+    var ct=document.createElement('div');ct.className='content clamp';setContent(ct,it.content);normalizeLightBg(ct);c.appendChild(ct);
     var foot=document.createElement('div');foot.className='cardfoot';
     var sp=document.createElement('span');sp.className='spacer';foot.appendChild(sp);
     // BULLETIN_AI_SUMMARY_V1：一則公告一個「摘要」按鈕，點擊後把標題＋正文濃縮。
@@ -1134,7 +1249,9 @@
     list.innerHTML='';
     list.classList.toggle('cols',!activeCourse&&visible.length>3);
     if(!visible.length){list.innerHTML='<div class="empty">'+(showRead?'沒有已閱讀的公告':'目前沒有未讀公告')+'</div>';return;}
-    visible.forEach(function(it){list.appendChild(card(it));});
+    visible.forEach(function(it,i){var c=card(it);c.dataset.seq=String(i);list.appendChild(c);});
+    list.querySelectorAll('.card').forEach(fitClamp);
+    packCols();
   }
   function buildFilters(){
     filtersEl.innerHTML='';

@@ -1,4 +1,4 @@
-/* APP_SETTINGS_BUILD: 20260829settings9 — fix14 (測試通知卡改內嵌 settings.html 並移至外觀卡之後) */
+/* APP_SETTINGS_BUILD: 20260829settings10 — 齒輪改開啟 Dashboard 快捷設定面板；完整設定移到 /admin/settings 分群 */
  /* APP_SETTINGS_V1 — 全站外觀與本地偏好設定
  *
  * 這支腳本被 inject_theme() 放進每個頁面 <head> 的最前面（早於 theme.css），
@@ -8,8 +8,9 @@
  * 2) 「跟隨系統」模式監聽 prefers-color-scheme 變化，即時切換深淺色。
  * 3) 其他分頁變更設定時，透過 storage 事件同步到目前分頁。
  * 4) 注入「設定」入口：僅存在於 Dashboard 分頁列（緊鄰「通知」分頁）與
- *    手機「更多」面板。所有頁面（含課表／作業／檔案）的右上角 header
- *    一律不加入設定按鈕。
+ *    手機「更多」面板。點了先開啟快捷設定面板（window.TronclassQuickSettings，
+ *    由 dashboard.html 提供）；面板不存在時才跳到 /admin/settings。
+ *    所有頁面（含課表／作業／檔案）的右上角 header 一律不加入設定按鈕。
  * 5) 在 /admin/settings 頁面（有 #appSettingsRoot）掛上互動邏輯。
  *
  * 對應的 CSS 覆蓋規則在 pages.rs 的 APP_SETTINGS_DYNAMIC_CSS（隨 theme.css
@@ -122,6 +123,17 @@
   // 其他頁面（課表／作業／檔案…）的 header 一律不加設定按鈕。
   var SHEET_POLL_MAX = 30;   // 30 × 400ms ≈ 12 秒（等手機更多面板）
 
+  // 開啟快捷設定面板；沒有面板（非 Dashboard）時退回完整設定頁。
+  function openQuickSettings(event) {
+    var quick = window.TronclassQuickSettings;
+    if (quick && typeof quick.open === 'function') {
+      if (event && event.preventDefault) event.preventDefault();
+      quick.open();
+      return true;
+    }
+    return false;
+  }
+
   function buildGearTab() {
     var b = document.createElement('button');
     b.id = 'appSettingsGearTab';
@@ -129,7 +141,9 @@
     b.className = 'tab app-settings-tab';
     b.setAttribute('aria-label', '設定');
     b.textContent = '設定';
-    b.addEventListener('click', function () { location.href = '/admin/settings'; });
+    b.addEventListener('click', function () {
+      if (!openQuickSettings(null)) location.href = '/admin/settings';
+    });
     return b;
   }
 
@@ -150,7 +164,8 @@
     a.id = 'moreSettingsFinalV2';
     a.className = 'button secondary';
     a.href = '/admin/settings';
-    a.textContent = '外觀設定';
+    a.textContent = '設定';
+    a.addEventListener('click', function (event) { openQuickSettings(event); });
     grid.insertBefore(a, grid.firstChild);
     return true;
   }

@@ -835,7 +835,7 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
 </style>
 </head>
 <body>
-<header><div class="top"><div class="brand"><div class="logo">D</div><div><div class="brand-title">Tronclass<br>課表管理</div><div id="brandSub" class="brand-sub">載入中</div></div></div><div class="top-actions"><a id="backDashboard" class="button primary" href="/admin">回控制台</a><a id="meLink" class="button" href="/admin/me">我的頁面</a><button id="logoutBtn" class="danger" type="button">登出</button></div></div></header>
+<header><div class="top"><div class="brand"><div class="logo">D</div><div><div class="brand-title">Tronclass<br>課表管理</div><div id="brandSub" class="brand-sub">載入中</div></div></div><div class="top-actions"><a id="backDashboard" class="button primary" href="/admin">回控制台</a><a id="meLink" class="button" href="/admin/me">我的頁面</a></div></div></header>
 <main class="page"><section id="panel" class="panel"><div class="head"><div class="title"><h1 id="pageTitle">課表</h1><div id="pageSub" class="small">查看課表，按「編輯課表」後可手動輸入；也可匯入 CSV 或套用模板。</div></div><div class="actions"><select id="accountSelect"></select><button id="reloadBtn" type="button">重新讀取</button><button id="wallpaperBtn" type="button">匯出桌布</button><button id="editBtn" class="primary" type="button">編輯課表</button></div></div><div id="ttSyncBar" class="sync-bar" hidden><div class="sync-row"><div class="sync-info"><div class="sync-title">課表自動同步<span id="ttSyncBadge" class="sync-badge">未啟用</span></div><div id="ttSyncDetail" class="sync-detail">從學校校務系統自動抓取課表，每天更新一次。</div></div><div class="sync-actions"><label class="sync-toggle"><input id="ttSyncEnabled" type="checkbox"><span>自動同步</span></label><button id="ttSyncNowBtn" type="button">立即同步</button></div></div></div><div id="viewer" class="viewer"></div><div id="editor" class="editor"><div class="template-bar"><select id="templateSelect"><option value="">模板課表</option></select><button id="applyTemplateBtn" type="button">套用模板</button><button id="saveTemplateBtn" type="button">另存模板</button><button id="deleteTemplateBtn" type="button">刪除模板</button><button id="importCsvBtn" type="button">匯入 CSV</button><button id="downloadCsvBtn" type="button">下載 CSV 範本</button></div><div class="edit-actions"><button id="addRowBtn" type="button">新增一堂課</button><button id="saveBtn" class="primary" type="button">儲存課表</button><button id="reloadEditBtn" type="button">重新讀取</button><button id="backViewBtn" type="button">返回查看</button></div><div id="rows"></div></div><div id="msg" class="msg"></div><input id="csvFile" type="file" accept=".csv,text/csv" class="hidden-init"></section></main><div id="toast" class="toast"></div>
 
 <!-- CONSOLIDATED_ADMIN_AUTH_V1_BODY_START -->
@@ -1628,7 +1628,9 @@ html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
       loadSyncStatus();
     }
   };
-  q('logoutBtn').onclick=function(){
+  /* TOPBAR_LOGOUT_REMOVED_V1：頂欄已移除「登出」按鈕；元素不存在時不綁定，避免腳本中斷 */
+  var logoutBtnEl=document.getElementById('logoutBtn');
+  if(logoutBtnEl) logoutBtnEl.onclick=function(){
     localStorage.removeItem('tronclass_admin_session');
     sessionStorage.removeItem('tronclass_admin_session');
     location.href='/admin?v=logout'

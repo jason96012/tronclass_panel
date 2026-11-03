@@ -274,7 +274,11 @@ pub async fn fb_sso_check_handler(
     ClientIp(ip): ClientIp,
 ) -> Response {
     if ip != "unknown" {
-        match state.accounts_db.is_ip_blacklisted(&ip).await {
+        let listed = match state.accounts_db.is_ip_blacklisted(&ip).await {
+            Ok(true) => Ok(!super::ip_has_temporary_access(&state, &ip).await),
+            other => other,
+        };
+        match listed {
             Ok(true) => {
                 warn!(ip = %ip, "Filebrowser SSO rejected for blacklisted IP");
                 return (

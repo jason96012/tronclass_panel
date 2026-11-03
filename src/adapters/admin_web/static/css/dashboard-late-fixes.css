@@ -236,9 +236,66 @@ html body .animated-login-card-inner .animated-login-field > input{
   .accounts-table .cell-ellipsis{max-width:140px}
 }
 
+/* ACCOUNTS_NAME_NOWRAP_V1：帳號欄（帳號 ID 與姓名）不可在字中間斷行，欄寬設下限。
+ * 之前課程欄變寬時，auto table layout 會把剩下的空間分給其他欄，帳號欄被壓到只剩
+ * 一個字寬，「ai-王奕凱」「王奕凱」逐字直排。這裡讓帳號欄 nowrap＋最小寬度，
+ * 寧可表格橫向捲動，也不擠壓人名。 */
+.accounts-table th:nth-child(2),
+.accounts-table td:nth-child(2){
+  white-space:nowrap;
+  min-width:130px;
+}
+
 /* TKU_NOTICE_BEFORE_ONBOARDING_V1：淡江網段提示要在新手導覽「前面」——主要是靠
  * dashboard-onboarding.js 的 autoTick() 判斷 window.__tkuNoticeOpen 延後開導覽
  * （時間序上先後顯示，不會疊在一起）。這裡的 z-index 是防呆：萬一使用者手動按
  * 頂欄「?」在淡江提示還開著時硬開導覽，淡江提示的 z-index 要蓋過
  * .ob-layer（dashboard-components.css 裡是 2147483000），不能被導覽蓋住。 */
 #tkuNoticeModal{z-index:2147483100}
+
+/* ATT_SUMMARY_CARDS_COMPACT_V1：點名分頁「出席統計」頂部六張卡片縮小。
+ * 原因：theme.css 全域把 .stat-value 設成 42px !important，六張卡片又都是大數字，
+ * 「最後班上總人數」的「1119 / 1799 人」還會換成兩行，同一排的卡片高度不一致。
+ * 這裡改成 3 欄（手機 2 欄）、數字 24px 不換行、標籤與留白縮小，六張卡片等高。
+ * 選擇器加上 #view-rollcall #attSummary 以蓋過 theme.css 與 inline style 的 grid 設定。 */
+#view-rollcall #attSummary{
+  grid-template-columns:repeat(3,minmax(0,1fr))!important;
+  gap:10px!important;
+  margin-bottom:12px!important;
+}
+#view-rollcall #attSummary .stat{
+  padding:12px 14px 12px 18px!important;
+}
+#view-rollcall #attSummary .stat-label{
+  font-size:11px!important;
+  letter-spacing:.04em!important;
+}
+#view-rollcall #attSummary .stat-value{
+  margin-top:6px!important;
+  font-size:24px!important;
+  line-height:1.15!important;
+  white-space:nowrap!important;
+  overflow:hidden;
+  text-overflow:clip;
+}
+#view-rollcall #attSummary .stat-hint{
+  margin-top:4px!important;
+  font-size:11.5px!important;
+  line-height:1.4;
+}
+@media (max-width:599px){
+  #view-rollcall #attSummary{
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+  }
+  /* 手機兩欄時，「最後班上總人數」橫跨兩欄，「1119 / 1799 人」才放得下 */
+  #view-rollcall #attSummary .stat:nth-child(5){grid-column:1 / -1}
+  #view-rollcall #attSummary .stat-value{font-size:20px!important}
+}
+
+/* ACCOUNTS_ACTIONS_ALIGN_LEFT_V1：帳號操作鈕改為靠左對齊（與「操作」表頭同一起點）。
+ * theme.css（≥821px）原本把 .actions-cell 設為 justify-content:flex-end，按鈕較少的列
+ * （管理員：取消管理員、無「設為檢視者」）會被推到右邊，與一般帳號列的起點對不齊。
+ * 這裡以更高特異性覆蓋，所有列的第一顆按鈕都從同一個 x 座標開始。 */
+@media (min-width:821px){
+  #accountsBody td:last-child .actions-cell{justify-content:flex-start!important}
+}

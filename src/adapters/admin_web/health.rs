@@ -843,6 +843,86 @@ fn first_line_after_header(text: &str) -> Option<String> {
 
 // ── CLIENT_ERROR_REPORT_V1 ────────────────────────────────────────────────────
 
+/// CSP_REPORT_SINK_V1（方案 B）：瀏覽器送來的 CSP／Trusted Types 違規報告（`report-uri /csp-report`）。
+///
+/// - 匿名端點（報告由瀏覽器自動送出、不帶登入）。**永遠回 204，不回 4xx**：
+///   原本沒有這條路由 → 404，WAF 會把每一筆違規當成 4xx 異常計數，掃碼頁人數一多就會封鎖整個 IP。
+/// - 三層限流（記憶體視窗，不寫 SQLite）：
+///   1. 每個 IP 群組每分鐘 20 筆（key 與黑名單相同：IPv4 單一位址、IPv6 為 /64），超過即整筆丟棄。
+///   2. 全站主控台輸出每分鐘 300 筆，超過即整筆丟棄，避免洪水灌爆 stdout。
+///   3. 全站寫入 `web_logs` 每分鐘 10 筆。`web_logs` 只保留最新 100 筆、與稽核紀錄共用，
+///      超出的報告只進主控台，不進資料庫。
+/// - body 上限 16 KB。超過即靜默丟棄（不回 413，否則同樣會被計數）。
+/// - URL 只保留 scheme＋主機＋路徑：去掉查詢字串與 `#fragment`，避免 `?token=` 之類的機密寫進日誌。
+/// - 欄位截斷、濾控制字元並移除換行（避免偽造主控台日誌行）。
+const CSP_REPORT_MAX_BYTES: usize = 16 * 1024;
+const CSP_REPORT_MAX_PER_GROUP_PER_MINUTE: u32 = 20;
+const CSP_REPORT_MAX_CONSOLE_PER_MINUTE: u32 = 300;
+const CSP_REPORT_MAX_DB_PER_MINUTE: u32 = 10;
+
+pub(super) async fn csp_report_handler(
+    State(state): State<AdminWebState>,
+    ClientIp(ip): ClientIp,
+    body: axum::body::Body,
+) -> Response {
+    let group = crate::trusted_ip::blacklist_group_key(&ip);
+    if !state
+        .rate_limiter
+        .check_limit_memory(&format!("csp-report-group:{group}"), CSP_REPORT_MAX_PER_GROUP_PER_MINUTE)
+        .await
+    {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if !state
+        .rate_limiter
+        .check_limit_memory("csp-report-console-global", CSP_REPORT_MAX_CONSOLE_PER_MINUTE)
+        .await
+    {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    let Ok(bytes) = axum::body::to_bytes(body, CSP_REPORT_MAX_BYTES).await else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    // application/csp-report：{"csp-report": {...}}
+    // application/reports+json：[{"type":"csp-violation","body":{...}}, ...]
+    let report = value
+        .get("csp-report")
+        .or_else(|| value.get("body"))
+        .or_else(|| value.as_array().and_then(|a| a.first()).and_then(|f| f.get("body")))
+        .unwrap_or(&value);
+    let directive = csp_report_field(report, &["violated-directive", "effectiveDirective"], 100);
+    let blocked = strip_url_query(&csp_report_field(report, &["blocked-uri", "blockedURL"], 300));
+    let document = strip_url_query(&csp_report_field(report, &["document-uri", "documentURL"], 300));
+    let message = format!("violated={directive} blocked={blocked}");
+    let details = format!("document={document} ip={ip}");
+    // 主控台一定輸出（在全站主控台上限內）。
+    tracing::warn!(target: "client:csp_violation", message = %message, details = %details, "CSP 違規報告");
+    // 寫入 web_logs 受全站每分鐘 10 筆限制；超出的只留在主控台。
+    if state
+        .rate_limiter
+        .check_limit_memory("csp-report-db-global", CSP_REPORT_MAX_DB_PER_MINUTE)
+        .await
+    {
+        crate::logs::record_system("WARN", "client:csp_violation", message, Some(details));
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// 取報告中第一個非空的欄位（兩種格式的欄位名稱不同），並經過欄位清理。
+fn csp_report_field(report: &serde_json::Value, keys: &[&str], max_chars: usize) -> String {
+    keys.iter()
+        .filter_map(|key| report.get(*key).and_then(|v| v.as_str()))
+        .map(|raw| sanitize_client_field(raw, max_chars).replace('\n', " "))
+        .find(|clean| !clean.is_empty())
+        .unwrap_or_default()
+}
+
+/// 去掉 URL 的查詢字串與 fragment；非 URL 的字串（如 `inline`、`eval`）原樣保留。
+fn strip_url_query(raw: &str) -> String {
+    raw.split(['?', '#']).next().unwrap_or("").to_string()
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct ClientLogRequest {
     #[serde(default)]
@@ -945,7 +1025,8 @@ fn is_csp_cf_inline_noise(kind: &str, message: &str, source: &str, stack: &str) 
 
 /// CLIENT_ERROR_REPORT_V1：前端錯誤／看門狗事件回報。
 ///
-/// - 需登入（access cookie；sendBeacon 會帶同源 cookie）。未登入回 401 但不寫任何東西。
+/// - 需登入（access cookie；sendBeacon 會帶同源 cookie）。未登入靜默回 204、不寫任何東西
+///   （CLIENT_LOG_SILENT_204_V1：401 會被 WAF 當成 4xx 異常計數，連帶封鎖整個 IP）。
 /// - 每 session 每分鐘 30 筆（走 RateLimiter 的記憶體視窗，不寫 SQLite；key 以 session 帳號區分）。
 /// - body 由 `ADMIN_TINY_BODY_LIMIT`（8 KB）擋掉超大 payload；欄位再各自截斷、濾控制字元。
 /// - 寫入 `crate::logs::record_system`（kind=system，source=client）→ /admin/logs 可見，
@@ -957,7 +1038,8 @@ pub(super) async fn client_log_handler(
     body: axum::body::Bytes,
 ) -> Response {
     let Some(session) = state.authorize_any(&query.token).await else {
-        return unauthorized_response();
+        // CLIENT_LOG_SILENT_204_V1：未登入靜默 204（不寫任何東西）。
+        return StatusCode::NO_CONTENT.into_response();
     };
     // sendBeacon 送出的 Content-Type 可能是 text/plain 或 application/json，
     // 所以不用 Json 抽取器，自己解析。
@@ -968,7 +1050,8 @@ pub(super) async fn client_log_handler(
         .check_limit_memory(&rate_key, CLIENT_LOG_MAX_PER_MINUTE)
         .await
     {
-        return rate_limited_response();
+        // CLIENT_LOG_SILENT_204_V1：超過速率限制靜默 204（不回 429；429 同樣會計入 WAF 異常）。
+        return StatusCode::NO_CONTENT.into_response();
     }
     let kind = {
         let raw = sanitize_client_field(&request.kind, 32);

@@ -273,6 +273,53 @@ const ASSETS: &[(&str, &str)] = &[
         "/pub/static/js/share-preview.js",
         include_str!("static/js/share-preview.js"),
     ),
+    // AI_ASSET_VERSION_FIX_V1（2026-11-02）：AI 對話頁的 CSS 與模組原本沒登記在這份清單，
+    // 改它們不會讓 build id 變動，ai.html 的 ?sv= 也不會變，手機（PWA）會以 immutable 快取
+    // 繼續跑舊 CSS／舊模組，最多 7 天。這裡全部登記。
+    (
+        "/admin/static/ai/opencode.css",
+        include_str!("static/opencode.css"),
+    ),
+    (
+        "/admin/static/ai/js/state.js",
+        include_str!("static/js/state.js"),
+    ),
+    (
+        "/admin/static/ai/js/api.js",
+        include_str!("static/js/api.js"),
+    ),
+    (
+        "/admin/static/ai/js/markdown.js",
+        include_str!("static/js/markdown.js"),
+    ),
+    (
+        "/admin/static/ai/js/composer.js",
+        include_str!("static/js/composer.js"),
+    ),
+    (
+        "/admin/static/ai/js/timeline.js",
+        include_str!("static/js/timeline.js"),
+    ),
+    (
+        "/admin/static/ai/js/panels.js",
+        include_str!("static/js/panels.js"),
+    ),
+    (
+        "/admin/static/ai/js/command-palette.js",
+        include_str!("static/js/command-palette.js"),
+    ),
+    (
+        "/admin/static/ai/js/keyboard.js",
+        include_str!("static/js/keyboard.js"),
+    ),
+    (
+        "/admin/static/ai/js/opencode.js",
+        include_str!("static/js/opencode.js"),
+    ),
+    (
+        "/admin/static/ai/js/icons.js",
+        include_str!("static/js/icons.js"),
+    ),
 ];
 
 static BUILD_ID: Lazy<String> = Lazy::new(|| {
@@ -303,6 +350,23 @@ pub(super) fn build_id() -> &'static str {
 /// 把輸入中所有 `/admin/static/...` 參照統一改寫為 `?sv=<build id>`。
 /// 沒有任何參照時回傳借用（零配置）；`?sv=` 前綴與舊 `?v=` 區別，
 /// 看回應就能確認改寫已生效。
+/// AI_MODULE_VERSION_V1：ES module 的同目錄相對 import（`from './panels.js'`）不帶版號，
+/// 會被 immutable 快取跨版本共用，造成「新 entry + 舊模組」。這裡把它改寫成 `?sv=<build id>`，
+/// 與 HTML 裡 entry 的版號一致，所以整組模組會一起換。
+static MODULE_IMPORT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"((?:from|import)\s*['"]\./[A-Za-z0-9._\-]+\.js)(['"])"#)
+        .expect("AI_MODULE_VERSION_V1 regex must compile")
+});
+
+/// 改寫 JS 模組內的相對 import 版號（只給 AI 頁面的模組用）。
+pub(super) fn rewrite_module_imports(input: &str) -> Cow<'_, str> {
+    if !input.contains("./") {
+        return Cow::Borrowed(input);
+    }
+    let replacement = format!("${{1}}?sv={}${{2}}", *BUILD_ID);
+    MODULE_IMPORT_RE.replace_all(input, replacement.as_str())
+}
+
 pub(super) fn rewrite_asset_versions(input: &str) -> Cow<'_, str> {
     // 快速路徑：兩種前綴都不存在時零配置回傳（/pub/static 也必須改寫，見 ASSET_VERSION_AUTO_V1）。
     if !input.contains("/admin/static/") && !input.contains("/pub/static/") {

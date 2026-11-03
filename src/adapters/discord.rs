@@ -24,7 +24,8 @@ use uuid::Uuid;
 
 use crate::account::RawAccountConfig;
 use crate::adapters::events::{
-    AdapterAccountTarget, AdapterMessenger, MonitorStatus, OutboundMessage, StatusMessage,
+    AdapterAccountTarget, AdapterMessenger, MonitorStatus, OutboundMessage, SecurityAlertEvent,
+    StatusMessage,
 };
 use crate::adapters::requests::{
     self, AdapterRequest, RequestCommand, RequestContent, RequestState,
@@ -43,6 +44,8 @@ const COMPONENT_NUMBER_PICK_PREFIX: &str = "trc:number-pick:";
 const COMPONENT_ACCOUNT_APPROVE_PREFIX: &str = "trc:account-approve:";
 const COMPONENT_BLOCK_IP_PREFIX: &str = "trc:block-ip:";
 const COMPONENT_UNBLOCK_IP_PREFIX: &str = "trc:unblock-ip:";
+/// WAF_AUTO_BLOCK_NOTIFY_V2：WAF 自動封鎖的解除按鈕；值是黑名單鍵（IPv4 或 IPv6 /64）。
+const COMPONENT_UNBLOCK_WAF_PREFIX: &str = "trc:unblock-waf:";
 const COMPONENT_UNBLOCK_OWN_IP_PREFIX: &str = "trc:unblock-own-ip:";
 /// LOGIN_TIERED_LOCKOUT_V1：帳號持有人取消第一層登入鎖定 / 直接封鎖來源 IP。
 /// payload：`{account_id}|{ip}`；account_id 只做顯示與鍵值，授權以資料庫的 Discord 綁定為準。
@@ -943,6 +946,21 @@ impl DiscordRuntime {
                 Ok(true) => OutboundMessage::Text(format!("[安全] 已封鎖 IP `{ip}`。黑名單頁面可查看與解除封鎖。")),
                 Ok(false) => OutboundMessage::Text(format!("[安全] IP `{ip}` 已經在黑名單中。")),
                 Err(error) => OutboundMessage::Text(format!("[安全] 封鎖 IP 失敗：{error}")),
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        if let Some(key) = parse_unblock_waf_custom_id(&component.data.custom_id) {
+            // WAF_AUTO_BLOCK_NOTIFY_V2：只有 admin_user_id 能解除 WAF 封鎖（與告警只發給他一致）。
+            if user_id != self.bot.admin_user_id {
+                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
+                return Ok(());
+            }
+            let message = match self.accounts_db.unblock_ip(&key).await {
+                Ok(true) => OutboundMessage::Text(format!("[安全] 已解除 WAF 封鎖 `{key}`。")),
+                Ok(false) => OutboundMessage::Text(format!("[安全] `{key}` 已不在黑名單中。")),
+                Err(error) => OutboundMessage::Text(format!("[安全] 解除失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -1885,6 +1903,15 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                 .label("狀態")
                 .style(ButtonStyle::Primary)]),
         ],
+        OutboundMessage::SecurityAlert(event) if event.waf_block.is_some() => {
+            vec![CreateActionRow::Buttons(vec![
+                CreateButton::new(format!("{COMPONENT_UNBLOCK_WAF_PREFIX}{}", event.ip))
+                    .label("解除封鎖")
+                    .style(ButtonStyle::Success),
+                CreateButton::new_link("https://dashboard.jasoncloudserver.me/admin/blacklist")
+                    .label("查看黑名單"),
+            ])]
+        }
         OutboundMessage::SecurityAlert(event) => {
             if parse_discord_ip(&event.ip).is_some() {
                 // LOGIN_TIERED_LOCKOUT_V1：第一層鎖定 → 持有人可「取消這次鎖定」快速登入，
@@ -2497,6 +2524,20 @@ fn notice_card_for(message: &OutboundMessage) -> Option<NoticeCard> {
             }
             Some(card.hint("逾時後這次點名就會失敗。"))
         }
+        OutboundMessage::SecurityAlert(event) if event.waf_block.is_some() => {
+            let (reason, path) = waf_block_reason_path(event);
+            Some(
+                NoticeCard::new(NoticeCategory::Security, "🛡️ WAF 自動封鎖 IP", "")
+                    .field("來源 IP", &event.ip, true)
+                    .field("觸發原因", reason, false)
+                    .field("請求路徑", path, false)
+                    .field("時間", &event.timestamp, false)
+                    .hint(format!(
+                        "{}\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+                        waf_block_action(event)
+                    )),
+            )
+        }
         OutboundMessage::SecurityAlert(event) => {
             let action = if event.ip_is_blacklisted {
                 "此 IP 已因登入失敗超過十次自動加入黑名單；如需恢復，請按「移除黑名單」。"
@@ -2624,6 +2665,7 @@ fn render_discord_message(message: &OutboundMessage) -> String {
         // DISCORD_NOTIFY_UNIFY_V1：Text 仍有多處呼叫端（同時送 LINE 與 Discord），
         // Discord 端統一去掉開頭的表情符號，LINE 文案不動。
         OutboundMessage::Text(text) => strip_leading_emoji(text),
+        OutboundMessage::SecurityAlert(event) if event.waf_block.is_some() => waf_alert_text(event),
         OutboundMessage::SecurityAlert(event) => {
             let action = if event.ip_is_blacklisted {
                 "此 IP 已因登入失敗超過十次自動加入黑名單；如需恢復，請按「移除黑名單」。"
@@ -2873,6 +2915,51 @@ fn parse_discord_ip(value: &str) -> Option<String> {
 fn parse_block_ip_custom_id(value: &str) -> Option<String> {
     let ip = value.strip_prefix(COMPONENT_BLOCK_IP_PREFIX)?;
     parse_discord_ip(ip)
+}
+
+/// WAF 解除按鈕的 custom_id：只接受 WAF 實際寫入的鍵形狀（IPv4 原樣，IPv6 為 `/64` 群組鍵），
+/// 其餘一律拒絕，避免 custom_id 被竄改成任意字串傳進 SQL。
+fn parse_unblock_waf_custom_id(value: &str) -> Option<String> {
+    let raw = value.strip_prefix(COMPONENT_UNBLOCK_WAF_PREFIX)?.trim();
+    let host = raw.strip_suffix("/64").unwrap_or(raw);
+    let ip: std::net::IpAddr = host.parse().ok()?;
+    let key = crate::trusted_ip::blacklist_group_key(&ip.to_string());
+    if key == raw {
+        Some(key)
+    } else {
+        None
+    }
+}
+
+fn waf_block_reason_path(event: &SecurityAlertEvent) -> (&str, &str) {
+    event
+        .waf_block
+        .as_ref()
+        .map(|waf| (waf.reason.as_str(), waf.path.as_str()))
+        .unwrap_or(("", ""))
+}
+
+/// WAF_AUTO_BLOCK_NOTIFY_V2：依封鎖類型說明會不會自動解除。
+fn waf_block_action(event: &SecurityAlertEvent) -> &'static str {
+    match event.waf_block.as_ref() {
+        Some(waf) if waf.permanent => {
+            "攻擊特徵類封鎖為永久。若確認是誤判，按「解除封鎖」即可立即移除。"
+        }
+        _ => "異常 4xx 類封鎖 30 分鐘後自動解除。若要立即放行，按「解除封鎖」。",
+    }
+}
+
+/// WAF 告警的純文字版（與卡片內容相同）。
+fn waf_alert_text(event: &SecurityAlertEvent) -> String {
+    let (reason, path) = waf_block_reason_path(event);
+    format!(
+        "[安全] WAF 自動封鎖 IP\n\n來源 IP：{}\n觸發原因：{}\n請求路徑：{}\n時間：{}\n\n{}\n同一 IP 24 小時內只通知一次。\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+        event.ip,
+        reason,
+        path,
+        event.timestamp,
+        waf_block_action(event),
+    )
 }
 
 fn parse_unblock_ip_custom_id(value: &str) -> Option<String> {

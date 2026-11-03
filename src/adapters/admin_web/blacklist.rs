@@ -404,7 +404,10 @@ pub(super) async fn admin_blacklist_status_handler(
     }
     match state.accounts_db.is_ip_blacklisted(&ip).await {
         Ok(blacklisted) => {
-            (StatusCode::OK, Json(json!({ "blacklisted": blacklisted }))).into_response()
+            // BLACKLIST_CONTACT_APPROVAL_V1：已核准暫時放行者回報「不在黑名單」，
+            // 與 `ip_is_blacklisted`（中介層）判斷一致，頁面才會自動跳轉。
+            let effective = blacklisted && !super::ip_has_temporary_access(&state, &ip).await;
+            (StatusCode::OK, Json(json!({ "blacklisted": effective }))).into_response()
         }
         Err(error) => {
             // 查詢失敗：誠實回報「還在黑名單」（不要讓前端因為這一次查詢失敗

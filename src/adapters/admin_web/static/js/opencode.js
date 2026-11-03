@@ -1,6 +1,9 @@
 /**
  * AI 頁面主入口：初始化、事件綁定、協調各模組。
  *
+ * OPENCODE_AGENT_ONLY_V2（Turn 8）：所有訊息都交給 opencode agent 處理，
+ * 不再有一般聊天路徑。模型清單由管理員在「模型」分頁管理。
+ *
  * 初始化順序（刻意設計）：
  *   1. 建立 UI 元件（只做 DOM 綁定，不會因後端失敗而中斷）
  *   2. 綁定所有事件
@@ -12,7 +15,7 @@ import { el, clear } from './markdown.js';
 import { icon } from './icons.js';
 import { createTimeline } from './timeline.js';
 import { createComposer } from './composer.js';
-import { createPanelManager, createSessionList, createModelPicker, createToolsPanel } from './panels.js';
+import { createPanelManager, createSessionList, createModelPicker } from './panels.js';
 import { createCommandPalette, createDefaultCommands } from './command-palette.js';
 import { createGlobalShortcuts } from './keyboard.js';
 
@@ -21,20 +24,10 @@ import { createGlobalShortcuts } from './keyboard.js';
 // ─────────────────────────────────────────────────────────────
 
 const SUGGESTIONS = [
-  '幫我整理今天的重點',
-  '解釋這段程式碼的邏輯',
-  '把這段文字翻成英文',
-  '列出學習計畫的步驟'
-];
-
-// 與後端 agent_tools() 同步（ai_chat.rs）。僅在 Agent 模式下會實際執行。
-const TOOLS = [
-  { name: 'workspace_list', description: '列出工作區檔案', icon: 'folder-open' },
-  { name: 'workspace_read', description: '讀取工作區檔案', icon: 'book-open' },
-  { name: 'workspace_write', description: '寫入工作區檔案', icon: 'pencil' },
-  { name: 'workspace_delete', description: '刪除工作區檔案', icon: 'trash' },
-  { name: 'calc', description: '計算算式', icon: 'calculator' },
-  { name: 'now', description: '查詢現在時間', icon: 'clock' }
+  '列出工作區的檔案結構',
+  '讀取 AGENTS.md 並摘要其中的規則',
+  '寫一個計算平均數的 Python 腳本',
+  '解釋這個專案目前有哪些檔案'
 ];
 
 const ELEMENT_IDS = {
@@ -49,12 +42,18 @@ const ELEMENT_IDS = {
   composerInput: 'composerInput', sendBtn: 'sendBtn', stopBtn: 'stopBtn', attachBtn: 'attachBtn',
   fileInput: 'fileInput', modelPickerBtn: 'modelPickerBtn', modelPickerDropdown: 'modelPickerDropdown',
   currentModelName: 'currentModelName', newSessionBtn: 'newSessionBtn', sessionList: 'sessionList',
-  sessionSearch: 'sessionSearch', toolsList: 'toolsList', agentMode: 'agentMode',
-  terminalOutput: 'terminalOutput', commandPalette: 'commandPalette', cmdInput: 'cmdInput',
-  cmdResults: 'cmdResults', ocEnabled: 'ocEnabled', ocBaseUrl: 'ocBaseUrl', ocModel: 'ocModel',
+  sessionSearch: 'sessionSearch', modelsPanel: 'modelsPanel', ocModelList: 'ocModelList',
+  ocModelNote: 'ocModelNote', ocModelAddCard: 'ocModelAddCard', ocModelInput: 'ocModelInput',
+  ocModelAddBtn: 'ocModelAddBtn',
+  commandPalette: 'commandPalette', cmdInput: 'cmdInput',
+  cmdResults: 'cmdResults', ocEnabled: 'ocEnabled', ocBaseUrl: 'ocBaseUrl',
   ocApiKey: 'ocApiKey', ocKeyHint: 'ocKeyHint', ocStatus: 'ocStatus', ocSaveBtn: 'ocSaveBtn',
   ocTestBtn: 'ocTestBtn', ocAccountChips: 'ocAccountChips', ocAccountInput: 'ocAccountInput',
-  ocAddAccountBtn: 'ocAddAccountBtn', ocSaveAccessBtn: 'ocSaveAccessBtn', ocAccessNote: 'ocAccessNote'
+  ocAddAccountBtn: 'ocAddAccountBtn', ocSaveAccessBtn: 'ocSaveAccessBtn', ocAccessNote: 'ocAccessNote',
+  ocManageNvidia: 'ocManageNvidia', ocManageCustom: 'ocManageCustom', ocModelTitle: 'ocModelTitle',
+  ocModelAddHint: 'ocModelAddHint', ocCustomName: 'ocCustomName', ocCustomBaseUrl: 'ocCustomBaseUrl',
+  ocCustomApiKey: 'ocCustomApiKey', ocCustomKeyHint: 'ocCustomKeyHint', ocCustomStatus: 'ocCustomStatus',
+  ocCustomSaveBtn: 'ocCustomSaveBtn'
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -67,16 +66,18 @@ let timeline;
 let composer;
 let sessionList;
 let commandPalette;
-let threads = [];          // 對話摘要（來自 /state 與本地更新）
-let models = [];           // 全部模型（含停用），選擇器會再過濾
+let threads = [];          // 對話摘要（來自 /opencode/sessions）
+let ocModels = [];         // 模型清單（來自 /opencode/state）
+let defaultModel = '';     // 預設模型
+let currentModel = '';
+let currentProvider = 'nvidia'; // 目前聊天選用的供應商：nvidia | custom
+let ocCustom = normalizeCustom({}); // 自訂供應商狀態（來自 /opencode/state 的 custom）
+let manageProvider = 'nvidia';      // 模型分頁目前管理哪個供應商     // 本頁目前選用的模型（預設 = defaultModel）
 let currentSessionId = null;
-let currentModel = 'auto';
 let canManage = false;
 let isStreaming = false;
-let activeJob = null;      // { jobId, stop() }
 let ocState = null;        // 最近一次 /opencode/state
 let accessList = [];       // 存取名單編輯中的內容
-let agentMode = false;
 
 // ─────────────────────────────────────────────────────────────
 // 小工具
@@ -100,25 +101,35 @@ function deriveTitle(text) {
   return clean.length > 30 ? clean.slice(0, 30) + '…' : clean;
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/** 客戶端先產生 thread_id，第一則訊息送出前就能中止。 */
+function newThreadId() {
+  return `t-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function modelName(id) {
-  if (id === 'auto') return '自動';
-  return models.find((m) => m.id === id)?.name || id;
+/** 把輸入文字與附件合成一則送給 agent 的訊息。圖片目前無法送出，會註明。 */
+function buildOutgoingMessage(text, attachments) {
+  const parts = [];
+  if (text) parts.push(text);
+  const skipped = [];
+  (attachments || []).forEach((att) => {
+    if (att.kind === 'text' && att.text) {
+      parts.push(`[附件：${att.name}]\n\`\`\`\n${att.text}\n\`\`\``);
+    } else {
+      skipped.push(att.name);
+    }
+  });
+  if (skipped.length) {
+    parts.push(`（以下附件未送出，opencode 模式目前只支援文字附件：${skipped.join('、')}）`);
+  }
+  return parts.join('\n\n');
 }
 
 // ─────────────────────────────────────────────────────────────
 // 模型、會話、空狀態
 // ─────────────────────────────────────────────────────────────
 
-function availableModels() {
-  return models.filter((m) => m.enabled && m.available);
-}
-
 function updateModelLabel() {
-  elements.currentModelName.textContent = modelName(currentModel);
+  elements.currentModelName.textContent = currentModel || '未設定';
 }
 
 function openModelPicker(force) {
@@ -126,12 +137,52 @@ function openModelPicker(force) {
   const open = force !== undefined ? force : dropdown.classList.contains('hidden');
   dropdown.classList.toggle('hidden', !open);
   if (open) {
-    createModelPicker(dropdown, models, currentModel, selectModel).render();
+    createModelPicker(dropdown, chatOptions(), optionKey(currentProvider, currentModel), selectModel).render();
   }
 }
 
-function selectModel(id) {
-  currentModel = id;
+function optionKey(provider, id) {
+  return `${provider}|${id}`;
+}
+
+/** 聊天選單的所有選項：NVIDIA 清單；自訂供應商只有在「已設定」時才列出。 */
+function chatOptions() {
+  const options = ocModels.map((id) => ({
+    key: optionKey('nvidia', id), provider: 'nvidia', name: id, group: 'NVIDIA', isDefault: id === defaultModel
+  }));
+  if (ocCustom.configured) {
+    ocCustom.models.forEach((id) => options.push({
+      key: optionKey('custom', id), provider: 'custom', name: id, group: ocCustom.name,
+      isDefault: id === ocCustom.default_model
+    }));
+  }
+  return options;
+}
+
+function normalizeCustom(raw) {
+  const c = raw || {};
+  return {
+    configured: !!c.configured,
+    name: c.name || '自訂供應商',
+    base_url: c.base_url || '',
+    key_masked: c.key_masked || '',
+    default_model: c.default_model || '',
+    models: Array.isArray(c.models) ? c.models : []
+  };
+}
+
+/** 目前選擇不在選項內時（例如模型被刪除、供應商停用）退回 NVIDIA 預設。 */
+function ensureValidSelection() {
+  const valid = chatOptions().some((o) => o.provider === currentProvider && o.name === currentModel);
+  if (!valid) {
+    currentProvider = 'nvidia';
+    currentModel = defaultModel;
+  }
+}
+
+function selectModel(option) {
+  currentProvider = option.provider;
+  currentModel = option.name;
   updateModelLabel();
   openModelPicker(false);
   updateEmptyState();
@@ -140,13 +191,19 @@ function selectModel(id) {
 function updateEmptyState() {
   const hasMessages = timeline.getMessages().length > 0;
   elements.emptyState.classList.toggle('hidden', hasMessages);
-  const count = availableModels().length;
-  if (!count) {
-    elements.emptyStateDesc.textContent = '目前沒有可用模型，請聯絡管理員。';
-  } else if (currentModel === 'auto') {
-    elements.emptyStateDesc.textContent = `目前是「自動」模式：系統會依你的問題挑最合適的模型（共 ${count} 個可用）`;
+  const desc = elements.emptyStateDesc;
+  if (!ocState) {
+    desc.textContent = '載入中…';
+  } else if (!ocState.config_enabled) {
+    desc.textContent = 'opencode 尚未啟用，請管理員在 opencode 分頁開啟。';
+  } else if (!ocState.healthy) {
+    desc.textContent = 'opencode sidecar 無法連線，暫時無法送出訊息。';
+  } else if (!ocState.allowed) {
+    desc.textContent = '此帳號未被授權使用 opencode，請聯絡管理員。';
+  } else if (!chatOptions().length) {
+    desc.textContent = '目前沒有模型，請管理員在「模型」分頁新增。';
   } else {
-    elements.emptyStateDesc.textContent = `目前使用 ${modelName(currentModel)}，可在右上角切換`;
+    desc.textContent = `目前使用 ${currentModel}，輸入需求開始。agent 會在工作區內執行。`;
   }
 }
 
@@ -172,6 +229,8 @@ function newSession() {
   elements.chatTitle.textContent = '新對話';
   renderSessions();
   updateEmptyState();
+  // 手機：新會話後收起抽屜，才看得到輸入框
+  if (isNarrow()) panels.toggleLeftSidebar(false);
   elements.composerInput.focus();
 }
 
@@ -181,26 +240,26 @@ async function selectSession(id) {
     return;
   }
   try {
-    const data = await api.threads.get(id);
-    const thread = data.thread;
-    currentSessionId = thread.id;
-    setUrlSession(thread.id);
-    elements.chatTitle.textContent = thread.title || '對話';
-    if (thread.model_id) currentModel = thread.model_id;
-    updateModelLabel();
-    timeline.setMessages((thread.messages || []).map((m, i) => ({
+    const data = await api.sessions.messages(id);
+    currentSessionId = id;
+    setUrlSession(id);
+    const thread = threads.find((t) => t.id === id);
+    elements.chatTitle.textContent = thread ? thread.title : '對話';
+    timeline.setMessages((data.messages || []).map((m, i) => ({
       id: `h-${i}`,
       role: m.role,
-      content: m.content,
-      model: m.model,
-      keyName: m.key_name,
-      // 後端歷史附件可能是字串或物件；時間軸只顯示名稱
-      attachments: (m.attachments || []).map((a) => (typeof a === 'string' ? a : (a && a.name) || '附件'))
+      content: m.content
     })));
     renderSessions();
     updateEmptyState();
     if (isNarrow()) panels.toggleLeftSidebar(false);
   } catch (error) {
+    if (error.code === 'session_not_found') {
+      // 伺服器重啟後記憶體內的對話對應會消失：改開新會話
+      toast('這個對話已不存在（伺服器可能已重啟），已開新會話', true);
+      newSession();
+      return;
+    }
     toast('載入對話失敗：' + error.message, true);
   }
 }
@@ -208,7 +267,7 @@ async function selectSession(id) {
 async function deleteSession(id) {
   if (!confirm('確定要刪除這個對話嗎？')) return;
   try {
-    await api.threads.delete(id);
+    await api.sessions.delete(id);
     threads = threads.filter((t) => t.id !== id);
     if (currentSessionId === id) {
       newSession();
@@ -224,10 +283,10 @@ async function renameSession(id) {
   const session = threads.find((t) => t.id === id);
   if (!session) return;
   const next = prompt('新標題：', session.title || '');
-  if (!next || next === session.title) return;
+  if (!next || next.trim() === session.title) return;
   try {
-    const data = await api.threads.rename(id, next);
-    session.title = data.title || next;
+    const data = await api.sessions.rename(id, next.trim());
+    session.title = data.title || next.trim();
     if (currentSessionId === id) elements.chatTitle.textContent = session.title;
     renderSessions();
   } catch (error) {
@@ -237,38 +296,60 @@ async function renameSession(id) {
 
 async function clearAllSessions() {
   if (!confirm('確定要刪除所有對話嗎？此操作無法復原。')) return;
-  try {
-    await api.threads.clear();
-    threads = [];
-    newSession();
-  } catch (error) {
-    toast('清空失敗：' + error.message, true);
+  const ids = threads.map((t) => t.id);
+  for (const id of ids) {
+    try {
+      await api.sessions.delete(id);
+    } catch (error) {
+      toast('刪除失敗：' + error.message, true);
+    }
   }
+  threads = [];
+  newSession();
 }
 
-/** 重新抓取 /state（模型、對話摘要）。失敗不影響目前畫面。 */
+/** 重新抓取 /opencode/state（模型清單、權限、健康狀態）。失敗不影響目前畫面。 */
 async function refreshState() {
   try {
-    const data = await api.state();
-    threads = data.threads || [];
-    models = data.models || [];
-    canManage = !!data.can_manage;
-    renderSessions();
+    ocState = await api.state();
+    ocModels = ocState.models || [];
+    defaultModel = ocState.model || '';
+    ocCustom = normalizeCustom(ocState.custom);
+    ensureValidSelection();
+    canManage = !!ocState.can_manage;
     updateModelLabel();
     updateEmptyState();
+    renderModels();
   } catch (error) {
     toast('載入資料失敗：' + error.message, true);
   }
 }
 
+/** 抓取目前帳號的對話清單。未授權帳號不呼叫。 */
+async function loadSessions() {
+  if (!ocState || !ocState.allowed) return;
+  try {
+    const data = await api.sessions.list();
+    threads = data.sessions || [];
+    renderSessions();
+  } catch (error) {
+    toast('載入對話清單失敗：' + error.message, true);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
-// 送出與串流
+// 送出與中止
 // ─────────────────────────────────────────────────────────────
 
 async function sendMessage(text, attachments, attachmentNames) {
   if (isStreaming) return;
+  const message = buildOutgoingMessage(text, attachments);
+  if (!message.trim()) return;
+
   isStreaming = true;
-  elements.terminalOutput.replaceChildren();
+  if (!currentSessionId) currentSessionId = newThreadId();
+  const threadId = currentSessionId;
+  setUrlSession(threadId);
 
   timeline.addMessage({
     id: `u-${Date.now()}`,
@@ -282,30 +363,27 @@ async function sendMessage(text, attachments, attachmentNames) {
   timeline.startStreaming(messageId);
 
   try {
-    const started = await api.chat.send({
-      thread_id: currentSessionId || '',
-      message: text,
-      model_id: currentModel === 'auto' ? '' : currentModel,
-      attachments,
-      agent: agentMode
+    const started = await api.chat({
+      thread_id: threadId,
+      message,
+      model: currentModel,
+      provider: currentProvider
     });
-
-    if (!currentSessionId) {
-      threads.unshift({
-        id: started.thread_id,
-        title: deriveTitle(text),
-        model_id: started.model_id,
-        updated: Date.now(),
-        count: 0
-      });
-      elements.chatTitle.textContent = deriveTitle(text);
+    const result = started.job_id
+      ? await waitForChatJob(started.job_id, (partial) => timeline.updateStreaming(partial))
+      : started;
+    if (!threads.some((t) => t.id === threadId)) {
+      threads.unshift({ id: threadId, title: deriveTitle(text), updated: Date.now() });
     }
-    currentSessionId = started.thread_id;
-    setUrlSession(currentSessionId);
+    elements.chatTitle.textContent = (threads.find((t) => t.id === threadId) || {}).title || deriveTitle(text);
     renderSessions();
-
-    const job = await runJob(started.job_id, messageId);
-    finishMessage(messageId, job, started);
+    const finalText = result.text || '（agent 沒有回傳文字）';
+    timeline.endStreaming({
+      id: messageId,
+      role: 'assistant',
+      content: finalText,
+      model: result.model
+    });
   } catch (error) {
     timeline.endStreaming({
       id: messageId,
@@ -315,153 +393,189 @@ async function sendMessage(text, attachments, attachmentNames) {
     toast(error.message || '發送失敗', true);
   } finally {
     isStreaming = false;
+    await loadSessions();
     await refreshState();
   }
 }
 
-/**
- * 串流一個 job，直到拿到最終結果。
- * 主要走 SSE（delta 逐段推送）；SSE 斷線或被代理吃掉時退回輪詢 /chat/status。
- * 回傳最終 job 快照（含 text / ok / error / model / key_name）。
- */
-function runJob(jobId, messageId) {
-  return new Promise((resolve) => {
-    let text = '';
-    let settled = false;
-    let es = null;
-    let paintTimer = null;
-    let lastPaint = 0;
+/** 每 0.5 秒輪詢一次背景回覆（後端約每秒更新一次進行中的文字），最多等 15 分鐘。連續 5 次網路錯誤（例如代理回 502）才放棄。 */
+const CHAT_POLL_MS = 500;
+const CHAT_MAX_WAIT_MS = 15 * 60 * 1000;
+const CHAT_MAX_POLL_FAILURES = 5;
 
-    const paint = () => {
-      paintTimer = null;
-      lastPaint = Date.now();
-      timeline.updateStreaming(text);
-    };
-    const schedulePaint = () => {
-      if (paintTimer) return;
-      const wait = Math.max(0, 80 - (Date.now() - lastPaint));
-      paintTimer = setTimeout(paint, wait);
-    };
-
-    const settle = (job) => {
-      if (settled) return;
-      settled = true;
-      if (paintTimer) clearTimeout(paintTimer);
-      if (es) es.close();
-      activeJob = null;
-      resolve(job);
-    };
-
-    const pollUntilDone = async () => {
-      for (;;) {
-        let snapshot;
-        try {
-          snapshot = await api.chat.status(jobId);
-        } catch (error) {
-          return { ok: false, error: error.message || '無法取得回覆狀態' };
-        }
-        if (snapshot.text && snapshot.text.length > text.length) {
-          text = snapshot.text;
-          schedulePaint();
-        }
-        if (snapshot.done) return snapshot;
-        await sleep(350);
-      }
-    };
-
-    activeJob = {
-      jobId,
-      // 停止：通知後端（保留已生成內容），然後輪詢到結束。
-      stop: async () => {
-        try {
-          await api.chat.stop(jobId);
-        } catch {
-          // 工作可能已結束，忽略
-        }
-        if (es) es.close();
-        settle(await pollUntilDone());
-      }
-    };
-
+/** onPartial(text)：回覆還在生成時，每次拿到新的進行中文字就呼叫一次。 */
+async function waitForChatJob(jobId, onPartial) {
+  const deadline = Date.now() + CHAT_MAX_WAIT_MS;
+  let failures = 0;
+  for (;;) {
+    await new Promise((resolve) => setTimeout(resolve, CHAT_POLL_MS));
+    let status;
     try {
-      es = new EventSource(api.chat.streamUrl(jobId));
-    } catch {
-      es = null;
+      status = await api.chatStatus(jobId);
+      failures = 0;
+    } catch (error) {
+      // 找不到 job（已過期或伺服器重啟）直接失敗；其他錯誤（例如代理回 502）重試。
+      failures += 1;
+      if (error.status === 404 || failures >= CHAT_MAX_POLL_FAILURES) throw error;
+      continue;
     }
-    if (!es) {
-      pollUntilDone().then(settle);
-      return;
+    if (status.state === 'done') return status;
+    if (status.state === 'failed') {
+      throw Object.assign(new Error(status.error || '發送失敗'), { code: status.code });
     }
-
-    es.addEventListener('meta', () => {});
-    es.addEventListener('step', (event) => appendTerminal(parseJson(event.data)));
-    es.addEventListener('delta', (event) => {
-      text += event.data;
-      schedulePaint();
-    });
-    es.addEventListener('done', (event) => settle(parseJson(event.data) || { ok: false, error: '回覆資料格式錯誤' }));
-    es.addEventListener('gone', () => {
-      if (es) es.close();
-      pollUntilDone().then(settle);
-    });
-    es.onerror = () => {
-      if (settled) return;
-      es.close();
-      pollUntilDone().then(settle);
-    };
-  });
+    if (onPartial && typeof status.partial === 'string' && status.partial) onPartial(status.partial);
+    if (Date.now() > deadline) throw new Error('等待回覆逾時，請稍後到對話列表重新開啟');
+  }
 }
 
-function parseJson(raw) {
+/** 中止目前對話的回覆（sidecar 會停止執行）。 */
+async function stopGeneration() {
+  if (!isStreaming || !currentSessionId) return;
   try {
-    return JSON.parse(raw);
-  } catch {
-    return null;
+    await api.abort(currentSessionId);
+    toast('已要求中止');
+  } catch (error) {
+    toast('中止失敗：' + error.message, true);
   }
 }
 
-function finishMessage(messageId, job, started) {
-  const ok = !!job.ok && !job.error;
-  const body = job.text || '';
-  const content = ok
-    ? body
-    : `${body ? body + '\n\n' : ''}錯誤：${job.error || '生成失敗'}`;
-  timeline.endStreaming({
-    id: messageId,
-    role: 'assistant',
-    content,
-    model: job.model || started.model_id,
-    keyName: job.key_name || ''
+// ─────────────────────────────────────────────────────────────
+// 模型管理（左側「模型」分頁）
+// ─────────────────────────────────────────────────────────────
+
+/** 模型分頁目前管理的清單與預設值（依 manageProvider）。 */
+function manageList() {
+  return manageProvider === 'custom' ? ocCustom.models : ocModels;
+}
+
+function manageDefault() {
+  return manageProvider === 'custom' ? ocCustom.default_model : defaultModel;
+}
+
+function setManageProvider(provider) {
+  manageProvider = provider;
+  renderModels();
+}
+
+function renderManageTabs() {
+  const custom = manageProvider === 'custom';
+  elements.ocManageNvidia.className = 'btn btn-sm ' + (custom ? 'btn-secondary' : 'btn-primary');
+  elements.ocManageCustom.className = 'btn btn-sm ' + (custom ? 'btn-primary' : 'btn-secondary');
+  elements.ocManageNvidia.setAttribute('aria-pressed', String(!custom));
+  elements.ocManageCustom.setAttribute('aria-pressed', String(custom));
+  elements.ocModelTitle.textContent = custom ? `${ocCustom.name} 模型` : 'NVIDIA 模型';
+  elements.ocModelAddHint.textContent = custom
+    ? '請輸入服務商提供的模型 ID，例如 gpt-4o-mini 或 qwen2.5:7b。'
+    : '請輸入 NVIDIA 的完整模型 ID（廠商/模型名），例如 nvidia/nemotron-3-super-120b-a12b';
+  elements.ocModelInput.placeholder = custom ? 'gpt-4o-mini' : 'nvidia/模型名';
+}
+
+function renderModels() {
+  const list = elements.ocModelList;
+  if (!list) return;
+  clear(list);
+  renderManageTabs();
+  const writable = canManage;
+  const models = manageList();
+  const dflt = manageDefault();
+  const groupName = manageProvider === 'custom' ? ocCustom.name : 'NVIDIA';
+  elements.ocModelAddCard.classList.toggle('hidden', !writable);
+  if (!models.length) {
+    list.appendChild(el('div', 'text-sm text-muted', '目前沒有模型。'));
+  }
+  models.forEach((id) => {
+    const isDefault = id === dflt;
+    const row = el('div', 'model-row' + (isDefault ? ' is-default' : ''));
+    const main = el('div', 'model-row-main');
+    main.appendChild(el('div', 'model-row-name', id));
+    main.appendChild(el('div', 'field-hint', isDefault ? '預設模型' : groupName));
+    row.appendChild(main);
+    if (writable && !isDefault) {
+      const actions = el('div', 'model-row-actions');
+      const setDefault = el('button', 'btn btn-secondary btn-sm', '設為預設');
+      setDefault.type = 'button';
+      setDefault.addEventListener('click', () => manageModel('default', id));
+      const remove = el('button', 'btn btn-danger btn-sm', '刪除');
+      remove.type = 'button';
+      remove.addEventListener('click', () => manageModel('remove', id));
+      actions.appendChild(setDefault);
+      actions.appendChild(remove);
+      row.appendChild(actions);
+    }
+    list.appendChild(row);
   });
-  if (!ok) toast(job.error || '生成失敗', true);
-}
-
-function stopGeneration() {
-  if (activeJob) activeJob.stop();
-}
-
-/** 工具執行步驟 → 底部終端機面板。 */
-function appendTerminal(step) {
-  if (step === null || step === undefined) return;
-  const text = typeof step === 'string' ? step : JSON.stringify(step);
-  if (elements.terminalOutput.querySelector('.term-empty')) {
-    elements.terminalOutput.replaceChildren();
+  let note = writable ? '' : '只有管理員可以管理模型。';
+  if (writable && manageProvider === 'custom' && !ocCustom.configured) {
+    note = '自訂供應商尚未設定 Base URL 或 API Key，設定完成後模型才會出現在聊天選單。';
   }
-  elements.terminalOutput.appendChild(el('div', 'term-line', '› ' + text.slice(0, 500)));
-  panels.toggleBottomPanel(true);
+  elements.ocModelNote.textContent = note;
+}
+
+/** 把 /models 的回應寫回對應供應商的狀態。 */
+function applyModelsResponse(provider, data) {
+  if (provider === 'custom') {
+    ocCustom.models = data.models || ocCustom.models;
+    ocCustom.default_model = data.model || ocCustom.default_model;
+  } else {
+    ocModels = data.models || ocModels;
+    defaultModel = data.model || defaultModel;
+  }
+}
+
+/** action: 'add' | 'remove' | 'default'。每次操作都會寫入設定並要求 sidecar 重啟。 */
+async function manageModel(action, model) {
+  if (!canManage) return;
+  if (action === 'remove' && !confirm(`確定要從清單移除 ${model} 嗎？`)) return;
+  const provider = manageProvider;
+  try {
+    const data = await api.models.manage(action, model, provider);
+    applyModelsResponse(provider, data);
+    if (action === 'default' && provider === currentProvider) {
+      currentModel = provider === 'custom' ? ocCustom.default_model : defaultModel;
+    }
+    ensureValidSelection();
+    updateModelLabel();
+    renderModels();
+    updateEmptyState();
+    elements.ocModelNote.textContent = data.message || '';
+    toast(data.message || '模型清單已儲存');
+    await refreshState();
+  } catch (error) {
+    toast('模型操作失敗：' + error.message, true);
+  }
+}
+
+async function addModelFromInput() {
+  const value = elements.ocModelInput.value.trim();
+  if (!value) return;
+  const provider = manageProvider;
+  try {
+    const data = await api.models.manage('add', value, provider);
+    applyModelsResponse(provider, data);
+    elements.ocModelInput.value = '';
+    renderModels();
+    updateEmptyState();
+    elements.ocModelNote.textContent = data.message || '';
+    toast(data.message || '已新增模型');
+    await refreshState();
+  } catch (error) {
+    toast('新增模型失敗：' + error.message, true);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────
 // opencode 面板（左側欄第三個分頁）
 // ─────────────────────────────────────────────────────────────
 
-const OPENCODE_FIELDS = ['ocEnabled', 'ocBaseUrl', 'ocModel', 'ocApiKey', 'ocSaveBtn',
-  'ocAccountInput', 'ocAddAccountBtn', 'ocSaveAccessBtn'];
+const OPENCODE_FIELDS = ['ocEnabled', 'ocBaseUrl', 'ocApiKey', 'ocSaveBtn',
+  'ocAccountInput', 'ocAddAccountBtn', 'ocSaveAccessBtn',
+  'ocCustomName', 'ocCustomBaseUrl', 'ocCustomApiKey', 'ocCustomSaveBtn'];
 
 async function loadOpencode() {
   try {
-    ocState = await api.opencode.state();
+    await refreshState();
     renderOpencode();
+    if (ocState && ocState.allowed && !threads.length) await loadSessions();
   } catch (error) {
     elements.ocStatus.textContent = '載入失敗：' + error.message;
     elements.ocStatus.className = 'text-sm text-error';
@@ -474,11 +588,21 @@ function renderOpencode() {
 
   elements.ocEnabled.value = s.config_enabled ? '1' : '0';
   elements.ocBaseUrl.value = s.base_url || '';
-  elements.ocModel.value = s.model || '';
   elements.ocApiKey.value = '';
   elements.ocKeyHint.textContent = s.key_masked
-    ? `目前金鑰：${s.key_masked}（留空不更動）`
+    ? `目前 NVIDIA 金鑰：${s.key_masked}（留空不更動）`
+    : '尚未設定 NVIDIA 金鑰';
+
+  const custom = normalizeCustom(s.custom);
+  elements.ocCustomName.value = (s.custom && s.custom.name) || '';
+  elements.ocCustomBaseUrl.value = custom.base_url;
+  elements.ocCustomApiKey.value = '';
+  elements.ocCustomKeyHint.textContent = custom.key_masked
+    ? `目前金鑰：${custom.key_masked}（留空不更動）`
     : '尚未設定金鑰';
+  elements.ocCustomStatus.textContent = custom.configured
+    ? '已設定，模型可在聊天選單使用'
+    : '未設定（需要 Base URL 與 API Key）';
 
   if (s.config_enabled && !s.healthy) {
     elements.ocStatus.textContent = '已啟用，但 sidecar 無法連線';
@@ -502,21 +626,41 @@ function updateOpencodeFieldState() {
   const writable = !!(ocState && ocState.can_manage);
   const on = elements.ocEnabled.value === '1';
   elements.ocBaseUrl.disabled = !writable || !on;
-  elements.ocModel.disabled = !writable || !on;
   elements.ocApiKey.disabled = !writable || !on;
+  const customLocked = !writable || !on;
+  elements.ocCustomName.disabled = customLocked;
+  elements.ocCustomBaseUrl.disabled = customLocked;
+  elements.ocCustomApiKey.disabled = customLocked;
+  elements.ocCustomSaveBtn.disabled = customLocked;
 }
 
 async function saveOpencodeConfig() {
   const payload = {
     enabled: elements.ocEnabled.value === '1',
-    base_url: elements.ocBaseUrl.value.trim(),
-    model: elements.ocModel.value.trim()
+    base_url: elements.ocBaseUrl.value.trim()
   };
   const key = elements.ocApiKey.value.trim();
   if (key) payload.api_key = key;
   try {
-    await api.opencode.saveConfig(payload);
-    toast('opencode 設定已儲存');
+    await api.config.save(payload);
+    toast('opencode 設定已儲存，sidecar 將自動重啟');
+    await loadOpencode();
+  } catch (error) {
+    toast('儲存失敗：' + error.message, true);
+  }
+}
+
+/** 自訂供應商：名稱、Base URL、API Key（留空不更動）。 */
+async function saveCustomProvider() {
+  const payload = {
+    name: elements.ocCustomName.value.trim(),
+    base_url: elements.ocCustomBaseUrl.value.trim()
+  };
+  const key = elements.ocCustomApiKey.value.trim();
+  if (key) payload.api_key = key;
+  try {
+    await api.custom.save(payload);
+    toast('自訂供應商已儲存，sidecar 將自動重啟');
     await loadOpencode();
   } catch (error) {
     toast('儲存失敗：' + error.message, true);
@@ -529,7 +673,7 @@ async function testOpencode() {
   const label = elements.ocTestBtn.textContent;
   elements.ocTestBtn.textContent = '測試中…';
   try {
-    ocState = await api.opencode.state();
+    ocState = await api.state();
     renderOpencode();
     toast(ocState.healthy ? '連線測試成功' : '連線測試失敗', !ocState.healthy);
   } catch (error) {
@@ -586,7 +730,7 @@ function addAccessAccount() {
 
 async function saveOpencodeAccess() {
   try {
-    await api.opencode.saveAccess(accessList);
+    await api.config.saveAccess(accessList);
     toast('授權名單已儲存');
     await loadOpencode();
   } catch (error) {
@@ -600,7 +744,7 @@ function openOpencodePanel() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 工具分頁、建議按鈕
+// 建議按鈕
 // ─────────────────────────────────────────────────────────────
 
 function renderSuggestions() {
@@ -614,15 +758,6 @@ function renderSuggestions() {
     });
     elements.suggestions.appendChild(chip);
   });
-}
-
-function renderTools() {
-  const tools = createToolsPanel(elements.toolsList, TOOLS, (tool) => {
-    composer.setValue(`請使用「${tool.name}」工具協助我：`);
-    composer.focus();
-    if (isNarrow()) panels.toggleLeftSidebar(false);
-  });
-  tools.render();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -747,18 +882,20 @@ function bindEvents() {
   });
   elements.ocSaveAccessBtn.addEventListener('click', saveOpencodeAccess);
 
-  elements.agentMode.checked = agentMode;
-  elements.agentMode.addEventListener('change', () => {
-    agentMode = elements.agentMode.checked;
-    try {
-      localStorage.setItem('ai-agent-mode', agentMode ? '1' : '0');
-    } catch {
-      // 無法寫入 localStorage 時只影響記憶，不影響功能
+  elements.ocModelAddBtn.addEventListener('click', addModelFromInput);
+  elements.ocManageNvidia.addEventListener('click', () => setManageProvider('nvidia'));
+  elements.ocManageCustom.addEventListener('click', () => setManageProvider('custom'));
+  elements.ocCustomSaveBtn.addEventListener('click', saveCustomProvider);
+  elements.ocModelInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      addModelFromInput();
     }
   });
 
   panels.setupTabs(elements.leftTabs, elements.leftContent, (target) => {
     if (target === 'opencode') loadOpencode();
+    if (target === 'models') refreshState();
   });
   panels.setupTabs(elements.rightTabs, elements.rightContent);
 }
@@ -767,9 +904,8 @@ async function init() {
   try {
     const savedTheme = localStorage.getItem('theme');
     if (savedTheme) document.documentElement.dataset.theme = savedTheme;
-    agentMode = localStorage.getItem('ai-agent-mode') === '1';
   } catch {
-    agentMode = false;
+    // 無法讀取主題時使用預設值
   }
 
   collectElements();
@@ -779,12 +915,12 @@ async function init() {
   }
   buildComponents();
   renderSuggestions();
-  renderTools();
   bindEvents();
   updateModelLabel();
   updateEmptyState();
 
   await refreshState();
+  await loadSessions();
 
   const sessionId = new URLSearchParams(window.location.search).get('session');
   if (sessionId) await selectSession(sessionId);

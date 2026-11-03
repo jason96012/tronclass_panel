@@ -37,6 +37,8 @@ export function createCommandPalette(palette, input, results, commands, onClose)
 
   function close() {
     palette.classList.remove('open');
+    // 面板隱藏前先把焦點移開：否則焦點停在已隱藏的輸入框，keyboard.js 會略過輸入框內的快捷鍵（例如立刻再按 Ctrl+K 沒反應）。
+    if (document.activeElement === input) input.blur();
     isOpen = false;
     document.removeEventListener('keydown', handleKeyDown);
     onClose?.();

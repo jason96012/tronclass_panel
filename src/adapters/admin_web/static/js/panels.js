@@ -18,7 +18,6 @@ export function createPanelManager(elements) {
     resizeBottom,
     menuBtn,
     rightSidebarToggle,
-    opencodeToggle,
     leftSidebarClose,
     rightSidebarClose,
     bottomPanelClose
@@ -52,9 +51,18 @@ export function createPanelManager(elements) {
     }
   }
 
+  // 目前是否開啟：手機看 .open 類別，桌機看 hidden 屬性（桌機不用 .open）。
+  function isLeftOpen(mobile) {
+    return mobile ? leftSidebar.classList.contains('open') : !leftSidebar.hidden;
+  }
+
+  function isRightOpen(mobile) {
+    return mobile ? rightSidebar.classList.contains('open') : !rightSidebar.hidden;
+  }
+
   function toggleLeftSidebar(force) {
     const mobile = isMobile();
-    const open = force !== undefined ? force : !leftSidebar.classList.contains('open');
+    const open = force !== undefined ? force : !isLeftOpen(mobile);
     if (mobile) {
       // 手機抽屜靠 transform 進出場；hidden 屬性若殘留會讓抽屜永遠看不到。
       leftSidebar.hidden = false;
@@ -69,7 +77,7 @@ export function createPanelManager(elements) {
 
   function toggleRightSidebar(force) {
     const mobile = isMobile();
-    const open = force !== undefined ? force : !rightSidebar.classList.contains('open');
+    const open = force !== undefined ? force : !isRightOpen(mobile);
     if (mobile) {
       rightSidebar.hidden = false;
       rightSidebar.classList.toggle('open', open);
@@ -127,8 +135,11 @@ export function createPanelManager(elements) {
       rightSidebar.style.width = rightWidth + 'px';
       rightSidebar.style.flexBasis = rightWidth + 'px';
     } else if (resizeType === 'bottom') {
-      bottomHeight = Math.max(MIN_BOTTOM, Math.min(MAX_BOTTOM, startHeight + dy));
+      // 把手在面板上緣：往上拖（dy < 0）應該變高
+      bottomHeight = Math.max(MIN_BOTTOM, Math.min(MAX_BOTTOM, startHeight - dy));
       bottomPanel.style.height = bottomHeight + 'px';
+      // CSS 的 flex 簡寫會把 flex-basis 設成 --bottom-panel-height，要一起改才會生效（同左右欄）
+      bottomPanel.style.flexBasis = bottomHeight + 'px';
     }
   }
 
@@ -201,7 +212,7 @@ export function createPanelManager(elements) {
     get bottomHeight() { return bottomHeight; },
     setLeftWidth: (w) => { leftWidth = Math.max(MIN_LEFT, Math.min(MAX_LEFT, w)); leftSidebar.style.width = leftWidth + 'px'; },
     setRightWidth: (w) => { rightWidth = Math.max(MIN_RIGHT, Math.min(MAX_RIGHT, w)); rightSidebar.style.width = rightWidth + 'px'; },
-    setBottomHeight: (h) => { bottomHeight = Math.max(MIN_BOTTOM, Math.min(MAX_BOTTOM, h)); bottomPanel.style.height = bottomHeight + 'px'; }
+    setBottomHeight: (h) => { bottomHeight = Math.max(MIN_BOTTOM, Math.min(MAX_BOTTOM, h)); bottomPanel.style.height = bottomHeight + 'px'; bottomPanel.style.flexBasis = bottomHeight + 'px'; }
   };
 }
 
@@ -307,23 +318,27 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-export function createModelPicker(container, models, currentModel, onSelect) {
+/**
+ * 模型選單（CUSTOM_PROVIDER_V1 起依供應商分組）。
+ * options: [{ key, name, group, isDefault }]；currentKey 與 key 比對；點選時回傳整個 option。
+ */
+export function createModelPicker(container, options, currentKey, onSelect) {
+  // OPENCODE_AGENT_ONLY_V2：沒有「自動」選項；清單就是管理員設定的模型。
   function render() {
     clear(container);
-    const autoOpt = el('div', 'model-option' + (currentModel === 'auto' ? ' selected' : ''));
-    autoOpt.innerHTML = `<span class="model-option-glyph">${icon('zap', 16)}</span><div class="model-option-info"><div class="model-option-name">自動</div><div class="model-option-provider">依問題自動選擇最適合模型</div></div>`;
-    autoOpt.addEventListener('click', () => onSelect('auto'));
-    container.appendChild(autoOpt);
-
-    models.filter(m => m.enabled && m.available).forEach(model => {
-      const opt = el('div', 'model-option' + (model.id === currentModel ? ' selected' : ''));
+    if (!options.length) {
+      container.appendChild(el('div', 'model-option', '目前沒有可用模型'));
+      return;
+    }
+    options.forEach(option => {
+      const opt = el('div', 'model-option' + (option.key === currentKey ? ' selected' : ''));
       opt.innerHTML = `
         <div class="model-option-info">
-          <div class="model-option-name">${escapeHtml(model.name)}</div>
-          <div class="model-option-provider">${escapeHtml(model.provider)} · ${model.id}</div>
+          <div class="model-option-name">${escapeHtml(option.name)}</div>
+          <div class="model-option-provider">${escapeHtml(option.group)}${option.isDefault ? ' · 預設' : ''}</div>
         </div>
       `;
-      opt.addEventListener('click', () => onSelect(model.id));
+      opt.addEventListener('click', () => onSelect(option));
       container.appendChild(opt);
     });
   }

@@ -17,6 +17,20 @@ use super::{
 /// 畫面上「只顯示前 5 筆、按『顯示更多』展開」的 UI 行為不受影響，繼續保留
 /// （那是純顯示層的分頁，跟這裡講的資料庫筆數上限是兩回事）。
 
+/// WAF 異常 4xx 自動封鎖的到期秒數（30 分鐘）。只對這一類自動封鎖生效；
+/// 手動封鎖、登入失敗封鎖、攻擊特徵封鎖都維持永久，直到管理員解除。
+/// 先前 `waf.rs` 定義了這個常數卻從未使用，導致封鎖實際上永久生效。
+pub const WAF_ANOMALY_BAN_SECS: i64 = 1800;
+/// WAF 異常 4xx 自動封鎖寫入的 `reason` 前綴（`waf.rs` 寫入時也引用這個常數）。
+pub const WAF_ANOMALY_REASON_PREFIX: &str = "WAF 防火牆自動封鎖（異常 4xx 行為）";
+/// WAF 自動封鎖共用的 `blocked_by`（攻擊特徵、指紋、異常 4xx 都用這個）。
+pub const WAF_BLOCKED_BY: &str = "system:waf-firewall-max";
+
+/// 這一列是否屬於「會到期的 WAF 異常 4xx 自動封鎖」。
+fn is_expiring_waf_anomaly_ban(blocked_by: &str, reason: &str) -> bool {
+    blocked_by == WAF_BLOCKED_BY && reason.starts_with(WAF_ANOMALY_REASON_PREFIX)
+}
+
 #[derive(Debug, Clone, FromRow, Serialize)]
 pub struct IpBlacklistRow {
     pub ip: String,
@@ -37,16 +51,48 @@ impl AccountsDb {
         // 封鎖以「整段前綴」生效，位址輪換（privacy addresses）不能洗白身分。
         // IPv4 的群組鍵＝自己，行為與舊版完全一致。
         let group = crate::trusted_ip::blacklist_group_key(trimmed);
-        let exists: i64 = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM ip_blacklist WHERE ip = ? OR ip = ?)",
+        let rows = sqlx::query_as::<_, (String, i64, String, String)>(
+            "SELECT ip, blocked_at, blocked_by, reason FROM ip_blacklist WHERE ip = ? OR ip = ?",
         )
         .bind(trimmed)
         .bind(group)
-        .fetch_one(&self.pool)
+        .fetch_all(&self.pool)
         .await
         .into_diagnostic()
         .wrap_err("檢查 IP 黑名單失敗")?;
-        Ok(exists != 0)
+
+        if rows.is_empty() {
+            return Ok(false);
+        }
+        // WAF 異常 4xx 自動封鎖超過到期時間 → 視為已解除，並刪除該列。
+        // 必須刪除：ip 是 PRIMARY KEY，過期列若留著，之後的 INSERT OR IGNORE
+        // 會擋住重新封鎖。
+        let now = Local::now().timestamp();
+        let mut active = false;
+        let mut expired: Vec<String> = Vec::new();
+        for (key, blocked_at, blocked_by, reason) in rows {
+            if is_expiring_waf_anomaly_ban(&blocked_by, &reason)
+                && now.saturating_sub(blocked_at) >= WAF_ANOMALY_BAN_SECS
+            {
+                expired.push(key);
+            } else {
+                active = true;
+            }
+        }
+        for key in expired {
+            sqlx::query(
+                "DELETE FROM ip_blacklist
+                 WHERE ip = ? AND blocked_by = ? AND reason LIKE ? || '%'",
+            )
+            .bind(&key)
+            .bind(WAF_BLOCKED_BY)
+            .bind(WAF_ANOMALY_REASON_PREFIX)
+            .execute(&self.pool)
+            .await
+            .into_diagnostic()
+            .wrap_err("清除已到期的 WAF 自動封鎖失敗")?;
+        }
+        Ok(active)
     }
 
     pub async fn list_ip_blacklist(&self, limit: i64) -> Result<Vec<IpBlacklistRow>> {

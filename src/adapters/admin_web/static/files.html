@@ -1149,9 +1149,9 @@
 }
 </style>
 <style id="TABLET_FOLDER_LAYOUT_V1">
-/* 平板卡片：名稱與操作分排，避免 200px 欄寬內的按鈕擠掉名稱。
-   寬度條件涵蓋接鍵鼠的平板；較大觸控螢幕亦套用。手機沿用原版型。 */
-@media (min-width:821px) and (max-width:1366px), (min-width:821px) and (pointer:coarse){
+/* 平板／電腦卡片：名稱與操作分排，避免 200px 欄寬內的按鈕擠掉名稱（FOLDER_NAME_ROW_V2：
+   1568px 等寬螢幕原本的單排版型會把名稱擠到 0 寬，改為全寬一律套用兩排版型）。手機沿用原版型。 */
+@media (min-width:821px){
   .folder-grid .folder-card{
     display:grid;
     grid-template-columns:32px minmax(0,1fr) 44px;

@@ -90,6 +90,10 @@ pub(super) fn token_for_account(account_id: &str) -> String {
 /// 這個標頭（見本檔開頭「`/admin/api/logout` 固定豁免」說明）。
 pub(super) fn is_exempt_path(path: &str) -> bool {
     path == "/admin/api/logout"
+        // BLACKLIST_CONTACT_CSRF_V1：「聯絡管理員」只新增一筆待處理申請，不做任何
+        // 特權操作。被擋的瀏覽器若還帶著舊的登入 cookie，缺少 CSRF 標頭會被 403，
+        // 前端就只會顯示「傳送失敗」。同源檢查（Sec-Fetch-Site）仍然生效。
+        || path == "/admin/api/geo-restrict/request-access"
 }
 
 /// 中介層呼叫入口：請求帶的 `X-CSRF-Token` 標頭是否等於「這個已登入帳號」
