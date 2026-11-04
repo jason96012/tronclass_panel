@@ -45,6 +45,7 @@ mod sessions;
 mod timetable;
 mod timetable_sync;
 mod web_push;
+mod waf_fingerprint;
 
 use std::{path::Path, str::FromStr, time::Duration};
 

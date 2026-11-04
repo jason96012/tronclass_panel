@@ -54,6 +54,8 @@ const COMPONENT_OWNER_BLOCK_IP_PREFIX: &str = "trc:owner-block-ip:";
 /// ADMIN_GEO_RESTRICT_V1：payload 是 `geo_access_requests.id`（UUID）。
 const COMPONENT_GEO_ALLOW_PREFIX: &str = "trc:geo-allow:";
 const COMPONENT_GEO_IGNORE_PREFIX: &str = "trc:geo-ignore:";
+/// WAF 指紋封鎖的放行按鈕：後面接 `waf_fingerprint_blocks.pair`。
+const COMPONENT_FP_RELEASE_PREFIX: &str = "trc:fp-release:";
 const DISCORD_SEND_INTERVAL_MS: u64 = 350;
 const DISCORD_DASHBOARD_DEDUPE_TTL_SECS: u64 = 10 * 60;
 const MAX_DISCORD_DM_CHANNEL_CACHE: usize = 2048;
@@ -946,6 +948,28 @@ impl DiscordRuntime {
                 Ok(true) => OutboundMessage::Text(format!("[安全] 已封鎖 IP `{ip}`。黑名單頁面可查看與解除封鎖。")),
                 Ok(false) => OutboundMessage::Text(format!("[安全] IP `{ip}` 已經在黑名單中。")),
                 Err(error) => OutboundMessage::Text(format!("[安全] 封鎖 IP 失敗：{error}")),
+            };
+            reply_component(ctx, &component, message, true).await?;
+            return Ok(());
+        }
+
+        if let Some(pair) = parse_fp_release_custom_id(&component.data.custom_id) {
+            // 指紋放行：只有 admin_user_id 能按（與 WAF 封鎖通知只發給他一致）。
+            if user_id != self.bot.admin_user_id {
+                reply_component(ctx, &component, OutboundMessage::NotAuthorized, true).await?;
+                return Ok(());
+            }
+            let now = chrono::Local::now().timestamp();
+            let message = match self
+                .accounts_db
+                .release_fingerprint_block(&pair, &user_id, now)
+                .await
+            {
+                Ok(true) => OutboundMessage::Text(
+                    "[安全] 已放行此 IP 群組＋指紋組合，之後不會再因指紋被封鎖。".to_string(),
+                ),
+                Ok(false) => OutboundMessage::Text("[安全] 找不到這筆指紋封鎖紀錄。".to_string()),
+                Err(error) => OutboundMessage::Text(format!("[安全] 放行失敗：{error}")),
             };
             reply_component(ctx, &component, message, true).await?;
             return Ok(());
@@ -1954,6 +1978,13 @@ fn action_rows_for_message(message: &OutboundMessage) -> Vec<CreateActionRow> {
                 vec![]
             }
         }
+        OutboundMessage::FingerprintBlock(event) => vec![CreateActionRow::Buttons(vec![
+            CreateButton::new(format!("{COMPONENT_FP_RELEASE_PREFIX}{}", event.pair))
+                .label("放行此組合")
+                .style(ButtonStyle::Success),
+            CreateButton::new_link("https://dashboard.jasoncloudserver.me/admin/blacklist")
+                .label("查看管理後台"),
+        ])],
         OutboundMessage::GeoAccessRequest(event) => vec![CreateActionRow::Buttons(vec![
             CreateButton::new(format!("{COMPONENT_GEO_ALLOW_PREFIX}{}", event.request_id))
                 .label("暫時放行")
@@ -2558,6 +2589,19 @@ fn notice_card_for(message: &OutboundMessage) -> Option<NoticeCard> {
                     )),
             )
         }
+        OutboundMessage::FingerprintBlock(event) => Some(
+            NoticeCard::new(NoticeCategory::Security, "🛡️ WAF 指紋封鎖（指數時間）", "")
+                .field("IP 群組", &event.ip_group, true)
+                .field("第幾次", event.strikes.to_string(), true)
+                .field("解除時間", &event.blocked_until, true)
+                .field("指紋（節錄）", &event.fingerprint_preview, false)
+                .field("時間", &event.timestamp, false)
+                .hint(
+                    "按「放行此組合」後，這個 IP 群組＋此指紋 30 天內不再因指紋被封鎖，到期後恢復檢查（同指紋的其他 IP 不受影響）。\n\
+                     未放行時，封鎖會到期自動解除，次數越多封鎖越久（上限 24 小時）。\n\
+                     黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
+                ),
+        ),
         OutboundMessage::GeoAccessRequest(event) => Some(
             NoticeCard::new(NoticeCategory::Security, "🌐 國外 IP 嘗試存取管理後台", "")
                 .field("來源 IP", &event.ip, true)
@@ -2684,6 +2728,14 @@ fn render_discord_message(message: &OutboundMessage) -> String {
                 action,
             )
         },
+        OutboundMessage::FingerprintBlock(event) => format!(
+            "[安全] WAF 指紋封鎖（第 {} 次）\n\nIP 群組：{}\n解除時間：{}\n指紋（節錄）：{}\n時間：{}\n\n按「放行此組合」可讓這個 IP 群組＋此指紋 30 天內不再因指紋被封鎖；未放行則到期自動解除。",
+            event.strikes,
+            event.ip_group,
+            event.blocked_until,
+            event.fingerprint_preview,
+            event.timestamp,
+        ),
         OutboundMessage::GeoAccessRequest(event) => format!(
             "[安全] 國外 IP 嘗試存取管理後台\n\n來源 IP：{}\n位置：{}\n想前往：{}\n時間：{}\n\n按「暫時放行」可讓這個 IP 在 {} 小時內跳過僅限台灣的限制；按「忽略」維持擋下。\n黑名單管理頁：https://dashboard.jasoncloudserver.me/admin/blacklist",
             event.ip,
@@ -2919,6 +2971,17 @@ fn parse_block_ip_custom_id(value: &str) -> Option<String> {
 
 /// WAF 解除按鈕的 custom_id：只接受 WAF 實際寫入的鍵形狀（IPv4 原樣，IPv6 為 `/64` 群組鍵），
 /// 其餘一律拒絕，避免 custom_id 被竄改成任意字串傳進 SQL。
+/// 解析放行按鈕的 custom_id：只接受 `hash16|群組` 格式，避免任意字串進資料庫查詢。
+fn parse_fp_release_custom_id(value: &str) -> Option<String> {
+    let raw = value.strip_prefix(COMPONENT_FP_RELEASE_PREFIX)?;
+    let (hash, group) = raw.split_once('|')?;
+    let well_formed = hash.len() == 16
+        && hash.chars().all(|c| c.is_ascii_hexdigit())
+        && !group.is_empty()
+        && group.len() <= 64;
+    well_formed.then(|| raw.to_string())
+}
+
 fn parse_unblock_waf_custom_id(value: &str) -> Option<String> {
     let raw = value.strip_prefix(COMPONENT_UNBLOCK_WAF_PREFIX)?.trim();
     let host = raw.strip_suffix("/64").unwrap_or(raw);

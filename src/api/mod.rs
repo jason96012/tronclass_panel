@@ -149,6 +149,8 @@ pub fn build_http_client(cookie_jar: Arc<Jar>, timeout_secs: u64) -> reqwest::Re
 
     Client::builder()
         .cookie_provider(cookie_jar)
+        // SSRF_DNS_PIN_V1：連線與重定向的 DNS 解析都經過防護解析器（見 GuardedDnsResolver）。
+        .dns_resolver(Arc::new(GuardedDnsResolver))
         .default_headers(default_headers)
         .timeout(Duration::from_secs(timeout_secs))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
@@ -201,6 +203,41 @@ pub(crate) fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
                 })
         }
     }
+}
+
+/// SSRF_DNS_PIN_V1：HTTP 用戶端的 DNS 解析器。只回傳未被 `is_blocked_ip` 封鎖的位址，
+/// 因此連線實際使用的 IP 就是通過檢查的 IP。這同時處理兩個缺口：
+/// ① 檢查與連線之間 DNS 被改寫（DNS rebinding／TOCTOU）；
+/// ② 重定向到網域名稱時，新主機也會經過此解析器（重定向政策本身只檢查字面量）。
+/// 只封 loopback、link-local（含 169.254 metadata）、unspecified、multicast、broadcast；
+/// RFC1918 私網刻意不封（教材檔案埠可能在校內）。
+/// 已建立的連線會被連線池重用而不重新解析，但該連線建立當下的 IP 已通過檢查。
+pub(crate) struct GuardedDnsResolver;
+
+impl reqwest::dns::Resolve for GuardedDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(resolve_guarded(host))
+    }
+}
+
+/// `GuardedDnsResolver` 的實際解析流程。解析失敗或全部位址被封鎖時回傳錯誤（fail-closed）。
+async fn resolve_guarded(
+    host: String,
+) -> std::result::Result<reqwest::dns::Addrs, Box<dyn std::error::Error + Send + Sync>> {
+    let found = tokio::net::lookup_host((host.as_str(), 0)).await?;
+    let allowed: Vec<std::net::SocketAddr> = found
+        .filter(|addr| !is_blocked_ip(addr.ip()))
+        .collect();
+    if allowed.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "SSRF_DNS_PIN_V1：網域解析後為被封鎖的位址",
+        )
+        .into());
+    }
+    let addrs: reqwest::dns::Addrs = Box::new(allowed.into_iter());
+    Ok(addrs)
 }
 
 /// SSRF_DNS_GUARD_V1：網域名稱解析後是否落在被封鎖的位址。

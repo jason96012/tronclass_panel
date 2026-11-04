@@ -125,6 +125,36 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     )
     .await?;
 
+    // AUDIT_CHAIN_V2：雜湊鏈欄位。chain_version=1 為舊的獨立簽章（既有列的預設值，
+    // 驗證時用舊公式）；2 為串鏈簽章，prev_hash 記錄寫入當下「前一筆」的 event_hash。
+    ensure_table_column(
+        pool,
+        "activity_events",
+        "prev_hash",
+        "TEXT NOT NULL DEFAULT ''",
+    )
+    .await?;
+    ensure_table_column(
+        pool,
+        "activity_events",
+        "chain_version",
+        "INTEGER NOT NULL DEFAULT 1",
+    )
+    .await?;
+
+    // AUDIT_CHAIN_V2：清理 activity_events 時留下的墓碑（被刪列的 id 與 event_hash）。
+    // 登入失敗的清理會刪除中間的列，沒有墓碑的話，驗證會把正常清理誤判為竄改。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS activity_events_pruned (
+            id INTEGER PRIMARY KEY NOT NULL,
+            event_hash TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .into_diagnostic()
+    .wrap_err("初始化 activity_events_pruned 資料表失敗")?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ip_blacklist (
             ip TEXT PRIMARY KEY NOT NULL,
@@ -894,6 +924,8 @@ pub(crate) async fn create_schema(pool: &SqlitePool) -> Result<()> {
     .await
     .into_diagnostic()
     .wrap_err("初始化 geo_access_requests 資料表失敗")?;
+
+    super::waf_fingerprint::create_table(pool).await?;
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_geo_access_requests_ip_status ON geo_access_requests(ip, status)")
         .execute(pool)

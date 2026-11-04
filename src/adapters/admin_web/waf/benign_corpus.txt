@@ -1,0 +1,159 @@
+# WAF 正常使用語料（WAF_BENIGN_CORPUS_V1）
+#
+# 格式：每行一筆，前綴代表請求的哪個部分：
+#   U|  URL 路徑與查詢字串（GET，無特殊標頭）
+#   R|  Referer 標頭（請求路徑為 /courses）
+#   C|  Cookie 標頭（請求路徑為 /courses）
+#   J|  JSON 本體（POST application/json）
+#   F|  表單本體（POST application/x-www-form-urlencoded）
+# 前綴加 T（例如 TJ|）代表「已知會被攔截的取捨」，測試會鎖定這個行為。
+# 注意：標記 T 的誤判需要用戶決定是否保留；未決定前以鎖定行為記錄，並在測試輸出列出。
+# 非 ASCII 字元會在測試中自動做百分比編碼（與瀏覽器送出的格式相同）。
+#
+# 語料來源：前端 static/*.html、static/js/*.js 實際使用的 API 路徑與 JSON 欄位，
+# 以及校內教材、公告、AI 聊天的常見內容（含程式碼與 SQL 教學）。
+
+# ---- URL：管理後台與 API（真實路徑） ----
+U|/admin/api/status?include_history=false
+U|/admin/api/status?include_history=false&history_limit=0
+U|/admin/api/status?include_history=false&resume=abc123
+U|/admin/api/activity/login?limit=500
+U|/admin/api/blacklist/recent-logins?limit=300
+U|/admin/api/files/history?limit=300
+U|/admin/api/files/list?path=/教材/第一週 講義.pdf
+U|/admin/api/files/download?path=/教材/期末 報告 (最終版).docx
+U|/admin/api/files/preview?path=/課程/Week 3: Joins & Unions.pdf
+U|/admin/api/files/office-embed?path=/簡報/資料庫 設計 (v2).pptx
+U|/admin/api/files/preview?path=/文件/readme (1).txt
+U|/admin/api/homework/detail?id=123&course_id=45
+U|/admin/api/homework/submission?id=123&student=2026001
+U|/admin/api/homework/file?id=9
+U|/admin/api/rollcalls/records?days=0&limit=100
+U|/admin/api/rollcalls/stats?days=30
+U|/admin/api/timetable?account_id=414850015
+U|/admin/api/detection-schedule?account_id=414850015
+U|/admin/api/bulletins/attachment?upload_id=12
+U|/admin/api/bulletins/translate/status?job=abc-123
+U|/admin/api/ai/chat/status?job=8f3a-22
+U|/admin/api/ai/opencode/chat/status?job=8f3a
+U|/admin/api/mock/qr.svg?data=https://tronclass.example.edu.tw/qr?code=AB12
+U|/admin/api/logs?limit=500&kind=security&q=login
+U|/admin/api/logs?kind=audit&since=2026-11-01T00:00:00+08:00
+U|/admin/api/events?since=1730600000
+U|/admin/api/credits?course=Operating%20Systems
+U|/admin/api/radar/input?q=C%2B%2B%20%E5%85%A5%E9%96%80
+U|/admin/api/homework?course=CS101&status=late
+U|/admin/api/timetable/sync?week=44&mode=full
+U|/admin/api/client-log
+U|/admin/api/update-times
+U|/admin/static/client-log.js
+U|/static/css/app.css?v=20261103
+U|/static/js/api.js?v=2.1.0
+U|/pub/share?path=/公開/課表 2026.pdf
+U|/pub/preview-log
+U|/course/12345/homework?page=2&sort=due_date
+U|/tc/api/courses?keyword=資料庫%20%26%20系統
+U|/api/v1/courses/123/discussions?order_by=created_at
+U|/uploads/2026/11/03/report-final_v2.pdf
+U|/bulletin-list?page=2
+
+# ---- URL：一般搜尋與篩選（含容易被誤判的字元） ----
+U|/search?q=select%20a%20course%20from%20the%20list
+U|/courses?filter=order%20by%20due%20date&limit=20
+U|/courses?title=O%27Brien%20Lab
+U|/courses?keyword=it%27s%20--%20ok
+U|/courses?date=2026-11-01--2026-11-05
+U|/courses?tag=C%23%20%231
+U|/courses?page=1&size=20&order=asc
+U|/courses?q=joins%20%26%20unions
+U|/admin/api/radar/input?q=a%20and%201%3D2
+U|/courses?q=%E8%B3%87%E6%96%99%E5%BA%AB%20%E8%AA%B2%E7%A8%8B%20%E4%BD%9C%E6%A5%AD
+
+# ---- Referer（搜尋引擎與常見來源） ----
+# 待用戶決定：搜尋詞 union select 進入 Referer 會 403（不封鎖，僅影響第一次進站）
+TR|https://www.google.com/search?q=union+select+是什麼
+R|https://www.google.com/search?q=sql+injection+tutorial
+R|https://tronclass.example.edu.tw/course/123/homework
+R|https://meet.google.com/abc-defg-hij
+R|https://mail.google.com/mail/u/0/
+R|https://www.facebook.com/
+R|https://www.bing.com/search?q=%E8%B3%87%E6%96%99%E5%BA%AB+%E5%AE%9E%E9%AA%8C
+
+# ---- Cookie ----
+C|session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc-DEF_123; theme=dark
+C|_ga=GA1.1.123.456; _gid=GA1.1.789; cf_clearance=abc.def-1
+C|csrf_token=7f3a9c0d2e1b4a5f; lang=zh-TW; device=iPhone; ac=1
+
+# ---- JSON：公告摘要、翻譯（公告常含 HTML） ----
+J|{"text":"<p>第三週作業請於週五前繳交，<b>注意格式</b>。</p>","tl":"zh-TW"}
+J|{"text":"親愛的同學：期末考範圍為第 1–8 章，請攜帶學生證。詳見附件。"}
+J|{"text":"<table><tr><td>週次</td><td>主題</td></tr><tr><td>1</td><td>資料庫簡介</td></tr></table>"}
+J|{"text":"<a href=\"https://www.example.edu.tw/course?id=12&lang=zh\">課程網頁</a>"}
+J|{"text":"活動網址：https://event.example.com/signup?ref=abc&utm_source=mail 報名截止 11/10 17:00"}
+J|{"text":"活動公告：下週三 (11/12) 14:00 於 Room 301 舉行「資料庫實作工作坊」"}
+J|{"text":"第 2 週 -- 第 4 週 為期中範圍"}
+J|{"text":"請用 'single quotes' 包住字串"}
+J|{"text":"第 3 章 Joins：INNER JOIN 與 LEFT JOIN 的差別，範例 SELECT * FROM a JOIN b ON a.id = b.id;"}
+
+# ---- JSON：AI 聊天（學生常見問題，含程式碼與教學內容） ----
+J|{"message":"請幫我解釋 SELECT 語法與 JOIN 的差別"}
+J|{"message":"這段 Python 程式碼為什麼會 IndexError？\nfor i in range(10):\n    print(arr[i])"}
+J|{"message":"我的 JavaScript 函式 function add(a, b) { return a + b; } 怎麼寫測試？"}
+J|{"message":"請用 Markdown 整理：## 第一章\n- 重點 1\n- 重點 2 (見附錄)"}
+J|{"message":"數學題：若 x + 1 = 2，求 x 的值。"}
+J|{"message":"LaTeX 公式 \\frac{a}{b} 怎麼排版？"}
+J|{"message":"模板範例：Hello {{name}}，你的成績是 {{score}} 分。"}
+J|{"message":"價格 ${price} 元，共 3 件"}
+J|{"message":"請解釋 CSS 的 width: 100%; 與 margin:0 auto; 的差別"}
+J|{"message":"我的 HTML 是 <div class=\"box\">內容</div>，為什麼排版跑掉？"}
+J|{"message":"<img src=\"logo.png\" alt=\"onion 圖示\">"}
+J|{"message":"請解釋 JSON 格式：{\"name\": \"Alice\", \"age\": 20}"}
+J|{"message":"你好，我的課表今天有變動嗎？"}
+J|{"message":"請把下列 CSV 轉成 JSON：name,score\nAlice,90"}
+J|{"message":"pip install requests 之後 import 失敗"}
+J|{"message":"bash: rm -rf ./build 會刪除什麼？"}
+J|{"message":"Windows 命令 dir C:\\Users 是什麼意思"}
+J|{"message":"Regex: ^[a-z]+@[a-z]+\\.com$ 怎麼寫？"}
+J|{"message":"我的 Java 程式出現 NullPointerException，代碼如下: String s = null; s.length();"}
+J|{"message":"什麼是 eval()？為什麼不建議使用？"}
+J|{"message":"作業說明：請提交 .zip 檔（含 main.py）"}
+J|{"message":"檔案 readme (1).txt 的內容是什麼？"}
+J|{"message":"請解釋 Java 的 try { } catch (Exception e) { } 結構"}
+
+# ---- 表單 ----
+F|q=C%2B%2B+%E5%85%A5%E9%96%80&page=2
+F|username=student01&password=P%40ssw0rd%21&remember=1
+F|note=%E4%BD%9C%E6%A5%AD%E5%B7%B2%E5%AE%8C%E6%88%90%EF%BC%8C%E8%AB%8B%E6%9F%A5%E6%94%B6
+F|keyword=order+by+due_date&limit=20
+F|title=week+3%3A+joins+%26+unions
+
+# ---- 已知取捨：下列內容「應該」會被攔截（攻擊特徵或安全優先），測試鎖定此行為 ----
+TJ|{"message":"SQL 注入範例：' OR 1=1 --"}
+TJ|{"message":"請解釋 UNION SELECT 攻擊的原理"}
+TJ|{"message":"<img src=x onerror=alert(1)>"}
+TR|https://www.bing.com/search?q=or+1%3D1+什麼意思
+# C1 回歸：新規則附近的正常輸入（不應被攔截）。
+U|/search?q=(select the correct answer from the list)
+U|/search?q=a || b
+U|/courses?q=x xor y
+# C2 回歸：XSS 規則放寬後的正常輸入（不應被攔截）；最後一行 TJ| 為已知取捨（會被攔截，由使用者決定）。
+J|{"content":"<p>Welcome to online learning</p>"}
+J|{"html":"<img src=\"onion.png\" alt=\"one\">"}
+U|/courses?mode=online&onlyActive=true
+U|/search?q=alert the students
+J|{"html":"<a href=\"https://example.com\">link</a>"}
+TJ|{"html":"<span title=\"online=yes\">x</span>"}
+# C3 回歸：子字串私網規則的已知誤判來源（數字與檔名含 10.／127.／1.10.）。
+U|/x?score=10.5
+U|/x?version=1.10.2
+U|/files/2010.jpg
+U|/courses?price=10.50&lang=zh-TW
+U|/courses/1127.html?x=1
+U|/x?next=https://lms.example.edu/courses
+# C9 回歸：token 層（布林求值、版本註解、# 註解）新增後的正常輸入（不應被攔截）。
+U|/search?q=chapter 1 or 2
+U|/search?q=union of sets
+U|/courses?q=color or red
+J|{"message":"請比較 2 > 1 的大小，或 3 = 3 也成立"}
+U|/x?a="1"; onboarding=done
+U|/search?q="hello" online=yes

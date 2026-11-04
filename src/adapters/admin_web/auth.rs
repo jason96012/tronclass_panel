@@ -40,6 +40,58 @@ pub(super) struct AdminLoginResponse {
     pub(super) must_change_password: bool,
 }
 
+/// LOGIN_SUCCESS_DEDUPE_V1：登入成功稽核去重的時間窗（秒）。
+const LOGIN_SUCCESS_DEDUPE_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// 最近一次寫入的登入成功紀錄（key = 帳號 + IP + 動作）。
+static RECENT_LOGIN_SUCCESS: once_cell::sync::Lazy<
+    std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// 回傳 true 代表這筆成功登入與視窗內的前一筆相同，不應再寫入稽核列。
+/// 只在成功路徑呼叫；不改變任何登入或 session 行為。
+fn login_success_is_duplicate(account_id: &str, ip: &str, action: &str) -> bool {
+    let key = format!("{account_id}\u{1f}{ip}\u{1f}{action}");
+    let now = std::time::Instant::now();
+    let mut recent = RECENT_LOGIN_SUCCESS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(previous) = recent.get(&key) {
+        if now.duration_since(*previous) < LOGIN_SUCCESS_DEDUPE_WINDOW {
+            return true;
+        }
+    }
+    recent.insert(key, now);
+    if recent.len() > 1024 {
+        recent.retain(|_, t| now.duration_since(*t) < LOGIN_SUCCESS_DEDUPE_WINDOW);
+    }
+    false
+}
+
+/// AUDIT_CHAIN_V2：管理員查詢活動紀錄雜湊鏈的驗證結果。
+pub(super) async fn admin_activity_chain_verify_handler(
+    State(state): State<AdminWebState>,
+    Query(query): Query<AdminActivityQuery>,
+) -> Response {
+    let Some(session) = state.authorize(&query.token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    match state.accounts_db.verify_activity_chain().await {
+        Ok(report) => (StatusCode::OK, Json(json!(report))).into_response(),
+        Err(e) => {
+            warn!(error = %e, "activity chain verification failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "internal server error" })),
+            )
+                .into_response()
+        }
+    }
+}
+
 pub(super) async fn admin_login_activity_handler(
     State(state): State<AdminWebState>,
     Query(query): Query<AdminActivityQuery>,
@@ -407,19 +459,25 @@ pub(super) async fn admin_login_handler(
         "Web 管理頁登入成功"
     };
     info!(account = %account_id, is_admin = is_admin, bootstrap = must_change_password, client = %client, "admin web login success");
-    crate::logs::record_audit(
-        "web",
-        &account_id,
-        login_action,
-        Some(&account_id),
-        None,
-        login_message,
-    );
+    // LOGIN_SUCCESS_DEDUPE_V1：同一帳號、同一 IP、同一種動作在極短時間內（2 秒）
+    // 連續成功，只記錄第一筆。session 與回應照常建立，只影響稽核列。
+    // 失敗紀錄不做去重：黑名單自動封鎖是靠失敗列計數，去重會削弱暴力破解防護。
+    let duplicate_success = login_success_is_duplicate(&account_id, &ip, login_action);
+    if !duplicate_success {
+        crate::logs::record_audit(
+            "web",
+            &account_id,
+            login_action,
+            Some(&account_id),
+            None,
+            login_message,
+        );
+    }
     // PERFORMANCE_LOGIN_RESPONSE_V1:
     // Fire-and-forget the persistent login event so the SQLite INSERT does
     // not delay the response. The session cookie is already set; the audit
     // row is best-effort and must not block the user.
-    {
+    if !duplicate_success {
         let state = state.clone();
         let actor = account_id.clone();
         let acct = account_id.clone();
@@ -861,4 +919,21 @@ pub(super) async fn admin_password_change_handler(
         account.is_admin,
         false,
     )
+}
+
+#[cfg(test)]
+mod login_success_dedupe_tests {
+    use super::login_success_is_duplicate;
+
+    #[test]
+    fn duplicate_success_within_window_is_suppressed_only_for_same_key() {
+        // 使用獨一無二的帳號名，避免和其他測試共用全域狀態時互相影響。
+        let acct = "dedupe-test-account-7f3a";
+        assert!(!login_success_is_duplicate(acct, "198.51.100.1", "login"));
+        assert!(login_success_is_duplicate(acct, "198.51.100.1", "login"));
+        // 不同 IP、不同動作、不同帳號都不去重。
+        assert!(!login_success_is_duplicate(acct, "198.51.100.2", "login"));
+        assert!(!login_success_is_duplicate(acct, "198.51.100.1", "login_bootstrap"));
+        assert!(!login_success_is_duplicate("dedupe-test-other-9c1d", "198.51.100.1", "login"));
+    }
 }

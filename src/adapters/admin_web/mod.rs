@@ -101,6 +101,8 @@ mod radar_input;
 mod seo;
 // WAF_FIREWALL_V1：Web 應用防火牆與全方位資訊安全防護引擎。
 mod waf;
+mod waf_detect;
+mod waf_sql_lex;
 // INDEXNOW_V1（fix105）：主動把公開首頁提交給 Bing（Bing 官方協定；Google 不參與）。
 mod indexnow;
 mod static_assets;
@@ -527,7 +529,7 @@ async fn reject_blacklisted_ip_middleware(
         // 存取權限，跟上面幾個豁免路徑是同一種考量。
         || path == "/admin/api/blacklist/status"
         || path == "/admin/logout"
-        // BLACKLIST_CONTACT_ADMIN_GAP_FIX_V1：這支中介層跑在 `reject_hosting_ip_
+        // BLACKLIST_CONTACT_ADMIN_GAP_FIX_V1：（WAF_ORDER_BLACKLIST_FIRST_V1 起本層已前移到機房與 WAF 之外，下列豁免理由仍適用；原註解：這支中介層跑在 `reject_hosting_ip_
         // middleware`／`reject_foreign_admin_ip_middleware` 之後（見本檔案組裝
         // router 的 `.layer()` 疊加順序），三層共用同一個 `/admin/api/*` 範圍。
         // 那兩層都已經豁免「聯絡管理員」與輪詢這兩支端點（道理見它們各自的
@@ -1410,6 +1412,33 @@ pub(super) async fn notify_waf_auto_block(
     }
 }
 
+/// WAF 指紋封鎖通知：只送 `admin_user_id`（Discord 按鈕「放行此組合」）。
+/// 去重沿用 `waf_notice_should_send`：同一組合 24 小時內只通知一次，避免共用指紋的大量用戶灌爆通知。
+pub(super) async fn notify_fingerprint_block(
+    state: &AdminWebState,
+    event: crate::adapters::events::FingerprintBlockEvent,
+) {
+    if !waf_notice_should_send(&event.pair) {
+        return;
+    }
+    let Some(messenger) = state.messenger.clone() else {
+        warn!("WAF 指紋封鎖通知略過：沒有 Discord messenger");
+        return;
+    };
+    let admin = messenger.admin_user_id().trim().to_string();
+    if admin.is_empty() {
+        warn!("WAF 指紋封鎖通知略過：沒有 admin Discord user id");
+        return;
+    }
+    let ip_group = event.ip_group.clone();
+    if let Err(error) = messenger
+        .push(&admin, &OutboundMessage::FingerprintBlock(event))
+        .await
+    {
+        warn!(to = %admin, ip_group = %ip_group, error = %error, "WAF 指紋封鎖 Discord 通知推送失敗");
+    }
+}
+
 /// ADMIN_GEO_RESTRICT_V1：通知管理員「有國外 IP 申請暫時放行」——與
 /// `notify_admins_security_alert` 同一種雙渠道寫法（Discord 按鈕＋Web Push），
 /// 只有送達對象、文案、偏好鍵（`geo_access_request`）、落地頁不同。只在
@@ -2077,6 +2106,8 @@ async fn check_unusual_login_location(
 
 #[derive(Clone)]
 pub struct AdminWebState {
+    // WAF_ENGINE_DI_V1：每個 AdminWebState 持有自己的 WAF 引擎（限速／異常／指紋／遙測）。
+    waf: Arc<waf::WafEngine>,
     // ACCOUNT_HOT_ADD_V1：改用可執行期追加的共享登錄簿（與 LINE／Discord 同一份）。
     accounts: AccountRegistry,
     // ACCOUNT_HOT_ADD_V1：新增帳號後直接熱啟動監控循環；None 代表本次啟動沒有
@@ -2341,6 +2372,7 @@ impl AdminWebState {
         let _ = THROTTLE_DB.set(accounts_db.clone());
 
         let state = Self {
+            waf: Arc::new(waf::WafEngine::with_rules(Default::default(), waf::load_rules_from_env())),
             accounts,
             monitor_spawner: None,
             rate_limiter: RateLimiter::with_db(accounts_db.clone()),
@@ -3875,6 +3907,11 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/api/activity/login",
             get(auth::admin_login_activity_handler),
         )
+        // AUDIT_CHAIN_V2：管理員驗證活動紀錄雜湊鏈（只回報結果，不回傳任何密鑰）。
+        .route(
+            "/admin/api/activity/verify",
+            get(auth::admin_activity_chain_verify_handler),
+        )
         .route("/admin/api/push/config", get(web_push::config_handler))
         .route("/admin/api/push/overview", get(web_push::overview_handler))
         .route(
@@ -4067,18 +4104,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             axum::routing::get(pages::admin_credits_page_handler),
         )
         .layer(axum::middleware::from_fn(admin_security_headers_middleware))
-        // ADMIN_GEO_RESTRICT_V1：刻意放在 IP 黑名單檢查「之內」（layer 疊加順序下，
-        // 後加的 layer 較外層、較早執行）——已被列入黑名單的 IP 一律先看到黑名單的
-        // 說明頁，不論是不是國外，黑名單的訊息更明確、也是管理員手動／既有規則判定的
-        // 結果，優先序理當高於這個新功能。
-        .layer(axum::middleware::from_fn_with_state(
-            geo_guard_state,
-            reject_foreign_admin_ip_middleware,
-        ))
-        .layer(axum::middleware::from_fn_with_state(
-            blacklist_guard_state,
-            reject_blacklisted_ip_middleware,
-        ))
         .layer(axum::middleware::from_fn_with_state(
             password_guard_state,
             require_dashboard_password_change_middleware,
@@ -4103,6 +4128,19 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .layer(axum::middleware::from_fn_with_state(
             hosting_guard_state,
             reject_hosting_ip_middleware,
+        ))
+        // WAF_ORDER_BLACKLIST_FIRST_V1：請求檢查順序為「黑名單 → 國外 → 機房 → WAF」。
+        // axum 的 `.layer()` 後加的在外層、先執行，所以這兩層加在機房層之後、清洗轉送
+        // 標頭層之前：黑名單最先執行，確保 IP 判斷用的是已清洗的標頭。已封鎖的 IP 不再
+        // 進入 WAF（不再逐筆印攔截 log、不再做特徵比對）。
+        // 國外層只擋 `/admin/*` 管理路徑（見 reject_foreign_admin_ip_middleware）。
+        .layer(axum::middleware::from_fn_with_state(
+            geo_guard_state,
+            reject_foreign_admin_ip_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            blacklist_guard_state,
+            reject_blacklisted_ip_middleware,
         ))
         // HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): outermost admin layer, so every
         // middleware and handler below sees forwarded headers only when they

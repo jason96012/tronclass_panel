@@ -137,6 +137,8 @@ pub enum OutboundMessage {
     /// ADMIN_GEO_RESTRICT_V1：被「僅限台灣 IP」擋下的訪客按「聯絡管理員」。
     /// 只送給管理員（Discord 按鈕＋Web Push），不會送到一般使用者。
     GeoAccessRequest(GeoAccessRequestEvent),
+    /// WAF 指紋封鎖通知（只送管理員）；Discord 按鈕為「放行」。
+    FingerprintBlock(FingerprintBlockEvent),
     SystemStarted(SystemStartedEvent),
     RollcallDetected(RollcallEvent),
     NumberCodeRequested(NumberCodeRequest),
@@ -555,6 +557,21 @@ pub struct GeoAccessRequestEvent {
     pub location: String,
     /// 訪客原本想前往的路徑，純顯示用，一樣已事先截斷。
     pub path: String,
+    pub timestamp: String,
+}
+
+/// WAF 指紋封鎖：`pair` 是 `waf_fingerprint_blocks.pair`（指紋 hash|IP 群組），
+/// 放行按鈕的 custom_id 帶著它；放行只影響這一組，不影響同指紋的其他 IP。
+#[derive(Debug, Clone, PartialEq)]
+pub struct FingerprintBlockEvent {
+    pub pair: String,
+    pub ip_group: String,
+    /// 指紋的前段文字（UA 等），已事先截斷，純顯示用。
+    pub fingerprint_preview: String,
+    /// 第幾次封鎖（指數時間）。
+    pub strikes: i64,
+    /// 本次封鎖的解除時間（已格式化為本地時間字串）。
+    pub blocked_until: String,
     pub timestamp: String,
 }
 
