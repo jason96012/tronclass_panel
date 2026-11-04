@@ -287,8 +287,9 @@ html body .animated-login-card-inner .animated-login-field > input{
   #view-rollcall #attSummary{
     grid-template-columns:repeat(2,minmax(0,1fr))!important;
   }
-  /* 手機兩欄時，「最後班上總人數」橫跨兩欄，「1119 / 1799 人」才放得下 */
-  #view-rollcall #attSummary .stat:nth-child(5){grid-column:1 / -1}
+  /* ATT_MOBILE_HIDE_V1：手機隱藏「最後班上總人數」與「未點到名」兩張卡（電腦／平板保留）。
+     剩下 4 張卡排成 2×2。資料與未點到名名單（下方區塊）不受影響。 */
+  #view-rollcall #attSummary .stat.att-mobile-hide{display:none!important}
   #view-rollcall #attSummary .stat-value{font-size:20px!important}
 }
 

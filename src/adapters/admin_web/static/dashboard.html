@@ -1854,7 +1854,7 @@ var ACCOUNTS_COURSE_MAX_CHARS=10;function courseCell(text){var full=String(text=
    （後端 rollcall_events 資料表，每次送出後累積，重啟不消失）。 */
 var attStats=null,attRecords=[],attDays=90,attLoading=false,attError='',attLoadedAt=0;
 function attNumber(v){return Number.isFinite(Number(v))?Number(v):0}
-function attCard(label,value,hint){return '<div class="stat"><div class="stat-label">'+esc(label)+'</div><div class="stat-value">'+esc(value)+'</div><div class="stat-hint">'+esc(hint||'')+'</div></div>'}
+function attCard(label,value,hint,cls){return '<div class="stat'+(cls?' '+esc(cls):'')+'"><div class="stat-label">'+esc(label)+'</div><div class="stat-value">'+esc(value)+'</div><div class="stat-hint">'+esc(hint||'')+'</div></div>'}
 function attRateClass(rate){return rate>=90?'good':(rate>=70?'warn':'bad')}
 function attRangeText(days){return days>0?('近 '+days+' 天'):'全部（保留 400 天）'}
 function fillAccountFilter(){
@@ -1911,8 +1911,8 @@ function renderAttendance(){
       attCard('成功送出',attNumber(s.success),'失敗 '+attNumber(s.failed)+' 次')+
       attCard('累積成功率',attNumber(s.success_rate).toFixed(1)+'%','成功 ÷ 總次數')+
       attCard('系統自動送出',attNumber(s.auto_submitted)+' 次','手動 '+attNumber(s.manual_submitted)+' 次（班上達 15% 免動手）')+
-      attCard('最後班上總人數',classCardVal,classCardHint)+
-      attCard('未點到名',attNumber(s.failed)===0?'0 人':(attNumber(s.failed)+' 次'),attNumber(s.failed)===0?'全員到齊 (無缺席)':'點擊下方可查看名單');
+      attCard('最後班上總人數',classCardVal,classCardHint,'att-mobile-hide')+
+      attCard('未點到名',attNumber(s.failed)===0?'0 人':(attNumber(s.failed)+' 次'),attNumber(s.failed)===0?'全員到齊 (無缺席)':'點擊下方可查看名單','att-mobile-hide');
   }
   if(!courses.length){
     box.innerHTML='<div class="empty">這段期間還沒有點名紀錄。統計會在每次送出後自動累積（含成功與未成功）。</div>';
