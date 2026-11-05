@@ -157,3 +157,6 @@ U|/courses?q=color or red
 J|{"message":"請比較 2 > 1 的大小，或 3 = 3 也成立"}
 U|/x?a="1"; onboarding=done
 U|/search?q="hello" online=yes
+# WAF_DESER_V1（E6）：一般 HTML 的 DOCTYPE 與範本區塊語法不得誤判
+J|{"content":"<!DOCTYPE html><html lang=\"zh-Hant\"><head><title>第三週作業</title></head><body><p>請提交作業</p></body></html>"}
+J|{"template":"{% for item in items %}<li>{{ item.name }}</li>{% endfor %}"}

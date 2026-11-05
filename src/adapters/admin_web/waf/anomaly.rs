@@ -45,6 +45,21 @@ pub(super) fn waf_anomaly_whitelisted(path: &str) -> bool {
     WAF_ANOMALY_WHITELIST_PATHS.iter().any(|&p| path == p || path.starts_with(&format!("{}/", p)))
 }
 
+/// R-05：CSP 違規回報端點（瀏覽器只會 POST 到這裡）。這個端點的 4xx（路由缺失時的 404、GET 的 405）
+/// 不是攻擊信號，不計入異常次數，也不算指紋信號。端點本身已有限流（每群組每分鐘 20 筆、
+/// 全站主控台 300 筆、寫入 DB 10 筆，見 `health.rs` `csp_report_handler`）。
+pub(super) const WAF_ANOMALY_REPORT_PATHS: &[&str] = &["/csp-report"];
+
+/// 路徑是否為 CSP 回報端點（完整比對，子路徑不豁免）。
+pub(super) fn waf_anomaly_report_path(path: &str) -> bool {
+    WAF_ANOMALY_REPORT_PATHS.contains(&path)
+}
+
+/// 異常計數與指紋信號共用的排除判斷：既有白名單路徑，或 CSP 回報端點（R-05）。
+pub(super) fn waf_anomaly_excluded_path(path: &str) -> bool {
+    waf_anomaly_whitelisted(path) || waf_anomaly_report_path(path)
+}
+
 /// 異常行為偵測：追蹤每個 IP 的 4xx 觸發時間點（滑動窗口）。
 #[derive(Clone)]
 pub struct WafAnomalyTracker {
@@ -160,5 +175,26 @@ mod tests_anomaly_group_key {
         assert!(!tracker.record_and_check(&key("2001:db8:9:9::1")).await);
         assert!(!tracker.record_and_check(&key("203.0.113.7")).await);
         assert!(!tracker.record_and_check(&key("203.0.113.8")).await);
+    }
+}
+
+#[cfg(test)]
+mod tests_report_path {
+    //! R-05：CSP 回報端點的 4xx 不計入異常，也不算指紋信號。尚未編譯與執行。
+    use super::*;
+
+    #[test]
+    fn csp_report_endpoint_is_excluded_by_exact_path_only() {
+        assert!(waf_anomaly_report_path("/csp-report"));
+        assert!(waf_anomaly_excluded_path("/csp-report"));
+        assert!(!waf_anomaly_excluded_path("/csp-report/extra"), "子路徑不豁免");
+        assert!(!waf_anomaly_excluded_path("/csp-reports"), "相近名稱不豁免");
+        assert!(!waf_anomaly_excluded_path("/courses"), "一般路徑不豁免");
+    }
+
+    #[test]
+    fn existing_whitelist_still_excluded() {
+        assert!(waf_anomaly_excluded_path("/admin/api/blacklist/status"));
+        assert!(waf_anomaly_excluded_path("/admin/api/blacklist/status/x"));
     }
 }

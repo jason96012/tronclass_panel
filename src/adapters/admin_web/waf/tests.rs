@@ -76,11 +76,29 @@ mod ssti_proto_limit_tests {
     fn body_limit_tiers_by_path() {
         assert_eq!(waf_body_scan_limit("/admin/api/action"), 4 * MB);
         assert_eq!(waf_body_scan_limit("/admin/api/login"), 4 * MB);
-        assert_eq!(waf_body_scan_limit("/admin/api/ai/opencode/chat"), 32 * MB);
+        // R-22（2026-11-05）：AI 聊天 20MB；其餘 AI 端點、TC 代理的 JSON／表單／文字 4MB。
+        assert_eq!(waf_body_scan_limit("/admin/api/ai/opencode/chat"), 20 * MB);
+        assert_eq!(waf_body_scan_limit("/admin/api/ai/opencode/config"), 4 * MB);
+        assert_eq!(waf_body_scan_limit("/admin/api/ai/summarize"), 4 * MB);
         assert_eq!(waf_body_scan_limit("/admin/api/files/upload"), 32 * MB);
         assert_eq!(waf_body_scan_limit("/admin/api/homework/submit"), 32 * MB);
-        assert_eq!(waf_body_scan_limit("/tc/x"), 32 * MB);
-        assert_eq!(waf_body_scan_limit("/api/v1/items"), 32 * MB);
+        assert_eq!(waf_body_scan_limit("/tc/x"), 4 * MB);
+        assert_eq!(waf_body_scan_limit("/api/v1/items"), 4 * MB);
+        assert_eq!(waf_body_scan_limit("/course/1/x"), 4 * MB);
+        assert_eq!(waf_body_scan_limit("/static/app.js"), 4 * MB);
+    }
+
+    #[test]
+    fn iclass_body_scan_exemption_is_prefix_scoped() {
+        // 2026-11-05（A）：只有 iClass 代理前綴略過本體特徵比對；其餘路徑照常掃描。
+        assert!(waf_body_scan_exempt("/tc/course/1/x"));
+        assert!(waf_body_scan_exempt("/api/courses/1"));
+        assert!(waf_body_scan_exempt("/course/1/learning-activity"));
+        assert!(waf_body_scan_exempt("/bulletin-list/"));
+        assert!(!waf_body_scan_exempt("/admin/api/ai/opencode/chat"));
+        assert!(!waf_body_scan_exempt("/admin/api/login"));
+        assert!(!waf_body_scan_exempt("/tcx"));
+        assert!(!waf_body_scan_exempt("/apix/data"));
     }
 
     #[test]

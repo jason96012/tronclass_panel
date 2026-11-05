@@ -39,8 +39,11 @@ const TC_ACCOUNT_COOKIE_MAX_AGE_SECS: u64 = 8 * 60 * 60;
 /// 導航不帶任何 cookie，但 /tc/ 頁面的子資源請求（/static、/api）正常帶。
 /// 導航用 URL 內的一次性 token 鑑權；子資源在票券效期（120 秒）內用它。
 const TC_TICKET_COOKIE: &str = "tc_proxy_ticket";
-/// 轉發 body 上限（未來供作業上傳等場景）。
+/// 轉發 body 上限，只給 multipart（作業附件、教材等上傳）。
 pub(super) const TC_PROXY_BODY_LIMIT: usize = 32 * 1024 * 1024;
+/// R-22（2026-11-05 實作）：非 multipart 的本體（JSON、表單、文字、其他二進位）上限 4MB，
+/// 與 WAF 一般路徑上限一致。TC 萬用路由原本一律 32MB，現在只有 multipart 維持 32MB。
+pub(super) const TC_PROXY_NON_MULTIPART_BODY_LIMIT: usize = 4 * 1024 * 1024;
 /// 請求轉發到上游的 header 白名單（原始 Cookie 一律不轉發）。
 const FORWARD_REQ_HEADERS: &[&str] = &[
     "content-type",
@@ -89,6 +92,9 @@ static TC_HTTP: once_cell::sync::Lazy<Option<reqwest::Client>> =
             .default_headers(default_headers)
             .timeout(std::time::Duration::from_secs(60))
             .redirect(reqwest::redirect::Policy::none())
+            // SSRF_DNS_PIN_V1（B1）：代理 client 也掛上防護解析器，與 build_http_client 一致。
+            // 解析結果若落在 loopback／link-local／未指定等位址，連線會被拒絕（fail-closed）。
+            .dns_resolver(std::sync::Arc::new(crate::api::GuardedDnsResolver))
             .use_rustls_tls()
             .build()
             .ok()
@@ -269,9 +275,14 @@ pub(super) async fn tc_proxy_handler(
     let upstream_raw = strip_tc_prefix(&pq);
     // TC_NAV_TOKEN_V1（fix34）：提取並剝除 tc_token——鑑權用，不轉發上游。
     let (upstream_pq, tc_token) = extract_tc_token(&upstream_raw);
-    let body_bytes = match axum::body::to_bytes(body, TC_PROXY_BODY_LIMIT).await {
+    let limit = tc_body_limit_for(&parts.headers);
+    let body_bytes = match axum::body::to_bytes(body, limit).await {
         Ok(bytes) => bytes,
-        Err(_) => return tc_error_page(StatusCode::PAYLOAD_TOO_LARGE, "請求內容過大或讀取失敗"),
+        Err(_) => {
+            // 量測用：若正式站有合法的大 JSON 被擋，這裡的 log 會留下路徑與上限。
+            warn!(path = %upstream_pq, limit, "iClass 代理請求本體超過上限或讀取失敗，已拒絕（R-22）");
+            return tc_error_page(StatusCode::PAYLOAD_TOO_LARGE, "請求內容過大或讀取失敗");
+        }
     };
     tc_proxy_core(
         &state,
@@ -282,6 +293,21 @@ pub(super) async fn tc_proxy_handler(
         tc_token.as_deref(),
     )
     .await
+}
+
+/// R-22：依 Content-Type 決定 TC 代理的本體上限。multipart 為 32MB，其餘為 4MB。
+/// 缺少 Content-Type 視為非 multipart。
+pub(super) fn tc_body_limit_for(headers: &axum::http::HeaderMap) -> usize {
+    let is_multipart = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| ct.trim_start().to_ascii_lowercase().starts_with("multipart/"))
+        .unwrap_or(false);
+    if is_multipart {
+        TC_PROXY_BODY_LIMIT
+    } else {
+        TC_PROXY_NON_MULTIPART_BODY_LIMIT
+    }
 }
 
 /// `/tc/xxx` 註冊在同一 handler：剝掉 `/tc` 前綴讓上游收到原始路徑。
@@ -1132,3 +1158,44 @@ fn tc_error_page(status: StatusCode, message: &str) -> Response {
         .into_response()
 }
 
+#[cfg(test)]
+mod tc_body_limit_tests {
+    //! R-22 測試（2026-11-05）。尚未編譯與執行。
+    use super::*;
+    use axum::http::{header, HeaderMap, HeaderValue};
+
+    const MB: usize = 1024 * 1024;
+
+    fn with_ct(ct: Option<&str>) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        if let Some(v) = ct {
+            h.insert(header::CONTENT_TYPE, HeaderValue::from_str(v).expect("ct"));
+        }
+        h
+    }
+
+    #[test]
+    fn multipart_keeps_32mb_in_any_case() {
+        assert_eq!(tc_body_limit_for(&with_ct(Some("multipart/form-data; boundary=x"))), 32 * MB);
+        assert_eq!(tc_body_limit_for(&with_ct(Some("Multipart/Form-Data; boundary=x"))), 32 * MB);
+    }
+
+    #[test]
+    fn json_form_text_and_binary_capped_at_4mb() {
+        assert_eq!(tc_body_limit_for(&with_ct(Some("application/json"))), 4 * MB);
+        assert_eq!(tc_body_limit_for(&with_ct(Some("application/x-www-form-urlencoded"))), 4 * MB);
+        assert_eq!(tc_body_limit_for(&with_ct(Some("text/plain"))), 4 * MB);
+        assert_eq!(tc_body_limit_for(&with_ct(Some("application/octet-stream"))), 4 * MB);
+    }
+
+    #[test]
+    fn missing_content_type_is_capped_at_4mb() {
+        assert_eq!(tc_body_limit_for(&with_ct(None)), 4 * MB);
+    }
+
+    #[test]
+    fn multipart_lookalike_is_not_multipart() {
+        // 只看媒體型別前綴：`multipart-x` 之類不得借用 32MB。
+        assert_eq!(tc_body_limit_for(&with_ct(Some("multipartx/foo"))), 4 * MB);
+    }
+}

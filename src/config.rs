@@ -91,7 +91,60 @@ pub struct AppConfig {
     /// 未設定時會退回環境變數 `TRONCLASS_AUDIT_HMAC_KEY`；兩者皆未設定時
     /// 使用預設值並記錄警告，生產環境務必設定其中一個。
     #[serde(default = "default_audit_hmac_key")]
-    pub audit_hmac_key: String,}
+    pub audit_hmac_key: String,
+
+    /// WAF 本體掃描與讀取參數（R-20，設定區段 `[waf]`）。未設定時使用預設值。
+    #[serde(default)]
+    pub waf: WafRuntimeConfig,
+}
+
+/// WAF 本體掃描與讀取參數（R-20）。
+///
+/// 先前寫死在程式中（預算 128 MB、等待 10 秒、讀取 30 秒）。預設值與先前完全相同；
+/// 超出範圍的值會夾到範圍內並記錄警告（不會因設定錯誤而關閉掃描或讓預算歸零）。
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WafRuntimeConfig {
+    /// 本體掃描記憶體預算（MB）：同時掃描中的本體大小總和上限。範圍 1..=4096。
+    pub body_scan_budget_mb: usize,
+    /// 等待掃描預算的秒數，逾時回 503（失敗即關閉）。範圍 1..=120。
+    pub body_scan_wait_secs: u64,
+    /// 讀取本體的逾時秒數，逾時回 408。範圍 5..=300。
+    pub body_read_timeout_secs: u64,
+}
+
+impl Default for WafRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            body_scan_budget_mb: 128,
+            body_scan_wait_secs: 10,
+            body_read_timeout_secs: 30,
+        }
+    }
+}
+
+impl WafRuntimeConfig {
+    /// 夾到允許範圍；被修正的欄位記錄警告。
+    pub fn sanitized(&self) -> Self {
+        let out = Self {
+            body_scan_budget_mb: self.body_scan_budget_mb.clamp(1, 4096),
+            body_scan_wait_secs: self.body_scan_wait_secs.clamp(1, 120),
+            body_read_timeout_secs: self.body_read_timeout_secs.clamp(5, 300),
+        };
+        if out.body_scan_budget_mb != self.body_scan_budget_mb
+            || out.body_scan_wait_secs != self.body_scan_wait_secs
+            || out.body_read_timeout_secs != self.body_read_timeout_secs
+        {
+            tracing::warn!(
+                budget_mb = out.body_scan_budget_mb,
+                wait_secs = out.body_scan_wait_secs,
+                read_timeout_secs = out.body_read_timeout_secs,
+                "[waf] 設定超出允許範圍，已夾到範圍內"
+            );
+        }
+        out
+    }
+}
 
 // ─── 子設定結構 ───────────────────────────────────────────────────────────────
 

@@ -14,8 +14,8 @@ use tokio::sync::Mutex;
 pub struct WafWhitelist {
     /// 明確允許的 IP 字串（精確比對）
     pub(super) ips: Arc<Mutex<Vec<String>>>,
-    /// CIDR 區塊（字串形式，如 "10.0.0.0/8"）
-    pub(super) cidrs: Arc<Mutex<Vec<String>>>,
+    /// CIDR 區塊。A6：加入時就解析成 (網路位址, 前綴長度)，每個請求只做位元比對，不再解析字串。
+    pub(super) cidrs: Arc<Mutex<Vec<(IpAddr, u8)>>>,
     /// 路徑前綴豁免（如 "/api/health", "/metrics"）
     pub(super) paths: Arc<Mutex<Vec<String>>>,
 }
@@ -23,6 +23,17 @@ pub struct WafWhitelist {
 impl WafWhitelist {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 加入一個 CIDR（如 "10.0.0.0/8"）。格式錯誤或前綴超出範圍回傳 false，且不加入。
+    pub async fn add_cidr(&self, cidr: &str) -> bool {
+        match parse_cidr(cidr) {
+            Some(net) => {
+                self.cidrs.lock().await.push(net);
+                true
+            }
+            None => false,
+        }
     }
 
     pub async fn is_ip_whitelisted(&self, ip: &str) -> bool {
@@ -38,14 +49,9 @@ impl WafWhitelist {
             Ok(a) => a,
             Err(_) => return false,
         };
-        for cidr in cidrs.iter() {
-            if let Some(net) = parse_cidr(cidr) {
-                if ip_addr_matches_cidr(ip_addr, net) {
-                    return true;
-                }
-            }
-        }
-        false
+        cidrs
+            .iter()
+            .any(|net| ip_addr_matches_cidr(ip_addr, *net))
     }
 
     /// WAF_WHITELIST_PATH_CANON_V1：路徑豁免必須同時滿足
@@ -241,6 +247,11 @@ pub(super) fn parse_cidr(cidr: &str) -> Option<(IpAddr, u8)> {
     }
     let ip = IpAddr::from_str(parts[0]).ok()?;
     let prefix: u8 = parts[1].parse().ok()?;
+    // 前綴超出位址長度會讓位元遮罩計算下溢（panic／錯誤結果），直接拒絕。
+    let max = if ip.is_ipv4() { 32 } else { 128 };
+    if prefix > max {
+        return None;
+    }
     Some((ip, prefix))
 }
 
@@ -260,5 +271,34 @@ pub(super) fn ip_addr_matches_cidr(ip: IpAddr, (network, prefix): (IpAddr, u8)) 
             (a_bits & mask) == (n_bits & mask)
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod cidr_tests {
+    use super::*;
+
+    /// A6 + 範圍檢查：前綴超出位址長度的 CIDR 必須被拒絕（否則遮罩計算會下溢）。
+    #[test]
+    fn parse_cidr_rejects_out_of_range_prefix() {
+        assert!(parse_cidr("10.0.0.0/8").is_some());
+        assert!(parse_cidr("10.0.0.0/32").is_some());
+        assert!(parse_cidr("10.0.0.0/33").is_none());
+        assert!(parse_cidr("2001:db8::/128").is_some());
+        assert!(parse_cidr("2001:db8::/129").is_none());
+        assert!(parse_cidr("10.0.0.0/999").is_none());
+        assert!(parse_cidr("10.0.0.0").is_none());
+    }
+
+    /// A6：加入時解析一次，之後的比對使用已解析的結果。
+    #[tokio::test]
+    async fn added_cidr_matches_and_bad_cidr_is_refused() {
+        let w = WafWhitelist::new();
+        assert!(w.add_cidr("10.0.0.0/8").await);
+        assert!(!w.add_cidr("10.0.0.0/40").await, "超出範圍的 CIDR 不得加入");
+        assert!(!w.add_cidr("not-a-cidr").await);
+        assert!(w.is_ip_whitelisted("10.1.2.3").await);
+        assert!(!w.is_ip_whitelisted("11.0.0.1").await);
+        assert_eq!(w.cidrs.lock().await.len(), 1, "只有合法的 CIDR 被保存");
     }
 }

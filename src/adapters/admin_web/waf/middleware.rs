@@ -129,6 +129,21 @@ pub async fn waf_firewall_middleware(
     let fp_row = match state.accounts_db.get_fingerprint_block(&fp_pair).await {
         Ok(row) => row,
         Err(error) => {
+            // R-04（2026-11-04 決定 a）：讀取失敗時，只對「若有紀錄本來會被指紋封鎖」的請求回 503（fail-closed）。
+            // 判斷只用記憶體狀態（可疑與近期信號），不依賴資料庫；其他請求維持原本的略過行為。
+            let verified_crawler = crate::hosting_ip::is_verified_google_crawler(&ip.to_string());
+            let recent_signal =
+                fingerprint_suspicious && waf.fingerprint.has_recent_signal(&fp_pair).await;
+            if fingerprint_db_error_fails_closed(fingerprint_suspicious, recent_signal, verified_crawler) {
+                warn!(ip = %ip, error = %error, "WAF 指紋封鎖紀錄讀取失敗，可疑請求回 503（R-04）");
+                return waf_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    json!({
+                        "error": "waf_unavailable",
+                        "message": "WAF: 暫時無法確認請求安全狀態，請稍後再試"
+                    }),
+                );
+            }
             // 與黑名單檢查一致：讀取失敗時略過本次封鎖查詢（會記錄警告）。
             warn!(ip = %ip, error = %error, "WAF 指紋封鎖紀錄讀取失敗，本次略過指紋封鎖檢查");
             None
@@ -338,7 +353,7 @@ pub async fn waf_firewall_middleware(
             );
         };
         let (parts, body) = request.into_parts();
-        let bytes = match tokio::time::timeout(WAF_BODY_READ_TIMEOUT, axum::body::to_bytes(body, limit)).await {
+        let bytes = match tokio::time::timeout(waf.body_read_timeout, axum::body::to_bytes(body, limit)).await {
             Ok(Ok(bytes)) => bytes,
             Ok(Err(_)) => return waf_payload_too_large(),
             Err(_) => {
@@ -356,7 +371,13 @@ pub async fn waf_firewall_middleware(
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_ascii_lowercase().starts_with("application/x-www-form-urlencoded"))
             .unwrap_or(false);
-        if let Some(threat) = inspect_waf_body(&String::from_utf8_lossy(&bytes), is_form) {
+        // 2026-11-05（使用者選 A）：iClass 代理路徑略過特徵比對；讀取、預算、大小上限照舊。
+        let body_threat = if waf_body_scan_exempt(&raw_path) {
+            None
+        } else {
+            inspect_waf_body(&String::from_utf8_lossy(&bytes), is_form)
+        };
+        if let Some(threat) = body_threat {
             // R-02：本體威脅命中也是攻擊信號。
             waf.fingerprint.mark_signal(&fp_pair).await;
             threat.record_telemetry(&waf.telemetry);
@@ -385,19 +406,22 @@ pub async fn waf_firewall_middleware(
     // - 403 (FORBIDDEN) 是我們自己的中介層（地理封鎖、機房 IP 封鎖、黑名單、認證失敗）合法回傳的存取控制回應，
     //   不應視為異常探測行為。若計入會導致正常被封鎖的用戶重複觸發異常偵測而被二次封鎖。
     // - 真正的掃描器異常行為主要表現為：404 (路徑探測)、400 (惡意請求)、429 (頻率超限) 等。
-    // - 已知搜尋引擎爬蟲豁免，避免 Googlebot/Bingbot 被誤封導致「未建立索引」。
+    // - Google 爬蟲豁免（2026-11-05 決定 b）：需 UA 為已知爬蟲且 IP 已驗證為 Google 官方清單內，
+    //   才不計入異常。UA 可偽造，只看 UA 會讓攻擊者避開異常偵測。
     // - WAF_ANOMALY_WHITELIST_V1：聯絡管理員端點預期回 403/429，不應計入異常行為；
     //   與其他中介層的豁免清單保持一致。
     let status = response.status();
-    let is_crawler = is_known_crawler(&user_agent);
+    let is_crawler = is_known_crawler(&user_agent)
+        && crate::hosting_ip::is_verified_google_crawler(&ip.to_string());
     // WAF_ANOMALY_EXCLUDE_403_V1：403 是合法存取控制回應，不計入異常偵測
     let is_forbidden = status == StatusCode::FORBIDDEN;
     // WAF_ANOMALY_EXCLUDE_429_V1（R-06）：429 是限流回應，不計入異常偵測。
     // 限流本身若再計入，會形成「限流 → 異常 → 封鎖」的連鎖。
     let is_rate_limited = status == StatusCode::TOO_MANY_REQUESTS;
-    // R-02：探測類 4xx（404、400 等）記到組合上。白名單路徑（聯絡管理員等）不算。
+    // R-02：探測類 4xx（404、400 等）記到組合上。白名單路徑（聯絡管理員等）與 CSP 回報端點（R-05）不算。
     // 放在異常計數條件之外：不因 UA 是爬蟲而豁免（UA 可偽造，豁免會讓攻擊者避開信號）。
-    if is_fingerprint_signal_status(status) && !waf_anomaly_whitelisted(&raw_path) {
+    let excluded_path = waf_anomaly_excluded_path(&raw_path);
+    if is_fingerprint_signal_status(status) && !excluded_path {
         waf.fingerprint.mark_signal(&fp_pair).await;
     }
     if status.is_client_error()
@@ -405,7 +429,7 @@ pub async fn waf_firewall_middleware(
         && !is_rate_limited
         && !is_local_or_trusted_ip(&ip)
         && !is_crawler
-        && !waf_anomaly_whitelisted(&raw_path)
+        && !excluded_path
     {
         // WAF_ANOMALY_GROUP_KEY_V1（R-01）：異常計數與封鎖使用同一把尺（IPv6 收斂為 /64）。
         // 若以完整位址計數，攻擊者可在同一 /64 內輪換位址，每個位址都低於門檻。
@@ -520,4 +544,28 @@ pub(super) fn waf_error_response(status: StatusCode, body: serde_json::Value) ->
         Json(body),
     )
         .into_response()
+}
+
+/// R-04：指紋封鎖紀錄讀取失敗時，這個請求是否應回 503（fail-closed）。
+/// 條件與「有紀錄時會被指紋封鎖」相同：指紋可疑、有近期信號、且不是已驗證的 Google 爬蟲。
+pub(super) fn fingerprint_db_error_fails_closed(
+    suspicious: bool,
+    recent_signal: bool,
+    verified_crawler: bool,
+) -> bool {
+    suspicious && recent_signal && !verified_crawler
+}
+
+#[cfg(test)]
+mod fingerprint_fail_closed_tests {
+    use super::fingerprint_db_error_fails_closed as f;
+
+    /// R-04：只有「會被指紋封鎖」的請求在 DB 失敗時回 503。
+    #[test]
+    fn only_would_be_blocked_requests_fail_closed() {
+        assert!(f(true, true, false));
+        assert!(!f(false, true, false), "未達可疑門檻不回 503");
+        assert!(!f(true, false, false), "沒有近期信號不回 503");
+        assert!(!f(true, true, true), "已驗證的 Google 爬蟲不回 503");
+    }
 }

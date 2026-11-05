@@ -181,8 +181,22 @@ fn is_comment_start(next: Option<&char>) -> bool {
     next.map_or(true, |c| c.is_whitespace())
 }
 
+/// R-19：token 層的前置條件（必要條件，不是判斷式）。
+///
+/// `union_select` 需要 `Word("union")`；`tautology` 需要 `Word("or"|"and"|"xor")` 或 `Op("||")`。
+/// `Word` 是輸入中的原始子字串（不做小寫化，比對區分大小寫），`xor` 內含 `or`，
+/// 因此輸入若不含 `union`、`or`、`and`、`||` 任一子字串，任何 token 序列都不可能命中，
+/// 可以略過分詞（省下 `Vec<char>` 與 token 陣列的配置）。這個函式只會回傳 false 的情況
+/// 跳過分詞，不改變任何命中結果；`tests::precondition_is_superset_of_lexer_hits` 驗證這一點。
+pub(crate) fn may_match_token_rules(src: &str) -> bool {
+    src.contains("union") || src.contains("or") || src.contains("and") || src.contains("||")
+}
+
 /// token 層的 SQLi 判斷。回傳規則名稱；未命中回傳 None。
 pub(crate) fn token_sqli_label(src: &str) -> Option<&'static str> {
+    if !may_match_token_rules(src) {
+        return None;
+    }
     let toks = tokenize(src);
     if union_select(&toks) {
         return Some("UNION SELECT 注入（語法分析）");
@@ -331,6 +345,79 @@ fn compare(a: &Val, b: &Val, op: &str) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::token_sqli_label as t;
+    use super::{may_match_token_rules, tokenize};
+
+    /// R-19：前置條件必須是詞法層命中的超集合（前置條件為假時，詞法層一定不命中）。
+    /// 以固定種子的線性同餘產生器組合片段，覆蓋各種 token 邊界，不依賴外部隨機來源。
+    #[test]
+    fn precondition_is_superset_of_lexer_hits() {
+        const PIECES: &[&str] = &[
+            "union", "select", "or", "and", "xor", "||", "|", "|*", "o", "r", "a", "n", "d",
+            "u", "i", "1", "'", "\"", "(", ")", "=", "<", ">", "/*!", "*/", "/*", "#", " ",
+            "\n", "true", "not", "like", "x", "é", "中", "all", "distinct", "--", "-", "0",
+        ];
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let mut hits = 0usize;
+        let mut skipped = 0usize;
+        for _ in 0..200_000 {
+            let len = 1 + next() % 8;
+            let mut s = String::new();
+            for _ in 0..len {
+                s.push_str(PIECES[next() % PIECES.len()]);
+            }
+            let lexer_hit = {
+                let toks = tokenize(&s);
+                super::union_select(&toks) || super::tautology(&toks)
+            };
+            if lexer_hit {
+                hits += 1;
+                assert!(may_match_token_rules(&s), "前置條件漏掉命中：{s:?}");
+            }
+            if !may_match_token_rules(&s) {
+                skipped += 1;
+            }
+        }
+        // 確認測試確實涵蓋了命中與略過兩種情況。
+        assert!(hits > 100, "命中樣本太少：{hits}");
+        assert!(skipped > 1_000, "略過樣本太少：{skipped}");
+    }
+
+    /// R-19：量測用（不納入一般測試）。比較「直接分詞」與「先過前置條件」的耗時。
+    /// 執行：cargo test --bin tronclass_rollcall -- --ignored sql_lex_bench --nocapture
+    #[test]
+    #[ignore = "benchmark: run manually with --ignored --nocapture"]
+    fn sql_lex_bench() {
+        let zh = "這是一段中文的課程討論內容，學生提交了第三週的作業，老師會在下週一說明結果。".repeat(20_000);
+        let en = "The quick brown fox jumps over the lazy dog while students submit weekly homework. ".repeat(12_000);
+        let sqlish = "SELECT name FROM course WHERE id = 1 OR 2 > 1 AND x = x ".repeat(12_000);
+        for (label, text) in [("中文本體", &zh), ("英文本體", &en), ("SQL 形狀文字", &sqlish)] {
+            let mb = text.len() as f64 / (1024.0 * 1024.0);
+            let runs = 3;
+            let t0 = std::time::Instant::now();
+            let mut direct_hits = 0;
+            for _ in 0..runs {
+                let toks = tokenize(text);
+                if super::union_select(&toks) || super::tautology(&toks) {
+                    direct_hits += 1;
+                }
+            }
+            let direct = t0.elapsed().as_secs_f64() / runs as f64;
+            let t1 = std::time::Instant::now();
+            for _ in 0..runs {
+                let _ = t(text);
+            }
+            let gated = t1.elapsed().as_secs_f64() / runs as f64;
+            println!(
+                "[sql_lex_bench] {label}: {mb:.2} MiB  直接分詞 {:.1} ms  先過前置條件 {:.3} ms  (直接命中 {direct_hits}/{runs})",
+                direct * 1000.0,
+                gated * 1000.0
+            );
+        }
+    }
 
     #[test]
     fn token_layer_detects_obfuscated_sqli() {

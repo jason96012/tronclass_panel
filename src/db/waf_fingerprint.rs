@@ -10,6 +10,11 @@
 //!
 //! 時間封鎖與次數的計算在 `waf::fingerprint::next_backoff`，這裡只負責讀寫。
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use miette::{IntoDiagnostic, Result, WrapErr};
 use sqlx::FromRow;
 
@@ -29,6 +34,28 @@ pub struct FingerprintBlockRow {
     pub exempt_until: i64,
 }
 
+/// 管理頁列表用的一列（R-28）：比 `FingerprintBlockRow` 多 IP 群組與指紋預覽。
+#[derive(Debug, Clone, FromRow)]
+pub struct FingerprintBlockListRow {
+    pub pair: String,
+    pub ip_group: String,
+    pub fingerprint_preview: String,
+    pub strikes: i64,
+    pub blocked_until: i64,
+    pub last_blocked_at: i64,
+    pub exempt: i64,
+    pub exempt_until: i64,
+    pub released_by: String,
+    pub released_at: i64,
+}
+
+impl FingerprintBlockListRow {
+    /// 放行是否仍有效（與 `FingerprintBlockRow::exempt_active` 相同規則）。
+    pub fn exempt_active(&self, now: i64) -> bool {
+        self.exempt != 0 && self.exempt_until > now
+    }
+}
+
 impl FingerprintBlockRow {
     /// 放行是否仍有效：旗標為 1 且尚未到期。到期後回到一般指紋規則。
     pub fn exempt_active(&self, now: i64) -> bool {
@@ -36,10 +63,90 @@ impl FingerprintBlockRow {
     }
 }
 
+// FP_BLOCK_CACHE_V1（R-18）：指紋封鎖紀錄的短 TTL 快取。
+// 快取的是「資料列」（包括沒有列的負向結果），不是判斷結果。封鎖與放行是否仍有效，
+// 仍由呼叫端用目前時間計算，所以到期不需要等快取過期。
+// 寫入（記錄、放行、撤銷）在寫入成功之後才清空並遞增 generation；查詢期間若發生寫入，
+// 以舊 generation 回寫的結果會被捨棄。這個順序不可對調，否則並行讀取會把舊值存回快取。
+pub(crate) const FP_BLOCK_CACHE_TTL: Duration = Duration::from_secs(5);
+const FP_BLOCK_CACHE_CAP: usize = 10_000;
+
+#[derive(Default)]
+struct FpBlockCacheState {
+    generation: u64,
+    entries: HashMap<String, (Option<FingerprintBlockRow>, Instant)>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct FingerprintBlockCache {
+    inner: Arc<Mutex<FpBlockCacheState>>,
+    /// 量測用：實際打到資料庫的讀取次數。
+    db_reads: Arc<AtomicU64>,
+    /// 量測用：快取命中次數。
+    cache_hits: Arc<AtomicU64>,
+}
+
+impl FingerprintBlockCache {
+    fn lock(&self) -> std::sync::MutexGuard<'_, FpBlockCacheState> {
+        // 快取只是加速：鎖中毒時仍可使用內容，寫入路徑會清空快取。
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn generation(&self) -> u64 {
+        self.lock().generation
+    }
+
+    /// 未過期的快取回傳 `Some(列或 None)`；未命中回傳 `None`。
+    fn get(&self, pair: &str, now: Instant) -> Option<Option<FingerprintBlockRow>> {
+        let st = self.lock();
+        match st.entries.get(pair) {
+            Some((row, expires)) if *expires > now => {
+                self.cache_hits.fetch_add(1, Ordering::Relaxed);
+                Some(row.clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn put(&self, pair: &str, row: Option<FingerprintBlockRow>, generation: u64, now: Instant) {
+        let mut st = self.lock();
+        if st.generation != generation {
+            return;
+        }
+        if st.entries.len() >= FP_BLOCK_CACHE_CAP && !st.entries.contains_key(pair) {
+            st.entries.retain(|_, (_, expires)| *expires > now);
+            if st.entries.len() >= FP_BLOCK_CACHE_CAP {
+                st.entries.clear();
+            }
+        }
+        st.entries.insert(pair.to_string(), (row, now + FP_BLOCK_CACHE_TTL));
+    }
+
+    fn clear(&self) {
+        let mut st = self.lock();
+        st.generation = st.generation.wrapping_add(1);
+        st.entries.clear();
+    }
+
+    /// 量測用：(資料庫讀取次數, 快取命中次數)。
+    pub(crate) fn stats(&self) -> (u64, u64) {
+        (
+            self.db_reads.load(Ordering::Relaxed),
+            self.cache_hits.load(Ordering::Relaxed),
+        )
+    }
+}
+
 impl AccountsDb {
-    /// 讀取某個組合的封鎖狀態；沒有紀錄回傳 `None`。
+    /// 讀取某個組合的封鎖狀態；沒有紀錄回傳 `None`。經過 `FP_BLOCK_CACHE_V1` 快取。
     pub async fn get_fingerprint_block(&self, pair: &str) -> Result<Option<FingerprintBlockRow>> {
-        sqlx::query_as::<_, FingerprintBlockRow>(
+        let now = Instant::now();
+        if let Some(cached) = self.fp_block_cache.get(pair, now) {
+            return Ok(cached);
+        }
+        let generation = self.fp_block_cache.generation();
+        self.fp_block_cache.db_reads.fetch_add(1, Ordering::Relaxed);
+        let row = sqlx::query_as::<_, FingerprintBlockRow>(
             "SELECT pair, strikes, blocked_until, last_blocked_at, exempt, exempt_until \
              FROM waf_fingerprint_blocks WHERE pair = ?",
         )
@@ -47,7 +154,9 @@ impl AccountsDb {
         .fetch_optional(&self.pool)
         .await
         .into_diagnostic()
-        .wrap_err("讀取 WAF 指紋封鎖紀錄失敗")
+        .wrap_err("讀取 WAF 指紋封鎖紀錄失敗")?;
+        self.fp_block_cache.put(pair, row.clone(), generation, now);
+        Ok(row)
     }
 
     /// 寫入一次新的封鎖（次數與解除時間由呼叫端算好）。
@@ -61,7 +170,7 @@ impl AccountsDb {
         blocked_until: i64,
         now: i64,
     ) -> Result<()> {
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO waf_fingerprint_blocks \
              (pair, ip_group, fingerprint_preview, strikes, blocked_until, last_blocked_at, exempt) \
              VALUES (?, ?, ?, ?, ?, ?, 0) \
@@ -77,10 +186,43 @@ impl AccountsDb {
         .bind(blocked_until)
         .bind(now)
         .execute(&self.pool)
+        .await;
+        self.fp_block_cache.clear();
+        result.into_diagnostic().wrap_err("寫入 WAF 指紋封鎖紀錄失敗")?;
+        Ok(())
+    }
+
+    /// 管理頁列表（R-28）：依最後封鎖時間由新到舊。`limit` 夾在 1..=500。
+    pub async fn list_fingerprint_blocks(&self, limit: i64) -> Result<Vec<FingerprintBlockListRow>> {
+        let limit = limit.clamp(1, 500);
+        sqlx::query_as::<_, FingerprintBlockListRow>(
+            "SELECT pair, ip_group, fingerprint_preview, strikes, blocked_until, last_blocked_at, \
+                    exempt, exempt_until, released_by, released_at \
+             FROM waf_fingerprint_blocks ORDER BY last_blocked_at DESC, pair ASC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
         .await
         .into_diagnostic()
-        .wrap_err("寫入 WAF 指紋封鎖紀錄失敗")?;
-        Ok(())
+        .wrap_err("讀取 WAF 指紋封鎖列表失敗")
+    }
+
+    /// 撤銷有效放行（R-28）：清除豁免旗標，之後該組合再命中指紋規則會重新封鎖。
+    /// 只處理仍標記為放行的列；回傳是否真的撤銷了一筆。
+    pub async fn revoke_fingerprint_release(&self, pair: &str, revoked_by: &str, now: i64) -> Result<bool> {
+        let result = sqlx::query(
+            "UPDATE waf_fingerprint_blocks \
+             SET exempt = 0, exempt_until = 0, released_by = ?, released_at = ? \
+             WHERE pair = ? AND exempt = 1",
+        )
+        .bind(revoked_by)
+        .bind(now)
+        .bind(pair)
+        .execute(&self.pool)
+        .await;
+        self.fp_block_cache.clear();
+        let result = result.into_diagnostic().wrap_err("撤銷 WAF 指紋放行失敗")?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// 管理員放行：標記豁免 30 天、清除現有封鎖。回傳是否找到該組合。
@@ -95,9 +237,9 @@ impl AccountsDb {
         .bind(now)
         .bind(pair)
         .execute(&self.pool)
-        .await
-        .into_diagnostic()
-        .wrap_err("放行 WAF 指紋封鎖失敗")?;
+        .await;
+        self.fp_block_cache.clear();
+        let result = result.into_diagnostic().wrap_err("放行 WAF 指紋封鎖失敗")?;
         Ok(result.rows_affected() > 0)
     }
 }
@@ -147,6 +289,35 @@ pub(super) async fn create_table(pool: &sqlx::SqlitePool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn repeated_lookups_hit_cache_and_negative_results_are_cached() {
+        // R-18：同一組合在 TTL 內重複查詢只打一次資料庫（含沒有列的情況）。
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = AccountsDb::open(dir.path().join("accounts.db")).await.expect("open db");
+        let pair = "fp00000000000000|198.51.100.0";
+        assert!(db.get_fingerprint_block(pair).await.unwrap().is_none());
+        assert!(db.get_fingerprint_block(pair).await.unwrap().is_none());
+        assert!(db.get_fingerprint_block(pair).await.unwrap().is_none());
+        assert_eq!(db.fp_block_cache.stats(), (1, 2), "(資料庫讀取, 快取命中)");
+    }
+
+    #[tokio::test]
+    async fn writes_are_visible_immediately_despite_cache() {
+        // R-18：寫入會清空快取，之後的查詢立即看到新狀態（不必等 TTL）。
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = AccountsDb::open(dir.path().join("accounts.db")).await.expect("open db");
+        let pair = "fp00000000000000|198.51.100.0";
+        assert!(db.get_fingerprint_block(pair).await.unwrap().is_none());
+        db.record_fingerprint_block(pair, "198.51.100.0", "preview", 1, 10_000, 1_000)
+            .await
+            .unwrap();
+        let row = db.get_fingerprint_block(pair).await.unwrap().expect("封鎖列立即可見");
+        assert_eq!(row.strikes, 1);
+        db.release_fingerprint_block(pair, "admin", 1_000).await.unwrap();
+        let row = db.get_fingerprint_block(pair).await.unwrap().expect("列仍存在");
+        assert!(row.exempt_active(1_000), "放行立即生效");
+    }
 
     async fn open_db() -> (tempfile::TempDir, AccountsDb) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -205,6 +376,25 @@ mod tests {
         let row = db.get_fingerprint_block(pair).await.unwrap().unwrap();
         assert!(row.exempt_active(600 + FP_RELEASE_EXEMPT_SECS - 1));
         assert!(!row.exempt_active(600 + FP_RELEASE_EXEMPT_SECS + 1), "到期後不得仍豁免");
+    }
+
+    /// R-28：列表回傳所有列（新到舊），撤銷只影響已放行的列。
+    #[tokio::test]
+    async fn admin_list_and_revoke_release() {
+        let (_dir, db) = open_db().await;
+        let a = "aaaaaaaaaaaaaaaa|203.0.113.7";
+        let b = "bbbbbbbbbbbbbbbb|198.51.100.9";
+        db.record_fingerprint_block(a, "203.0.113.7", "UA-A", 1, 1_000, 500).await.unwrap();
+        db.record_fingerprint_block(b, "198.51.100.9", "UA-B", 2, 2_000, 900).await.unwrap();
+        let rows = db.list_fingerprint_blocks(50).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].pair, b, "最後封鎖時間較新的排前面");
+        assert!(!db.revoke_fingerprint_release(a, "admin", 1_000).await.unwrap(), "未放行的列不可撤銷");
+        assert!(db.release_fingerprint_block(a, "admin", 1_000).await.unwrap());
+        assert!(db.revoke_fingerprint_release(a, "admin", 1_100).await.unwrap());
+        let row = db.get_fingerprint_block(a).await.unwrap().unwrap();
+        assert!(!row.exempt_active(1_100), "撤銷後不再豁免");
+        assert_eq!(row.exempt, 0);
     }
 
     #[tokio::test]

@@ -163,6 +163,10 @@ pub struct AccountsDb {
     pub(crate) pool: SqlitePool,
     pub(crate) activity_tx: mpsc::Sender<ActivityEventInput>,
     pub(crate) material_tx: mpsc::Sender<MaterialEventInput>,
+    /// IP_BLACKLIST_CACHE_V1（R-34）：黑名單查詢的短 TTL 快取（寫入時清空）。
+    pub(crate) blacklist_cache: blacklist::IpBlacklistCache,
+    /// FP_BLOCK_CACHE_V1（R-18）：指紋封鎖紀錄的短 TTL 快取（寫入後清空）。
+    pub(crate) fp_block_cache: waf_fingerprint::FingerprintBlockCache,
 }
 
 impl AccountsDb {
@@ -224,6 +228,8 @@ impl AccountsDb {
             pool,
             activity_tx,
             material_tx,
+            blacklist_cache: Default::default(),
+            fp_block_cache: Default::default(),
         })
     }
 

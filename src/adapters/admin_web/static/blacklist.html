@@ -173,6 +173,11 @@
       <div class="card-head"><strong>已封鎖的 IP</strong><span class="summary" id="summary">載入中...</span></div>
       <div id="content"><div class="empty">載入中...</div></div>
     </section>
+    <section class="card">
+      <div class="card-head"><strong>指紋封鎖紀錄</strong><span class="summary" id="fpSummary">載入中...</span></div>
+      <div class="hint">命中指紋規則的「IP 群組＋瀏覽器指紋」組合會依次數延長封鎖。「放行 30 天」讓此組合在期間內不再因指紋被封鎖；「撤銷放行」恢復指紋規則。</div>
+      <div id="fpContent"><div class="empty">載入中...</div></div>
+    </section>
     <section class="card recent-card">
       <div class="card-head">
         <div class="card-head-copy">
@@ -338,7 +343,7 @@
       if(btn){btn.disabled=true;btn.textContent='更新中…'}
       var done=function(){loading=false;if(btn){btn.disabled=false;btn.textContent='重新整理'}};
       // 四支 API 平行抓；黑名單先回來就先畫（下方表格的按鈕狀態會跟著更新）。
-      Promise.all([load(),loadRecent(),loadGeoRequests(),loadHostingBlocks()]).then(done,done);
+      Promise.all([load(),loadRecent(),loadGeoRequests(),loadHostingBlocks(),loadFingerprints()]).then(done,done);
     }
     // ADMIN_GEO_RESTRICT_V1：僅限台灣 IP 存取開關。
     var geoBusy=false;
@@ -457,10 +462,53 @@
         .catch(function(error){toast(error.message||String(error),true)})
         .then(function(){geoRequestBusy=false});
     });
+    // R-28：指紋封鎖管理（列表、放行 30 天、撤銷放行）。
+    var fpBusy=false;
+    function fpStateLabel(state){return state==='released'?'已放行':state==='blocked'?'封鎖中':'已到期'}
+    function renderFingerprints(items){
+      q('fpSummary').textContent=items.length+' 筆';
+      if(!items.length){q('fpContent').innerHTML='<div class="empty">目前沒有指紋封鎖紀錄。</div>';return}
+      q('fpContent').innerHTML='<table><thead><tr><th>IP 群組</th><th>指紋預覽</th><th>次數</th><th>狀態</th><th>封鎖到期</th><th>放行到期</th><th>操作</th></tr></thead><tbody>'+items.map(function(row){
+        var released=row.state==='released';
+        var action=released
+          ?'<button type="button" data-fp-revoke="'+esc(row.pair)+'">撤銷放行</button>'
+          :'<button class="danger" type="button" data-fp-release="'+esc(row.pair)+'">放行 30 天</button>';
+        return '<tr>'
+          +'<td data-label="IP 群組">'+esc(row.ip_group||'-')+'</td>'
+          +'<td data-label="指紋預覽">'+esc(row.fingerprint_preview||'-')+'</td>'
+          +'<td data-label="次數">'+esc(row.strikes)+'</td>'
+          +'<td data-label="狀態">'+esc(fpStateLabel(row.state))+'</td>'
+          +'<td data-label="封鎖到期">'+esc(fmtTime(row.blocked_until))+'</td>'
+          +'<td data-label="放行到期">'+(released?esc(fmtTime(row.exempt_until)):'-')+'</td>'
+          +'<td data-label="操作">'+action+'</td>'
+          +'</tr>'}).join('')+'</tbody></table>';
+    }
+    function loadFingerprints(){
+      return api('/admin/api/blacklist/fingerprints').then(function(body){renderFingerprints(body.items||[])})
+        .catch(function(error){q('fpSummary').textContent='';q('fpContent').innerHTML='<div class="error">'+esc(error.message||error)+'</div>'});
+    }
+    q('fpContent').addEventListener('click',function(event){
+      if(fpBusy)return;
+      var release=event.target.closest('[data-fp-release]');
+      var revoke=event.target.closest('[data-fp-revoke]');
+      var button=release||revoke;
+      if(!button)return;
+      var pair=button.getAttribute(release?'data-fp-release':'data-fp-revoke');
+      if(release&&!confirm('確定放行此 IP 群組＋指紋組合 30 天？\n\n期間內此組合不會因指紋被封鎖；到期後恢復指紋規則。'))return;
+      if(revoke&&!confirm('確定撤銷放行？\n\n撤銷後此組合再命中指紋規則會重新被封鎖。'))return;
+      fpBusy=true;
+      button.disabled=true;
+      var path=release?'/admin/api/blacklist/fingerprints/release':'/admin/api/blacklist/fingerprints/revoke';
+      api(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pair:pair})})
+        .then(function(){toast(release?'已放行 30 天':'已撤銷放行');return loadFingerprints()})
+        .catch(function(error){toast(error.message||String(error),true)})
+        .then(function(){fpBusy=false});
+    });
     loadGeoRestrict();
     loadHostingRestrict();
     loadGeoRequests();
     loadHostingBlocks();
+    loadFingerprints();
     q('reload').addEventListener('click',loadAll);
     // 複製 IP、展開／收合「顯示更多」（三份清單共用同一個委派監聽）。
     document.addEventListener('click',function(event){

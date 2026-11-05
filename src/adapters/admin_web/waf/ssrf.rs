@@ -5,6 +5,8 @@
 //! - URL 授權段（`://` 或前導 `//` 之後）：依 inet_aton 規則解析（`127.1`、`0177.0.0.1`、`2130706433`、`0`），
 //!   並檢查 `localhost`、IPv6（含 `::ffff:` 映射）、以及 `nip.io` 類網域中嵌入的 IP。
 //! - 參數值（`=` 之後）：只接受嚴格的四段點分十進位或 `[IPv6]`，因此 `10.5`、`1.10.2` 這類數字不會被當成 IP。
+//!   R-09（2026-11-04 決定）：裸 IP 只在 `BARE_SSRF_PARAM_NAMES` 列出的參數名下判斷，例如 `?q=192.168.1.1` 不再命中；
+//!   URL 形式（含 `://` 或前導 `//`）仍在所有參數中判斷。
 //!
 //! 私網範圍：loopback、10/8、172.16/12、192.168/16、169.254/16、0/8、100.64/10（CGNAT）、
 //! IPv6 的 `::1`、`::`、`fc00::/7`、`fe80::/10`。
@@ -34,7 +36,7 @@ pub(super) fn private_network_host(target: &str) -> Option<String> {
             }
         }
     }
-    for token in bare_values(&lower) {
+    for token in bare_values_for_ssrf_params(&lower) {
         if let Some(host) = bare_host(token) {
             if host_is_private(&host, HostMode::Bare) {
                 return Some(host);
@@ -81,12 +83,31 @@ fn authority_host(auth: &str) -> Option<String> {
 }
 
 /// 取出每個 `=` 之後的第一個值片段。
-fn bare_values(s: &str) -> Vec<&str> {
-    s.split('=')
-        .skip(1)
-        .filter_map(|seg| seg.split(VALUE_END).next())
-        .filter(|v| !v.is_empty())
-        .collect()
+/// R-09：裸 IP 只在這些參數名下判斷私網（2026-11-04 決定：限定參數名）。
+/// 清單刻意偏向「會被伺服器拿去連線」的參數；需要時再加。URL 形式不受此限制。
+const BARE_SSRF_PARAM_NAMES: &[&str] = &[
+    "url", "uri", "host", "hostname", "target", "callback", "redirect", "redirect_uri",
+    "next", "dest", "destination", "link", "src", "href", "endpoint", "server", "proxy",
+];
+/// 參數名前面的分隔字元（參數名取最後一段）。
+const KEY_START: &[char] = &['?', '&', ';', ',', '/', ' ', '\t', '\r', '\n', '"', '\'', '<', '>', '(', ')', '|', '#', '\\'];
+
+/// 取出參數名在 `BARE_SSRF_PARAM_NAMES` 之中的參數值（第一段，與 VALUE_END 相同的結束規則）。
+fn bare_values_for_ssrf_params(s: &str) -> Vec<&str> {
+    let segs: Vec<&str> = s.split('=').collect();
+    let mut out = Vec::new();
+    for i in 1..segs.len() {
+        let key = segs[i - 1].rsplit(KEY_START).next().unwrap_or("");
+        if !BARE_SSRF_PARAM_NAMES.contains(&key) {
+            continue;
+        }
+        if let Some(value) = segs[i].split(VALUE_END).next() {
+            if !value.is_empty() {
+                out.push(value);
+            }
+        }
+    }
+    out
 }
 
 /// 參數值片段取主機：`[IPv6]`、`裸 IPv6`、`host[:port][/path]`。
@@ -248,6 +269,28 @@ mod tests {
         ] {
             assert!(p(t).is_some(), "應命中：{t}");
         }
+    }
+
+    /// R-09：裸私網 IP 只在清單參數名下命中；URL 形式仍在任何參數下命中。
+    #[test]
+    fn bare_private_ip_only_for_listed_params() {
+        for t in [
+            "/x?q=192.168.1.1",
+            "/x?page=10.0.0.1",
+            "/x?ip=192.168.1.1",
+            "/x?id=172.16.5.5",
+        ] {
+            assert!(p(t).is_none(), "不應命中（非清單參數）：{t}");
+        }
+        for t in [
+            "/x?target=192.168.1.1",
+            "/x?callback=10.0.0.1",
+            "/x?redirect=[::1]",
+            "/x?next=172.16.0.9",
+        ] {
+            assert!(p(t).is_some(), "應命中（清單參數）：{t}");
+        }
+        assert!(p("/x?q=http://192.168.1.1/").is_some(), "URL 形式不受參數名限制");
     }
 
     #[test]

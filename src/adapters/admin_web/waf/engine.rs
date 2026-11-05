@@ -43,6 +43,21 @@ pub struct WafConfig {
     pub body_scan_budget_mb: usize,
     /// C5：等待掃描預算的最長時間；逾時回 503（失敗即關閉，不略過掃描）。
     pub body_scan_wait: Duration,
+    /// R-20：讀取本體的逾時；逾時回 408。
+    pub body_read_timeout: Duration,
+}
+
+impl WafConfig {
+    /// R-20：由設定檔區段 `[waf]` 建立（先夾到允許範圍）。其餘欄位維持預設值。
+    pub fn from_runtime(rt: &crate::config::WafRuntimeConfig) -> Self {
+        let rt = rt.sanitized();
+        Self {
+            body_scan_budget_mb: rt.body_scan_budget_mb,
+            body_scan_wait: Duration::from_secs(rt.body_scan_wait_secs),
+            body_read_timeout: Duration::from_secs(rt.body_read_timeout_secs),
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for WafConfig {
@@ -62,6 +77,7 @@ impl Default for WafConfig {
             fingerprint_max_keys: WAF_FINGERPRINT_MAX_KEYS,
             body_scan_budget_mb: 128,
             body_scan_wait: Duration::from_secs(10),
+            body_read_timeout: super::body_scan::WAF_BODY_READ_TIMEOUT,
         }
     }
 }
@@ -82,6 +98,8 @@ pub struct WafEngine {
     pub(super) body_scan_budget: Arc<Semaphore>,
     pub(super) body_scan_budget_mb: usize,
     pub(super) body_scan_wait: Duration,
+    /// R-20：讀取本體逾時。
+    pub(super) body_read_timeout: Duration,
     /// A4：唯讀規則基線（只增不減，在內建檢測器鏈之後執行）。
     pub(super) rules: WafRules,
 }
@@ -98,6 +116,7 @@ impl WafEngine {
             body_scan_budget: Arc::new(Semaphore::new(config.body_scan_budget_mb)),
             body_scan_budget_mb: config.body_scan_budget_mb,
             body_scan_wait: config.body_scan_wait,
+            body_read_timeout: config.body_read_timeout,
             telemetry: WafTelemetry::default(),
             rate_limiter: WafRateLimiter::with_limits(
                 config.rate_limit_max_requests,

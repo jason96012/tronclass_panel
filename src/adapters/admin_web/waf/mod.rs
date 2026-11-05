@@ -117,5 +117,5 @@ pub use middleware::waf_firewall_middleware;
 pub use telemetry::waf_stats_handler;
 pub use memory::is_local_or_trusted_ip;
 pub use threat::WafThreat;
-pub use engine::WafEngine;
+pub use engine::{WafConfig, WafEngine};
 pub use rules::load_rules_from_env;

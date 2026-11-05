@@ -1412,13 +1412,27 @@ pub(super) async fn notify_waf_auto_block(
     }
 }
 
+/// R-29：指紋封鎖通知的去重鍵。只在次數為 1、2、4、8…（2 的冪次）時產生鍵；
+/// 其他次數回傳 `None`，不通知。鍵包含次數，因此每一級升級各自有 24 小時去重。
+pub(super) fn fingerprint_notice_key(pair: &str, strikes: i64) -> Option<String> {
+    if strikes >= 1 && (strikes & (strikes - 1)) == 0 {
+        Some(format!("{pair}#{strikes}"))
+    } else {
+        None
+    }
+}
+
 /// WAF 指紋封鎖通知：只送 `admin_user_id`（Discord 按鈕「放行此組合」）。
-/// 去重沿用 `waf_notice_should_send`：同一組合 24 小時內只通知一次，避免共用指紋的大量用戶灌爆通知。
+/// R-29：只在次數升級到 1、2、4、8… 時通知；同一（組合，次數）24 小時內只通知一次，
+/// 避免共用指紋的大量用戶灌爆通知，同時讓每一級升級都能被管理員看見。
 pub(super) async fn notify_fingerprint_block(
     state: &AdminWebState,
     event: crate::adapters::events::FingerprintBlockEvent,
 ) {
-    if !waf_notice_should_send(&event.pair) {
+    let Some(notice_key) = fingerprint_notice_key(&event.pair, event.strikes) else {
+        return;
+    };
+    if !waf_notice_should_send(&notice_key) {
         return;
     }
     let Some(messenger) = state.messenger.clone() else {
@@ -2372,7 +2386,10 @@ impl AdminWebState {
         let _ = THROTTLE_DB.set(accounts_db.clone());
 
         let state = Self {
-            waf: Arc::new(waf::WafEngine::with_rules(Default::default(), waf::load_rules_from_env())),
+            waf: Arc::new(waf::WafEngine::with_rules(
+                waf::WafConfig::from_runtime(&crate::config::try_get_config().map(|c| c.waf.clone()).unwrap_or_default()),
+                waf::load_rules_from_env(),
+            )),
             accounts,
             monitor_spawner: None,
             rate_limiter: RateLimiter::with_db(accounts_db.clone()),
@@ -3665,6 +3682,21 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             post(blacklist::admin_blacklist_unblock_handler)
                 .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
         )
+        // R-28：指紋封鎖管理（列表、放行、撤銷放行）。權限與黑名單頁相同（需管理員 session）。
+        .route(
+            "/admin/api/blacklist/fingerprints",
+            get(blacklist::admin_fingerprint_list_handler),
+        )
+        .route(
+            "/admin/api/blacklist/fingerprints/release",
+            post(blacklist::admin_fingerprint_release_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
+        .route(
+            "/admin/api/blacklist/fingerprints/revoke",
+            post(blacklist::admin_fingerprint_revoke_handler)
+                .layer(DefaultBodyLimit::max(ADMIN_TINY_BODY_LIMIT)),
+        )
         // IP_BLACKLIST_AUTO_REDIRECT_V1：`blocked.html` 輪詢用，不需要 session
         // （道理同 `/admin/api/geo-restrict/access-status`）。
         .route(
@@ -4116,21 +4148,21 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             session_cookie_to_query_middleware,
         ))
         .layer(axum::middleware::from_fn(https_redirect_middleware))
+        // HOSTING_IP_BLOCK_V1（R-34 決定 2026-11-05）：機房層放在 WAF「之內」，順序為
+        // 黑名單 → 國外 → WAF → 機房。機房 IP 的請求先經過 WAF，蜜罐與攻擊特徵會被記錄、
+        // 計入異常與自動封鎖，之後才由機房層回 403。代價：機房來源的請求會多消耗 WAF 的
+        // 檢查與本體掃描預算。
+        .layer(axum::middleware::from_fn_with_state(
+            hosting_guard_state,
+            reject_hosting_ip_middleware,
+        ))
         // WAF_FIREWALL_V1: 系統防火牆最外層防禦，攔截惡意探針、攻擊載荷與 L7 洪水掃描。
         .layer(axum::middleware::from_fn_with_state(
             waf_guard_state,
             waf::waf_firewall_middleware,
         ))
-        // HOSTING_IP_BLOCK_V1：刻意放在 WAF「之外」（layer 疊加順序下，後加的
-        // layer 較外層、較早執行）——已知是雲端／VPS機房出口的 IP 直接擋下，
-        // 連 WAF 的特徵比對都不必跑，語意上與 WAF 同屬「site-wide 第一線防禦」，
-        // 緊鄰擺放。
-        .layer(axum::middleware::from_fn_with_state(
-            hosting_guard_state,
-            reject_hosting_ip_middleware,
-        ))
-        // WAF_ORDER_BLACKLIST_FIRST_V1：請求檢查順序為「黑名單 → 國外 → 機房 → WAF」。
-        // axum 的 `.layer()` 後加的在外層、先執行，所以這兩層加在機房層之後、清洗轉送
+        // WAF_ORDER_BLACKLIST_FIRST_V1：請求檢查順序為「黑名單 → 國外 → WAF → 機房」（R-34 調整）。
+        // axum 的 `.layer()` 後加的在外層、先執行，所以這兩層加在 WAF 層之後、清洗轉送
         // 標頭層之前：黑名單最先執行，確保 IP 判斷用的是已清洗的標頭。已封鎖的 IP 不再
         // 進入 WAF（不再逐筆印攔截 log、不再做特徵比對）。
         // 國外層只擋 `/admin/*` 管理路徑（見 reject_foreign_admin_ip_middleware）。
@@ -5682,4 +5714,27 @@ fn unauthorized_response() -> Response {
         .into_response()
 }
 
+#[cfg(test)]
+mod fingerprint_notice_tests {
+    use super::fingerprint_notice_key;
 
+    /// R-29：只有 1、2、4、8… 會產生通知鍵；其他次數不通知。
+    #[test]
+    fn notifies_only_on_power_of_two_strikes() {
+        let pair = "0123456789abcdef|203.0.113.7";
+        for strikes in [1_i64, 2, 4, 8, 16] {
+            assert!(fingerprint_notice_key(pair, strikes).is_some(), "strikes={strikes}");
+        }
+        for strikes in [0_i64, -1, 3, 5, 6, 7, 9] {
+            assert!(fingerprint_notice_key(pair, strikes).is_none(), "strikes={strikes}");
+        }
+    }
+
+    /// 同一組合的不同次數，去重鍵不同（升級會再通知一次）。
+    #[test]
+    fn each_level_has_its_own_dedupe_key() {
+        let pair = "0123456789abcdef|203.0.113.7";
+        assert_ne!(fingerprint_notice_key(pair, 1), fingerprint_notice_key(pair, 2));
+        assert_eq!(fingerprint_notice_key(pair, 2), fingerprint_notice_key(pair, 2));
+    }
+}

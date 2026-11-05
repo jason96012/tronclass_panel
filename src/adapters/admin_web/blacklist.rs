@@ -17,6 +17,7 @@
 //! 實際擋人的中介層在 `mod.rs` 的 `reject_foreign_admin_ip_middleware`。
 
 use super::*;
+use chrono::Local;
 use super::pages::{inject_auth_attrs, inject_theme, ADMIN_BLACKLIST_HTML};
 // 編譯修正：`use super::*;` 只帶得進 mod.rs 的 `json!`（父模組只 `use serde_json::json;`），
 // `Value` 不在 scope —— 同層其他模組（ai_chat.rs 等）也都是自己 import。
@@ -1034,4 +1035,195 @@ pub(super) async fn admin_geo_access_clear_all_handler(
         Json(json!({ "ok": true, "cleared": cleared })),
     )
         .into_response()
+}
+
+// ---------------------------------------------------------------------------
+// R-28：指紋封鎖管理（列表、放行、撤銷放行）。
+// 之前只能用 Discord 按鈕放行，或直接改資料表。這裡提供網頁版，權限與黑名單頁相同。
+// 寫入操作會記入稽核紀錄（record_audit）。尚未編譯、未部署。
+// ---------------------------------------------------------------------------
+
+/// 指紋組合鍵的格式：`<指紋前 16 碼 hex>|<IP 群組>`。這裡只做基本形狀檢查，
+/// 不作為安全邊界：實際比對仍是 DB 的完整字串相等。
+pub(super) fn valid_fingerprint_pair(pair: &str) -> bool {
+    let pair = pair.trim();
+    !pair.is_empty()
+        && pair.len() <= 128
+        && pair.contains('|')
+        && pair
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '|' | '.' | ':' | '/'))
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct AdminFingerprintPairRequest {
+    pair: String,
+}
+
+/// 指紋封鎖列表的狀態標籤：放行中（優先）→ 封鎖中 → 已到期。
+fn fingerprint_state_label(exempt_active: bool, blocked_until: i64, now: i64) -> &'static str {
+    if exempt_active {
+        "released"
+    } else if blocked_until > now {
+        "blocked"
+    } else {
+        "expired"
+    }
+}
+
+pub(super) async fn admin_fingerprint_list_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    match state.accounts_db.list_fingerprint_blocks(200).await {
+        Ok(rows) => {
+            let now = Local::now().timestamp();
+            let items: Vec<Value> = rows
+                .into_iter()
+                .map(|row| {
+                    let exempt_active = row.exempt_active(now);
+                    json!({
+                        "pair": row.pair,
+                        "ip_group": row.ip_group,
+                        "fingerprint_preview": row.fingerprint_preview,
+                        "strikes": row.strikes,
+                        "blocked_until": row.blocked_until,
+                        "last_blocked_at": row.last_blocked_at,
+                        "exempt_until": row.exempt_until,
+                        "exempt_active": exempt_active,
+                        "released_by": row.released_by,
+                        "released_at": row.released_at,
+                        "state": fingerprint_state_label(exempt_active, row.blocked_until, now),
+                    })
+                })
+                .collect();
+            (StatusCode::OK, Json(json!({ "items": items }))).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": super::public_error("讀取指紋封鎖列表失敗：", &error) })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn admin_fingerprint_release_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminFingerprintPairRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let pair = request.pair.trim().to_string();
+    if !valid_fingerprint_pair(&pair) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid fingerprint pair" })),
+        )
+            .into_response();
+    }
+    let now = Local::now().timestamp();
+    match state
+        .accounts_db
+        .release_fingerprint_block(&pair, &session.account_id, now)
+        .await
+    {
+        Ok(found) => {
+            if found {
+                crate::logs::record_audit(
+                    "web",
+                    &session.account_id,
+                    "fingerprint_block_release",
+                    None,
+                    Some(&pair),
+                    "Web 管理頁放行指紋封鎖（30 天）",
+                );
+            }
+            (StatusCode::OK, Json(json!({ "ok": true, "released": found }))).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": super::public_error("放行指紋封鎖失敗：", &error) })),
+        )
+            .into_response(),
+    }
+}
+
+pub(super) async fn admin_fingerprint_revoke_handler(
+    State(state): State<AdminWebState>,
+    headers: HeaderMap,
+    Query(query): Query<AdminQuery>,
+    Json(request): Json<AdminFingerprintPairRequest>,
+) -> Response {
+    let token = session_token(&headers, &query.token);
+    let Some(session) = state.authorize(&token).await else {
+        return unauthorized_response();
+    };
+    if !session.is_admin {
+        return unauthorized_response();
+    }
+    let pair = request.pair.trim().to_string();
+    if !valid_fingerprint_pair(&pair) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid fingerprint pair" })),
+        )
+            .into_response();
+    }
+    let now = Local::now().timestamp();
+    match state
+        .accounts_db
+        .revoke_fingerprint_release(&pair, &session.account_id, now)
+        .await
+    {
+        Ok(revoked) => {
+            if revoked {
+                crate::logs::record_audit(
+                    "web",
+                    &session.account_id,
+                    "fingerprint_release_revoke",
+                    None,
+                    Some(&pair),
+                    "Web 管理頁撤銷指紋放行，之後恢復指紋規則",
+                );
+            }
+            (StatusCode::OK, Json(json!({ "ok": true, "revoked": revoked }))).into_response()
+        }
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": super::public_error("撤銷指紋放行失敗：", &error) })),
+        )
+            .into_response(),
+    }
+}
+
+#[cfg(test)]
+mod fingerprint_admin_tests {
+    use super::valid_fingerprint_pair;
+
+    /// R-28：只接受 `hex|IP群組` 的形狀；空字串、缺分隔符、奇怪字元一律拒絕。
+    #[test]
+    fn pair_shape_is_checked() {
+        assert!(valid_fingerprint_pair("0123456789abcdef|203.0.113.7"));
+        assert!(valid_fingerprint_pair("0123456789abcdef|2001:db8:1:2::/64"));
+        assert!(!valid_fingerprint_pair(""));
+        assert!(!valid_fingerprint_pair("0123456789abcdef"));
+        assert!(!valid_fingerprint_pair("0123|1.2.3.4; DROP TABLE"));
+        assert!(!valid_fingerprint_pair("0123|<script>"));
+        assert!(!valid_fingerprint_pair(&format!("a|{}", "1".repeat(200))));
+    }
 }

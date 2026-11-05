@@ -150,14 +150,12 @@ impl ThreatDetector for DeserializationDetector {
         let full_target: &str = &ctx.full_target;
         let decoded_target: &str = &ctx.decoded_target;
         // 11. 檢測 XXE 與 Java / JSON 反序列化注入
-        if full_target.contains("<!doctype")
-            || full_target.contains("<!entity")
+        if full_target.contains("<!entity")
             || full_target.contains("system \"http")
             || full_target.contains("system 'http")
             || full_target.contains("ro0ab")
             || full_target.contains("fastjson")
             || full_target.contains("com.sun.rowset")
-            || decoded_target.contains("<!doctype")
             || decoded_target.contains("<!entity")
             || decoded_target.contains("system \"http")
             || decoded_target.contains("system 'http")
@@ -166,6 +164,10 @@ impl ThreatDetector for DeserializationDetector {
             || decoded_target.contains("com.sun.rowset")
         {
             return Some(WafThreat::DeserializationAttack(raw_path.to_string()));
+        }
+        // 11b. WAF_DESER_V1：結構化反序列化（URL 範圍：PHP 物件、unserialize、gadget、.NET 魔數）。
+        if let Some(label) = crate::adapters::admin_web::waf_detect::detect_deserialization(full_target, crate::adapters::admin_web::waf_detect::Scope::Url) {
+            return Some(WafThreat::DeserializationAttack(format!("結構化反序列化：{label}")));
         }
         None
     }

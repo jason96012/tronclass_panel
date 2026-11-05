@@ -355,7 +355,11 @@ static XSS_RULES_COMMON: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (
             // 只在標籤內才算事件處理器（`<svg/onload=`、`<img src=x onerror=`）。
             // C2：不再依賴固定事件清單，任何 on…= 屬性都算（涵蓋 onauxclick、onfocusin、onstart 等）。
-            re(r#"<\s*[a-z][^>]*[\s/'"]on[a-z]+\s*="#),
+            // R-13（2026-11-04 決定 a）：只比對已知事件名稱（與屬性跳出規則同一組），
+            // 避免 `<span title="online=yes">` 這類文字誤判。白名單外的事件名稱不再攔截。
+            // 本規則對 URL 與本體都適用；URL 範圍另有通用 on…= 規則（見 XSS_RULES_URL_ONLY），因此 URL 覆蓋不縮小。
+            // 事件清單須與 XSS_RULES_URL_ONLY「屬性跳出」規則保持同步。
+            re(r##"<\s*[a-z][^>]*[\s/'"]on(?:focus(?:in|out)?|blur|load|error|mouse(?:over|out|enter|leave|down|up|move)|click|dblclick|auxclick|contextmenu|input|beforeinput|change|submit|reset|toggle|select|scroll|wheel|key(?:down|up|press)|animation(?:start|end|iteration)|transition(?:start|end)|pointer(?:over|enter|down|up|move)|drag(?:start|enter|over|end)?|copy|paste|cut|invalid|search|start|begin|end|play|pause|message|hashchange|pageshow|show|touch(?:start|move|end)|formdata)\s*="##),
             "事件處理器屬性",
         ),
         (
@@ -389,6 +393,11 @@ fn tab_tolerant(word: &str) -> String {
 /// 只用於 URL、標頭範圍的 DOM 規則。本體排除，因為教材與程式碼常包含這些字串。
 static XSS_RULES_URL_ONLY: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     vec![
+        (
+            // R-13：URL 範圍維持通用 on…= 規則，不因事件白名單縮小 URL 的覆蓋。
+            re(r#"<\s*[a-z][^>]*[\s/'"]on[a-z]+\s*="#),
+            "事件處理器屬性（URL 範圍）",
+        ),
         (
             re(r"document\.(cookie|write|domain)|\bwindow\.location\s*=|\bdocument\.location\b"),
             "DOM 外洩或跳轉",
@@ -503,6 +512,22 @@ static SSTI_RULES_COMMON: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
             "ERB 命令執行",
         ),
         (
+            re(r"\{\{[^}]{0,200}\.constructor\s*\("),
+            "JS constructor 呼叫（Handlebars／Nunjucks）",
+        ),
+        (
+            re(r"\{\{[^}]{0,200}(process\.mainmodule|child_process|require\s*\()"),
+            "範本內 Node 模組存取",
+        ),
+        (
+            re(r"\{%[^%]{0,200}(__class__|__globals__|__builtins__|__subclasses__|__mro__|__import__|os\.popen|subprocess|config\.items)"),
+            "Jinja／Twig 區塊語句注入",
+        ),
+        (
+            re(r"<%[^%]{0,200}(__import__|import\s+os\b|os\.popen|subprocess|system\s*\()"),
+            "Mako／ERB 區塊程式碼注入",
+        ),
+        (
             re(r"\{\{\s*7\s*\*\s*7\s*\}\}|\$\{\s*7\s*\*\s*7\s*\}|<%=\s*7\s*\*\s*7\s*%>|#\{\s*7\s*\*\s*7\s*\}"),
             "SSTI 數學運算探測",
         ),
@@ -535,6 +560,63 @@ pub fn detect_ssti(raw: &str, scope: Scope) -> Option<&'static str> {
     None
 }
 
+// ---- WAF_DESER_V1（E6 反序列化）：統一小寫化後比對（normalize），魔數需要邊界以免誤判隨機 base64 ----
+static DESER_RULES_COMMON: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    vec![
+        (
+            re(r"(^|[^a-z0-9+/])ro0ab[a-z0-9+/]{4,}"),
+            "Java 序列化魔數（base64）",
+        ),
+        (
+            re(r"(^|[^0-9a-f])aced0005[0-9a-f]{4}"),
+            "Java 序列化魔數（hex）",
+        ),
+        (
+            re(r"(^|[^a-z0-9+/])aaeaaad/////"),
+            ".NET BinaryFormatter 魔數",
+        ),
+        (
+            // XXE：DOCTYPE 內部子集，或 SYSTEM 指向外部 URL（外部 DTD 會在伺服器端抓取）。
+            // 一般 HTML 的 <!DOCTYPE html>、XHTML 的 PUBLIC 形式不命中。
+            re(r#"<!doctype[^>]{0,300}(\[|\bsystem\s*["'](https?|ftp|file|php|jar|netdoc|gopher|expect):)"#),
+            "XXE：DOCTYPE 內部子集或外部 SYSTEM 位址",
+        ),
+        (
+            re(r"invokertransformer|chainedtransformer|templatesimpl|convertedclosure|badattributevalueexpexception|objectdataprovider|typeconfusedelegate|jdbcrowsetimpl"),
+            "已知反序列化 gadget 類別",
+        ),
+    ]
+});
+
+/// 只用於 URL 範圍：PHP 物件字串與 unserialize 呼叫（本體中可能出現在教材與程式碼範例）。
+static DESER_RULES_URL_ONLY: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
+    vec![
+        (
+            re(r#"(^|[^a-z0-9_])o:\d{1,3}:"[a-z_\\]{1,64}":\d{1,3}:\{"#),
+            "PHP 物件反序列化字串",
+        ),
+        (re(r"unserialize\s*\("), "PHP unserialize 呼叫"),
+    ]
+});
+
+/// 反序列化特徵偵測（E6）。body 範圍只用 COMMON 規則。
+pub fn detect_deserialization(raw: &str, scope: Scope) -> Option<&'static str> {
+    let text = normalize(raw);
+    for (regex, label) in DESER_RULES_COMMON.iter() {
+        if regex.is_match(&text) {
+            return Some(label);
+        }
+    }
+    if scope == Scope::Url {
+        for (regex, label) in DESER_RULES_URL_ONLY.iter() {
+            if regex.is_match(&text) {
+                return Some(label);
+            }
+        }
+    }
+    None
+}
+
 static PROTO_RULES_COMMON: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
     vec![
         (
@@ -544,6 +626,10 @@ static PROTO_RULES_COMMON: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
         (
             re(r#"["']constructor["']\s*:\s*\{\s*["']prototype["']"#),
             "JSON constructor.prototype 巢狀注入",
+        ),
+        (
+            re(r#"["'](__proto__|constructor\.prototype)[.\[]"#),
+            "JSON 字串值的原型路徑（路徑式 set 注入）",
         ),
         (
             re(r"constructor\.prototype\.(isadmin|role|admin|polluted|permission)"),
@@ -562,7 +648,7 @@ static PROTO_RULES_URL_ONLY: Lazy<Vec<(Regex, &'static str)>> = Lazy::new(|| {
             re(r"(object|reflect)\s*\.\s*(setprototypeof|defineproperty|defineproperties)\s*\("),
             "JS 原型 API 注入",
         ),
-        (re(r"__define(getter|setter)__\s*\("), "__defineGetter__／__defineSetter__"),
+        (re(r"__(define|lookup)(getter|setter)__\s*\("), "__defineGetter__／__lookupGetter__ 等"),
     ]
 });
 
@@ -763,6 +849,17 @@ mod tests {
         assert!(detect_xss("請用 alert(1) 練習", Scope::Body).is_none());
     }
 
+    /// R-13：本體範圍的標籤事件只比對白名單；URL 範圍維持通用規則（覆蓋不縮小）。
+    #[test]
+    fn xss_tag_event_whitelist_for_body() {
+        assert!(detect_xss("<span title=\"online=yes\">課程</span>", Scope::Body).is_none(), "online= 不得誤判");
+        assert!(detect_xss("<span title=\"onboarding=done\">", Scope::Body).is_none());
+        assert!(detect_xss("<img src=x onerror=alert(1)>", Scope::Body).is_some());
+        assert!(detect_xss("<body onpageshow=x>", Scope::Body).is_some());
+        // URL 範圍：通用規則仍在，行為與 R-13 之前相同。
+        assert!(detect_xss("<span title=\"online=yes\">", Scope::Url).is_some());
+    }
+
     // ---- XSS：不應命中（正常內容） ----
     #[test]
     fn xss_normal_markup_is_not_flagged() {
@@ -837,5 +934,67 @@ mod tests {
         assert_eq!(XSS_RULES_URL_ONLY.len(), 4);
         let _ = detect_sqli("", Scope::Url);
         let _ = detect_xss("", Scope::Url);
+    }
+}
+
+#[cfg(test)]
+mod e6_tests {
+    //! WAF_DESER_V1 / WAF_SSTI_PROTO_V2 測試（E4、E5、E6）。尚未編譯與執行。
+    use super::*;
+
+    #[test]
+    fn ssti_handlebars_nunjucks_node_and_block_forms_are_detected() {
+        assert!(detect_ssti("{{ range.constructor(\"return process.mainModule\") }}", Scope::Body).is_some());
+        assert!(detect_ssti("{{ x.constructor('alert(1)')() }}", Scope::Body).is_some());
+        assert!(detect_ssti("{{ require('child_process') }}", Scope::Body).is_some());
+        assert!(detect_ssti("{% set x = ''.__class__.__mro__ %}", Scope::Body).is_some());
+        assert!(detect_ssti("{% import os %}{% os.popen('id') %}", Scope::Body).is_some());
+        assert!(detect_ssti("<% import os %><%= os.popen('id').read %>", Scope::Body).is_some());
+    }
+
+    #[test]
+    fn ssti_ordinary_block_and_handlebars_syntax_is_not_flagged() {
+        assert!(detect_ssti("{% for item in items %}<li>{{ item.name }}</li>{% endfor %}", Scope::Body).is_none());
+        assert!(detect_ssti("{% if user.isAdmin %}管理者{% endif %}", Scope::Body).is_none());
+        assert!(detect_ssti("<% if (ready) { %>顯示<% } %>", Scope::Body).is_none());
+        assert!(detect_ssti("{{#each students}}{{this}}{{/each}}", Scope::Body).is_none());
+    }
+
+    #[test]
+    fn java_magic_needs_token_boundary() {
+        assert!(detect_deserialization("rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA==", Scope::Body).is_some());
+        assert!(detect_deserialization("data=aced0005737200", Scope::Url).is_some());
+        // 隨機 base64 中間出現的 ro0ab 不應命中（前面是 base64 字元，沒有邊界）。
+        assert!(detect_deserialization("iVBORw0KGgoAAAANSUhEUgAAAro0ABcdefgh", Scope::Body).is_none());
+    }
+
+    #[test]
+    fn gadget_and_dotnet_markers_are_detected_in_body() {
+        assert!(detect_deserialization("org.apache.commons.collections.functors.InvokerTransformer", Scope::Body).is_some());
+        assert!(detect_deserialization("AAEAAAD/////AQAAAAAAAAAE", Scope::Body).is_some());
+    }
+
+    #[test]
+    fn xxe_external_or_internal_doctype_is_detected_but_html_doctype_is_not() {
+        assert!(detect_deserialization("<!DOCTYPE r SYSTEM \"http://evil.example/x.dtd\"><r/>", Scope::Body).is_some());
+        assert!(detect_deserialization("<!DOCTYPE r [<!ELEMENT r ANY>]><r/>", Scope::Body).is_some());
+        assert!(detect_deserialization("<!DOCTYPE html>", Scope::Body).is_none());
+        assert!(detect_deserialization("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">", Scope::Body).is_none());
+    }
+
+    #[test]
+    fn php_object_and_unserialize_are_url_only() {
+        assert!(detect_deserialization(r#"?d=O:8:"stdClass":1:{s:1:"a";i:1;}"#, Scope::Url).is_some());
+        assert!(detect_deserialization("?x=unserialize($_GET['a'])", Scope::Url).is_some());
+        assert!(detect_deserialization("unserialize($data) 會有安全風險", Scope::Body).is_none());
+    }
+
+    #[test]
+    fn proto_path_string_values_and_lookup_getter() {
+        assert!(detect_proto_pollution(r#"{"path": "__proto__.polluted", "value": 1}"#, Scope::Body).is_some());
+        assert!(detect_proto_pollution(r#"{"key":"constructor.prototype.x"}"#, Scope::Body).is_some());
+        assert!(detect_proto_pollution("?x=__lookupGetter__(a)", Scope::Url).is_some());
+        assert!(detect_proto_pollution("obj.__proto__ === Foo.prototype", Scope::Body).is_none());
+        assert!(detect_proto_pollution(r#"{"title":"__proto__ 是 JS 的內部屬性"}"#, Scope::Body).is_none());
     }
 }
