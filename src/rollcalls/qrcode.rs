@@ -9,8 +9,8 @@
 //! `p` 參數是特殊編碼的字串，解碼方式如下：
 //!
 //! 1. URL decode（處理 `%XX` 轉義）
-//! 2. 用 `!`（或 chr(31)）分割成多個 segment
-//! 3. 每個 segment 用 `~`（或 chr(30)）分割成 `key` 和 `value`
+//! 2. 用 `!` 分割成多個 segment；value 中的 chr(31) 還原為字面 `!`
+//! 3. 每個 segment 用 `~` 分割 key 和 value；value 中的 chr(30) 還原為字面 `~`
 //! 4. `key` 是 base36 整數，對應欄位名稱（見 `KEY_MAP`）
 //! 5. `value` 可能帶有特殊前綴字元：
 //!    - `chr(26)`（0x1A）開頭 → bool 值（緊接的字元 `1`/`0` 或 `t`/`f`）
@@ -221,7 +221,7 @@ pub enum QrParseError {
 /// - `/j?p=...`（相對 URL）
 /// - 純 `p` 參數值（直接傳入編碼後的字串）
 pub fn parse_qr_url(input: &str) -> Result<QrCodeData> {
-    debug!(input = %input, "解析 QR code URL");
+    debug!(input_len = input.len(), "解析 QR code URL");
 
     // 嘗試判斷是否為完整 URL 或相對 URL
     let p_value = if input.contains("?p=") || input.contains("&p=") {
@@ -237,12 +237,12 @@ pub fn parse_qr_url(input: &str) -> Result<QrCodeData> {
 
     // URL decode p 參數
     let decoded = url_decode(&p_value);
-    debug!(decoded = %decoded, "p 參數 URL decode 結果");
+    debug!(decoded_len = decoded.len(), "p 參數 URL decode 完成");
 
     // 解析編碼的 p 參數
     parse_encoded_p(&decoded)
         .into_diagnostic()
-        .wrap_err_with(|| format!("解析 QR code p 參數失敗：{decoded}"))
+        .wrap_err("解析 QR code p 參數失敗")
 }
 
 /// 從 URL 字串中提取 `p` 參數的值
@@ -254,6 +254,8 @@ fn extract_p_param(url: &str) -> Result<String> {
         return Err(miette::miette!(QrParseError::MissingParam));
     };
 
+    // A URL fragment is not part of the query or of the attendance payload.
+    let query = query.split('#').next().unwrap_or(query);
     // 解析 query string
     for pair in query.split('&') {
         if let Some(eq_pos) = pair.find('=') {
@@ -306,7 +308,6 @@ fn parse_encoded_p(encoded: &str) -> std::result::Result<QrCodeData, QrParseErro
                     segment_idx = i,
                     key = raw_key,
                     field = field_name,
-                    value = %value,
                     "解析 segment"
                 );
 
@@ -338,7 +339,7 @@ fn parse_encoded_p(encoded: &str) -> std::result::Result<QrCodeData, QrParseErro
             }
             None => {
                 // segment 沒有分隔符，可能是純值或格式有問題
-                warn!(segment = %segment, "QR code segment 缺少分隔符，跳過");
+                warn!(segment_idx = i, "QR code segment 缺少分隔符，跳過");
             }
         }
     }
@@ -399,7 +400,7 @@ fn decode_value(raw: &str) -> QrValue {
                 Some('0') | Some('f') | Some('F') | Some('n') | Some('N') => false,
                 // 無法識別，預設為 false
                 _ => {
-                    debug!(rest = %rest, "bool 前綴後跟未知字元，預設 false");
+                    debug!("bool 前綴後跟未知字元，預設 false");
                     false
                 }
             };
@@ -416,7 +417,7 @@ fn decode_value(raw: &str) -> QrValue {
                     match rest.trim_start_matches('0').parse::<i64>() {
                         Ok(n) => QrValue::Number(n),
                         Err(_) => {
-                            warn!(rest = %rest, "數字前綴後無法解析數字，當作字串");
+                            warn!("數字前綴後無法解析數字，當作字串");
                             QrValue::String(unescape_value(rest))
                         }
                     }
@@ -546,7 +547,7 @@ impl std::fmt::Display for QrCodeResult {
 /// - `rollcall_id`：要簽到的 rollcall ID
 /// - `qr_input`：QR code 的完整 URL，或 p 參數值，或解析後的 `data` 字串
 /// - `is_raw_data`：若為 true，`qr_input` 直接作為 data 傳給 API（跳過解析步驟）
-#[instrument(skip(api), fields(rollcall_id = rollcall_id))]
+#[instrument(skip(api, qr_input), fields(rollcall_id = rollcall_id))]
 pub async fn attempt_qrcode_rollcall(
     api: Arc<ApiClient>,
     rollcall_id: u64,
@@ -560,7 +561,7 @@ pub async fn attempt_qrcode_rollcall(
     } else {
         match parse_qr_url(qr_input) {
             Ok(parsed) => {
-                debug!(parsed = %parsed.summary(), "QR code 解析成功");
+                debug!(rollcall_id = ?parsed.rollcall_id, "QR code 解析成功");
 
                 if let Some(d) = parsed.data {
                     d
@@ -676,3 +677,23 @@ pub fn is_tronclass_qr_url(url: &str) -> bool {
 
 // ─── 測試 ─────────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod qr_fragment_and_escape_tests {
+    use super::*;
+
+    #[test]
+    fn url_fragment_is_not_part_of_payload() {
+        let parsed = parse_qr_url("https://example.org/j?p=3~abc!4~42#screen").unwrap();
+        assert_eq!(parsed.data.as_deref(), Some("abc"));
+        assert_eq!(parsed.rollcall_id, Some(42));
+        let parsed = parse_qr_url("https://example.org/j?p=3~abc#screen").unwrap();
+        assert_eq!(parsed.data.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn value_escape_characters_remain_inside_field() {
+        let parsed = parse_qr_url("3~hello%1Fworld%1Eagain!4~42").unwrap();
+        assert_eq!(parsed.data.as_deref(), Some("hello!world~again"));
+        assert_eq!(parsed.rollcall_id, Some(42));
+    }
+}

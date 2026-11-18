@@ -103,6 +103,9 @@ impl AccountsDb {
 
     /// 對一組鍵上鎖到 `until`；已有生效中鎖的鍵不延長。回傳是否有「新建立」的鎖。
     pub async fn login_lock_insert(&self, keys: &[String], until: i64, now: i64) -> Result<bool> {
+        // All aliases for the same account are committed together. On any error,
+        // dropping the transaction rolls back before the caller uses fallback.
+        let mut tx = self.pool.begin().await.into_diagnostic().wrap_err("開始登入鎖定交易失敗")?;
         let mut created = false;
         for key in keys {
             let key = key.trim().to_lowercase();
@@ -113,7 +116,7 @@ impl AccountsDb {
             sqlx::query("DELETE FROM login_locks WHERE key = ? AND until <= ?")
                 .bind(&key)
                 .bind(now)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .into_diagnostic()
                 .wrap_err("清除過期登入鎖定失敗")?;
@@ -123,7 +126,7 @@ impl AccountsDb {
             .bind(&key)
             .bind(until)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .into_diagnostic()
             .wrap_err("寫入登入鎖定失敗")?
@@ -132,6 +135,7 @@ impl AccountsDb {
                 created = true;
             }
         }
+        tx.commit().await.into_diagnostic().wrap_err("提交登入鎖定交易失敗")?;
         Ok(created)
     }
 
@@ -161,6 +165,7 @@ impl AccountsDb {
 
     /// 解除一組鍵的鎖定；回傳是否真的有鎖被移除。
     pub async fn login_lock_remove(&self, keys: &[String]) -> Result<bool> {
+        let mut tx = self.pool.begin().await.into_diagnostic().wrap_err("開始解除登入鎖定交易失敗")?;
         let mut removed = false;
         for key in keys {
             let key = key.trim().to_lowercase();
@@ -169,7 +174,7 @@ impl AccountsDb {
             }
             let affected = sqlx::query("DELETE FROM login_locks WHERE key = ?")
                 .bind(&key)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .into_diagnostic()
                 .wrap_err("移除登入鎖定失敗")?
@@ -178,6 +183,7 @@ impl AccountsDb {
                 removed = true;
             }
         }
+        tx.commit().await.into_diagnostic().wrap_err("提交解除登入鎖定交易失敗")?;
         Ok(removed)
     }
 }

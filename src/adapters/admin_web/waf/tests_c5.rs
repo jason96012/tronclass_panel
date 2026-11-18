@@ -33,6 +33,17 @@ mod c5_tests {
     }
 
     #[tokio::test]
+    async fn oversized_reservation_is_rejected_instead_of_under_reserved() {
+        let waf = WafEngine::new(WafConfig {
+            body_scan_budget_mb: 1,
+            body_scan_wait: Duration::from_millis(50),
+            ..Default::default()
+        });
+        assert!(acquire_body_scan_slot(&waf, 4 * 1024 * 1024).await.is_none());
+        assert!(acquire_body_scan_slot(&waf, 1024 * 1024).await.is_some());
+    }
+
+    #[tokio::test]
     async fn budget_blocks_when_exhausted_and_releases_on_drop() {
         let cfg = WafConfig {
             body_scan_budget_mb: 4,

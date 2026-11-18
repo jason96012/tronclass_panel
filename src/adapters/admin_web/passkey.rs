@@ -27,6 +27,7 @@ pub(super) struct PasskeyRegistrationCeremony {
 
 pub(super) struct PasskeyAuthenticationCeremony {
     account_id: String,
+    source_group: String,
     state: AuthenticationState,
     expires_at: Instant,
 }
@@ -38,6 +39,10 @@ static PASSKEY_AUTH_STATES: once_cell::sync::Lazy<
     Mutex<HashMap<String, PasskeyAuthenticationCeremony>>,
 > = once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 const MAX_PENDING_PASSKEY_STATES: usize = 128;
+// Limit a single authenticated account's share of registration slots.
+const MAX_PENDING_REGISTRATIONS_PER_ACCOUNT: usize = 4;
+// Bound a single IPv4 / IPv6 /64 group's share of authentication ceremonies.
+const MAX_PENDING_AUTH_PER_IP_GROUP: usize = 16;
 const MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT: usize = 32;
 
 pub(super) fn passkey_user_handle(account_id: &str) -> Vec<u8> {
@@ -83,7 +88,13 @@ pub(super) fn passkey_webauthn_from_headers(headers: &HeaderMap) -> Result<Webau
                 );
             Some(format!("{proto}://{host}"))
         })
-        .unwrap_or_else(|| "https://dashboard.jasoncloudserver.me".to_string());
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "missing Origin and Host for passkey" })),
+            )
+                .into_response()
+        })?;
     let parsed = match url::Url::parse(&origin) {
         Ok(parsed) => parsed,
         Err(_) => {
@@ -204,6 +215,15 @@ pub(super) async fn admin_passkey_register_start_handler(
     let ceremony_id = Uuid::new_v4().simple().to_string();
     cleanup_passkey_states().await;
     let mut pending = PASSKEY_REG_STATES.lock().await;
+    if pending.values().filter(|entry| entry.account_id == account.id).count()
+        >= MAX_PENDING_REGISTRATIONS_PER_ACCOUNT
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "too many pending passkey registrations for this account; retry shortly" })),
+        )
+            .into_response();
+    }
     if pending.len() >= MAX_PENDING_PASSKEY_STATES {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -366,7 +386,7 @@ pub(super) async fn admin_passkey_login_start_handler(
     }
     if !state
         .rate_limiter
-        .check_limit(&format!("passkey-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
+        .check_limit(&format!("passkey-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)), IP_RATE_LIMIT_MAX_ATTEMPTS)
         .await
     {
         warn!(ip = %ip, "passkey login rate limited by ip");
@@ -425,7 +445,12 @@ pub(super) async fn admin_passkey_login_start_handler(
     let ceremony_id = Uuid::new_v4().simple().to_string();
     cleanup_passkey_states().await;
     let mut pending = PASSKEY_AUTH_STATES.lock().await;
-    if pending.len() >= MAX_PENDING_PASSKEY_STATES {
+    let source_group = crate::trusted_ip::blacklist_group_key(&ip);
+    if pending.len() >= MAX_PENDING_PASSKEY_STATES
+        || pending.values().filter(|entry| entry.source_group == source_group).count()
+            >= MAX_PENDING_AUTH_PER_IP_GROUP
+    {
+        // Same decoy shape as the existing global-cap path; no account enumeration.
         return passkey_login_decoy_response(&wa);
     }
     pending.insert(
@@ -433,6 +458,7 @@ pub(super) async fn admin_passkey_login_start_handler(
         PasskeyAuthenticationCeremony {
             // 空字串＝免輸帳號儀式：finish 階段以 credential id 反查。
             account_id: account.map(|account| account.id).unwrap_or_default(),
+            source_group,
             state: auth_state,
             expires_at: Instant::now() + Duration::from_secs(300),
         },
@@ -457,7 +483,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
     }
     if !state
         .rate_limiter
-        .check_limit(&format!("passkey-finish-ip:{ip}"), IP_RATE_LIMIT_MAX_ATTEMPTS)
+        .check_limit(&format!("passkey-finish-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)), IP_RATE_LIMIT_MAX_ATTEMPTS)
         .await
     {
         warn!(ip = %ip, "passkey finish rate limited by ip");

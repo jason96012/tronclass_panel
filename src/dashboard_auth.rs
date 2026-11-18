@@ -204,11 +204,17 @@ pub fn verify_first_login_password(password: &str, provider_password: &str) -> b
         && constant_time_eq(password.as_bytes(), provider_password.as_bytes())
 }
 
-/// Validate a new Dashboard password before it is stored.
-///
-/// There is intentionally no character-count policy. Users may choose a short
-/// password or a long passphrase, but it must not be empty, contain control
-/// characters, or reuse the upstream Tronclass credential.
+/// Apply the additional policy when setting a new administrator password.
+/// Existing hashes and automatic hash upgrades remain compatible.
+pub fn validate_admin_password_length(password: &str, is_admin: bool) -> Result<()> {
+    if is_admin && password.chars().count() < 12 {
+        return Err(miette::miette!("管理員 Dashboard 密碼長度至少需要 12 個字元"));
+    }
+    Ok(())
+}
+
+/// Validate a new Dashboard password before it is stored: at least eight
+/// characters, no control characters, and no upstream password reuse.
 pub fn validate_dashboard_password(password: &str, provider_password: &str) -> Result<()> {
     if password.is_empty() {
         return Err(miette::miette!("Dashboard 密碼不可為空"));

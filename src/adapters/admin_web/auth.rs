@@ -856,6 +856,13 @@ pub(super) async fn admin_password_change_handler(
         return unauthorized_response();
     }
 
+    if let Err(error) = crate::dashboard_auth::validate_admin_password_length(
+        &request.new_password,
+        account.is_admin,
+    ) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": error.to_string() }))).into_response();
+    }
+
     let hash = match crate::dashboard_auth::hash_dashboard_password_async(
         request.new_password.clone(),
         account.password.clone(),

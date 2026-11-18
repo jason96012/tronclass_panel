@@ -62,10 +62,8 @@ fn csrf_secret() -> &'static [u8] {
             }
         }
         let mut b = [0u8; 32];
-        if let Err(e) = getrandom::getrandom(&mut b) {
-            tracing::warn!(error = %e, "getrandom 失敗，CSRF token 金鑰改用 rand 產生");
-            b = rand::random::<[u8; 32]>();
-        }
+        // A failed OS entropy source must not silently change key-generation policy.
+        getrandom::getrandom(&mut b).expect("無法取得安全亂數，拒絕建立 CSRF 金鑰");
         let secret = hex::encode(b);
         if let Err(e) = crate::atomic_write::write_atomic_with_mode(path, &secret, 0o600) {
             tracing::warn!(

@@ -3182,6 +3182,7 @@ void main() {
     const ZXING_WASM_URL = "/scanner/zxing_reader.wasm";
     let zxingReady = false;
     let zxingState = "loading";        // loading / ready / unavailable
+    let zxingInitPromise = null;        // shared preload; never start a second WASM initialization
 
     function hasZxing() {
       return zxingReady && typeof window !== "undefined" && window.ZXingWASM
@@ -3749,7 +3750,10 @@ void main() {
          還沒命中時 interval 仍是 0 → 找 QR 的速度完全不變。 */
       const decodeGap = (lastHitAt && at - lastHitAt < 2000) ? HIT_DECODE_GAP_MS : DECODE_INTERVAL_MS;
       if (decoding || at - lastDecodeAt < decodeGap) return;
-      if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+      /* QR_LIVE_FRAME_READY_V1：即時相機不一定會達到 HAVE_ENOUGH_DATA（4）；
+         只要目前影格可用且尺寸已建立，就能以 drawImage 擷取並解碼。
+         沿用其他相機取樣路徑的 HAVE_CURRENT_DATA 門檻，避免預覽正常卻永遠不掃。 */
+      if (video.readyState < video.HAVE_CURRENT_DATA || !video.videoWidth || !video.videoHeight) return;
       decoding = true;
       lastDecodeAt = at;
       const decodeEpoch = scanEpoch;
@@ -4801,9 +4805,15 @@ void main() {
           return;
         }
         await initDecoder();
-        if (!barcodeDetector && !window.jsQR) {
+        // ZXing is a usable decoder too. If jsQR and the native decoder are
+        // unavailable, wait briefly for the already-running WASM preload.
+        if (!barcodeDetector && !window.jsQR && !hasZxing() && zxingInitPromise) {
+          setStatus("正在載入備用 QR 解碼器…", "warn");
+          await Promise.race([zxingInitPromise, new Promise(resolve => setTimeout(resolve, 5000))]);
+        }
+        if (!barcodeDetector && !window.jsQR && !hasZxing()) {
           setStatus("QR 解碼器尚未載入", "error");
-          setScanHint("解碼器沒有載入：請重新整理頁面；若一直失敗請回報（伺服器 /scanner/jsqr.js 讀不到）", "error");
+          setScanHint("解碼器沒有載入：請檢查網路並重新整理；若一直失敗請回報（/scanner/jsqr.js 或 /scanner/zxing_reader.wasm 可能讀不到）", "error");
           return;
         }
         /* 重新開啟前先關掉舊的 stream，避免手機鏡頭被前一條佔住。 */
@@ -5137,7 +5147,8 @@ void main() {
     }
     /* QR_ZXING_V1：進頁面就把 zxing-wasm 載好（背景做，不擋相機開啟）。
        載入失敗也不影響：解碼會自動退回 jsQR。 */
-    initZxing().then(() => updateCamInfo());
+    zxingInitPromise = initZxing();
+    zxingInitPromise.then(() => updateCamInfo());
     /* QR_WECHAT_V1：開頁 1.5 秒後在背景把微信引擎載好（6MB，只需一次）。
        不擋相機、不擋掃描；如果一直掃不到，深度掃描會立刻把它叫上來。 */
     wechatPreloadTimer = setTimeout(() => { initWechat(false); }, 1500);

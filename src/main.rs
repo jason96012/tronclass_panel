@@ -815,6 +815,7 @@ async fn run_account_cmd(db: db::AccountsDb, cmd: AccountCmd) -> Result<()> {
                 eprintln!("找不到帳號：{id}");
                 std::process::exit(1);
             };
+            crate::dashboard_auth::validate_admin_password_length(&password, account.is_admin)?;
             let password_hash =
                 crate::dashboard_auth::hash_dashboard_password(&password, &account.password)?;
             if db.set_dashboard_password_hash(&id, &password_hash).await? {

@@ -150,6 +150,11 @@ fn cache_get(ip: &str) -> Option<GeoInfo> {
 }
 
 fn cache_put(ip: &str, info: &GeoInfo) {
+    cache_put_at(ip, info, Instant::now());
+}
+
+// Both successful and failed lookups must obey the same capacity limit.
+fn cache_put_at(ip: &str, info: &GeoInfo, at: Instant) {
     let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
     if cache.len() >= MAX_CACHE_ENTRIES && !cache.contains_key(ip) {
         if let Some(oldest) = cache
@@ -160,7 +165,7 @@ fn cache_put(ip: &str, info: &GeoInfo) {
             cache.remove(&oldest);
         }
     }
-    cache.insert(ip.to_string(), (Instant::now(), info.clone()));
+    cache.insert(ip.to_string(), (at, info.clone()));
 }
 
 fn pick_str(value: &serde_json::Value, key: &str) -> String {
@@ -239,11 +244,10 @@ pub async fn lookup(ip: &str) -> GeoInfo {
         None => {
             let unknown = GeoInfo::default();
             // 短快取：把 Instant 往前撥，讓 TTL 只剩 10 分鐘。
-            let mut cache = CACHE.lock().unwrap_or_else(|p| p.into_inner());
             let short_ttl_at = Instant::now()
                 .checked_sub(CACHE_TTL - Duration::from_secs(10 * 60))
                 .unwrap_or_else(Instant::now);
-            cache.insert(ip.to_string(), (short_ttl_at, unknown.clone()));
+            cache_put_at(ip, &unknown, short_ttl_at);
             unknown
         }
     }

@@ -200,8 +200,12 @@ pub(super) async fn acquire_body_scan_slot(
     waf: &WafEngine,
     limit: usize,
 ) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    // 單一請求的需求不得超過整體預算（否則永遠等不到）。
-    let units = body_scan_units(limit).min(waf.body_scan_budget_mb as u32);
+    // Do not under-reserve when a configured budget is smaller than a route's
+    // maximum: fail closed rather than buffering more than the budget covers.
+    let units = body_scan_units(limit);
+    if units as usize > waf.body_scan_budget_mb {
+        return None;
+    }
     let sem = waf.body_scan_budget.clone();
     match tokio::time::timeout(waf.body_scan_wait, sem.acquire_many_owned(units)).await {
         Ok(Ok(permit)) => Some(permit),
