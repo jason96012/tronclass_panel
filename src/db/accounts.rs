@@ -6,6 +6,26 @@ use sqlx::FromRow;
 use super::{AccountsDb, MAX_USERNAME_MATCH_ROWS};
 use crate::account::RawAccountConfig;
 
+// Prevent a stale read used for key rotation from overwriting a newer password
+// or session cookie saved concurrently by a login or administrator.
+const REWRAP_COMPARE_AND_SWAP_SQL: &str =
+    "UPDATE accounts SET password = ?, session_cookie = ? WHERE id = ? AND password = ? AND session_cookie = ?";
+
+// Database read paths can be hot. Report failed migration writes without
+// turning a database outage into an unbounded warning storm.
+fn warn_rewrap_write_failure() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static LAST_WARNING: AtomicU64 = AtomicU64::new(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let last = LAST_WARNING.load(Ordering::Relaxed);
+    if (last == 0 || now.saturating_sub(last) >= 60)
+        && LAST_WARNING.compare_exchange(last, now.max(1), Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    {
+        tracing::warn!("帳號憑證背景重加密寫回失敗；保留原資料並於後續讀取重試（警告最多每分鐘一次）");
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UsernameUpdateResult {
     Updated { account_id: String },
@@ -178,14 +198,20 @@ impl AccountsDb {
         }
         let new_password = password.unwrap_or_else(|| row.password.clone());
         let new_cookie = session_cookie.unwrap_or_else(|| row.session_cookie.clone());
-        match sqlx::query("UPDATE accounts SET password = ?, session_cookie = ? WHERE id = ?")
+        match sqlx::query(REWRAP_COMPARE_AND_SWAP_SQL)
             .bind(&new_password)
             .bind(&new_cookie)
             .bind(&row.id)
+            .bind(&row.password)
+            .bind(&row.session_cookie)
             .execute(&self.pool)
             .await
         {
-            // LOG_QUIET_V1：逐帳號細節降 debug；list() 端以單行彙總替代，避免洗版。
+            // A concurrent update wins; never overwrite it with a stale snapshot.
+            Ok(result) if result.rows_affected() == 0 => {
+                tracing::debug!("憑證在背景重加密期間已變更或帳號已刪除；略過舊快照，下次讀取再確認");
+                false
+            }
             Ok(_) => {
                 tracing::debug!(
                     account_id = %row.id,
@@ -194,6 +220,7 @@ impl AccountsDb {
                 true
             }
             Err(error) => {
+                warn_rewrap_write_failure();
                 tracing::debug!(
                     account_id = %row.id,
                     %error,
@@ -228,6 +255,8 @@ impl AccountsDb {
 
             let mut failed = false;
             let mut changed = false;
+            let mut encrypted_password = false;
+            let mut rewrapped_password = false;
             let mut new_password = password.clone();
             let mut new_cookie = session_cookie.clone();
             for (outcome, slot, is_password) in [(pw, &mut new_password, true), (ck, &mut new_cookie, false)] {
@@ -237,14 +266,14 @@ impl AccountsDb {
                         *slot = v;
                         changed = true;
                         if is_password {
-                            report.encrypted_plaintext += 1;
+                            encrypted_password = true;
                         }
                     }
                     RotateOutcome::Rewrapped(v) => {
                         *slot = v;
                         changed = true;
                         if is_password {
-                            report.rewrapped += 1;
+                            rewrapped_password = true;
                         }
                     }
                     RotateOutcome::Undecryptable => {
@@ -266,16 +295,27 @@ impl AccountsDb {
             }
             if dry_run {
                 report.would_update += 1;
+                if encrypted_password { report.encrypted_plaintext += 1; }
+                if rewrapped_password { report.rewrapped += 1; }
                 continue;
             }
-            match sqlx::query("UPDATE accounts SET password = ?, session_cookie = ? WHERE id = ?")
+            match sqlx::query(REWRAP_COMPARE_AND_SWAP_SQL)
                 .bind(&new_password)
                 .bind(&new_cookie)
                 .bind(&id)
+                .bind(&password)
+                .bind(&session_cookie)
                 .execute(&self.pool)
                 .await
             {
-                Ok(_) => report.updated += 1,
+                Ok(result) if result.rows_affected() == 0 => report.write_failed.push(
+                    format!("{id}: 帳號資料已變更或刪除，略過舊快照；請重新檢查再重試"),
+                ),
+                Ok(_) => {
+                    report.updated += 1;
+                    if encrypted_password { report.encrypted_plaintext += 1; }
+                    if rewrapped_password { report.rewrapped += 1; }
+                }
                 Err(error) => report.write_failed.push(format!("{id}: {error}")),
             }
         }
@@ -287,9 +327,9 @@ impl AccountsDb {
     /// 新增帳號；若 id 已存在則回傳錯誤。
     pub async fn insert(&self, account: &RawAccountConfig) -> Result<()> {
         let password = crate::secret_encryption::StoreSecret::new(&account.password)
-            .store_value_with_purpose("accounts.password");
+            .store_value_with_purpose("accounts.password")?;
         let session_cookie = crate::secret_encryption::StoreSecret::new(&account.session_cookie)
-            .store_value_with_purpose("accounts.session_cookie");
+            .store_value_with_purpose("accounts.session_cookie")?;
         sqlx::query(
             "INSERT INTO accounts (id, provider, username, password, dashboard_password_hash, enabled, line_user_id, discord_user_id, session_cookie, is_admin)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -314,9 +354,9 @@ impl AccountsDb {
     /// 新增或更新帳號（upsert）。
     pub async fn upsert(&self, account: &RawAccountConfig) -> Result<()> {
         let password = crate::secret_encryption::StoreSecret::new(&account.password)
-            .store_value_with_purpose("accounts.password");
+            .store_value_with_purpose("accounts.password")?;
         let session_cookie = crate::secret_encryption::StoreSecret::new(&account.session_cookie)
-            .store_value_with_purpose("accounts.session_cookie");
+            .store_value_with_purpose("accounts.session_cookie")?;
         sqlx::query(
             "INSERT INTO accounts (id, provider, username, password, dashboard_password_hash, enabled, line_user_id, discord_user_id, session_cookie, is_admin)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -351,7 +391,7 @@ impl AccountsDb {
     /// SET_PASSWORD_VERIFY_V1：只更新儲存的學校密碼（加密寫入），不動其他欄位。回傳是否找到帳號。
     pub async fn set_password(&self, id: &str, password: &str) -> Result<bool> {
         let stored = crate::secret_encryption::StoreSecret::new(password)
-            .store_value_with_purpose("accounts.password");
+            .store_value_with_purpose("accounts.password")?;
         let result = sqlx::query("UPDATE accounts SET password = ? WHERE id = ?")
             .bind(&stored)
             .bind(id)
@@ -417,7 +457,7 @@ impl AccountsDb {
     /// 更新帳號最近一次成功登入的 session cookie，回傳是否找到並更新。
     pub async fn set_session_cookie(&self, id: &str, session_cookie: &str) -> Result<bool> {
         let stored = crate::secret_encryption::StoreSecret::new(session_cookie)
-            .store_value_with_purpose("accounts.session_cookie");
+            .store_value_with_purpose("accounts.session_cookie")?;
         let result = sqlx::query("UPDATE accounts SET session_cookie = ? WHERE id = ?")
             .bind(&stored)
             .bind(id)
@@ -536,3 +576,7 @@ impl AccountsDb {
 }
 
 
+
+#[cfg(test)]
+#[path = "accounts/rewrap_cas_tests.rs"]
+mod rewrap_cas_tests;

@@ -219,3 +219,7 @@ fn cleanup_submit_state(state: &mut HashMap<GroupSubmitKey, SubmitSequence>) {
     state.retain(|_, sequence| sequence.last_used.elapsed() < GROUP_SUBMIT_STATE_TTL);
 }
 
+
+#[cfg(test)]
+#[path = "group_submit/qr_phase1_tests.rs"]
+mod qr_phase1_tests;

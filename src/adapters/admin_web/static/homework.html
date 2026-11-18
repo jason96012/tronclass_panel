@@ -2320,11 +2320,11 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
         ? '✅ 已完成（手動標記）'
         : (submitted
           ? '✅ 已繳交'
-          : (rem != null && rem <= 0 ? '❌ 逾期未繳' : '⏳ 未繳交'));
+          : (item.submission_status === 'unknown' ? '❔ 繳交狀態未知' : (rem != null && rem <= 0 ? '❌ 逾期未繳' : '⏳ 未繳交')));
 
       const statusClass = (submitted || userDone)
         ? 'good'
-        : (rem != null && rem <= 0 ? 'bad' : 'warn');
+        : (item.submission_status === 'unknown' ? 'warn' : (rem != null && rem <= 0 ? 'bad' : 'warn'));
 
       // SCORE_DISPLAY_V1：作業／測驗／問答類的「分數」放在「截止期限」旁邊同一列
       //（截止期限不再跨滿整行）。已評分 → 💯 綠色分數；未評分（score=null，

@@ -437,11 +437,8 @@ impl std::fmt::Display for RequestCommand {
             RequestCommand::Stop => write!(f, "Stop"),
             RequestCommand::Start => write!(f, "Start"),
             RequestCommand::ReAuth => write!(f, "ReAuth"),
-            RequestCommand::QrCode { data, .. } => {
-                // REDIRECT_UTF8_SLICE_V1：QR data 可能含任意 UTF-8，改用字元截斷。
-                write!(f, "QrCode({}...)", crate::text_utils::truncate_chars(data, 20))
-            }
-            RequestCommand::NumberCode { code, .. } => write!(f, "NumberCode({code})"),
+            RequestCommand::QrCode { .. } => write!(f, "QrCode(<redacted>)"),
+            RequestCommand::NumberCode { .. } => write!(f, "NumberCode(<redacted>)"),
             RequestCommand::NumberAutoLookup { account_id, .. } => {
                 write!(
                     f,
@@ -450,7 +447,7 @@ impl std::fmt::Display for RequestCommand {
                 )
             }
             RequestCommand::Help => write!(f, "Help"),
-            RequestCommand::Unknown(text) => write!(f, "Unknown({text})"),
+            RequestCommand::Unknown(_) => write!(f, "Unknown(<redacted>)"),
         }
     }
 }
@@ -837,7 +834,7 @@ pub async fn handle_request(request: AdapterRequest, state: &RequestState) -> Re
     Ok(())
 }
 
-#[instrument(skip(reply_token, state), fields(command = %cmd))]
+#[instrument(skip(cmd, reply_token, state), fields(command = %cmd))]
 pub async fn execute_command(
     cmd: RequestCommand,
     reply_token: &str,
@@ -908,6 +905,10 @@ pub async fn execute_command(
             reply_if_possible(reply_token, state, OutboundMessage::ReauthTriggered).await?;
         }
         RequestCommand::QrCode { data: qr_data, rollcall_id } => {
+            if qr_data.is_empty() || qr_data.len() > 16 * 1024 {
+                reply_if_possible(reply_token, state, OutboundMessage::Text("QR 資料為空或過長，請重新輸入。".to_string())).await?;
+                return Ok(());
+            }
             info!(data_len = qr_data.len(), "收到 QR code 資料");
             let account = if is_admin {
                 if state.accounts.len() == 1 {
@@ -1113,8 +1114,9 @@ pub async fn execute_command(
             reply_if_possible(reply_token, state, OutboundMessage::Help).await?;
         }
         RequestCommand::Unknown(text) => {
-            debug!(text = %text, "收到未知指令或純文字");
-            reply_if_possible(reply_token, state, OutboundMessage::UnknownCommand { text }).await?;
+            let _ = text; // May contain credentials; never log or echo it.
+            debug!("收到未知指令或純文字");
+            reply_if_possible(reply_token, state, OutboundMessage::UnknownCommand { text: String::new() }).await?;
         }
     }
 
@@ -1224,3 +1226,18 @@ async fn reply_not_authorized(reply_token: &str, state: &RequestState) -> Result
 }
 
 
+
+#[cfg(test)]
+mod functional_redaction_tests {
+    use super::*;
+    #[test]
+    fn command_display_never_contains_input() {
+        let sensitive = "secret-qr-code";
+        let cases = [
+            RequestCommand::QrCode { data: sensitive.to_string(), rollcall_id: None },
+            RequestCommand::NumberCode { code: sensitive.to_string(), rollcall_id: None },
+            RequestCommand::Unknown(sensitive.to_string()),
+        ];
+        for command in cases { assert!(!command.to_string().contains(sensitive)); }
+    }
+}

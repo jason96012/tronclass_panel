@@ -52,6 +52,7 @@ mod monitor_alerts;
 mod monitor_watchdog;
 // RADAR_PANEL_V1（fix70）：雷達設定的執行期有效值（設定檔基準值＋面板覆寫）。
 mod radar_settings;
+mod qr_timing_log;
 mod rollcalls;
 mod runtime_settings;
 mod secret_encryption;
@@ -1287,6 +1288,10 @@ async fn main() -> Result<()> {
     apply_runtime_timezone(&config.time.timezone)?;
 
     // config 載入後才初始化 tracing，確保使用設定檔中的等級
+    // Background best-effort QR timing storage must never gate attendance.
+    if let Err(e) = crate::qr_timing_log::init(&args.accounts_path) {
+        eprintln!("QR timing writer unavailable: {e}");
+    }
     init_tracing(&config.logging.level);
     logs::install_panic_hook();
 
@@ -1296,31 +1301,19 @@ async fn main() -> Result<()> {
         at_rest_encryption = crate::secret_encryption::is_encryption_enabled(),
         "at-rest 加密狀態（需 TRONCLASS_MASTER_KEY 環境變數為有效的 64 hex）"
     );
-    // AT_REST_ENCRYPTION_ALERT_V1（fix119）：未啟用 at-rest 加密時——
-    // 帳號密碼／cookie 會以**明文**寫入 accounts.db。單一行啟動日誌很容易被
-    // 淹沒，這裡啟動時用 error 層級點名，並且每小時重複 warn 提醒，直到
-    // 營運者設定 TRONCLASS_MASTER_KEY 為止（降不回去：db 裡一旦出現 enc: 信封
-    // 就必須有 key 才能登入，因此永不主動把明文重新寫回）。
+    // New sensitive writes fail closed; existing plaintext remains readable
+    // until an operator performs a backed-up migration. Do not stop attendance.
     if !crate::secret_encryption::is_encryption_enabled() {
         tracing::error!(
-            "安全警告：未設定有效的 TRONCLASS_MASTER_KEY（64 個 hex 字元），\
-             帳號的 TronClass 密碼／cookie 正以明文儲存在 accounts.db。\
-             請立即以 `openssl rand -hex 32` 產生 key 並加入環境變數後重啟；\
-             既有明文會在啟動時自動升級為 AES-256-GCM 加密。"
+            "安全警告：TRONCLASS_MASTER_KEY 未設定或無效；敏感資料新增／更新已拒絕，舊資料不會因此自動加密。請找回原金鑰；不要任意產生新金鑰覆蓋舊金鑰。"
         );
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-            // 第一跳立刻觸發；跳過它，第一次提醒在一小時後。
             interval.tick().await;
             loop {
                 interval.tick().await;
-                if crate::secret_encryption::is_encryption_enabled() {
-                    break;
-                }
-                tracing::warn!(
-                    "安全提醒：at-rest 加密仍未啟用（缺 TRONCLASS_MASTER_KEY），\
-                     帳號憑證持續以明文儲存，請參閱啟動時的安全警告。"
-                );
+                if crate::secret_encryption::is_encryption_enabled() { break; }
+                tracing::warn!("安全提醒：主密鑰無效，敏感資料寫入仍被拒絕；請找回原金鑰並檢查備份。");
             }
         });
     }

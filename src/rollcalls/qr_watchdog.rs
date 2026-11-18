@@ -127,3 +127,7 @@ impl QrHealth {
     }
 }
 
+
+#[cfg(test)]
+#[path = "qr_watchdog/qr_phase1_tests.rs"]
+mod qr_phase1_tests;

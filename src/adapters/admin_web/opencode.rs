@@ -313,10 +313,30 @@ fn read_opencode_config() -> OpencodeConfig {
 
 /// 寫入 opencode 設定（加密 API key）
 fn write_opencode_config(cfg: &OpencodeConfig) -> Result<(), String> {
+    // read_opencode_config omits secrets it cannot decrypt. Refuse to replace
+    // the file in that state, otherwise a wrong key could silently erase them.
+    let existing_path = std::path::Path::new(OPENCODE_CONFIG_FILE);
+    if existing_path.exists() {
+        if !crate::secret_encryption::is_encryption_enabled() {
+            return Err("主密鑰無效，拒絕更新既有 opencode 設定以保護原有金鑰".to_string());
+        }
+        let text = std::fs::read_to_string(existing_path)
+            .map_err(|_| "無法讀取既有 opencode 設定，拒絕覆寫".to_string())?;
+        let existing: OpencodeConfig = serde_json::from_str(&text)
+            .map_err(|_| "既有 opencode 設定無法解析，拒絕覆寫".to_string())?;
+        for stored in existing.provider_keys.values().chain(std::iter::once(&existing.legacy_api_key_encrypted)) {
+            if crate::secret_encryption::looks_like_envelope(stored)
+                && crate::secret_encryption::StoreSecret::from_stored_with_purpose(stored, "ai_opencode.api_key").as_str().is_empty()
+            {
+                return Err("既有 opencode 金鑰無法解密，拒絕覆寫；請檢查目前及舊主密鑰".to_string());
+            }
+        }
+    }
     let mut on_disk = cfg.clone();
     for sealed in on_disk.provider_keys.values_mut() {
         *sealed = crate::secret_encryption::StoreSecret::new(std::mem::take(sealed))
-            .store_value_with_purpose("ai_opencode.api_key");
+            .store_value_with_purpose("ai_opencode.api_key")
+            .map_err(|error| error.to_string())?;
     }
     on_disk.updated_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

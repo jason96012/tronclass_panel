@@ -220,7 +220,13 @@ pub enum QrParseError {
 /// - `https://elearn2.fju.edu.tw/scanner-jumper?p=...`
 /// - `/j?p=...`（相對 URL）
 /// - 純 `p` 參數值（直接傳入編碼後的字串）
+// Match scanner and command ingress limits, including direct callers.
+const MAX_QR_INPUT_BYTES: usize = 16 * 1024;
+
 pub fn parse_qr_url(input: &str) -> Result<QrCodeData> {
+    if input.len() > MAX_QR_INPUT_BYTES {
+        return Err(miette::miette!("QR 資料超過 16 KiB 上限"));
+    }
     debug!(input_len = input.len(), "解析 QR code URL");
 
     // 嘗試判斷是否為完整 URL 或相對 URL
@@ -527,7 +533,7 @@ impl QrCodeResult {
 impl std::fmt::Display for QrCodeResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            QrCodeResult::Success { data } => write!(f, "QR Code 簽到成功（data: {data}）"),
+            QrCodeResult::Success { .. } => write!(f, "QR Code 送出已接受"),
             QrCodeResult::Failed { reason } => write!(f, "QR Code 簽到失敗：{reason}"),
             QrCodeResult::ParseError { reason } => write!(f, "QR Code 解析失敗：{reason}"),
             QrCodeResult::Error(e) => write!(f, "QR Code 簽到錯誤：{e}"),
@@ -553,7 +559,11 @@ pub async fn attempt_qrcode_rollcall(
     rollcall_id: u64,
     qr_input: &str,
     is_raw_data: bool,
+    timing_attempt_id: u64,
 ) -> QrCodeResult {
+    if qr_input.len() > MAX_QR_INPUT_BYTES {
+        return QrCodeResult::ParseError { reason: "QR 資料超過 16 KiB 上限".to_string() };
+    }
     // ── 取得 data 字串 ────────────────────────────────────────────────────────
     let data = if is_raw_data {
         debug!("使用原始 data 字串（跳過 QR code 解析）");
@@ -588,7 +598,7 @@ pub async fn attempt_qrcode_rollcall(
     );
 
     // ── 呼叫 API ──────────────────────────────────────────────────────────────
-    match api.answer_qr_rollcall(rollcall_id, data.clone()).await {
+    match api.answer_qr_rollcall(rollcall_id, data.clone(), timing_attempt_id).await {
         Ok(AttendanceResult::Success) => {
             info!(rollcall_id = rollcall_id, "✅ QR Code 簽到成功");
             QrCodeResult::Success { data }
@@ -695,5 +705,22 @@ mod qr_fragment_and_escape_tests {
         let parsed = parse_qr_url("3~hello%1Fworld%1Eagain!4~42").unwrap();
         assert_eq!(parsed.data.as_deref(), Some("hello!world~again"));
         assert_eq!(parsed.rollcall_id, Some(42));
+    }
+}
+
+#[cfg(test)]
+mod qr_size_and_display_regression_tests {
+    use super::{parse_qr_url, QrCodeResult, MAX_QR_INPUT_BYTES};
+
+    #[test]
+    fn oversized_input_is_rejected_before_decoding() {
+        let input = "a".repeat(MAX_QR_INPUT_BYTES + 1);
+        assert!(parse_qr_url(&input).is_err());
+    }
+
+    #[test]
+    fn success_display_does_not_reveal_payload() {
+        let result = QrCodeResult::Success { data: "sensitive-payload".to_string() };
+        assert!(!result.to_string().contains("sensitive-payload"));
     }
 }

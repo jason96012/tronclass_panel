@@ -4304,68 +4304,48 @@ async fn no_compression_for_file_streams_middleware(
     next.run(axum::extract::Request::from_parts(parts, body)).await
 }
 
+// Includes authenticated iClass proxy aliases outside /admin. Scanner,
+// number, radar and LINE webhook belong to a separate merged router.
+fn admin_path_requires_https(path: &str) -> bool {
+    path.starts_with("/admin") || path == "/homework"
+        || path.starts_with("/tc/") || path.starts_with("/api/")
+        || path.starts_with("/static/") || path.starts_with("/course/")
+        || path.starts_with("/uploads/") || path == "/bulletin-list"
+        || path.starts_with("/bulletin-list/")
+}
+
 async fn https_redirect_middleware(
-    headers: HeaderMap,
-    uri: axum::http::Uri,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let path = uri.path();
-    if path.starts_with("/admin") {
-        // HTTPS_TRUSTED_PROXY_ONLY_V1 (H-4): `sanitize_forwarded_headers_middleware`
-        // has already dropped `x-forwarded-proto` for untrusted peers, so any
-        // value seen here came from a trusted hop.
-        //
-        // An absent header therefore means "a trusted hop did not declare a
-        // scheme", which in practice is direct loopback access during local
-        // development. Redirecting that to https:// would break dev (nothing
-        // serves TLS on that port) without protecting anyone: an untrusted
-        // client that reached us in plaintext has already sent its request, and
-        // the cookie hardening in `request_uses_https` is what actually keeps a
-        // session off a plaintext channel. So absence still means "do not
-        // redirect" — but it is now a deliberate, narrow case rather than a
-        // header an attacker can influence.
-        //
-        // The comparison is first-hop, trimmed and case-insensitive; the
-        // previous exact `== "http"` silently failed to redirect for values
-        // such as `HTTP` or `http, https`.
-        let is_plain_http = headers
-            .get("x-forwarded-proto")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.split(',').next())
-            .is_some_and(|v| v.trim().eq_ignore_ascii_case("http"));
-
-        if is_plain_http {
-            // Build the redirect target from the forwarded/Host value, but only
-            // when it is a plausible authority. The Location header is a 301
-            // (cacheable), so a value containing a path, scheme or credentials
-            // must never be interpolated verbatim.
-            let host = headers
-                .get("x-forwarded-host")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
-                .or_else(|| headers.get(header::HOST).and_then(|v| v.to_str().ok()))
-                .map(str::trim)
-                .filter(|value| is_safe_redirect_authority(value));
-
-            let Some(host) = host else {
-                // No usable host: fall through rather than emit a redirect to
-                // an attacker-shaped authority.
-                return next.run(request).await;
-            };
-
-            let https_uri = format!(
-                "https://{host}{}",
-                uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("")
-            );
-            if let Ok(location) = HeaderValue::from_str(&https_uri) {
-                return (StatusCode::MOVED_PERMANENTLY, [(header::LOCATION, location)])
-                    .into_response();
-            }
-            return next.run(request).await;
-        }
+    if !admin_path_requires_https(request.uri().path()) {
+        return next.run(request).await;
     }
-    next.run(request).await
+    // Only forwarded headers from trusted proxy hops survive the outer
+    // sanitizer. No redirect is issued: reflecting a request Host/query could
+    // leak a credential-bearing URL, and POST bodies cannot be made safe after
+    // the client has already sent them over plaintext.
+    if request_uses_https(request.headers()) {
+        return next.run(request).await;
+    }
+    let local_opt_in = std::env::var("TRONCLASS_ALLOW_INSECURE_LOCAL_HTTP")
+        .ok().is_some_and(|value| value == "1");
+    let peer = request.extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|info| info.0.ip());
+    let host = request.headers().get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|host| host.parse::<axum::http::uri::Authority>().ok());
+    let local_host = host.as_ref().is_some_and(|host| {
+        let name = host.host().trim_start_matches('[').trim_end_matches(']');
+        name.eq_ignore_ascii_case("localhost") || name == "127.0.0.1" || name == "::1"
+    });
+    let forwarded = ["x-forwarded-proto", "x-forwarded-for", "cf-visitor", "cf-connecting-ip"]
+        .iter().any(|name| request.headers().contains_key(*name));
+    if local_opt_in && peer.is_some_and(|ip| ip.is_loopback()) && local_host && !forwarded {
+        return next.run(request).await;
+    }
+    (StatusCode::FORBIDDEN, "HTTPS is required for the admin interface").into_response()
 }
 
 /// Accept only `host[:port]` shapes for use in a redirect `Location`.
@@ -5736,5 +5716,19 @@ mod fingerprint_notice_tests {
         let pair = "0123456789abcdef|203.0.113.7";
         assert_ne!(fingerprint_notice_key(pair, 1), fingerprint_notice_key(pair, 2));
         assert_eq!(fingerprint_notice_key(pair, 2), fingerprint_notice_key(pair, 2));
+    }
+}
+
+#[cfg(test)]
+mod network_https_route_tests {
+    use super::admin_path_requires_https;
+    #[test]
+    fn sensitive_aliases_are_in_scope_without_gating_scanner() {
+        for path in ["/admin", "/admin/api/login", "/homework", "/tc/course/1", "/api/profile", "/static/app.js", "/course/1", "/uploads/a", "/bulletin-list"] {
+            assert!(admin_path_requires_https(path), "{path}");
+        }
+        for path in ["/scanner", "/number", "/radar", "/healthz"] {
+            assert!(!admin_path_requires_https(path), "{path}");
+        }
     }
 }

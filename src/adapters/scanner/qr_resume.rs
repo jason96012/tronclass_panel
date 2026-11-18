@@ -46,12 +46,6 @@ impl QrScannerRegistry {
         self.qr_resume_signal.subscribe()
     }
 
-    pub(crate) async fn remember_qr(&self, provider: &str, account: &str, rollcall: &Rollcall) {
-        if let Some(entry) = self.inner.lock().await.get_mut(&PendingQrKey::new(provider, rollcall.rollcall_id)) {
-            entry.resume.templates.insert(account.to_string(), rollcall.clone());
-        }
-    }
-
     pub(crate) async fn qr_manual_rollcalls(&self, provider: &str, account: &str) -> Vec<Rollcall> {
         let inner = self.inner.lock().await;
         let now = Instant::now();

@@ -540,6 +540,7 @@
       <div class="actions">
         <button id="start" type="button">開啟相機</button>
         <button id="stop" type="button" class="secondary">停止</button>
+        <button id="recheck" type="button" class="secondary">重新核對帳號</button>
       </div>
       <div id="zoomControls" class="zoom-controls">
         <label for="zoom">
@@ -605,11 +606,12 @@
     </section>
 
     <section class="panel">
-      <p>簽到狀態會自動更新。已完成代表該帳號已回報 QR 簽到成功；未完成代表仍在等待有效 QR Code。</p>
+      <p>人數為目前已偵測並加入本場的帳號，其他帳號仍可能陸續加入；已點到須經學校確認。請持續對準最新 QR，直到各帳號完成。</p>
+      <p id="registrationHint">正在讀取已偵測到的帳號…</p>
       <div class="summary">
-        <div class="metric"><strong id="totalCount">0</strong><span>總帳號</span></div>
-        <div class="metric"><strong id="doneCount">0</strong><span>已點到</span></div>
-        <div class="metric"><strong id="pendingCount">0</strong><span>未點到</span></div>
+        <div class="metric"><strong id="totalCount">—</strong><span>總帳號</span></div>
+        <div class="metric"><strong id="doneCount">—</strong><span>已點到</span></div>
+        <div class="metric"><strong id="pendingCount">—</strong><span>未點到</span></div>
       </div>
       <div class="lists">
         <div class="list done">
@@ -1130,6 +1132,9 @@
             error.scannerCode = body.code || "";
             throw error;
           }
+          document.getElementById("registrationHint").textContent = body.registration_settling
+            ? "帳號仍可能陸續加入；人數目前只含已偵測並加入的帳號。"
+            : "目前只顯示已偵測並加入的帳號；其他帳號仍可能較晚加入。";
           totalCountEl.textContent = String(body.total_count || 0);
           doneCountEl.textContent = String(body.completed_count || 0);
           pendingCountEl.textContent = String(body.pending_count || 0);
@@ -1154,6 +1159,10 @@
           allDoneReading = null;
           allDoneEndedAt = null;
           lastKnownCounts = null;
+          totalCountEl.textContent = "—";
+          doneCountEl.textContent = "—";
+          pendingCountEl.textContent = "—";
+          document.getElementById("registrationHint").textContent = "狀態讀取失敗；暫時無法確認目前人數。";
           if (err && SCANNER_TERMINAL_CODES.indexOf(err.scannerCode) !== -1) {
             if (scanning) stopCamera();
             setStatus("掃碼連結已失效或流程已結束；這不代表簽到成功，請回控制台開啟目前的點名連結。", "warn");
@@ -1185,6 +1194,7 @@
       const pending = Math.max(0, Number(body && body.pending_count) || 0);
       const completed = Math.max(0, Number(body && body.completed_count) || 0);
       return { total, pending, completed, allDone: total > 0 && pending === 0 && completed >= total
+        && !Boolean(body && body.registration_settling)
         && Number(body && body.rechecking_count || 0) === 0 && Number(body && body.recheck_error_count || 0) === 0 };
     }
 
@@ -1314,7 +1324,9 @@
             rollcall_id: rollcallId,
             account_id: accountId,
             token,
-            qr_data: qrData
+            qr_data: qrData,
+            // Diagnostic only: client-reported age, never the QR itself.
+            client_observed_age_ms: Math.max(0, Math.min(60000, Date.now() - candidate.observedAt))
           }),
           keepalive: true
         }, SUBMIT_TIMEOUT_MS);
@@ -2786,7 +2798,8 @@ void main() {
     const TILE_PX_BUDGET = 1300 * 1000;   // 每輪分區解碼的畫素預算 → 決定每輪掃幾塊
     const TILES_PER_THOROUGH = 4;         // 完整輪一次掃幾塊（整圈早點掃完）
     const THOROUGH_EVERY_MS = 800;       // 多久算一次「完整輪」（調快：完整輪會多掃中央 1/2 與全幅）
-    let tileCursor = 0;                   // 分區輪掃的游標
+    let tileCursor = 0;                   // 分區輪掃的游標；只在真正掃過分區後推進
+    let preferTileNext = false;           // 中央與分區交替先掃，避免時間預算讓後段永遠餓死
     let stickyTile = -1;                  // 上一次解到的分區（優先重試）
 
     /* 分區順序：中心優先（先掃畫面中央，往外擴）。距離相同時用列、行決定，順序固定。 */
@@ -2868,37 +2881,31 @@ void main() {
       const seen = [];
       const push = (rg) => {
         const key = rg.sx + "," + rg.sy + "," + rg.cw + "," + rg.ch;
-        if (seen.indexOf(key) >= 0) return;      // 同一塊不要重複解
+        const existing = seen.indexOf(key);
+        if (existing >= 0) {
+          if (rg.scheduled) regions[existing].scheduled = true;
+          return;                                // 同一塊不要重複解
+        }
         seen.push(key);
         regions.push(rg);
       };
-      /* QR_ROI_TRACK_V1：先掃「上次看到 QR 的那一小塊」——原生像素 1:1，最快也最準。 */
+      // QR_FAIR_DECODE_V1：預算可能在第一區就用完；交替將一塊分區排到
+      // 追蹤區及中央尺度之前，避免遠離中央的碼永遠掃不到。游標只在實際解碼時前進。
+      const scheduledTile = tileRect(TILE_ORDER[tileCursor % TILE_ORDER.length]);
+      scheduledTile.scheduled = true;
+      if (preferTileNext) push(scheduledTile);
+      preferTileNext = !preferTileNext;
       const roi = roiRegion();
       if (roi) push(roi);
-      if (stickyTile >= 0) push(tileRect(stickyTile));
-      const zoomK = Math.round(digitalZoom());   /* LENS_ZOOM_V1：框架內的裁切倍率 */
-      /* 你看到的畫面＝中央 1/z。拉很大（z≥4）時那一塊最值得先掃；太小反而難解，所以不到 4 不掃。 */
+      if (stickyTile >= 0 && lastSeenAt && at - lastSeenAt < 2000) push(tileRect(stickyTile));
+      const zoomK = Math.round(digitalZoom());
       if (zoomK >= 4) push(centerRegion(Math.min(8, zoomK)));
       for (const pass of LADDER) {
         if (pass.thoroughOnly && !thorough) continue;
         push(centerRegion(pass.k));
       }
-      const hard = hardModeOn();
-      const n = hard ? TILES_PER_THOROUGH : Math.min(FAST_TILES, tilesPerRound(vw, vh));
-      let picked = 0;
-      let guard = 0;
-      while (picked < n && guard < TILE_ORDER.length * 2) {
-        const idx = TILE_ORDER[tileCursor % TILE_ORDER.length];
-        const wrap = Math.floor(tileCursor / TILE_ORDER.length);
-        tileCursor += 1;
-        guard += 1;
-        /* 使用者有拉大（z≥4）時，先只在「你看得到的那塊」裡挑（拉越大＝看得越少＝越快掃到）；
-           看得到的都試過了才往畫面其他角落掃。沒拉大時照中心優先順序掃整張。 */
-        if (wrap === 0 && targetZoom >= 4 && !tileHitsVisible(idx, vw, vh)) continue;
-        push(tileRect(idx));
-        picked += 1;
-      }
-      return { regions, opts, hard };
+      push(scheduledTile);
+      return { regions, opts, hard: hardModeOn() };
     }
 
     /* QR_SHARPEN_V1（fix82）：解碼前的 3×3 銳化。
@@ -3621,6 +3628,7 @@ void main() {
       for (let ri = 0; ri < regions.length; ri++) {
         if (nowMs() - roundStart > ROUND_BUDGET_MS) break;   // 這輪做夠了，剩下的下一輪再掃
         const region = regions[ri];
+        if (region.scheduled) tileCursor += 1;
         const cw = region.cw;
         const ch = region.ch;
         const longSide = Math.max(cw, ch);
@@ -3632,8 +3640,9 @@ void main() {
         canvas.height = dh;
         context.drawImage(video, region.sx, region.sy, cw, ch, 0, 0, dw, dh);
 
-        /* 只有「zxing 不可用」或「深度掃描的最後一塊」才允許 jsQR（jsQR 一次 55ms，很貴）。 */
-        const allowJsQR = jsqrBudget(hard) && ri === regions.length - 1;
+        /* 每輪只在第一個實際掃描區域考慮 jsQR；不能先耗掉預算再檢查
+           最後一區，因為時間上限可能讓最後一區永遠不會執行。 */
+        const allowJsQR = ri === 0 && jsqrBudget(hard);
         const plain = await readCanvas(region.label, opts, allowJsQR);
         if (plain) {
           const hitCorners = mapLocToVideo(plain.imgLoc, region);
@@ -3771,10 +3780,7 @@ void main() {
         /* QR_AI_SR_V1（fix93）：撿背景 AI 救援的結果；沒有就看看該不該放出去跑（不會阻塞這裡）。 */
         if (!found && srFound) { found = srFound; srFound = null; }
         if (!found) { srKick(); srWarmup(); }
-        /* QR_DECODE_PACING_V1：這一輪做完了 —— 依「剛剛忙了多久」讓畫面喘一段（最多 PERF_YIELD_MAX_MS），
-           解碼的總佔用率因此大約壓在 1/(1+PERF_DUTY_RATIO) ≈ 六成五以下，預覽才不會一格一格卡。
-           decoding 在這段期間維持 true，所以不會有下一輪插進來把畫面又吃掉。 */
-        await perfYield(Math.min(PERF_YIELD_MAX_MS, (nowMs() - roundStartAt) * PERF_DUTY_RATIO));
+        // 命中先回傳，不必等節流休息；舊鏡頭週期的結果仍不得送出。
         if (!scanning || decodeEpoch !== scanEpoch) return;
         if (found) {
           lastSeenAt = nowMs();
@@ -3783,6 +3789,8 @@ void main() {
           seenCount += 1;
           lastHitLabel = found.scale;
           lastHitVia = found.via || "";
+          // 開始傳送後再更新 UI／量清晰度，避免同步畫面工作延遲送碼。
+          submitQr(found.data, { data: found.data, observedAt: found.observedAt || decodedFrameAt, epoch: decodeEpoch });
           reportScanOnPreview(found);      // QR_PREVIEW_FEEDBACK_V1：預覽上直接顯示「掃到了」
           /* QR_BLUR_GUARD_V1：解到了 → 對焦是好的，重置（下一段仍可自動對焦）。 */
           refocusTries = 0;
@@ -3802,7 +3810,6 @@ void main() {
               `${found.sharpened ? "＋銳化" : ""} 解到${found.via ? "・" + found.via : ""}）`,
             "ok"
           );
-          submitQr(found.data, { data: found.data, observedAt: found.observedAt || decodedFrameAt, epoch: decodeEpoch });
         } else if (scanning && (!lastSeenAt || (nowMs() - lastSeenAt) / 1000 > NO_QR_HINT_SECS)) {
           /* ALL_DONE_AUTOSTOP_V1：這一輪是 await 回來的，中間可能已經「全部點到自動收工」
              （scanning 被 stopCamera 關掉）——那就不要再把提示列蓋回「還沒看到 QR」，
@@ -3841,6 +3848,8 @@ void main() {
           );
         }
         updateCamInfo();
+        // 維持原有解碼節流，但移到送出之後，兼顧首碼延遲與畫面流暢。
+        await perfYield(Math.min(PERF_YIELD_MAX_MS, (nowMs() - roundStartAt) * PERF_DUTY_RATIO));
       } finally {
         decoding = false;
       }
@@ -4943,9 +4952,14 @@ void main() {
       setScanHint("已停止掃描（可按「開啟相機」重新開始）", "");
     }
 
-    /* QR_MANUAL_CAMERA_V1：明確按開啟／手動送出，立即要求後端同場重查。
-       手動鏡頭在本次使用期間保持開啟，學校重新確認完成後由使用者自行停止。 */
-    function beginManualQrRecovery() {
+    /* 手動鏡頭保持開啟；正常開啟不重建已有待點名工作者。
+       需要恢復時可明確按「重新核對帳號」，已知全部完成後重開也會重查。 */
+    function beginManualQrRecovery(forceRecheck) {
+      // Normal opening/manual input must not cancel and rebuild active workers.
+      // A deliberate recheck, or reopening a known-complete session, still can.
+      const shouldRecheck = forceRecheck === true || allDoneStopped || !!(lastKnownCounts
+        && lastKnownCounts.total > 0 && lastKnownCounts.pending === 0
+        && lastKnownCounts.completed >= lastKnownCounts.total);
       allDoneManual = true;
       allDoneStopped = false;
       allDoneReading = null;
@@ -4957,8 +4971,11 @@ void main() {
       srFound = null; // a rescue decoded before this manual session is not a new observation
       lastSubmittedData = "";
       lastSubmittedAt = 0;
-      requestQrRecheck();
+      if (shouldRecheck) requestQrRecheck();
     }
+    document.getElementById("recheck").addEventListener("click", () => {
+      beginManualQrRecovery(true);
+    });
     document.getElementById("start").addEventListener("click", () => {
       beginManualQrRecovery();
       startCamera(); // do not wait for school network before asking for camera access
@@ -4971,7 +4988,7 @@ void main() {
         return;
       }
       beginManualQrRecovery();
-      setScanHint("手動送出：重新核對並補送你貼上的內容（不經過相機解碼）", "");
+      setScanHint("手動送出你貼上的內容（不經過相機解碼）", "");
       submitQr(value);
     });
 

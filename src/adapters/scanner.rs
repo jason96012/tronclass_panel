@@ -36,7 +36,7 @@ use crate::adapters::admin_web::{self, AdminWebState, HSTS_HEADER_VALUE};
 use crate::adapters::requests::{
     NumberCodeInput, NumberCodeSender, QrCodeSender, RadarPointInput, RadarPointSender,
 };
-use crate::api::rollcall::{RollcallProgress, AUTO_SUBMIT_PERCENT};
+use crate::api::rollcall::{Rollcall, RollcallProgress, AUTO_SUBMIT_PERCENT};
 use crate::api::ApiClient;
 use crate::text_utils::truncate_chars;
 use crate::rollcalls::qr_watchdog::{QrHealth, QrPhase, QR_REPLAY_MAX_AGE};
@@ -49,6 +49,8 @@ const DEFAULT_NUMBER_PATH: &str = "/number";
 // RADAR_INPUT_PAGE_V1（fix71）：雷達點名輸入頁（輸入座標）。
 const DEFAULT_RADAR_PATH: &str = "/radar";
 const MAX_QR_DATA_LEN: usize = 16 * 1024;
+// Grace period, not a guarantee that every monitor has already detected the class.
+const QR_REGISTRATION_QUIET: Duration = Duration::from_secs(15);
 /// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：同一個點名的班上進度最多每幾秒真的讀一次。
 /// 監控流程每個帳號都會問一次，靠這層快取把「13 個帳號」壓成「每 10 秒 1 次」。
 const CLASS_PROGRESS_TTL: Duration = Duration::from_secs(10);
@@ -96,6 +98,7 @@ struct PendingQrEntry {
     submitted_qr_data: Option<String>,
     submitted_qr_at: Option<Instant>,
     submission_revision: u64,
+    last_new_account_at: Instant,
     // QR_STALL_WATCHDOG_V1：ledger 不隨 receiver 替換而歸零。
     watchdogs: HashMap<String, QrHealth>,
     resume: qr_resume::QrResumeState,
@@ -221,6 +224,7 @@ impl QrScannerRegistry {
         account_id: &str,
         tx: QrCodeSender,
         timeout: Duration,
+        template: Option<&Rollcall>,
     ) -> Result<ScannerLink, ScannerError> {
         let now = Instant::now();
         let expires_at = now + timeout;
@@ -236,6 +240,7 @@ impl QrScannerRegistry {
                 submitted_qr_data: None,
                 submitted_qr_at: None,
                 submission_revision: 0,
+                last_new_account_at: now,
                 watchdogs: HashMap::new(),
                 resume: qr_resume::QrResumeState::default(),
                 accounts: HashMap::new(),
@@ -254,7 +259,13 @@ impl QrScannerRegistry {
             }
             // A camera-open recovery never extends the original link lifetime.
             if entry.resume.last_request.is_none() { entry.expires_at = entry.expires_at.max(expires_at); }
-            entry.all_accounts.insert(account_id.to_string());
+            if entry.all_accounts.insert(account_id.to_string()) {
+                entry.last_new_account_at = now;
+            }
+            // The account and its recovery template become visible atomically.
+            if let Some(rollcall) = template {
+                entry.resume.templates.insert(account_id.to_string(), rollcall.clone());
+            }
             // QR_RECOVERY_V1：重新進入等待代表需要再次確認，不能同時列為已完成。
             entry.completed_accounts.remove(account_id);
             let account = PendingAccount::new(tx);
@@ -509,6 +520,7 @@ impl QrScannerRegistry {
         })));
         let mut result = ScannerStatusResult {
             qr_recovery: entry.resume.status(),
+            registration_settling: now.saturating_duration_since(entry.last_new_account_at) < QR_REGISTRATION_QUIET,
             total_count: all_accounts.len(),
             completed_count: completed_accounts.len(),
             pending_count: pending_accounts.len(),
@@ -1331,6 +1343,11 @@ impl QrScannerRegistry {
         &self,
         submission: ScannerSubmission,
     ) -> Result<ScannerSubmitResult, ScannerError> {
+        // Measure server-side intake only; no QR, account, token or URL is logged.
+        let intake_started = Instant::now();
+        let intake_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64).unwrap_or(0);
         let provider = submission.provider.trim();
         let account_id = submission.account_id.trim();
         let token = submission.token.trim();
@@ -1346,7 +1363,12 @@ impl QrScannerRegistry {
         }
 
         let key = PendingQrKey::new(provider, submission.rollcall_id);
-        let (account_senders, previous_state, submission_revision) = {
+        // QR_RESET_FANOUT_V1: registration, reset, cache update and nonblocking
+        // dispatch are serialized by the registry lock. Otherwise a submit could
+        // snapshot old senders, lose a race to reset/re-register, and report success
+        // for channels that no longer belong to the active workers. No await occurs
+        // while holding this lock except its initial acquisition.
+        let (delivered_accounts, failed_accounts) = {
             let now = Instant::now();
             let mut inner = self.inner.lock().await;
             let entry = inner.get_mut(&key).ok_or(ScannerError::PendingNotFound)?;
@@ -1358,68 +1380,49 @@ impl QrScannerRegistry {
             if entry.token != token {
                 return Err(ScannerError::InvalidToken);
             }
-            // QR_RECOVERY_V1：連結持有人先完成後，仍可替同場尚未完成者補碼。
-            // 不接受陌生／僅被取消的帳號；token、provider、rollcall 邊界保持不變。
             let known_scanner = entry.accounts.contains_key(account_id)
                 || entry.completed_accounts.contains(account_id);
             if !known_scanner || entry.accounts.is_empty() {
                 return Err(ScannerError::AccountNotPending);
             }
 
-            // 同一個 scanner token 在過期前允許重複送出。
-            // 課堂 QR Code 可能會輪換，scanner 頁面會持續掃描並把新的 payload
-            // fan-out 給仍在等待的帳號；流程成功的帳號會自行 unregister。
-            // M3：記下舊狀態；若下面一個帳號都沒送到，會還原（避免晚到帳號收到從未送達的 payload）。
             let previous_state = (entry.used, entry.submitted_qr_data.clone(), entry.submitted_qr_at);
             entry.submission_revision = entry.submission_revision.wrapping_add(1);
             entry.used = true;
             entry.submitted_qr_data = Some(qr_data.to_string());
             entry.submitted_qr_at = Some(now);
-            let senders = entry
-                .accounts
-                .iter()
-                .map(|(account_id, account)| {
-                    (account_id.clone(), account.tx.clone(), Arc::clone(&account.lane))
-                })
-                .collect::<Vec<_>>();
-            // 即使 channel 已關閉／滿載，也要記下「確實有人重新掃」供外層偵測。
-            for (id, _, _) in &senders {
-                if let Some(health) = entry.watchdogs.get_mut(id) { health.enqueued(now); }
-            }
-            (senders, previous_state, entry.submission_revision)
-        };
 
-        // QR_FANOUT_NONBLOCKING_V1：逐一派送時不能在這裡 `send().await`。每個帳號的 QR 佇列只有 4 格，
-        // 而帳號處理一筆 payload 前要先等「輪到自己」的群組排程（人數多時可達十幾秒），期間掃碼頁每掃一次
-        // 就多一筆。舊寫法遇到滿佇列會卡住這個 HTTP 請求，排在後面的帳號收不到新 payload，掃碼頁逾時重試
-        // 又會疊加；症狀就是「QR 仍有效，卻有人一直停在未完成」。現在：有空位立即送；佇列滿時改由背景
-        // 任務等待送出，不擋住回應與其他帳號。已知取捨：佇列滿時，背景送出的舊 payload 可能比之後直送的新
-        // payload 晚到；帳號端取佇列中最新的一筆，下一次掃碼會自然校正。
-        let mut delivered_accounts = Vec::new();
-        let mut failed_accounts = Vec::new();
-        for (account_id, tx, lane) in account_senders {
-            if queue_qr_ordered(&lane, &tx, qr_data.to_string(), &account_id) {
-                delivered_accounts.push(account_id);
-            } else {
-                warn!(account_id = %account_id, "QR scanner callback 傳送失敗（帳號已結束）");
-                failed_accounts.push(account_id);
-            }
-        }
-
-        if delivered_accounts.is_empty() {
-            let mut inner = self.inner.lock().await;
-            if let Some(entry) = inner.get_mut(&key) {
-                // QR_LATEST_ROLLBACK_V1: an older failed delivery cannot overwrite a
-                // newer QR or restore a cache explicitly cleared by camera recovery.
-                if entry.token == token && entry.submission_revision == submission_revision {
-                    entry.used = previous_state.0;
-                    entry.submitted_qr_data = previous_state.1;
-                    entry.submitted_qr_at = previous_state.2;
+            let mut delivered = Vec::new();
+            let mut failed = Vec::new();
+            for (id, account) in &entry.accounts {
+                if queue_qr_ordered(&account.lane, &account.tx, qr_data.to_string(), id) {
+                    delivered.push(id.clone());
+                } else {
+                    warn!(account_id = %id, "QR scanner callback 傳送失敗（帳號已結束）");
+                    failed.push(id.clone());
                 }
             }
-            return Err(ScannerError::NoDeliveredAccounts);
-        }
+            for id in &delivered {
+                if let Some(health) = entry.watchdogs.get_mut(id) { health.enqueued(now); }
+            }
+            if delivered.is_empty() {
+                entry.used = previous_state.0;
+                entry.submitted_qr_data = previous_state.1;
+                entry.submitted_qr_at = previous_state.2;
+                return Err(ScannerError::NoDeliveredAccounts);
+            }
+            (delivered, failed)
+        };
 
+        // Emitted after fan-out and outside the registry lock; delivered means
+        // accepted by a channel/lane, not received by the school.
+        crate::qr_timing_log::record(serde_json::json!({
+            "event": "qr_timing_fanout", "rollcall_id": submission.rollcall_id,
+            "intake_epoch_ms": intake_epoch_ms,
+            "fanout_ms": intake_started.elapsed().as_millis() as u64,
+            "client_observed_age_ms": submission.client_observed_age_ms.map(|ms| ms.min(60_000)),
+            "accepted": delivered_accounts.len(), "rejected": failed_accounts.len()
+        }));
         Ok(ScannerSubmitResult {
             delivered_count: delivered_accounts.len(),
             delivered_accounts,
@@ -2156,8 +2159,8 @@ async fn scanner_submit_handler(
 ///
 /// 通道滿載時，新的 payload 不能各自 spawn（那樣會亂序：較舊的碼可能晚到，
 /// 讓 handler 拿舊碼去學校送出，學校回過期，掃碼頁顯示錯誤）。
-/// 改成：pending 依序排隊，由同一個 pump 任務逐筆送出；pending 非空時，
-/// 之後的 payload 一律排在後面，不會搶先。
+/// 由單一 pump 保留正在發送的隊首；其餘未發送的更新合併為最新一筆，
+/// 避免 QR 輪換時無界累積。已在通道內的資料仍由接收端送出前排空。
 #[derive(Default)]
 struct QrLane {
     /// 等待送出的 payload。隊首是發送中的那一筆，送出成功後才移除。
@@ -2186,6 +2189,9 @@ fn queue_qr_ordered(
             Err(TrySendError::Closed(_)) => return false,
         }
     } else {
+        // Keep the in-flight head, but coalesce unsent updates to the latest QR.
+        // A slow receiver must not build an unbounded backlog of rotating codes.
+        state.pending.truncate(1);
         state.pending.push_back(value);
     }
     if !state.pumping {
@@ -2282,6 +2288,7 @@ fn status_result_from_sets<'a>(
 
     ScannerStatusResult {
         qr_recovery: QrRecoveryStatus::default(),
+        registration_settling: false,
         total_count: all_accounts.len(),
         completed_count: completed_accounts.len(),
         pending_count: pending_accounts.len(),
@@ -2451,6 +2458,9 @@ pub struct ScannerSubmission {
     pub account_id: String,
     pub token: String,
     pub qr_data: String,
+    /// Optional, untrusted client-side duration; never used for routing.
+    #[serde(default)]
+    pub client_observed_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2477,6 +2487,8 @@ pub struct NumberCodeSubmission {
 pub struct ScannerStatusResult {
     #[serde(flatten)]
     pub qr_recovery: QrRecoveryStatus,
+    /// Recent new registration: counts are observed members, not a known class roster.
+    pub registration_settling: bool,
     pub total_count: usize,
     pub completed_count: usize,
     pub pending_count: usize,
@@ -2559,3 +2571,48 @@ impl ScannerError {
     }
 }
 
+
+#[cfg(test)]
+mod qr_reset_fanout_tests {
+    use super::*;
+
+    #[test]
+    fn scanner_timing_is_optional_for_older_clients() {
+        let old = r#"{"provider":"example","rollcall_id":1,"account_id":"test","token":"test","qr_data":"test"}"#;
+        let parsed: ScannerSubmission = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.client_observed_age_ms, None);
+        let newer = r#"{"provider":"example","rollcall_id":1,"account_id":"test","token":"test","qr_data":"test","client_observed_age_ms":42}"#;
+        let parsed: ScannerSubmission = serde_json::from_str(newer).unwrap();
+        assert_eq!(parsed.client_observed_age_ms, Some(42));
+    }
+
+    #[tokio::test]
+    async fn full_lane_keeps_inflight_and_latest_only() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send("channel".to_string()).unwrap();
+        let lane = Arc::new(std::sync::Mutex::new(QrLane::default()));
+        assert!(queue_qr_ordered(&lane, &tx, "first".into(), "test"));
+        assert!(queue_qr_ordered(&lane, &tx, "obsolete".into(), "test"));
+        assert!(queue_qr_ordered(&lane, &tx, "latest".into(), "test"));
+        {
+            let state = lock_lane(&lane);
+            assert_eq!(state.pending.iter().map(String::as_str).collect::<Vec<_>>(), vec!["first", "latest"]);
+        }
+        assert_eq!(rx.recv().await.as_deref(), Some("channel"));
+        assert_eq!(rx.recv().await.as_deref(), Some("first"));
+        assert_eq!(rx.recv().await.as_deref(), Some("latest"));
+    }
+
+    #[tokio::test]
+    async fn closed_receiver_is_not_reported_as_delivered() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        let lane = Arc::new(std::sync::Mutex::new(QrLane::default()));
+        assert!(!queue_qr_ordered(&lane, &tx, "qr".into(), "test"));
+    }
+}
+
+// QR_PHASE1_TESTS_V1: test-only contract coverage; no production-path changes.
+#[cfg(test)]
+#[path = "scanner/qr_phase1_tests.rs"]
+mod qr_phase1_tests;

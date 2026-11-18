@@ -152,7 +152,7 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
             None => {
                 let value = generate_private_key()?;
                 let encrypted = StoreSecret::new(value.as_str())
-                    .store_value_with_purpose("web_push.vapid_private_key");
+                    .store_value_with_purpose("web_push.vapid_private_key")?;
                 db.set_web_push_setting(VAPID_PRIVATE_KEY_SETTING, &encrypted)
                     .await?;
                 value
@@ -998,10 +998,10 @@ impl WebPushService {
             .take(300)
             .collect::<String>();
         if detail.trim().is_empty() {
-            Err(miette::miette!("Apple 推播服務回應 HTTP {}", status.as_u16()))
+            Err(miette::miette!("Web Push 推播服務回應 HTTP {}", status.as_u16()))
         } else {
             Err(miette::miette!(
-                "Apple 推播服務回應 HTTP {}：{}",
+                "Web Push 推播服務回應 HTTP {}：{}",
                 status.as_u16(),
                 detail.trim()
             ))

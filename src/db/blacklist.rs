@@ -104,23 +104,14 @@ impl IpBlacklistCache {
 
 impl AccountsDb {
     pub async fn is_ip_blacklisted(&self, ip: &str) -> Result<bool> {
+        // Query SQLite on each decision. A process-local TTL cache cannot be
+        // invalidated by another process or another AccountsDb::open(). The
+        // SELECT is the decision's snapshot; already-running requests cannot
+        // retroactively be revoked when a new ban commits.
         let trimmed = ip.trim();
-        if let Some(cached) = self.blacklist_cache.get(trimmed, Instant::now()) {
-            return Ok(cached);
-        }
-        let generation = self.blacklist_cache.generation();
-        let blocked = self.query_ip_blacklisted(trimmed).await?;
-        self.blacklist_cache.put(trimmed, blocked, generation, Instant::now());
-        Ok(blocked)
-    }
-
-    async fn query_ip_blacklisted(&self, trimmed: &str) -> Result<bool> {
-        // IP_BLACKLIST_V6_GROUP_V1：同時比對精確位址與 IPv6 /64 群組鍵——
-        // 封鎖以「整段前綴」生效，位址輪換（privacy addresses）不能洗白身分。
-        // IPv4 的群組鍵＝自己，行為與舊版完全一致。
         let group = crate::trusted_ip::blacklist_group_key(trimmed);
-        let rows = sqlx::query_as::<_, (String, i64, String, String)>(
-            "SELECT ip, blocked_at, blocked_by, reason FROM ip_blacklist WHERE ip = ? OR ip = ?",
+        let rows = sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT blocked_at, blocked_by, reason FROM ip_blacklist WHERE ip = ? OR ip = ?",
         )
         .bind(trimmed)
         .bind(group)
@@ -128,45 +119,16 @@ impl AccountsDb {
         .await
         .into_diagnostic()
         .wrap_err("檢查 IP 黑名單失敗")?;
-
-        if rows.is_empty() {
-            return Ok(false);
-        }
-        // WAF 異常 4xx 自動封鎖超過到期時間 → 視為已解除，並刪除該列。
-        // 必須刪除：ip 是 PRIMARY KEY，過期列若留著，之後的 INSERT OR IGNORE
-        // 會擋住重新封鎖。
         let now = Local::now().timestamp();
-        let mut active = false;
-        let mut expired: Vec<String> = Vec::new();
-        for (key, blocked_at, blocked_by, reason) in rows {
-            if is_expiring_waf_anomaly_ban(&blocked_by, &reason)
-                && now.saturating_sub(blocked_at) >= WAF_ANOMALY_BAN_SECS
-            {
-                expired.push(key);
-            } else {
-                active = true;
-            }
-        }
-        for key in expired {
-            sqlx::query(
-                "DELETE FROM ip_blacklist
-                 WHERE ip = ? AND blocked_by = ? AND reason LIKE ? || '%'",
-            )
-            .bind(&key)
-            .bind(WAF_BLOCKED_BY)
-            .bind(WAF_ANOMALY_REASON_PREFIX)
-            .execute(&self.pool)
-            .await
-            .into_diagnostic()
-            .wrap_err("清除已到期的 WAF 自動封鎖失敗")?;
-            self.blacklist_cache.clear();
-        }
-        Ok(active)
+        Ok(rows.iter().any(|(at, by, reason)| {
+            !is_expiring_waf_anomaly_ban(by, reason)
+                || now.saturating_sub(*at) < WAF_ANOMALY_BAN_SECS
+        }))
     }
 
     /// 黑名單列表。R-30：已到期的 WAF 異常 4xx 自動封鎖不列出（與 `is_ip_blacklisted`
-    /// 的到期規則相同：`now - blocked_at >= WAF_ANOMALY_BAN_SECS`）。這些列會在下次該 IP
-    /// 被檢查時刪除；列表只是不再顯示「已經失效」的列。
+    /// 的到期規則相同：`now - blocked_at >= WAF_ANOMALY_BAN_SECS`）。過期列保留於 DB，
+    /// 新的封鎖會以單一 UPSERT 原子替換過期的異常封鎖。
     pub async fn list_ip_blacklist(&self, limit: i64) -> Result<Vec<IpBlacklistRow>> {
         let limit = limit.clamp(1, 4096);
         let now = Local::now().timestamp();
@@ -204,9 +166,16 @@ impl AccountsDb {
         let ip = crate::trusted_ip::blacklist_group_key(ip);
         let now = Local::now();
         let result = sqlx::query(
-            "INSERT OR IGNORE INTO ip_blacklist
+            "INSERT INTO ip_blacklist
                 (ip, blocked_at, blocked_time, blocked_by, reason, failure_count)
-             VALUES (?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT(ip) DO UPDATE SET
+                blocked_at = excluded.blocked_at, blocked_time = excluded.blocked_time,
+                blocked_by = excluded.blocked_by, reason = excluded.reason,
+                failure_count = excluded.failure_count, blocked_account_id = ''
+             WHERE ip_blacklist.blocked_by = ?
+               AND substr(ip_blacklist.reason, 1, length(?)) = ?
+               AND ip_blacklist.blocked_at <= ?",
         )
         .bind(ip.as_str())
         .bind(now.timestamp())
@@ -214,6 +183,10 @@ impl AccountsDb {
         .bind(truncate_event_text(blocked_by.to_string(), EVENT_IDENTITY_MAX_BYTES))
         .bind(truncate_event_text(reason.to_string(), EVENT_DETAILS_MAX_BYTES))
         .bind(i64::from(failure_count))
+        .bind(WAF_BLOCKED_BY)
+        .bind(WAF_ANOMALY_REASON_PREFIX)
+        .bind(WAF_ANOMALY_REASON_PREFIX)
+        .bind(now.timestamp().saturating_sub(WAF_ANOMALY_BAN_SECS))
         .execute(&self.pool)
         .await
         .into_diagnostic()
@@ -424,5 +397,37 @@ mod ip_cache_tests {
         assert!(db.is_ip_blacklisted("198.51.100.44").await.unwrap()); // 第二次走快取
         db.unblock_ip("198.51.100.44").await.unwrap();
         assert!(!db.is_ip_blacklisted("198.51.100.44").await.unwrap());
+    }
+}
+
+#[cfg(test)]
+mod functional_repair_race_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn independent_handles_read_committed_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.db");
+        let first = AccountsDb::open(&path).await.unwrap();
+        let second = AccountsDb::open(&path).await.unwrap();
+        assert!(!first.is_ip_blacklisted("198.51.100.33").await.unwrap());
+        assert!(second.block_ip("198.51.100.33", "admin", "manual").await.unwrap());
+        assert!(first.is_ip_blacklisted("198.51.100.33").await.unwrap());
+        assert!(second.unblock_ip("198.51.100.33").await.unwrap());
+        assert!(!first.is_ip_blacklisted("198.51.100.33").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn expired_anomaly_ban_can_be_replaced_by_manual_ban() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AccountsDb::open(dir.path().join("accounts.db")).await.unwrap();
+        let reason = format!("{WAF_ANOMALY_REASON_PREFIX} test");
+        assert!(db.block_ip("198.51.100.34", WAF_BLOCKED_BY, &reason).await.unwrap());
+        sqlx::query("UPDATE ip_blacklist SET blocked_at = ? WHERE ip = ?")
+            .bind(Local::now().timestamp() - WAF_ANOMALY_BAN_SECS - 1)
+            .bind("198.51.100.34").execute(&db.pool).await.unwrap();
+        assert!(!db.is_ip_blacklisted("198.51.100.34").await.unwrap());
+        assert!(db.block_ip("198.51.100.34", "admin", "manual").await.unwrap());
+        assert!(db.is_ip_blacklisted("198.51.100.34").await.unwrap());
     }
 }

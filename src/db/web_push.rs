@@ -63,9 +63,9 @@ impl AccountsDb {
         // 時解出空白，該訂閱推播失敗後自然被清理（與密碼容器同一把尺）。
         let p256dh_stored =
             crate::secret_encryption::StoreSecret::new(p256dh.trim())
-            .store_value_with_purpose("web_push.p256dh");
+            .store_value_with_purpose("web_push.p256dh")?;
         let auth_stored = crate::secret_encryption::StoreSecret::new(auth.trim())
-            .store_value_with_purpose("web_push.auth");
+            .store_value_with_purpose("web_push.auth")?;
         sqlx::query(
             "INSERT INTO web_push_subscriptions
                 (endpoint, account_id, p256dh, auth, created_at, updated_at)

@@ -697,6 +697,9 @@ async fn notify_new_homework(
     let newly_seen: Vec<String> = todos
         .iter()
         .filter(|todo| !deferred.contains(&todo.id))
+        // Preserve unseen, potentially notifiable items until their submission
+        // status is known, rather than permanently consuming the new-item event.
+        .filter(|todo| !should_defer_unknown_seen(todo))
         .filter(|todo| !seen.contains(&todo.id.to_string()))
         .map(|todo| todo.id.to_string())
         .collect();
@@ -718,6 +721,13 @@ async fn notify_new_homework(
     Ok(())
 }
 
+fn should_defer_unknown_seen(todo: &crate::api::todos::TronclassTodoItem) -> bool {
+    todo.submission_status == "unknown"
+        && !todo.is_completed_or_submitted()
+        && todo.semester_current != Some(false)
+        && matches!(todo.item_type.trim().to_ascii_lowercase().as_str(), "homework" | "quiz" | "exam")
+}
+
 /// 這筆項目是否適合發「新作業通知」。
 ///
 /// 與作業頁的顯示條件一致：
@@ -730,6 +740,7 @@ fn is_notifiable_new_homework(todo: &crate::api::todos::TronclassTodoItem) -> bo
         todo.item_type.trim().to_ascii_lowercase().as_str(),
         "homework" | "quiz" | "exam"
     ) && !todo.is_completed_or_submitted()
+        && todo.submission_status != "unknown"
         && todo.semester_current != Some(false)
 }
 
@@ -813,3 +824,21 @@ fn pick_ladder_stage(total_minutes: i64, ladder: &[u64]) -> Option<(String, Stri
     Some((stage, stage_badge, time_desc))
 }
 
+
+#[cfg(test)]
+mod unknown_seen_regression_tests {
+    use super::should_defer_unknown_seen;
+    use crate::api::todos::parse_todos_json;
+    use serde_json::json;
+
+    #[test]
+    fn defer_only_actionable_unknown_items() {
+        let items = parse_todos_json(&json!([
+            {"id": 1, "title": "A", "type": "homework"},
+            {"id": 2, "title": "B", "type": "homework", "is_submitted": true}
+        ]), None, None);
+        assert_eq!(items.len(), 2);
+        assert!(should_defer_unknown_seen(&items[0]));
+        assert!(!should_defer_unknown_seen(&items[1]));
+    }
+}

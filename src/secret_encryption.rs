@@ -12,9 +12,9 @@
 //!   `set_session_cookie`).
 //! - Values are decrypted on the way **out** (`AccountRow` → `RawAccountConfig`),
 //!   so all existing in-memory callers keep working with plaintext.
-//! - If no master key is configured, values are stored as plaintext (legacy
-//!   behaviour) so existing deployments keep working — but a warning is logged
-//!   so operators know at-rest encryption is off.
+//! - New sensitive writes fail closed if the key is missing or encryption fails.
+//!   Existing plaintext remains readable for compatibility; it is not silently
+//!   deleted. Operators must back up keys and migrate existing data separately.
 //! - Encrypted values carry a stable prefix so we can tell them apart from
 //!   legacy plaintext and from each other (per-field salt/nonce).
 //!
@@ -63,8 +63,8 @@ fn v3_aad(purpose: &str) -> Vec<u8> {
 
 /// A stored secret that is transparently encrypted at rest.
 ///
-/// `as_str()` returns the plaintext in memory; `store_value()` returns the
-/// at-rest (possibly encrypted) form to persist.
+/// `as_str()` returns plaintext in memory; storage methods return an encrypted
+/// envelope or an error, never a plaintext fallback.
 #[derive(Clone)]
 pub struct StoreSecret(String);
 
@@ -83,7 +83,7 @@ impl StoreSecret {
     ///
     /// 無特定用途欄位時用這支（AAD 以空用途編碼）。敏感欄位請改用
     /// [`StoreSecret::store_value_with_purpose`] 做密文用途綁定。
-    pub fn store_value(&self) -> String {
+    pub fn store_value(&self) -> miette::Result<String> {
         self.store_value_with_purpose("")
     }
 
@@ -91,13 +91,17 @@ impl StoreSecret {
     /// `purpose` 是穩定的分類字串（例如 `"accounts.password"`），解密端需
     /// 以同一用途呼叫 [`StoreSecret::from_stored_with_purpose`]；跨用途／跨欄位
     /// 複用密文會讓 GCM 驗證失敗，被當成解密失敗處理。
-    pub fn store_value_with_purpose(&self, purpose: &str) -> String {
-        match master_key() {
-            Some(key) => {
-                encrypt_with_key(&self.0, key, purpose).unwrap_or_else(|| self.0.clone())
-            }
-            None => self.0.clone(),
-        }
+    pub fn store_value_with_purpose(&self, purpose: &str) -> miette::Result<String> {
+        self.encrypt_for_storage(master_key(), purpose)
+    }
+
+    fn encrypt_for_storage(&self, key: Option<[u8; 32]>, purpose: &str) -> miette::Result<String> {
+        let key = key.ok_or_else(|| miette::miette!(
+            "無有效的 TRONCLASS_MASTER_KEY，拒絕儲存敏感資料；原有資料不變"
+        ))?;
+        encrypt_with_key(&self.0, key, purpose).ok_or_else(|| miette::miette!(
+            "敏感資料加密失敗，拒絕寫入；原有資料不變"
+        ))
     }
 
     /// Parse a value loaded from the DB: decrypt if it is an envelope, else
@@ -454,3 +458,25 @@ pub fn rewrap_stored_with_purpose(stored: &str, purpose: &str) -> Option<String>
     encrypt_with_key(&plaintext, current, purpose)
 }
 
+
+#[cfg(test)]
+mod fail_closed_write_tests {
+    use super::*;
+
+    #[test]
+    fn missing_key_never_returns_plaintext() {
+        let secret = StoreSecret::new("sensitive-value");
+        assert!(secret.encrypt_for_storage(None, "accounts.password").is_err());
+    }
+
+    #[test]
+    fn valid_key_produces_a_decryptable_envelope() {
+        let key = [42u8; 32];
+        let stored = StoreSecret::new("sensitive-value")
+            .encrypt_for_storage(Some(key), "accounts.password")
+            .expect("encryption should succeed");
+        assert_ne!(stored, "sensitive-value");
+        assert!(looks_like_envelope(&stored));
+        assert_eq!(decrypt_layered(&stored, key, "accounts.password").as_deref(), Some("sensitive-value"));
+    }
+}

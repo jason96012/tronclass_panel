@@ -12,7 +12,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use once_cell::sync::{Lazy, OnceCell};
 use serenity::all::{
     ButtonStyle, ChannelId, Colour, Command, CommandDataOptionValue, CommandInteraction,
-    CommandOptionType, ComponentInteraction, Context, CreateActionRow, CreateButton,
+    CommandOptionType, ComponentInteraction, Context, CreateActionRow, CreateAllowedMentions, CreateButton,
     CreateCommand, CreateCommandOption, CreateEmbed, CreateEmbedFooter,
     CreateInteractionResponse, CreateInteractionResponseMessage, CreateMessage, EventHandler,
     GatewayIntents, GuildId, Http, Interaction, InteractionId, Message, Ready, UserId,
@@ -59,6 +59,7 @@ const COMPONENT_FP_RELEASE_PREFIX: &str = "trc:fp-release:";
 const DISCORD_SEND_INTERVAL_MS: u64 = 350;
 const DISCORD_DASHBOARD_DEDUPE_TTL_SECS: u64 = 10 * 60;
 const MAX_DISCORD_DM_CHANNEL_CACHE: usize = 2048;
+const DISCORD_DM_CHANNEL_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_DISCORD_DASHBOARD_DEDUPE: usize = 4096;
 const MAX_PENDING_ACCOUNT_REQUESTS: usize = 256;
 const MAX_DISCORD_PROVIDER_BYTES: usize = 64;
@@ -135,7 +136,7 @@ pub struct DiscordBotClient {
     admin_user_id: String,
     admin_channel_id: String,
     public_base_url: String,
-    dm_channels: Arc<Mutex<HashMap<String, ChannelId>>>,
+    dm_channels: Arc<Mutex<HashMap<String, (ChannelId, Instant)>>>,
 }
 
 impl DiscordBotClient {
@@ -171,8 +172,12 @@ impl DiscordBotClient {
         let cache_key = user_id_num.to_string();
 
         let cached_channel_id = {
-            let cache = self.dm_channels.lock().await;
-            cache.get(&cache_key).cloned()
+            let mut cache = self.dm_channels.lock().await;
+            let now = Instant::now();
+            if cache.get(&cache_key).is_some_and(|(_, at)| now.saturating_duration_since(*at) >= DISCORD_DM_CHANNEL_CACHE_TTL) {
+                cache.remove(&cache_key);
+            }
+            cache.get(&cache_key).map(|(channel, _)| *channel)
         };
         let channel_id = if let Some(channel_id) = cached_channel_id {
             channel_id
@@ -184,16 +189,27 @@ impl DiscordBotClient {
                 .into_diagnostic()
                 .wrap_err("建立 Discord DM channel 失敗")?;
             let mut cache = self.dm_channels.lock().await;
+            let now = Instant::now();
+            cache.retain(|_, (_, at)| now.saturating_duration_since(*at) < DISCORD_DM_CHANNEL_CACHE_TTL);
             if cache.len() >= MAX_DISCORD_DM_CHANNEL_CACHE && !cache.contains_key(&cache_key) {
-                if let Some(old_key) = cache.keys().next().cloned() {
+                if let Some(old_key) = cache.iter().min_by_key(|(_, (_, at))| *at).map(|(key, _)| key.clone()) {
                     cache.remove(&old_key);
                 }
             }
-            cache.insert(cache_key, channel.id);
+            cache.insert(cache_key.clone(), (channel.id, now));
             channel.id
         };
 
-        send_outbound_to_channel(&self.http, channel_id, message).await
+        let result = send_outbound_to_channel(&self.http, channel_id, message).await;
+        if result.is_err() {
+            // Invalidate only the matching entry. Do not retry now: a network
+            // timeout may mean Discord already accepted the notification.
+            let mut cache = self.dm_channels.lock().await;
+            if cache.get(&cache_key).is_some_and(|(cached, _)| *cached == channel_id) {
+                cache.remove(&cache_key);
+            }
+        }
+        result
     }
 
     async fn send_dashboard_copy(&self, message: &OutboundMessage) -> Result<()> {
@@ -225,6 +241,7 @@ impl AdapterMessenger for DiscordBotClient {
             // DISCORD_INTERACTION_EPHEMERAL_V1：slash／按鈕回覆只給操作者看，
             // 避免群組頻道洩漏監控狀態或刷版。主動推播仍走 DM／管理頻道。
             let mut builder = CreateInteractionResponseMessage::new()
+                .allowed_mentions(CreateAllowedMentions::new())
                 .content(payload.content)
                 .ephemeral(true)
                 .components(action_rows_for_message(message));
@@ -600,60 +617,14 @@ impl DiscordRuntime {
             "Discord slash command",
         );
         match command.data.name.as_str() {
-            "add-account" => {
-                // L2（安全審查）：密碼是斜線指令參數，會出現在公共頻道。與 /request-account 一致，只允許私訊。
-                if command.guild_id.is_some() {
-                    reply_interaction(
-                        ctx,
-                        &command,
-                        OutboundMessage::Text(
-                            "請在 bot DM 使用 /add-account，避免帳密出現在公共 channel。".to_string(),
-                        ),
-                        true,
-                    )
-                    .await?;
-                    return Ok(());
-                }
-                self.ensure_admin_interaction(ctx, &command).await?;
-                let provider = string_option(&command, "provider").unwrap_or_default();
-                let username = string_option(&command, "username").unwrap_or_default();
-                let password = string_option(&command, "password").unwrap_or_default();
-                let discord_user_id = user_option(&command, "user").unwrap_or_default();
-                let account_id = string_option(&command, "id").unwrap_or_default();
-                let message = self
-                    .add_account(
-                        &provider,
-                        &username,
-                        &password,
-                        &discord_user_id,
-                        &account_id,
-                        Some(command.channel_id),
-                    )
-                    .await;
-                reply_interaction(ctx, &command, message, true).await
-            }
-            "request-account" => {
-                if command.guild_id.is_some() {
-                    reply_interaction(
-                        ctx,
-                        &command,
-                        OutboundMessage::Text(
-                            "請在 bot DM 使用 /request-account，避免帳密出現在公共 channel。"
-                                .to_string(),
-                        ),
-                        true,
-                    )
-                    .await?;
-                    return Ok(());
-                }
-
-                let provider = string_option(&command, "provider").unwrap_or_default();
-                let username = string_option(&command, "username").unwrap_or_default();
-                let password = string_option(&command, "password").unwrap_or_default();
-                let message = self
-                    .request_account(&provider, &username, &password, &user_id)
-                    .await;
-                reply_interaction(ctx, &command, message, true).await
+            "add-account" | "request-account" => {
+                // Reject even stale Discord command registrations carrying a
+                // password: never read or forward interaction options here.
+                let message = match self.bot.admin_url() {
+                    Some(url) => format!("為保護密碼，Discord 已停用帳號密碼輸入。請聯絡管理員，透過管理面板新增帳號：{url}。請勿在 Discord 傳送密碼。"),
+                    None => "為保護密碼，Discord 已停用帳號密碼輸入。請聯絡管理員透過管理面板新增帳號；請勿在 Discord 傳送密碼。".to_string(),
+                };
+                reply_interaction(ctx, &command, OutboundMessage::Text(message), true).await
             }
             "bind-account" => {
                 self.ensure_admin_interaction(ctx, &command).await?;
@@ -681,10 +652,22 @@ impl DiscordRuntime {
             }
             "qr" => {
                 let qr_data = string_option(&command, "data").unwrap_or_default();
+                // Reject rather than truncate or rewrite a QR: changing even one
+                // byte can invalidate a legitimate attendance payload.
+                if qr_data.is_empty() || qr_data.len() > 16 * 1024 {
+                    return reply_interaction(ctx, &command, OutboundMessage::Text("QR 資料為空或過長，請重新輸入。".to_string()), true).await;
+                }
+                let rollcall_id = match string_option(&command, "id") {
+                    Some(raw) => match requests::parse_rollcall_id(&raw) {
+                        Some(id) => Some(id),
+                        None => return reply_interaction(ctx, &command, OutboundMessage::Text("點名 ID 格式無效，請輸入數字或 #數字。".to_string()), true).await,
+                    },
+                    None => None,
+                };
                 requests::execute_command(
                     RequestCommand::QrCode {
                         data: qr_data,
-                        rollcall_id: string_option(&command, "id").and_then(|raw| requests::parse_rollcall_id(&raw)),
+                        rollcall_id,
                     },
                     &reply_token,
                     &self.requests,
@@ -694,10 +677,17 @@ impl DiscordRuntime {
             }
             "num" => {
                 let code = string_option(&command, "code").unwrap_or_default();
+                let rollcall_id = match string_option(&command, "id") {
+                    Some(raw) => match requests::parse_rollcall_id(&raw) {
+                        Some(id) => Some(id),
+                        None => return reply_interaction(ctx, &command, OutboundMessage::Text("點名 ID 格式無效，請輸入數字或 #數字。".to_string()), true).await,
+                    },
+                    None => None,
+                };
                 requests::execute_command(
                     RequestCommand::NumberCode {
                         code,
-                        rollcall_id: string_option(&command, "id").and_then(|raw| requests::parse_rollcall_id(&raw)),
+                        rollcall_id,
                     },
                     &reply_token,
                     &self.requests,
@@ -1301,6 +1291,7 @@ impl DiscordRuntime {
             .send_message(
                 &self.bot.http,
                 CreateMessage::new()
+        .allowed_mentions(CreateAllowedMentions::new())
                     .content(render_pending_account_request(&pending))
                     .components(account_review_action_rows(&token)),
             )
@@ -1576,68 +1567,9 @@ fn discord_commands() -> Vec<CreateCommand> {
                 .required(false),
             ),
         CreateCommand::new("request-account")
-            .description("申請新增帳號（請在 bot 私訊使用，需管理員核准）")
-            .add_option(discord_provider_option(true))
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "username",
-                    "學校登入帳號",
-                )
-                .required(true)
-                .min_length(1)
-                .max_length(MAX_DISCORD_USERNAME_BYTES as u16),
-            )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "password",
-                    "學校密碼（回覆僅自己看得到；請在私訊輸入）",
-                )
-                .required(true)
-                .min_length(1)
-                .max_length(MAX_DISCORD_PASSWORD_BYTES as u16),
-            ),
+            .description("帳號申請已改由管理面板處理（不接受密碼）"),
         CreateCommand::new("add-account")
-            .description("管理員：新增帳號，可順便綁定 Discord 使用者")
-            .add_option(discord_provider_option(true))
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "username",
-                    "學校登入帳號",
-                )
-                .required(true)
-                .min_length(1)
-                .max_length(MAX_DISCORD_USERNAME_BYTES as u16),
-            )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "password",
-                    "學校密碼（回覆僅自己看得到）",
-                )
-                .required(true)
-                .min_length(1)
-                .max_length(MAX_DISCORD_PASSWORD_BYTES as u16),
-            )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::User,
-                    "user",
-                    "要綁定的 Discord 使用者",
-                )
-                .required(false),
-            )
-            .add_option(
-                CreateCommandOption::new(
-                    CommandOptionType::String,
-                    "id",
-                    "資料庫帳號 id；留空則用學校帳號",
-                )
-                .required(false)
-                .max_length(MAX_DISCORD_IDENTIFIER_BYTES as u16),
-            ),
+            .description("請由管理面板新增帳號（不接受密碼）"),
         CreateCommand::new("bind-account")
             .description("管理員：把學校帳號綁到 Discord 使用者")
             .add_option(
@@ -1682,6 +1614,7 @@ async fn send_outbound_to_channel(
     // DISCORD_NOTIFY_UNIFY_V1／DISCORD_NOTIFY_ALL_CARDS_V1：一律 embed 卡片。
     let payload = render_discord_payload(message);
     let mut builder = CreateMessage::new()
+        .allowed_mentions(CreateAllowedMentions::new())
         .content(payload.content)
         .components(action_rows_for_message(message));
     if let Some(embed) = payload.embed {
@@ -1785,6 +1718,7 @@ async fn reply_interaction(
 ) -> Result<()> {
     let payload = render_discord_payload(&message);
     let mut builder = CreateInteractionResponseMessage::new()
+                .allowed_mentions(CreateAllowedMentions::new())
         .content(payload.content)
         .ephemeral(ephemeral)
         .components(action_rows_for_message(&message));
@@ -1824,6 +1758,7 @@ async fn reply_number_picker(
         rollcall_ids.len()
     );
     let builder = CreateInteractionResponseMessage::new()
+                .allowed_mentions(CreateAllowedMentions::new())
         .content(text)
         .ephemeral(true)
         .components(rows);
@@ -1842,6 +1777,7 @@ async fn reply_component(
 ) -> Result<()> {
     let payload = render_discord_payload(&message);
     let mut builder = CreateInteractionResponseMessage::new()
+                .allowed_mentions(CreateAllowedMentions::new())
         .content(payload.content)
         .ephemeral(ephemeral)
         .components(action_rows_for_message(&message));
@@ -2919,7 +2855,7 @@ fn help_text() -> &'static str {
 /qr　送出課堂 QR 網址或掃描內容\n\
 /admin　管理頁連結\n\
 /help　顯示這段說明\n\
-申請帳號請在「與 bot 的私訊」用 /request-account（群組會拒收，請勿在公開頻道打密碼）。\n\
+申請帳號請聯絡管理員透過管理面板處理；請勿在 Discord 傳送密碼。\n\
 \n\
 管理員另有 /start、/stop、/add-account、/bind-account、/unbind-account、/bindings。"
 }

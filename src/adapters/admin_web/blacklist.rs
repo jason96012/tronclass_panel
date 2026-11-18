@@ -18,7 +18,7 @@
 
 use super::*;
 use chrono::Local;
-use super::pages::{inject_auth_attrs, inject_theme, ADMIN_BLACKLIST_HTML};
+use super::pages::{attach_fresh_cookies, inject_auth_attrs, inject_theme, resolve_page_session, ADMIN_BLACKLIST_HTML};
 // 編譯修正：`use super::*;` 只帶得進 mod.rs 的 `json!`（父模組只 `use serde_json::json;`），
 // `Value` 不在 scope —— 同層其他模組（ai_chat.rs 等）也都是自己 import。
 use serde_json::Value;
@@ -49,19 +49,22 @@ pub(super) async fn admin_blacklist_page_handler(
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
-    let token = session_token(&headers, &query.token);
-    let Some(session) = state.authorize(&token).await else {
+    let Some(page) = resolve_page_session(&state, &headers, &query.token).await else {
         return admin_login_redirect("/admin/blacklist");
     };
-    if !session.is_admin {
-        return unauthorized_response();
+    if page.session.must_change_password {
+        return attach_fresh_cookies(must_change_password_redirect(), &page, &headers);
+    }
+    if !page.session.is_admin {
+        return attach_fresh_cookies(unauthorized_response(), &page, &headers);
     }
     // CSRF_TOKEN_V1：這頁原本不注入任何 session 屬性到 HTML。黑名單/地理限制/
     // 放行審核等按鈕都是寫入操作，一併補上 data-csrf，讓它們能通過新的顯式
     // CSRF 檢查。
-    html_page_response(
+    attach_fresh_cookies(
+        html_page_response(&headers, inject_auth_attrs(&inject_theme(ADMIN_BLACKLIST_HTML), &page.session)),
+        &page,
         &headers,
-        inject_auth_attrs(&inject_theme(ADMIN_BLACKLIST_HTML), &session),
     )
 }
 

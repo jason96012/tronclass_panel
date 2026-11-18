@@ -521,6 +521,18 @@ async fn reverify_rollcall(
 const QR_NETWORK_TIMEOUT: Duration = Duration::from_secs(15);
 const QR_PROGRESS_TIMEOUT: Duration = Duration::from_secs(3);
 
+// Only use this for optional, cancellation-safe reads/notices, never for a PUT
+// or the post-PUT verification: dropping those can leave the result uncertain.
+enum QrInputOr<T> { Input(Option<String>), Other(T) }
+
+async fn qr_input_or<F: std::future::Future>(rx: &QrCodeReceiver, other: F) -> QrInputOr<F::Output> {
+    tokio::select! {
+        biased;
+        input = async { rx.lock().await.recv().await } => QrInputOr::Input(input),
+        result = other => QrInputOr::Other(result),
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum QrAttendanceVerification {
     Confirmed,
@@ -916,7 +928,7 @@ async fn handle_number_rollcall(
                         return result
                     }
                     RollcallResult::Failed { reason } => {
-                        warn!(code = %code, reason = %reason, "手動數字碼簽到失敗，繼續等待下一次輸入");
+                        warn!(reason = %reason, "手動數字碼簽到失敗，繼續等待下一次輸入");
                         last_error = Some(reason);
                     }
                     other => return other,
@@ -972,14 +984,14 @@ async fn submit_number_code(
         rollcall_id,
         GroupSubmitKind::Number,
         &config.id,
-        None,
+        Some(NUMBER_RELAY_MAX_WAIT),
     )
     .await;
 
     let success_detail = if is_auto {
-        format!("自動取得數字代碼 `{code}` 簽到成功")
+        "自動取得數字代碼簽到成功".to_string()
     } else {
-        format!("手動數字代碼 `{code}` 簽到成功")
+        "手動數字代碼簽到成功".to_string()
     };
 
     match api.answer_number_rollcall(rollcall_id, &code).await {
@@ -1038,10 +1050,10 @@ async fn wait_for_number_input(
             Ok(Some(NumberCodeInput::Code(code))) => {
                 let code = code.trim().to_string();
                 if is_valid_number_code(&code) {
-                    info!(code = %code, "收到手動數字點名碼");
+                    info!("收到手動數字點名碼");
                     return Ok(NumberCodeInput::Code(code));
                 }
-                warn!(code = %code, "收到無效數字點名碼，必須是 4 位數字，繼續等待");
+                warn!("收到無效數字點名碼，必須是 4 位數字，繼續等待");
             }
             Ok(Some(NumberCodeInput::AutoLookup)) => {
                 info!("收到自動讀取數字點名碼請求");
@@ -1076,6 +1088,9 @@ fn relay_budget(deadline: tokio::time::Instant) -> Option<Duration> {
 /// 與雷達同一個精神（見 `radar::RADAR_RELAY_MAX_WAIT`）：寧可提早送出，
 /// 也不要等到學校的點名視窗關了。
 const SELF_REG_RELAY_MAX_WAIT: Duration = Duration::from_secs(30);
+// A large group must not queue a valid number code indefinitely. This is a
+// safety cap, not an estimate of the school's actual closing time.
+const NUMBER_RELAY_MAX_WAIT: Duration = Duration::from_secs(30);
 
 /// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：檢查班上進度的間隔（秒）。
 /// 多帳號共用 registry 裡的同一份快取（見 `QrScannerRegistry::class_progress`），
@@ -1161,7 +1176,6 @@ async fn auto_lookup_and_submit_number(
             Some(code) => {
                 info!(
                     rollcall_id = rollcall.rollcall_id,
-                    code = %code,
                     source = %lookup.source,
                     "自動讀取數字點名碼成功，立刻送出"
                 );
@@ -1176,7 +1190,6 @@ async fn auto_lookup_and_submit_number(
                 match result {
                     RollcallResult::Failed { ref reason } => {
                         warn!(
-                            code = %code,
                             reason = %reason,
                             "自動讀取數字碼簽到失敗，繼續等待下一次輸入"
                         );
@@ -1687,13 +1700,11 @@ async fn handle_qrcode_rollcall(
                     &config.id,
                     tx,
                     max_wait_duration,
+                    Some(rollcall),
                 )
                 .await
             {
-                Ok(link) => {
-                    registry.remember_qr(&config.provider, &config.id, rollcall).await;
-                    Some((Arc::clone(registry), link.scan_url, link.already_submitted))
-                },
+                Ok(link) => Some((Arc::clone(registry), link.scan_url, link.already_submitted)),
                 Err(e) => {
                     warn!(error = %e, "註冊 QR scanner 失敗，改用 legacy scanner URL");
                     None
@@ -1723,6 +1734,21 @@ async fn handle_qrcode_rollcall(
         );
     }
 
+    // 等待 QR code 輸入（帶逾時）
+    let Some(rx) = qr_rx else {
+        error!("QR code 接收通道未初始化");
+        if let Some((registry, _, _)) = scanner_registered.as_ref() {
+            registry
+                .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
+                .await;
+        }
+        return RollcallResult::Failed {
+            reason: "此部署模式未啟用 QR Code 回傳通道".to_string(),
+        };
+    };
+
+    let mut priority_qr: Option<String> = None;
+
     // 發送 Line 通知，要求使用者提供 QR code
     if let Some(bot) = messenger {
         let alt_scan_url =
@@ -1738,38 +1764,31 @@ async fn handle_qrcode_rollcall(
         });
 
         if !scanner_already_submitted {
-            let target = adapter_target.lock().await.clone();
-            send_rollcall_notice(bot, &target, &msg, "發送 QR Code 請求通知").await;
+            let notice = async {
+                let target = adapter_target.lock().await.clone();
+                send_rollcall_notice(bot, &target, &msg, "發送 QR Code 請求通知").await;
+            };
+            match qr_input_or(&rx, notice).await {
+                QrInputOr::Input(Some(input)) => priority_qr = Some(input),
+                QrInputOr::Input(None) => {
+                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                        registry.unregister_pending(&config.provider, rollcall.rollcall_id, &config.id).await;
+                    }
+                    return RollcallResult::FatalError { reason: "QR code 輸入通道已關閉".to_string() };
+                }
+                QrInputOr::Other(()) => {}
+            }
         }
+    } else if scanner_registered.is_some() {
+        // A registered web scanner is itself a working input route; a missing
+        // notification adapter must not immediately unregister that account.
+        info!(rollcall_id = rollcall.rollcall_id, "未啟用通知，維持網頁 QR 輸入流程");
     } else {
-        // 沒有 Line Bot，只能記錄日誌
-        warn!(
-            rollcall_id = rollcall.rollcall_id,
-            scan_url = %scan_url,
-            "QR Code 簽到需要 Line Bot 支援，但 Line Bot 未啟用！"
-        );
-        if let Some((registry, _, _)) = scanner_registered.as_ref() {
-            registry
-                .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
-                .await;
-        }
+        warn!(rollcall_id = rollcall.rollcall_id, "QR 沒有可用的通知或網頁回傳路徑");
         return RollcallResult::Failed {
-            reason: "QR Code 簽到需要 Line Bot，請在 config.toml 中啟用 line_bot".to_string(),
+            reason: "QR Code 簽到沒有可用的網頁回傳或通知管道".to_string(),
         };
     }
-
-    // 等待 QR code 輸入（帶逾時）
-    let Some(rx) = qr_rx else {
-        error!("QR code 接收通道未初始化");
-        if let Some((registry, _, _)) = scanner_registered.as_ref() {
-            registry
-                .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
-                .await;
-        }
-        return RollcallResult::Failed {
-            reason: "此部署模式未啟用 QR Code 回傳通道".to_string(),
-        };
-    };
 
     info!(
         rollcall_id = rollcall.rollcall_id,
@@ -1813,74 +1832,87 @@ async fn handle_qrcode_rollcall(
             registry.qr_phase(&config.provider, rollcall.rollcall_id, &config.id, QrPhase::Checking).await;
         }
 
-        // 節流與提早結束：掃碼群組已沒有等待中的帳號時，不再發送任何伺服器確認請求。
-        // H2：「沒有人在等」不等於「本帳號成功」——只有本帳號確實簽到成功才回報 Success。
-        if let Some((registry, _, _)) = scanner_registered.as_ref() {
-            if registry.is_qr_group_completed(&config.provider, rollcall.rollcall_id).await {
-                if registry
-                    .is_qr_account_completed(&config.provider, rollcall.rollcall_id, &config.id)
-                    .await
-                {
-                    info!(
+        if priority_qr.is_none() {
+            // 節流與提早結束：掃碼群組已沒有等待中的帳號時，不再發送任何伺服器確認請求。
+            // H2：「沒有人在等」不等於「本帳號成功」——只有本帳號確實簽到成功才回報 Success。
+            if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                if registry.is_qr_group_completed(&config.provider, rollcall.rollcall_id).await {
+                    if registry
+                        .is_qr_account_completed(&config.provider, rollcall.rollcall_id, &config.id)
+                        .await
+                    {
+                        info!(
+                            rollcall_id = rollcall.rollcall_id,
+                            "本帳號已完成 QR 簽到，掃碼群組已無等待中的帳號，結束等待"
+                        );
+                        return RollcallResult::Success {
+                            detail: "本帳號已簽到成功（掃碼群組已無等待中的帳號）".to_string(),
+                        };
+                    }
+                    warn!(
                         rollcall_id = rollcall.rollcall_id,
-                        "本帳號已完成 QR 簽到，掃碼群組已無等待中的帳號，結束等待"
+                        "掃碼群組已無等待中的帳號，但本帳號未簽到成功，結束等待"
                     );
-                    return RollcallResult::Success {
-                        detail: "本帳號已簽到成功（掃碼群組已無等待中的帳號）".to_string(),
-                    };
-                }
-                warn!(
-                    rollcall_id = rollcall.rollcall_id,
-                    "掃碼群組已無等待中的帳號，但本帳號未簽到成功，結束等待"
-                );
-                return RollcallResult::Failed {
-                    reason: last_error
-                        .clone()
-                        .unwrap_or_else(|| "掃碼點名已結束，本帳號未取得簽到成功".to_string()),
-                };
-            }
-        }
-
-        // 定期向 TronClass 伺服器同步點名活躍狀態：若老師已在伺服器上關閉點名或本人已簽到，立即停止請求
-        if now >= next_server_active_check {
-            let server_status = match check_qr_server_status(&api, rollcall.rollcall_id).await {
-                Ok(state) => state,
-                Err(reason) => {
-                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
-                        registry.unregister_pending(&config.provider, rollcall.rollcall_id, &config.id).await;
-                    }
-                    return RollcallResult::FatalError { reason };
-                }
-            };
-            next_server_active_check = tokio::time::Instant::now() + Duration::from_secs(15);
-            match server_status {
-                ServerRollcallStatus::AlreadyAttended => {
-                    info!(rollcall_id = rollcall.rollcall_id, "學校伺服器確認已完成簽到，停止請求並結束等待");
-                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
-                        registry
-                            .mark_completed(&config.provider, rollcall.rollcall_id, &config.id)
-                            .await;
-                    }
-                    return RollcallResult::Success {
-                        detail: "學校伺服器確認已完成簽到".to_string(),
-                    };
-                }
-                ServerRollcallStatus::ClosedOrExpired => {
-                    info!(rollcall_id = rollcall.rollcall_id, "學校伺服器顯示 QR 點名已結束或已過期，停止請求並結束等待");
-                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
-                        registry
-                            .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
-                            .await;
-                    }
                     return RollcallResult::Failed {
-                        reason: last_error.unwrap_or_else(|| "點名已結束（老師已關閉或過期）".to_string()),
+                        reason: last_error
+                            .clone()
+                            .unwrap_or_else(|| "掃碼點名已結束，本帳號未取得簽到成功".to_string()),
                     };
                 }
-                ServerRollcallStatus::ActivePending | ServerRollcallStatus::UnknownError => {
-                    // 點名仍在進行中且尚未簽到，繼續等待
+            }
+
+            // 定期向 TronClass 伺服器同步點名活躍狀態：若老師已在伺服器上關閉點名或本人已簽到，立即停止請求
+            if now >= next_server_active_check {
+                // Periodic school status is a read, not an attendance PUT. A newly
+                // received QR may preempt this read; the next loop will check again.
+                let server_status = match qr_input_or(&rx, check_qr_server_status(&api, rollcall.rollcall_id)).await {
+                    QrInputOr::Input(Some(input)) => { priority_qr = Some(input); None }
+                    QrInputOr::Input(None) => {
+                        if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                            registry.unregister_pending(&config.provider, rollcall.rollcall_id, &config.id).await;
+                        }
+                        return RollcallResult::FatalError { reason: "QR code 輸入通道已關閉".to_string() };
+                    }
+                    QrInputOr::Other(Ok(state)) => Some(state),
+                    QrInputOr::Other(Err(reason)) => {
+                        if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                            registry.unregister_pending(&config.provider, rollcall.rollcall_id, &config.id).await;
+                        }
+                        return RollcallResult::FatalError { reason };
+                    }
+                };
+                if let Some(server_status) = server_status {
+                    next_server_active_check = tokio::time::Instant::now() + Duration::from_secs(15);
+                    match server_status {
+                        ServerRollcallStatus::AlreadyAttended => {
+                            info!(rollcall_id = rollcall.rollcall_id, "學校伺服器確認已完成簽到，停止請求並結束等待");
+                            if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                                registry
+                                    .mark_completed(&config.provider, rollcall.rollcall_id, &config.id)
+                                    .await;
+                            }
+                            return RollcallResult::Success {
+                                detail: "學校伺服器確認已完成簽到".to_string(),
+                            };
+                        }
+                        ServerRollcallStatus::ClosedOrExpired => {
+                            info!(rollcall_id = rollcall.rollcall_id, "學校伺服器顯示 QR 點名已結束或已過期，停止請求並結束等待");
+                            if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                                registry
+                                    .unregister_pending(&config.provider, rollcall.rollcall_id, &config.id)
+                                    .await;
+                            }
+                            return RollcallResult::Failed {
+                                reason: last_error.unwrap_or_else(|| "點名已結束（老師已關閉或過期）".to_string()),
+                            };
+                        }
+                        ServerRollcallStatus::ActivePending | ServerRollcallStatus::UnknownError => {
+                            // 點名仍在進行中且尚未簽到，繼續等待
+                        }
+                        }
                 }
             }
-        }
+        } // priority_qr: skip optional checks once a QR has already arrived
 
         if let Some(registry) = scanner_registry.as_ref() {
             registry.qr_phase(&config.provider, rollcall.rollcall_id, &config.id, QrPhase::WaitingInput).await;
@@ -1898,7 +1930,13 @@ async fn handle_qrcode_rollcall(
         let segment_end = progress_at.unwrap_or(wait_until);
         let remaining = segment_end.saturating_duration_since(now);
         // None 代表「催促時間點到了但還沒有輸入」（rx_guard 已在 block 結束時釋放）。
-        let qr_input: Option<String> = {
+        let qr_input: Option<String> = if let Some(input) = priority_qr.take() {
+            if let Some(registry) = scanner_registry.as_ref() {
+                registry.qr_phase(&config.provider, rollcall.rollcall_id, &config.id, QrPhase::WaitingTurn).await;
+            }
+            info!(input_len = input.len(), "收到 QR code 輸入，優先簽到");
+            Some(input)
+        } else {
             let mut rx_guard = rx.lock().await;
             match tokio::time::timeout(remaining, rx_guard.recv()).await {
                 Ok(Some(input)) => {
@@ -1912,40 +1950,76 @@ async fn handle_qrcode_rollcall(
                     if let Some(registry) = scanner_registry.as_ref() {
                         registry.qr_phase(&config.provider, rollcall.rollcall_id, &config.id, QrPhase::Checking).await;
                     }
-                    let progress = tokio::time::timeout(
-                        QR_PROGRESS_TIMEOUT,
-                        class_progress_over_threshold(
-                            &api,
-                            scanner_registry.as_ref(),
-                            &config.provider,
-                            rollcall.rollcall_id,
-                            account_label,
-                        ),
-                    ).await.unwrap_or(None);
-                    next_progress_check =
-                        tokio::time::Instant::now() + Duration::from_secs(AUTO_SUBMIT_POLL_SECS);
-                    if !progress_nudged {
-                        if let Some(progress) = progress {
-                            progress_nudged = true;
-                            warn!(
-                                rollcall_id = rollcall.rollcall_id,
-                                completed = progress.completed,
-                                total = progress.total,
-                                "班上已超過門檻，但 QR payload 只能靠掃碼取得，改為催使用者"
-                            );
-                            if let Some(bot) = messenger {
-                                let target = adapter_target.lock().await.clone();
-                                let msg = OutboundMessage::Text(format!(
-                                    "🔥 班上已有 {}/{} 人點名成功（{}%），但 QR 內容只能靠掃碼取得——請立刻開掃碼頁：{scan_url}",
-                                    progress.completed,
-                                    progress.total,
-                                    progress.percent_rounded()
-                                ));
-                                send_rollcall_notice(bot, &target, &msg, "發送 QR 催促通知").await;
+                    // QR_INPUT_PRIORITY_V1: a submitted code takes precedence over this
+                    // optional progress lookup. Dropping the lookup is safe: it is a
+                    // read-only hint, and the normal polling schedule will retry it.
+                    let progress = tokio::select! {
+                        biased;
+                        input = rx_guard.recv() => {
+                            match input {
+                                Some(input) => {
+                                    if let Some(registry) = scanner_registry.as_ref() {
+                                        registry.qr_phase(&config.provider, rollcall.rollcall_id, &config.id, QrPhase::WaitingTurn).await;
+                                    }
+                                    info!(input_len = input.len(), "收到 QR code 輸入，優先簽到");
+                                    Some(input)
+                                }
+                                None => {
+                                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                                        registry.unregister_pending(&config.provider, rollcall.rollcall_id, &config.id).await;
+                                    }
+                                    return RollcallResult::FatalError {
+                                        reason: "QR code 輸入通道已關閉".to_string(),
+                                    };
+                                }
                             }
                         }
-                    }
-                    continue;
+                        progress = tokio::time::timeout(
+                            QR_PROGRESS_TIMEOUT,
+                            class_progress_over_threshold(
+                                &api,
+                                scanner_registry.as_ref(),
+                                &config.provider,
+                                rollcall.rollcall_id,
+                                account_label,
+                            ),
+                        ) => {
+                            let progress = progress.unwrap_or(None);
+                            next_progress_check = tokio::time::Instant::now() + Duration::from_secs(AUTO_SUBMIT_POLL_SECS);
+                            if !progress_nudged {
+                                if let Some(progress) = progress {
+                                    progress_nudged = true;
+                                    warn!(rollcall_id = rollcall.rollcall_id, completed = progress.completed, total = progress.total,
+                                        "班上已超過門檻，但 QR payload 只能靠掃碼取得，改為催使用者");
+                                    if let Some(bot) = messenger {
+                                        let msg = OutboundMessage::Text(format!(
+                                            "🔥 班上已有 {}/{} 人點名成功（{}%），但 QR 內容只能靠掃碼取得——請立刻開掃碼頁：{scan_url}",
+                                            progress.completed, progress.total, progress.percent_rounded()
+                                        ));
+                                        let notice = async {
+                                            let target = adapter_target.lock().await.clone();
+                                            send_rollcall_notice(bot, &target, &msg, "發送 QR 催促通知").await;
+                                        };
+                                        tokio::select! {
+                                            biased;
+                                            input = rx_guard.recv() => match input {
+                                                Some(input) => priority_qr = Some(input),
+                                                None => {
+                                                    if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                                                        registry.unregister_pending(&config.provider, rollcall.rollcall_id, &config.id).await;
+                                                    }
+                                                    return RollcallResult::FatalError { reason: "QR code 輸入通道已關閉".to_string() };
+                                                }
+                                            },
+                                            _ = notice => {}
+                                        }
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    };
+                    progress
                 }
                 Err(_) if wait_until <= reminder_at && tokio::time::Instant::now() >= reminder_at => None,
                 Ok(None) => {
@@ -1967,7 +2041,7 @@ async fn handle_qrcode_rollcall(
                 let remaining_secs = max_deadline
                     .saturating_duration_since(tokio::time::Instant::now())
                     .as_secs();
-                send_input_reminder(
+                let reminder = send_input_reminder(
                     messenger,
                     &adapter_target,
                     account_label,
@@ -1976,14 +2050,27 @@ async fn handle_qrcode_rollcall(
                     &scan_url,
                     INPUT_REMINDER_SECS,
                     remaining_secs,
-                )
-                .await;
+                );
+                match qr_input_or(&rx, reminder).await {
+                    QrInputOr::Input(Some(input)) => priority_qr = Some(input),
+                    QrInputOr::Input(None) => {
+                        if let Some((registry, _, _)) = scanner_registered.as_ref() {
+                            registry.unregister_pending(&config.provider, rollcall.rollcall_id, &config.id).await;
+                        }
+                        return RollcallResult::FatalError { reason: "QR code 輸入通道已關閉".to_string() };
+                    }
+                    QrInputOr::Other(()) => {}
+                }
             }
             continue;
         };
 
+        // A fresh random identifier links this attempt's timing events without
+        // recording account identifiers or deriving an identifier from QR data.
+        let timing_attempt_id: u64 = rand::random();
+        let timing_received = tokio::time::Instant::now();
         // 執行 QR Code 簽到。scanner 會持續掃描並送出更新後的 QR payload；失敗時繼續等下一筆。
-        let _ = wait_group_submit_turn(
+        let relay_scheduled_wait = wait_group_submit_turn(
             &config.provider,
             rollcall.rollcall_id,
             GroupSubmitKind::QrCode,
@@ -1991,6 +2078,7 @@ async fn handle_qrcode_rollcall(
             relay_budget(max_deadline),
         )
         .await;
+        let timing_after_relay = tokio::time::Instant::now();
 
         // QR_FRESH_PAYLOAD_V1（fix68）：輪到自己之後、真正送出之前，先把佇列裡**最新**的
         // QR payload 取出來。等待期間課堂 QR 可能已經輪換，抱著舊 payload 送出只是白跑一趟。
@@ -2037,9 +2125,10 @@ async fn handle_qrcode_rollcall(
         }
         // QR_RECOVERY_V1：單次送出卡住只放棄該次等待，不解除整場的 QR 輸入登記。
         // timeout 不代表學校沒收到；下一輪仍會查詢實際狀態，不自行宣稱失敗／成功。
+        let timing_attempt_start = tokio::time::Instant::now();
         let (result, attempt_timed_out) = match tokio::time::timeout(
             QR_NETWORK_TIMEOUT,
-            attempt_qrcode_rollcall(Arc::clone(&api), rollcall.rollcall_id, &fresh_input, false),
+            attempt_qrcode_rollcall(Arc::clone(&api), rollcall.rollcall_id, &fresh_input, false, timing_attempt_id),
         ).await {
             Ok(result) => (result, false),
             Err(_) => (QrCodeResult::Failed {
@@ -2047,6 +2136,24 @@ async fn handle_qrcode_rollcall(
             }, true),
         };
 
+        let timing_result = if attempt_timed_out { "timeout_unknown" } else {
+            match &result {
+                QrCodeResult::Success { .. } => "school_put_accepted",
+                QrCodeResult::Failed { .. } => "failed_or_transport_unknown",
+                QrCodeResult::ParseError { .. } => "parse_error",
+                QrCodeResult::Error(_) => "error",
+            }
+        };
+        // Record only after the PUT attempt: logging must not delay its start.
+        crate::qr_timing_log::record(serde_json::json!({
+            "event": "qr_timing_attempt", "rollcall_id": rollcall.rollcall_id,
+            "attempt_id": timing_attempt_id,
+            "relay_requested_ms": relay_scheduled_wait.as_millis() as u64,
+            "relay_actual_ms": timing_after_relay.duration_since(timing_received).as_millis() as u64,
+            "post_relay_pre_attempt_ms": timing_attempt_start.duration_since(timing_after_relay).as_millis() as u64,
+            "attempt_ms": timing_attempt_start.elapsed().as_millis() as u64,
+            "replaced_inputs": refreshed, "outcome": timing_result
+        }));
         match result {
             QrCodeResult::Success { .. } => {
                 if let Some(registry) = scanner_registry.as_ref() {
@@ -2059,18 +2166,44 @@ async fn handle_qrcode_rollcall(
                         Some("QR 已送出，正在等待學校端二次確認；請保持掃描"),
                     ).await;
                 }
-                if let Some(bot) = messenger {
-                    let target = adapter_target.lock().await.clone();
-                    let msg = OutboundMessage::Text(format!(
-                        "📨 {}（QR Code）點名已送出，正在二次確認…", rollcall.course_title
-                    ));
-                    send_rollcall_notice(bot, &target, &msg, "發送 QR 已送出通知").await;
-                }
                 crate::web_push_notifications::notify_rollcall_submitted(
                     account_label, rollcall.rollcall_id, &rollcall.course_title,
                     &AttendanceType::QrCode.to_string(),
                 );
-                match verify_qr_attendance(&api, rollcall.rollcall_id).await {
+                // Do not wait for the notice before verifying the attendance PUT.
+                // Verification is pinned and is never dropped merely because the
+                // notification finishes; a slow notice may instead be dropped.
+                let timing_verify_started = tokio::time::Instant::now();
+                let verification = verify_qr_attendance(&api, rollcall.rollcall_id);
+                tokio::pin!(verification);
+                let verified = if let Some(bot) = messenger {
+                    let notice = async {
+                        let target = adapter_target.lock().await.clone();
+                        let msg = OutboundMessage::Text(format!(
+                            "📨 {}（QR Code）點名已送出，正在二次確認…", rollcall.course_title
+                        ));
+                        send_rollcall_notice(bot, &target, &msg, "發送 QR 已送出通知").await;
+                    };
+                    tokio::select! {
+                        biased;
+                        result = &mut verification => result,
+                        _ = notice => verification.await,
+                    }
+                } else {
+                    verification.await
+                };
+                let verification_outcome = match &verified {
+                    QrAttendanceVerification::Confirmed => "confirmed",
+                    QrAttendanceVerification::Retry(_) => "unconfirmed_retry",
+                    QrAttendanceVerification::Fatal(_) => "fatal",
+                };
+                crate::qr_timing_log::record(serde_json::json!({
+                    "event": "qr_timing_verify", "rollcall_id": rollcall.rollcall_id,
+                    "attempt_id": timing_attempt_id,
+                    "verify_ms": timing_verify_started.elapsed().as_millis() as u64,
+                    "outcome": verification_outcome
+                }));
+                match verified {
                     QrAttendanceVerification::Confirmed => {
                         if let Some((registry, _, _)) = scanner_registered.as_ref() {
                             registry.mark_completed(&config.provider, rollcall.rollcall_id, &config.id).await;
@@ -2579,6 +2712,17 @@ pub async fn process_rollcall_batch(
                 dropped += 1;
             }
         }
+        // The dashboard must not keep advertising this cancelled batch's URL
+        // while the same account is waiting for a fresh detection/registration.
+        {
+            let mut current = status.lock().await;
+            if current.last_detected_rollcall_id.is_some_and(|id| all_rollcall_ids.contains(&id)) {
+                current.last_detected_timestamp = None;
+                current.last_detected_course = None;
+                current.last_detected_rollcall_id = None;
+                current.last_detected_url = None;
+            }
+        }
         info!(
             account = %account_id,
             dropped = dropped,
@@ -2660,3 +2804,29 @@ impl std::fmt::Display for BatchSummary {
 
 // ─── 測試 ─────────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod qr_priority_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn buffered_qr_wins_over_ready_optional_work() {
+        let (tx, rx) = create_qrcode_channel(2);
+        tx.try_send("sample".to_string()).unwrap();
+        match qr_input_or(&rx, std::future::ready(())).await {
+            QrInputOr::Input(Some(value)) => assert_eq!(value, "sample"),
+            _ => panic!("buffered input should have priority"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_receive_does_not_discard_later_input() {
+        let (tx, rx) = create_qrcode_channel(2);
+        assert!(matches!(qr_input_or(&rx, std::future::ready(())).await, QrInputOr::Other(())));
+        tx.try_send("later".to_string()).unwrap();
+        assert_eq!(rx.lock().await.recv().await.as_deref(), Some("later"));
+    }
+}
+
+#[cfg(test)]
+#[path = "qr_phase1_tests.rs"]
+mod qr_phase1_tests;

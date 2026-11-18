@@ -34,6 +34,13 @@ mod detector_tests {
     }
 
     #[test]
+    fn recursive_decode_preserves_utf8_and_handles_five_layers() {
+        assert_eq!(recursive_url_decode("中文+%252525252e".to_string()), "中文 .");
+        assert_eq!(recursive_url_decode("中文+%zz".to_string()), "中文 %zz");
+        assert_eq!(recursive_url_decode("%25E4%25B8%25AD".to_string()), "%E4%B8%AD");
+    }
+
+    #[test]
     fn chain_order_is_fixed() {
         assert_eq!(
             CompositeDetector::standard().names(),

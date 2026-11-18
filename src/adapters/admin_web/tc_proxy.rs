@@ -149,7 +149,7 @@ pub(super) async fn tc_go_handler(
     };
     // TC_GO_ALL_PATHS_COOKIES_V1：以下所有出口（含 early return）都由這裡統一
     // 附上輪換後的新 cookie。
-    let response = tc_go_after_auth(&state, query, &page).await;
+    let response = tc_go_after_auth(&state, query, &page, &headers).await;
     super::pages::attach_fresh_cookies(response, &page, &headers)
 }
 
@@ -158,6 +158,7 @@ async fn tc_go_after_auth(
     state: &AdminWebState,
     query: TcGoQuery,
     page: &super::pages::PageSession,
+    headers: &HeaderMap,
 ) -> Response {
     if page.session.must_change_password {
         return Redirect::to("/admin/password?first=1").into_response();
@@ -239,8 +240,9 @@ async fn tc_go_after_auth(
     let ticket_token = state.mint_tc_nav_token(&account_id, session.is_admin, false);
     let target_with_token = append_query_before_fragment(&target_path, "tc_token", &nav_token);
     let mut response: Response = Redirect::to(&format!("/tc{target_with_token}")).into_response();
+    let secure = if super::request_uses_https(headers) { "; Secure" } else { "" };
     let cookie = format!(
-        "{TC_ACCOUNT_COOKIE}={account_id}; Path=/; Max-Age={TC_ACCOUNT_COOKIE_MAX_AGE_SECS}; HttpOnly; SameSite=Lax"
+        "{TC_ACCOUNT_COOKIE}={account_id}; Path=/; Max-Age={TC_ACCOUNT_COOKIE_MAX_AGE_SECS}; HttpOnly; SameSite=Lax{secure}"
     );
     if let Ok(value) = axum::http::HeaderValue::from_str(&cookie) {
         response
@@ -249,7 +251,7 @@ async fn tc_go_after_auth(
     }
     let ticket_ttl = super::TC_NAV_TICKET_TTL_SECS;
     let ticket = format!(
-        "{TC_TICKET_COOKIE}={ticket_token}; Path=/; Max-Age={ticket_ttl}; HttpOnly; SameSite=Lax"
+        "{TC_TICKET_COOKIE}={ticket_token}; Path=/; Max-Age={ticket_ttl}; HttpOnly; SameSite=Lax{secure}"
     );
     if let Ok(value) = axum::http::HeaderValue::from_str(&ticket) {
         response

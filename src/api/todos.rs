@@ -12,7 +12,7 @@ use miette::{IntoDiagnostic, Result, WrapErr};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 // ─── 常數 ─────────────────────────────────────────────────────────────────────
 
@@ -82,7 +82,7 @@ impl TronclassTodoItem {
 
     /// 判斷是否為進行中且未截止的待辦作業
     pub fn is_active_pending(&self, now: DateTime<Utc>) -> bool {
-        if self.is_completed_or_submitted() {
+        if self.is_completed_or_submitted() || self.submission_status == "unknown" {
             return false;
         }
 
@@ -133,6 +133,8 @@ impl super::ApiClient {
         // ─────────────────────────────────────────────────────────────────────
         // 步驟 1: 查詢全域待辦清單 GET /api/todos
         // ─────────────────────────────────────────────────────────────────────
+        let mut todos_source_ok = false;
+        let mut courses_source_ok = false;
         let todos_url = format!("{}/api/todos", self.base_url);
         debug!(url = %todos_url, "正在查詢 Tronclass 全域待辦清單 /api/todos");
 
@@ -144,6 +146,7 @@ impl super::ApiClient {
             if status.is_success() {
                 if let Ok(body_bytes) = resp.bytes().await {
                     if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                        todos_source_ok = has_todos_container(&json_val);
                         let items = parse_todos_json(&json_val, None, None);
                         for item in items {
                             if seen_ids.insert(item.id) {
@@ -169,6 +172,7 @@ impl super::ApiClient {
             if status.is_success() {
                 if let Ok(body_bytes) = resp.bytes().await {
                     if let Ok(json_val) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
+                        courses_source_ok = course_array(&json_val).is_some();
                         // CURRENT_SEMESTER_ONLY_V1
                         // 只保留當前學期仍在進行的課程，避免作業頁混入上學期／已封存
                         // 課程的舊作業。無法判斷學期的課程一律保留（寧可多顯示）。
@@ -238,7 +242,12 @@ impl super::ApiClient {
                         // 「作業/活動」端點只會回 homework/material/web_link/page/...，
                         // 不會有測驗；若漏抓 exams，測驗就永遠進不了待辦、也不會發截止提醒。
                         // 因此每門課多抓一筆 /exams。
-                        let course_list: Vec<CourseBrief> = courses.into_iter().take(25).collect();
+                        if courses.len() > 25 {
+                            // Do not persist a silently truncated replacement snapshot.
+                            // The request budget is retained to avoid overloading the school.
+                            return Err(miette::miette!("課程超過 25 門的抓取上限；保留既有快照，請檢查作業來源設定"));
+                        }
+                        let course_list: Vec<CourseBrief> = courses;
                         // SUBMISSION_PAGINATION_V1
                         // 第三個布林 = 是否要做分頁抓取。只有 `/homework-activities`
                         // 需要分頁（因為它帶正確的 submitted 旗標且預設只有 10 筆／頁）；
@@ -272,7 +281,7 @@ impl super::ApiClient {
                         // SUBMISSION_PAGINATION_V1
                         // paginate = true 的端點（homework-activities）會依 `pages` 遍歷所有頁，
                         // 確保拿到每一個 homework 及其正確的 submitted 旗標。
-                        let fetched: Vec<Vec<TronclassTodoItem>> =
+                        let fetched: Vec<miette::Result<Vec<TronclassTodoItem>>> =
                             futures::stream::iter(request_urls.into_iter().map(
                                 |(url, course_id, course_name, paginate)| async move {
                                     let mut all_items = Vec::new();
@@ -282,17 +291,21 @@ impl super::ApiClient {
                                             "{url}?page={page}&page_size={HOMEWORK_ACTIVITIES_PAGE_SIZE}"
                                         );
                                         let Ok(resp) = self.client.get(&effective_url).send().await else {
+                                            warn!(course_id, page, "作業來源請求失敗，清單可能不完整");
                                             break;
                                         };
                                         if !resp.status().is_success() {
+                                            warn!(course_id, page, status = %resp.status(), "作業來源回應失敗，清單可能不完整");
                                             break;
                                         }
                                         let Ok(bytes) = resp.bytes().await else {
+                                            warn!(course_id, page, "作業來源讀取失敗，清單可能不完整");
                                             break;
                                         };
                                         let Ok(json) =
                                             serde_json::from_slice::<serde_json::Value>(&bytes)
                                         else {
+                                            warn!(course_id, page, "作業來源 JSON 無法解析，清單可能不完整");
                                             break;
                                         };
                                         all_items.extend(parse_todos_json(
@@ -306,14 +319,17 @@ impl super::ApiClient {
                                         // 依回傳的 pages 決定是否繼續下一頁（安全上限 200 頁）。
                                         let pages = json
                                             .get("pages")
-                                            .and_then(|v| v.as_u64())
+                                            .and_then(parse_u64)
                                             .unwrap_or(1);
-                                        if page >= pages.max(1) || page >= 200 {
+                                        if page >= pages.max(1) {
                                             break;
+                                        }
+                                        if page >= 200 {
+                                            return Err(miette::miette!("課程作業超過 200 頁的抓取上限；保留既有快照"));
                                         }
                                         page += 1;
                                     }
-                                    all_items
+                                    Ok(all_items)
                                 },
                             ))
                             .buffer_unordered(COURSE_FETCH_CONCURRENCY)
@@ -328,7 +344,7 @@ impl super::ApiClient {
                         // 其實已繳交的作業誤判成未繳交。
                         let mut merged: HashMap<u64, TronclassTodoItem> = HashMap::new();
                         for items in fetched {
-                            for item in items {
+                            for item in items? {
                                 // SUBMISSION_PAGINATION_V1
                                 // 用 Entry 的互斥分支，避免把 item 同時移動進 and_modify 閉包與
                                 // or_insert（否則觸發 E0382）。occupied 分支只有在「新版本已繳交
@@ -340,11 +356,7 @@ impl super::ApiClient {
                                 // 因此「帶分數」也作為覆蓋條件之一。
                                 match merged.entry(item.id) {
                                     std::collections::hash_map::Entry::Occupied(mut e) => {
-                                        let prefer_new = (item.is_submitted && !e.get().is_submitted)
-                                            || (item.score.is_some() && e.get().score.is_none());
-                                        if prefer_new {
-                                            e.insert(item);
-                                        }
+                                        merge_todo(e.get_mut(), item);
                                     }
                                     std::collections::hash_map::Entry::Vacant(v) => {
                                         v.insert(item);
@@ -359,16 +371,18 @@ impl super::ApiClient {
                             if seen_ids.insert(item.id) {
                                 results.push(item);
                             } else if let Some(existing) = results.iter_mut().find(|r| r.id == item.id) {
-                                let prefer_new = (item.is_submitted && !existing.is_submitted)
-                                    || (item.score.is_some() && existing.score.is_none());
-                                if prefer_new {
-                                    *existing = item;
-                                }
+                                merge_todo(existing, item);
                             }
                         }
                     }
                 }
             }
+        }
+
+        if !todos_source_ok { warn!("全域待辦來源無法取得或解析，作業清單可能不完整"); }
+        if !courses_source_ok { warn!("課程來源無法取得或解析，作業清單可能不完整"); }
+        if !todos_source_ok && !courses_source_ok {
+            return Err(miette::miette!("作業及課程來源皆無法取得或解析；保留既有快照，稍後重試"));
         }
 
         // CURRENT_SEMESTER_ONLY_V1（第二道防線）
@@ -518,6 +532,18 @@ impl super::ApiClient {
 // ─── 高容錯 JSON 解析工具 ─────────────────────────────────────────────────────
 
 /// 從任意 Tronclass JSON 節點提取作業陣列
+fn has_todos_container(root: &serde_json::Value) -> bool {
+    if root.is_array() { return true; }
+    let Some(obj) = root.as_object() else { return false; };
+    let keys = ["todo_list", "homework_activities", "activities", "exams", "todos", "assignments", "items", "results"];
+    if keys.iter().any(|key| obj.get(*key).is_some_and(|value| value.is_array())) { return true; }
+    match obj.get("data") {
+        Some(value) if value.is_array() => true,
+        Some(value) => value.as_object().is_some_and(|nested| keys[..7].iter().any(|key| nested.get(*key).is_some_and(|v| v.is_array()))),
+        None => false,
+    }
+}
+
 pub fn parse_todos_json(
     root: &serde_json::Value,
     fallback_course_name: Option<&str>,
@@ -628,6 +654,29 @@ pub fn parse_exam_scores(root: &serde_json::Value) -> HashMap<u64, f64> {
     map
 }
 
+// Merge independently: a later score must never erase a confirmed submission.
+fn merge_todo(existing: &mut TronclassTodoItem, incoming: TronclassTodoItem) {
+    if incoming.is_submitted && !existing.is_submitted {
+        existing.is_submitted = true;
+        existing.submission_status = incoming.submission_status.clone();
+    } else if existing.submission_status == "unknown" && incoming.submission_status != "unknown" {
+        existing.submission_status = incoming.submission_status.clone();
+    }
+    if existing.score.is_none() { existing.score = incoming.score; }
+    if existing.course_id.is_none() { existing.course_id = incoming.course_id; }
+    if existing.course_name.is_none() { existing.course_name = incoming.course_name; }
+    if existing.department_name.is_none() { existing.department_name = incoming.department_name; }
+    if existing.start_time.is_none() { existing.start_time = incoming.start_time; }
+    if existing.end_time.is_none() { existing.end_time = incoming.end_time; }
+    if existing.title == "未命名作業" { existing.title = incoming.title; }
+    existing.allow_late_submission |= incoming.allow_late_submission;
+}
+
+fn first_text(obj: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| obj.get(*key).and_then(|v| v.as_str())
+        .map(str::trim).filter(|s| !s.is_empty()).map(str::to_string))
+}
+
 /// 解析單一節點為標準 `TronclassTodoItem`
 pub fn parse_single_todo(
     val: &serde_json::Value,
@@ -642,104 +691,40 @@ pub fn parse_single_todo(
     // 這裡以前在缺少 id 欄位時用 rand::random()，每次輪詢都會產生不同 ID，
     // 導致 homework_reminder_sent 的主鍵永不重複 → 同一份作業被反覆通知。
     // 改用「課程 + 標題 + 截止時間」的穩定雜湊，讓同一份作業每次都得到相同 ID。
-    let id = obj
-        .get("id")
-        .or_else(|| obj.get("activity_id"))
-        .or_else(|| obj.get("todo_id"))
-        .or_else(|| obj.get("homework_id"))
-        .and_then(parse_u64)
-        .unwrap_or_else(|| stable_fallback_id(obj));
+    let id = ["id", "activity_id", "todo_id", "homework_id"]
+        .iter().find_map(|key| obj.get(*key).and_then(parse_u64))
+        .unwrap_or_else(|| stable_fallback_id(obj, fallback_course_id, fallback_course_name));
 
-    // 2. 標題
-    let title = obj
-        .get("title")
-        .or_else(|| obj.get("name"))
-        .or_else(|| obj.get("activity_name"))
-        .or_else(|| obj.get("homework_title"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // Choose the first usable alias, not merely the first present key.
+    let title = first_text(obj, &["title", "name", "activity_name", "homework_title"])
         .unwrap_or_else(|| "未命名作業".to_string());
-
-    // 3. 課程資訊
-    let mut course_name = obj
-        .get("course_name")
-        .or_else(|| obj.get("course_title"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-
+    let mut course_name = first_text(obj, &["course_name", "course_title"]);
     let mut course_id = obj.get("course_id").and_then(parse_u64);
-
-    if let Some(c_obj) = obj.get("course").and_then(|c| c.as_object()) {
+    if let Some(course) = obj.get("course").and_then(|v| v.as_object()) {
         if course_name.is_none() {
-            course_name = c_obj
-                .get("name")
-                .or_else(|| c_obj.get("title"))
-                .or_else(|| c_obj.get("course_name"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.trim().to_string());
+            course_name = first_text(course, &["name", "title", "course_name"]);
         }
-        if course_id.is_none() {
-            course_id = c_obj.get("id").and_then(parse_u64);
-        }
+        if course_id.is_none() { course_id = course.get("id").and_then(parse_u64); }
     }
-
     let course_name = course_name.or_else(|| fallback_course_name.map(str::to_string));
     let course_id = course_id.or(fallback_course_id);
-
-    // 4. 系所
-    let department_name = obj
-        .get("department_name")
-        .or_else(|| obj.get("department"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string());
-
-    // 5. 類型 (homework, quiz, discussion, etc.)
-    let item_type = obj
-        .get("type")
-        .or_else(|| obj.get("activity_type"))
-        .or_else(|| obj.get("item_type"))
-        .or_else(|| obj.get("category"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_lowercase())
-        .unwrap_or_else(|| "homework".to_string());
+    let department_name = first_text(obj, &["department_name", "department"]);
+    let item_type = first_text(obj, &["type", "activity_type", "item_type", "category"])
+        .map(|text| text.to_lowercase()).unwrap_or_else(|| "homework".to_string());
 
     // 6. 截止時間與開放時間
-    let end_time = obj
-        .get("end_time")
-        .or_else(|| obj.get("deadline"))
-        .or_else(|| obj.get("end_at"))
-        .or_else(|| obj.get("due_at"))
-        .or_else(|| obj.get("due_date"))
-        .or_else(|| obj.get("end_date"))
-        .or_else(|| obj.get("close_time"))
-        .or_else(|| obj.get("submit_end_time"))
-        .and_then(parse_datetime);
+    let end_time = ["end_time", "deadline", "end_at", "due_at", "due_date", "end_date", "close_time", "submit_end_time"]
+        .iter().find_map(|key| obj.get(*key).and_then(parse_datetime));
 
-    let start_time = obj
-        .get("start_time")
-        .or_else(|| obj.get("start_at"))
-        .or_else(|| obj.get("open_time"))
-        .or_else(|| obj.get("begin_time"))
-        .or_else(|| obj.get("start_date"))
-        .and_then(parse_datetime);
+    let start_time = ["start_time", "start_at", "open_time", "begin_time", "start_date"]
+        .iter().find_map(|key| obj.get(*key).and_then(parse_datetime));
 
     // 7. 繳交狀態判定
-    let mut is_submitted = obj
-        .get("is_submitted")
-        .or_else(|| obj.get("submitted"))
-        .or_else(|| obj.get("is_finished"))
-        .or_else(|| obj.get("finished"))
-        .and_then(parse_bool)
-        .unwrap_or(false);
-
-    let mut submission_status = obj
-        .get("submission_status")
-        .or_else(|| obj.get("status"))
-        .or_else(|| obj.get("state"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
+    let submitted_flag = ["is_submitted", "submitted", "is_finished", "finished"]
+        .iter().find_map(|key| obj.get(*key).and_then(parse_bool));
+    let mut status_known = submitted_flag.is_some();
+    let mut is_submitted = submitted_flag.unwrap_or(false);
+    let mut submission_status = first_text(obj, &["submission_status", "status", "state"])
         .unwrap_or_default();
 
     if let Some(sub_obj) = obj.get("submission").and_then(|s| s.as_object()) {
@@ -747,6 +732,7 @@ pub fn parse_single_todo(
             submission_status = st.trim().to_string();
         }
         if let Some(sub_b) = sub_obj.get("is_submitted").and_then(parse_bool) {
+            status_known = true;
             is_submitted = is_submitted || sub_b;
         }
     }
@@ -757,6 +743,7 @@ pub fn parse_single_todo(
     // 收到幾筆已繳的測驗若判成未繳交，會反覆觸發 24h/6h/1h 提醒造成誤報，
     // 所以這裡把「非空 exam_submissions」視為已繳交。
     if let Some(exam_submissions) = obj.get("exam_submissions") {
+        if exam_submissions.is_array() { status_known = true; }
         if matches!(exam_submissions, serde_json::Value::Array(arr) if !arr.is_empty()) {
             is_submitted = true;
             if submission_status.trim().is_empty() {
@@ -773,28 +760,16 @@ pub fn parse_single_todo(
         is_submitted = true;
     }
 
-    if submission_status.is_empty() {
-        submission_status = if is_submitted {
-            "submitted".to_string()
-        } else {
-            "not_submitted".to_string()
-        };
+    if is_submitted {
+        if submission_status.is_empty() { submission_status = "submitted".to_string(); }
+    } else if !matches!(status_lower.as_str(), "not_submitted" | "unsubmitted" | "pending" | "open" | "in_progress") {
+        submission_status = if status_known { "not_submitted" } else { "unknown" }.to_string();
     }
 
-    // 8. 遲交設定
-    let allow_late_submission = obj
-        .get("allow_late_submission")
-        .or_else(|| obj.get("allow_late"))
-        .or_else(|| obj.get("is_allow_late"))
-        .and_then(parse_bool)
-        .unwrap_or(false);
-
-    // 9. 成績分數
-    let score = obj
-        .get("score")
-        .or_else(|| obj.get("grade"))
-        .or_else(|| obj.get("submission").and_then(|s| s.get("score")))
-        .and_then(parse_f64);
+    let allow_late_submission = ["allow_late_submission", "allow_late", "is_allow_late"]
+        .iter().find_map(|key| obj.get(*key).and_then(parse_bool)).unwrap_or(false);
+    let score = ["score", "grade"].iter().find_map(|key| obj.get(*key).and_then(parse_f64))
+        .or_else(|| obj.get("submission").and_then(|sub| sub.get("score")).and_then(parse_f64));
 
     Some(TronclassTodoItem {
         id,
@@ -1126,11 +1101,11 @@ pub fn build_homework_detail(
     let lower = description_html.to_ascii_lowercase();
     let submit_by_group = node
         .get("submit_by_group")
-        .and_then(|value| value.as_bool())
+        .and_then(parse_bool)
         .or_else(|| {
             node.get("data")
                 .and_then(|data| data.get("submit_by_group"))
-                .and_then(|value| value.as_bool())
+                .and_then(parse_bool)
         })
         .unwrap_or(false);
     Some(HomeworkDetail {
@@ -1251,7 +1226,7 @@ impl super::ApiClient {
                         consider_homework_detail(&mut best, node, Some(course_id), item_id, endpoint, None);
                         break;
                     }
-                    let pages = json.get("pages").and_then(|v| v.as_u64()).unwrap_or(1);
+                    let pages = json.get("pages").and_then(parse_u64).unwrap_or(1);
                     if page >= pages.max(1) || page >= HOMEWORK_DETAIL_MAX_PAGES {
                         break;
                     }
@@ -1702,32 +1677,27 @@ pub fn parse_course_list(root: &serde_json::Value) -> Vec<(u64, String)> {
 ///
 /// Tronclass 各校欄位差異極大，因此採多層推斷，任何一層命中即採用；
 /// 全部無法判斷時回傳 `None`，呼叫端會保守地保留該課程。
+fn course_array(root: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    if let Some(array) = root.as_array() { return Some(array); }
+    let obj = root.as_object()?;
+    ["courses", "data", "items"].iter().find_map(|key| obj.get(*key).and_then(|value| {
+        value.as_array().or_else(|| value.as_object().and_then(|nested| {
+            ["courses", "items", "results"].iter().find_map(|inner| nested.get(*inner).and_then(|v| v.as_array()))
+        }))
+    }))
+}
+
 pub fn parse_course_briefs(root: &serde_json::Value) -> Vec<CourseBrief> {
     let mut courses = Vec::new();
 
-    let arr = if let Some(a) = root.as_array() {
-        Some(a)
-    } else if let Some(obj) = root.as_object() {
-        obj.get("courses")
-            .or_else(|| obj.get("data"))
-            .or_else(|| obj.get("items"))
-            .and_then(|v| v.as_array())
-    } else {
-        None
-    };
+    let arr = course_array(root);
 
     if let Some(arr) = arr {
         for v in arr {
             if let Some(obj) = v.as_object() {
                 if let Some(id) = obj.get("id").and_then(parse_u64) {
-                    let name = obj
-                        .get("name")
-                        .or_else(|| obj.get("course_name"))
-                        .or_else(|| obj.get("title"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("未命名課程")
-                        .trim()
-                        .to_string();
+                    let name = first_text(obj, &["name", "course_name", "title"])
+                        .unwrap_or_else(|| "未命名課程".to_string());
                     let department = obj
                         .get("department")
                         .and_then(|v| v.as_object())
@@ -1961,7 +1931,7 @@ fn current_semester_start_with(
 /// 相同的 ID，因此 `homework_reminder_sent` 的去重才能正常運作。
 ///
 /// 最高位設為 1，避免與上游真實 ID 撞號。
-fn stable_fallback_id(obj: &serde_json::Map<String, serde_json::Value>) -> u64 {
+fn stable_fallback_id(obj: &serde_json::Map<String, serde_json::Value>, fallback_course_id: Option<u64>, fallback_course_name: Option<&str>) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
 
@@ -1971,6 +1941,10 @@ fn stable_fallback_id(obj: &serde_json::Map<String, serde_json::Value>) -> u64 {
         if let Some(text) = obj.get(key).and_then(extract_scalar_text) {
             text.hash(&mut hasher);
         }
+    }
+    if !["course_id", "course_name", "course_title"].iter().any(|key| obj.get(*key).and_then(extract_scalar_text).is_some()) {
+        if let Some(id) = fallback_course_id { id.hash(&mut hasher); }
+        else if let Some(name) = fallback_course_name { name.trim().hash(&mut hasher); }
     }
     for key in ["title", "name", "activity_name", "homework_title"] {
         if let Some(text) = obj.get(key).and_then(|v| v.as_str()) {
@@ -2097,7 +2071,7 @@ fn parse_f64(val: &serde_json::Value) -> Option<f64> {
         serde_json::Value::Number(n) => n.as_f64(),
         serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
         _ => None,
-    }
+    }.filter(|number| number.is_finite())
 }
 
 fn parse_bool(val: &serde_json::Value) -> Option<bool> {
@@ -2196,3 +2170,70 @@ pub fn parse_datetime(val: &serde_json::Value) -> Option<DateTime<Utc>> {
 // ─── 單元測試 ─────────────────────────────────────────────────────────────────
 
 
+#[cfg(test)]
+mod functional_repair_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn nullable_primary_fields_fall_back_to_valid_aliases() {
+        let node = json!({"id": null, "activity_id": "42", "title": "test", "end_time": null, "deadline": "2026-12-01T08:00:00Z", "is_submitted": null, "submitted": true});
+        let item = parse_single_todo(&node, None, None).unwrap();
+        assert_eq!(item.id, 42);
+        assert!(item.end_time.is_some());
+        assert!(item.is_submitted);
+    }
+}
+
+#[cfg(test)]
+mod functional_gap_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn distinguishes_empty_lists_from_unrecognized_payloads() {
+        assert!(has_todos_container(&json!({"todo_list": []})));
+        assert!(!has_todos_container(&json!({"error": "bad"})));
+        assert!(course_array(&json!({"data": {"courses": []}})).is_some());
+        assert!(course_array(&json!({"error": "bad"})).is_none());
+    }
+
+    #[test]
+    fn null_aliases_fall_through_to_usable_values() {
+        let item = parse_single_todo(&json!({"id":1,"title":null,"name":"A", "submission_status":null,"status":"submitted","score":null,"grade":"90","allow_late_submission":null,"allow_late":true}), None, None).unwrap();
+        assert_eq!(item.title, "A");
+        assert!(item.is_submitted);
+        assert_eq!(item.score, Some(90.0));
+        assert!(item.allow_late_submission);
+    }
+
+    #[test]
+    fn nested_course_container_and_null_alias_are_supported() {
+        let courses = parse_course_briefs(&json!({"courses":null,"data":{"courses":[{"id":"12","name":null,"title":"課程"}]}}));
+        assert_eq!(courses.len(), 1);
+        assert_eq!(courses[0].id, 12);
+        assert_eq!(courses[0].name, "課程");
+    }
+
+    #[test]
+    fn unknown_submission_does_not_claim_unsubmitted() {
+        let item = parse_single_todo(&json!({"id":1,"title":"A","end_time":"2030-01-01T00:00:00Z"}), None, None).unwrap();
+        assert_eq!(item.submission_status, "unknown");
+        assert!(!item.is_active_pending(Utc::now()));
+    }
+
+    #[test]
+    fn distinct_fallback_courses_do_not_share_missing_id() {
+        let raw = json!({"title":"A","deadline":"2030-01-01"});
+        assert_ne!(parse_single_todo(&raw, None, Some(1)).unwrap().id, parse_single_todo(&raw, None, Some(2)).unwrap().id);
+    }
+
+    #[test]
+    fn score_merge_does_not_erase_submission() {
+        let mut item = parse_single_todo(&json!({"id":1,"is_submitted":true}), None, None).unwrap();
+        let later = parse_single_todo(&json!({"id":1,"is_submitted":false,"score":90}), None, None).unwrap();
+        merge_todo(&mut item, later);
+        assert!(item.is_submitted);
+        assert_eq!(item.score, Some(90.0));
+    }
+}

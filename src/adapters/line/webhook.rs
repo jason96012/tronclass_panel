@@ -155,9 +155,9 @@ async fn webhook_handler(
 
     let payload: WebhookPayload = match serde_json::from_slice(&body) {
         Ok(p) => p,
-        Err(e) => {
-            error!(error = %e, "Webhook payload 反序列化失敗");
-            return (StatusCode::OK, "").into_response();
+        Err(_) => {
+            error!("Webhook payload 反序列化失敗；拒絕確認接收");
+            return (StatusCode::BAD_REQUEST, "Invalid webhook payload").into_response();
         }
     };
 

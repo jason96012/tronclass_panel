@@ -18,10 +18,11 @@ use super::*;
 
 use axum::http::{header, HeaderMap, Method, Uri};
 
-/// 快速多輪 URL-decode，遞迴還原多重跳脫編碼（最高 3 層），消除混淆繞過。
+/// 多輪 URL-decode，最多 5 層。只解 ASCII %XX，原有 UTF-8 位元組保持不變；
+/// 每輪輸出不大於輸入，避免多位元組字元在重複解碼時膨脹。
 pub(super) fn recursive_url_decode(mut input: String) -> String {
-    for _ in 0..3 {
-        let mut decoded = String::with_capacity(input.len());
+    for _ in 0..5 {
+        let mut decoded = Vec::with_capacity(input.len());
         let bytes = input.as_bytes();
         let mut i = 0;
         let mut changed = false;
@@ -34,7 +35,7 @@ pub(super) fn recursive_url_decode(mut input: String) -> String {
                 ) {
                     let byte = (h1 * 16 + h2) as u8;
                     if byte.is_ascii() {
-                        decoded.push(byte as char);
+                        decoded.push(byte);
                         i += 3;
                         changed = true;
                         continue;
@@ -42,10 +43,10 @@ pub(super) fn recursive_url_decode(mut input: String) -> String {
                 }
             }
             if bytes[i] == b'+' {
-                decoded.push(' ');
+                decoded.push(b' ');
                 changed = true;
             } else {
-                decoded.push(bytes[i] as char);
+                decoded.push(bytes[i]);
             }
             i += 1;
         }
@@ -53,7 +54,13 @@ pub(super) fn recursive_url_decode(mut input: String) -> String {
         if !changed {
             break;
         }
-        input = decoded;
+        // Original UTF-8 is preserved byte-for-byte; replacements are ASCII.
+        // Preserve the prior input if the invariant is ever broken by a future
+        // decoder change; malformed requests must not panic the detector.
+        input = match String::from_utf8(decoded) {
+            Ok(value) => value,
+            Err(_) => return input,
+        };
     }
     input
 }

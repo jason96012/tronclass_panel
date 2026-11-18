@@ -1382,6 +1382,7 @@ impl super::ApiClient {
         &self,
         rollcall_id: u64,
         data: impl Into<String>,
+        timing_attempt_id: u64,
     ) -> Result<AttendanceResult> {
         let url = format!(
             "{}/api/rollcall/{}/answer_qr_rollcall",
@@ -1390,16 +1391,22 @@ impl super::ApiClient {
         let body = QrCodeRollcallBody::new(data);
         debug!(url = %url, "PUT answer_qr_rollcall");
 
-        let resp = self
-            .client
-            .put(&url)
-            .json(&body)
-            .send()
-            .await
-            .into_diagnostic()
-            .wrap_err_with(|| {
-                format!("PUT /api/rollcall/{rollcall_id}/answer_qr_rollcall failed")
-            })?;
+        // Capture the start immediately before polling the request. The event is
+        // emitted only after the response/error so it cannot delay submission.
+        let send_started = std::time::Instant::now();
+        let send_epoch_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64).unwrap_or(0);
+        let response = self.client.put(&url).json(&body).send().await;
+        crate::qr_timing_log::record(serde_json::json!({
+            "event": "qr_timing_http", "rollcall_id": rollcall_id,
+            "attempt_id": timing_attempt_id, "send_epoch_ms": send_epoch_ms,
+            "send_ms": send_started.elapsed().as_millis() as u64,
+            "outcome": if response.is_ok() { "response" } else { "transport_error" }
+        }));
+        let resp = response.into_diagnostic().wrap_err_with(|| {
+            format!("PUT /api/rollcall/{rollcall_id}/answer_qr_rollcall failed")
+        })?;
 
         let status = resp.status();
         match status {

@@ -81,6 +81,12 @@ impl Coordinate {
         }
     }
 
+    fn is_valid(&self) -> bool {
+        self.latitude.is_finite() && self.longitude.is_finite()
+            && (-90.0..=90.0).contains(&self.latitude)
+            && (-180.0..=180.0).contains(&self.longitude)
+    }
+
     /// 計算兩座標之間的距離（公尺），使用 Haversine 公式
     ///
     /// Haversine 公式適用於球面距離計算，對於幾公里內的距離誤差很小。
@@ -229,6 +235,17 @@ pub fn circle_intersection(
     center2: &Coordinate,
     radius2: f64,
 ) -> CircleIntersection {
+    // Equirectangular inference is unstable near the poles and across the
+    // antimeridian. Do not invent coordinates there; manual coordinates and
+    // the empty-answer path are unaffected.
+    if !center1.is_valid() || !center2.is_valid()
+        || !radius1.is_finite() || !radius2.is_finite()
+        || radius1 < 0.0 || radius2 < 0.0
+        || center1.latitude.abs() >= 89.9 || center2.latitude.abs() >= 89.9
+        || (center1.longitude - center2.longitude).abs() > 180.0
+    {
+        return CircleIntersection::None;
+    }
     // 以 center1 為原點，轉換為平面座標
     let (cx, cy) = center2.to_cartesian_meters(center1);
 
@@ -246,6 +263,10 @@ pub fn circle_intersection(
     if d < EPS && (radius1 - radius2).abs() < EPS {
         debug!("兩圓完全重疊，無限多交叉點");
         return CircleIntersection::Infinite;
+    }
+
+    if !d.is_finite() || d < EPS {
+        return CircleIntersection::None;
     }
 
     // 兩圓不相交（距離過遠或一圓在另一圓內部）
@@ -268,6 +289,10 @@ pub fn circle_intersection(
     // 計算 h²：交叉點到根軸的距離的平方
     let h_sq = radius1 * radius1 - a * a;
 
+    if !a.is_finite() || !h_sq.is_finite() {
+        return CircleIntersection::None;
+    }
+
     // 方向向量（單位向量）
     let ux = cx / d;
     let uy = cy / d;
@@ -280,7 +305,7 @@ pub fn circle_intersection(
     if h_sq <= EPS {
         let coord = Coordinate::from_cartesian_meters(mx, my, center1);
         debug!("兩圓相切，一個交叉點：{coord}");
-        return CircleIntersection::One(coord);
+        return if coord.is_valid() { CircleIntersection::One(coord) } else { CircleIntersection::None };
     }
 
     let h = h_sq.sqrt();
@@ -296,7 +321,11 @@ pub fn circle_intersection(
 
     debug!("兩圓有兩個交叉點：{coord1} 和 {coord2}");
 
-    CircleIntersection::Two(coord1, coord2)
+    if coord1.is_valid() && coord2.is_valid() {
+        CircleIntersection::Two(coord1, coord2)
+    } else {
+        CircleIntersection::None
+    }
 }
 
 /// 從多個（圓心, 半徑）對中，用最小二乘法估算最可能的教室位置
@@ -305,7 +334,10 @@ pub fn circle_intersection(
 /// 若出現兩個交點，因資訊不足無法判定唯一位置，返回 `None`。
 /// 有三個以上量測時，使用迭代最小二乘法求解非線性方程。
 pub fn estimate_location_from_distances(measurements: &[(Coordinate, f64)]) -> Option<Coordinate> {
-    if measurements.is_empty() {
+    if measurements.is_empty() || measurements.iter().any(|(coord, distance)| {
+        !coord.is_valid() || !distance.is_finite() || *distance < 0.0
+            || coord.latitude.abs() >= 89.9
+    }) || measurements.iter().any(|(coord, _)| (coord.longitude - measurements[0].0.longitude).abs() > 180.0) {
         return None;
     }
 
@@ -371,7 +403,7 @@ fn trilateration_least_squares(measurements: &[(Coordinate, f64)]) -> Option<Coo
 
     let coord = Coordinate::from_cartesian_meters(x_est, y_est, origin);
     debug!("三邊測量估算位置：{coord}");
-    Some(coord)
+    coord.is_valid().then_some(coord)
 }
 
 /// 解 2D 最小二乘線性方程組（直接解析解）
@@ -392,8 +424,10 @@ fn solve_least_squares_2d(a: &[Vec<f64>], b: &[f64]) -> Option<(f64, f64)> {
     // 2×2 矩陣求逆：det = ad - bc
     let det = ata[0][0] * ata[1][1] - ata[0][1] * ata[1][0];
 
-    if det.abs() < 1e-10 {
-        warn!("最小二乘法矩陣接近奇異（det={det:.2e}），無法求解");
+    let scale = ata[0][0].max(ata[1][1]);
+    if !det.is_finite() || !scale.is_finite() || scale <= 0.0
+        || det <= 1e-12 * scale * scale {
+        warn!("最小二乘法矩陣接近奇異或無效，無法求解");
         return None;
     }
 
@@ -401,21 +435,25 @@ fn solve_least_squares_2d(a: &[Vec<f64>], b: &[f64]) -> Option<(f64, f64)> {
     let x = inv_det * (ata[1][1] * atb[0] - ata[0][1] * atb[1]);
     let y = inv_det * (ata[0][0] * atb[1] - ata[1][0] * atb[0]);
 
-    Some((x, y))
+    if x.is_finite() && y.is_finite() { Some((x, y)) } else { None }
 }
 
 /// 計算兩個圓心的加權中點（當兩圓不相交時的退化處理）
 ///
 /// 加權方式：半徑較小的圓心權重較高（較精確）
 fn weighted_midpoint(c1: &Coordinate, r1: f64, c2: &Coordinate, r2: f64) -> Coordinate {
-    // 反比加權：r 越小，權重越大
-    let w1 = if r1 > 0.0 { 1.0 / r1 } else { 1.0 };
-    let w2 = if r2 > 0.0 { 1.0 / r2 } else { 1.0 };
-    let total = w1 + w2;
-
+    // Normalized inverse-radius weights without 1/r overflow for tiny r.
+    let scale = r1.max(r2);
+    let (w1, w2) = if scale == 0.0 {
+        (0.5, 0.5)
+    } else {
+        let a = r1 / scale;
+        let b = r2 / scale;
+        (b / (a + b), a / (a + b))
+    };
     Coordinate {
-        latitude: (c1.latitude * w1 + c2.latitude * w2) / total,
-        longitude: (c1.longitude * w1 + c2.longitude * w2) / total,
+        latitude: c1.latitude * w1 + c2.latitude * w2,
+        longitude: c1.longitude * w1 + c2.longitude * w2,
     }
 }
 
@@ -436,6 +474,7 @@ pub fn haversine_distance_meters(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> 
 
     let a = (dphi / 2.0).sin().powi(2) + phi1.cos() * phi2.cos() * (dlambda / 2.0).sin().powi(2);
 
+    let a = a.clamp(0.0, 1.0);
     let c = 2.0 * a.sqrt().atan2((1.0 - a).sqrt());
 
     EARTH_RADIUS * c
@@ -1255,6 +1294,9 @@ async fn try_single_radar_coord(
     accuracy: u32,
     altitude: i32,
 ) -> Result<SingleRadarResult> {
+    if !coord.is_valid() {
+        return Ok(SingleRadarResult::OtherFailure { reason: "雷達座標無效".to_string() });
+    }
     await_radar_submit_turn(provider, rollcall_id, account_id).await;
     let result = api
         .answer_radar_rollcall(
@@ -1268,7 +1310,8 @@ async fn try_single_radar_coord(
 
     match result {
         AttendanceResult::Success => Ok(SingleRadarResult::Success),
-        AttendanceResult::RadarTooFar { distance } => Ok(SingleRadarResult::TooFar { distance }),
+        AttendanceResult::RadarTooFar { distance } if distance.is_finite() && distance >= 0.0 => Ok(SingleRadarResult::TooFar { distance }),
+        AttendanceResult::RadarTooFar { .. } => Ok(SingleRadarResult::OtherFailure { reason: "學校回傳的距離無效".to_string() }),
         // RADAR_SCHOOL_BLOCK_V1（fix77）：學校端擋下（429／403）→ 記下來（停手＋推播）。
         AttendanceResult::TransientFailure { reason } => Ok(classify_single_failure(
             provider,
@@ -1294,7 +1337,10 @@ async fn try_single_radar_coord(
 /// - 若有更多量測點，用三邊測量法估算
 /// - 返回去重後的候選列表（按可信度排序）
 pub fn compute_radar_candidates(measurements: &[(Coordinate, f64)]) -> Vec<Coordinate> {
-    if measurements.len() < 2 {
+    if measurements.len() < 2 || measurements.iter().any(|(coord, distance)| {
+        !coord.is_valid() || !distance.is_finite() || *distance < 0.0
+            || coord.latitude.abs() >= 89.9
+    }) || measurements.iter().any(|(coord, _)| (coord.longitude - measurements[0].0.longitude).abs() > 180.0) {
         return Vec::new();
     }
 
@@ -1862,3 +1908,26 @@ async fn rollcall_still_open(api: &ApiClient, rollcall_id: u64) -> bool {
 
 // ─── 測試 ─────────────────────────────────────────────────────────────────────
 
+#[cfg(test)]
+mod functional_repair_tests {
+    use super::*;
+
+    #[test]
+    fn near_concentric_unequal_circles_never_produce_nan() {
+        let a = Coordinate::new(25.0, 121.0);
+        assert!(matches!(circle_intersection(&a, 100.0, &a, 100.0000015), CircleIntersection::None));
+    }
+
+    #[test]
+    fn invalid_measurements_do_not_produce_candidates() {
+        let a = Coordinate::new(25.0, 121.0);
+        let b = Coordinate::new(25.001, 121.0);
+        assert!(compute_radar_candidates(&[(a, f64::NAN), (b, 10.0)]).is_empty());
+        assert!(estimate_location_from_distances(&[(a, f64::INFINITY), (b, 10.0)]).is_none());
+    }
+
+    #[test]
+    fn degenerate_linear_system_is_rejected() {
+        assert!(solve_least_squares_2d(&[vec![1.0, 1.0], vec![2.0, 2.0]], &[1.0, 2.0]).is_none());
+    }
+}
