@@ -44,6 +44,8 @@ pub(super) const TC_PROXY_BODY_LIMIT: usize = 32 * 1024 * 1024;
 /// R-22（2026-11-05 實作）：非 multipart 的本體（JSON、表單、文字、其他二進位）上限 4MB，
 /// 與 WAF 一般路徑上限一致。TC 萬用路由原本一律 32MB，現在只有 multipart 維持 32MB。
 pub(super) const TC_PROXY_NON_MULTIPART_BODY_LIMIT: usize = 4 * 1024 * 1024;
+/// HTML requires injection and must be buffered; attachments are streamed.
+const TC_PROXY_HTML_LIMIT: usize = 10 * 1024 * 1024;
 /// 請求轉發到上游的 header 白名單（原始 Cookie 一律不轉發）。
 const FORWARD_REQ_HEADERS: &[&str] = &[
     "content-type",
@@ -851,13 +853,34 @@ async fn tc_proxy_core(
             axum::http::HeaderValue::from_static("no-store"),
         );
     }
-    let bytes = match upstream.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(account = %account_id, error = %e, "iClass 代理回應讀取失敗");
-            return tc_error_page(StatusCode::BAD_GATEWAY, "iClass 回應讀取失敗，請稍後再試");
+    // Binary downloads and JSON need no injection. Forward incrementally rather
+    // than collecting an unbounded upstream body in server memory. Stream errors
+    // after headers have been sent terminate the response, not a fake success.
+    if !content_type_is_html {
+        let mut response = Response::new(axum::body::Body::from_stream(upstream.bytes_stream()));
+        *response.status_mut() = status;
+        *response.headers_mut() = response_headers;
+        return response;
+    }
+    if upstream.content_length().is_some_and(|len| len > TC_PROXY_HTML_LIMIT as u64) {
+        return tc_error_page(StatusCode::BAD_GATEWAY, "iClass HTML 回應過大，無法代理");
+    }
+    let mut bytes = Vec::new();
+    loop {
+        match upstream.chunk().await {
+            Ok(Some(chunk)) => {
+                if bytes.len().checked_add(chunk.len()).map_or(true, |len| len > TC_PROXY_HTML_LIMIT) {
+                    return tc_error_page(StatusCode::BAD_GATEWAY, "iClass HTML 回應過大，無法代理");
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(e) => {
+                warn!(account = %account_id, error = %e, "iClass 代理回應讀取失敗");
+                return tc_error_page(StatusCode::BAD_GATEWAY, "iClass 回應讀取失敗，請稍後再試");
+            }
         }
-    };
+    }
     // TC_TOKEN_KEEP_V1（fix36）：HTML 才注入（JSON／資產注入會壞檔，且沒有
     // SPA 路由問題）。body 一改長度，content-length 已在白名單被剝除，安全。
     //

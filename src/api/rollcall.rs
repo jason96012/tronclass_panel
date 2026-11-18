@@ -709,6 +709,22 @@ const NUMBER_RESULT_TEXT_KEYS: &[&str] = &[
 ];
 const RESPONSE_BODY_PREVIEW_CHARS: usize = 300;
 
+// Redact an exact secret from diagnostics, without changing request or response
+// classification. Encoded, transformed or unknown secrets need separate review.
+fn redact_exact_secret(text: &str, secret: &str) -> String {
+    if secret.is_empty() { return text.to_string(); }
+    text.replace(secret, "[redacted]")
+}
+
+fn redact_number_result(result: &mut AttendanceResult, number_code: &str) {
+    match result {
+        AttendanceResult::Failed { reason } | AttendanceResult::TransientFailure { reason } => {
+            *reason = redact_exact_secret(reason, number_code);
+        }
+        _ => {}
+    }
+}
+
 fn classify_number_rollcall_response(
     status: StatusCode,
     body_text: &str,
@@ -1008,7 +1024,6 @@ impl super::ApiClient {
         let lookup = parse_number_code_payload(&payload);
         debug!(
             rollcall_id = rollcall_id,
-            code = lookup.code.as_deref().unwrap_or(""),
             source = %lookup.source,
             status = %lookup.status,
             "student_rollcalls number_code lookup completed"
@@ -1149,7 +1164,7 @@ impl super::ApiClient {
     }
 
     /// `PUT /api/rollcall/{id}/answer_number_rollcall` — 數字簽到
-    #[instrument(skip(self), fields(rollcall_id = rollcall_id, number_code = %number_code))]
+    #[instrument(skip(self, number_code), fields(rollcall_id = rollcall_id))]
     pub async fn answer_number_rollcall(
         &self,
         rollcall_id: u64,
@@ -1160,7 +1175,7 @@ impl super::ApiClient {
             self.base_url, rollcall_id
         );
         let body = NumberRollcallBody::new(number_code);
-        debug!(url = %url, code = %number_code, "PUT answer_number_rollcall");
+        debug!(url = %url, "PUT answer_number_rollcall");
 
         let resp = self
             .client
@@ -1177,13 +1192,13 @@ impl super::ApiClient {
         match status {
             StatusCode::OK | StatusCode::CREATED | StatusCode::NO_CONTENT => {
                 let body_text = resp.text().await.unwrap_or_default();
-                let result = classify_number_rollcall_response(status, &body_text, number_code);
-                let body_preview = response_body_preview(&body_text);
+                let mut result = classify_number_rollcall_response(status, &body_text, number_code);
+                redact_number_result(&mut result, number_code);
+                let body_preview = response_body_preview(&redact_exact_secret(&body_text, number_code));
 
                 match &result {
                     AttendanceResult::Success => {
                         debug!(
-                            code = %number_code,
                             status = %status,
                             body = %body_preview,
                             "數字簽到成功"
@@ -1191,7 +1206,6 @@ impl super::ApiClient {
                     }
                     AttendanceResult::Failed { reason } => {
                         debug!(
-                            code = %number_code,
                             status = %status,
                             body = %body_preview,
                             reason = %reason,
@@ -1200,7 +1214,6 @@ impl super::ApiClient {
                     }
                     AttendanceResult::TransientFailure { reason } => {
                         warn!(
-                            code = %number_code,
                             status = %status,
                             body = %body_preview,
                             reason = %reason,
@@ -1217,30 +1230,33 @@ impl super::ApiClient {
             }
             StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
                 let body_text = resp.text().await.unwrap_or_default();
-                debug!(code = %number_code, status = %status, body = %body_text, "數字代碼錯誤");
+                debug!(status = %status, body = %redact_exact_secret(&body_text, number_code), "數字代碼錯誤");
                 Ok(AttendanceResult::Failed {
-                    reason: format!("code {number_code} 不正確"),
+                    reason: "數字點名碼不正確".to_string(),
                 })
             }
             StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS => {
                 let body_text = resp.text().await.unwrap_or_default();
-                warn!(status = %status, body = %body_text, "數字簽到遇到暫時性 HTTP 失敗");
+                let safe_body = redact_exact_secret(&body_text, number_code);
+                warn!(status = %status, body = %safe_body, "數字簽到遇到暫時性 HTTP 失敗");
                 Ok(AttendanceResult::TransientFailure {
-                    reason: format!("HTTP {status}: {body_text}"),
+                    reason: format!("HTTP {status}: {safe_body}"),
                 })
             }
             other if other.is_server_error() => {
                 let body_text = resp.text().await.unwrap_or_default();
-                warn!(status = %other, body = %body_text, "數字簽到遇到伺服器錯誤");
+                let safe_body = redact_exact_secret(&body_text, number_code);
+                warn!(status = %other, body = %safe_body, "數字簽到遇到伺服器錯誤");
                 Ok(AttendanceResult::TransientFailure {
-                    reason: format!("HTTP {other}: {body_text}"),
+                    reason: format!("HTTP {other}: {safe_body}"),
                 })
             }
             other => {
                 let body_text = resp.text().await.unwrap_or_default();
-                warn!(status = %other, body = %body_text, "數字簽到收到非預期狀態");
+                let safe_body = redact_exact_secret(&body_text, number_code);
+                warn!(status = %other, body = %safe_body, "數字簽到收到非預期狀態");
                 Ok(AttendanceResult::TransientFailure {
-                    reason: format!("HTTP {other}: {body_text}"),
+                    reason: format!("HTTP {other}: {safe_body}"),
                 })
             }
         }
@@ -1419,9 +1435,10 @@ impl super::ApiClient {
             }
             other => {
                 let body_text = resp.text().await.unwrap_or_default();
-                warn!(status = %other, body = %body_text, "QR Code 簽到失敗");
+                let safe_body = redact_exact_secret(&body_text, &body.data);
+                warn!(status = %other, body = %safe_body, "QR Code 簽到失敗");
                 Ok(AttendanceResult::Failed {
-                    reason: format!("HTTP {other}: {body_text}"),
+                    reason: format!("HTTP {other}: {safe_body}"),
                 })
             }
         }
@@ -1430,3 +1447,17 @@ impl super::ApiClient {
 
 // ─── 測試 ─────────────────────────────────────────────────────────────────────
 
+
+#[cfg(test)]
+mod secret_diagnostics_tests {
+    use super::{redact_exact_secret, redact_number_result, AttendanceResult};
+
+    #[test]
+    fn exact_secret_is_masked_and_empty_secret_is_safe() {
+        assert_eq!(redact_exact_secret("echo 1234 twice 1234", "1234"), "echo [redacted] twice [redacted]");
+        assert_eq!(redact_exact_secret("429 error", ""), "429 error");
+        let mut result = AttendanceResult::Failed { reason: "code 1234 incorrect".into() };
+        redact_number_result(&mut result, "1234");
+        assert!(matches!(result, AttendanceResult::Failed { reason } if !reason.contains("1234")));
+    }
+}

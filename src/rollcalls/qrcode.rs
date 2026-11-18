@@ -238,11 +238,12 @@ pub fn parse_qr_url(input: &str) -> Result<QrCodeData> {
         return Err(miette::miette!(QrParseError::MissingParam));
     } else {
         // 假設輸入本身就是 p 參數值
-        input.to_string()
+        input
     };
 
-    // URL decode p 參數
-    let decoded = url_decode(&p_value);
+    // Borrow the common unescaped case; escaped bytes retain the existing
+    // decoder, including malformed percent and lossy UTF-8 semantics.
+    let decoded = url_decode_cow(p_value);
     debug!(decoded_len = decoded.len(), "p 參數 URL decode 完成");
 
     // 解析編碼的 p 參數
@@ -252,7 +253,7 @@ pub fn parse_qr_url(input: &str) -> Result<QrCodeData> {
 }
 
 /// 從 URL 字串中提取 `p` 參數的值
-fn extract_p_param(url: &str) -> Result<String> {
+fn extract_p_param(url: &str) -> Result<&str> {
     // 找到 ? 後面的 query string
     let query = if let Some(pos) = url.find('?') {
         &url[pos + 1..]
@@ -268,7 +269,7 @@ fn extract_p_param(url: &str) -> Result<String> {
             let key = &pair[..eq_pos];
             let value = &pair[eq_pos + 1..];
             if key == PARAM_NAME {
-                return Ok(value.to_string());
+                return Ok(value);
             }
         }
     }
@@ -465,6 +466,14 @@ fn unescape_value(s: &str) -> String {
 ///
 /// 不依賴外部 crate，只處理常見的 ASCII 轉義。
 /// 對於複雜的多字節 UTF-8，使用逐字節解碼。
+fn url_decode_cow(input: &str) -> std::borrow::Cow<'_, str> {
+    if input.as_bytes().iter().any(|b| *b == b'%' || *b == b'+') {
+        std::borrow::Cow::Owned(url_decode(input))
+    } else {
+        std::borrow::Cow::Borrowed(input)
+    }
+}
+
 pub fn url_decode(input: &str) -> String {
     let mut result = Vec::with_capacity(input.len());
     let bytes = input.as_bytes();
@@ -710,12 +719,21 @@ mod qr_fragment_and_escape_tests {
 
 #[cfg(test)]
 mod qr_size_and_display_regression_tests {
-    use super::{parse_qr_url, QrCodeResult, MAX_QR_INPUT_BYTES};
+    use super::{parse_qr_url, url_decode, url_decode_cow, QrCodeResult, MAX_QR_INPUT_BYTES};
 
     #[test]
     fn oversized_input_is_rejected_before_decoding() {
         let input = "a".repeat(MAX_QR_INPUT_BYTES + 1);
         assert!(parse_qr_url(&input).is_err());
+    }
+
+    #[test]
+    fn borrowed_decoder_matches_existing_decoder() {
+        for text in ["plain中文", "abc%20def", "bad%xy+end", "%FF", "x%1Fy", ""] {
+            assert_eq!(&*url_decode_cow(text), url_decode(text).as_str());
+        }
+        assert!(matches!(url_decode_cow("3~payload!4~42"), std::borrow::Cow::Borrowed(_)));
+        assert!(matches!(url_decode_cow("3~payload%20value"), std::borrow::Cow::Owned(_)));
     }
 
     #[test]

@@ -196,10 +196,7 @@ pub(crate) fn public_error(context: &str, detail: &dyn std::fmt::Display) -> Str
 }
 
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
-// PEN_TEST_V1：測試模式放寬登入嘗試上限，讓暴力破解／撞庫類測試能跑完。
-// ⚠️ 風險提醒：這兩個值同時也是「真實使用者帳號」的暴力破解防護。
-//    若在對外服務上以 pen_test 建置，任何人都能對任何帳號無限次嘗試密碼。
-//    測完請務必用不帶 feature 的建置重新部署。
+// 所有 feature 組合都採用相同登入限制；不要在測試 feature 內繞過。
 const RATE_LIMIT_MAX_ATTEMPTS: u32 = 5;
 const IP_RATE_LIMIT_MAX_ATTEMPTS: u32 = 20;
 const MAX_RATE_LIMIT_KEYS: usize = 4096;
@@ -306,7 +303,7 @@ pub(super) fn validate_optional_admin_text(
 #[derive(Clone, Default)]
 struct RateLimiter {
     attempts: Arc<Mutex<HashMap<String, Vec<Instant>>>>,
-    /// LOGIN_THROTTLE_SQLITE_V1：有 DB 時以 SQLite 為主（重啟不歸零）；DB 出錯退回記憶體。
+    /// 有 DB 時以 SQLite 為主；DB 出錯拒絕受限操作，不回退至獨立計數器。
     db: Option<AccountsDb>,
 }
 
@@ -347,18 +344,16 @@ impl RateLimiter {
     }
 
     async fn check_limit(&self, key: &str, max_attempts: u32) -> bool {
-        // LOGIN_THROTTLE_SQLITE_V1：先走 SQLite；語意同記憶體版——被拒絕的嘗試不記入窗口。
+        // A single SQL statement performs the limit check and write atomically.
+        // If persistence fails, deny instead of losing shared history on fallback.
         if let Some(db) = self.db.as_ref() {
-            let now = unix_now_secs();
-            let since = now - RATE_LIMIT_WINDOW.as_secs() as i64;
-            match db.throttle_count("rate", key, since).await {
-                Ok(count) if count >= max_attempts => return false,
-                Ok(_) => match db.throttle_record("rate", key, now, RATE_LIMIT_WINDOW.as_secs() as i64).await {
-                    Ok(_) => return true,
-                    Err(error) => warn!(error = %error, "節流寫入 SQLite 失敗，退回記憶體計數"),
-                },
-                Err(error) => warn!(error = %error, "節流讀取 SQLite 失敗，退回記憶體計數"),
-            }
+            return match db.throttle_try_record_rate(key, unix_now_secs(), RATE_LIMIT_WINDOW.as_secs() as i64, max_attempts).await {
+                Ok(allowed) => allowed,
+                Err(error) => {
+                    warn!(error = %error, "SQLite 節流器故障，拒絕受限制的管理操作");
+                    false
+                }
+            };
         }
         self.check_limit_memory(key, max_attempts).await
     }

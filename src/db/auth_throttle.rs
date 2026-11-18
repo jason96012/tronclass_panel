@@ -15,7 +15,21 @@ use super::AccountsDb;
 /// 單一 (scope, key) 允許保留的最大列數；超過就砍最舊的，避免被灌爆。
 const MAX_ROWS_PER_KEY: i64 = 256;
 
+// A single SQLite write statement serializes the predicate with insertion,
+// including across processes sharing the database. Do not split count/insert.
+const TRY_RECORD_RATE_SQL: &str = "INSERT INTO auth_throttle_events (scope, key, at)
+    SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM auth_throttle_events
+        WHERE scope = ? AND key = ? AND at > ?) < ?";
+
 impl AccountsDb {
+    pub(crate) async fn throttle_try_record_rate(&self, key: &str, now: i64, window_secs: i64, limit: u32) -> Result<bool> {
+        let result = sqlx::query(TRY_RECORD_RATE_SQL)
+            .bind("rate").bind(key).bind(now)
+            .bind("rate").bind(key).bind(now - window_secs).bind(i64::from(limit))
+            .execute(&self.pool).await.into_diagnostic().wrap_err("原子寫入速率限制事件失敗")?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// 記錄一次嘗試並回傳 window 內（含這次）的次數。
     pub async fn throttle_record(&self, scope: &str, key: &str, now: i64, window_secs: i64) -> Result<u32> {
         let since = now - window_secs;
@@ -188,3 +202,25 @@ impl AccountsDb {
     }
 }
 
+
+#[cfg(test)]
+mod atomic_rate_tests {
+    use super::TRY_RECORD_RATE_SQL;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    #[tokio::test]
+    async fn atomic_limit_rejects_over_capacity_and_accepts_expired() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE auth_throttle_events (scope TEXT, key TEXT, at INTEGER)").execute(&pool).await.unwrap();
+        for i in 0..3 {
+            let n = sqlx::query(TRY_RECORD_RATE_SQL).bind("rate").bind("k").bind(100_i64)
+                .bind("rate").bind("k").bind(40_i64).bind(2_i64)
+                .execute(&pool).await.unwrap().rows_affected();
+            assert_eq!(n, if i < 2 { 1 } else { 0 });
+        }
+        let n = sqlx::query(TRY_RECORD_RATE_SQL).bind("rate").bind("k").bind(161_i64)
+            .bind("rate").bind("k").bind(101_i64).bind(2_i64)
+            .execute(&pool).await.unwrap().rows_affected();
+        assert_eq!(n, 1);
+    }
+}
