@@ -1027,27 +1027,31 @@ fn compile_time_stamp() -> &'static str {
     option_env!("TRONCLASS_BUILD_STAMP").unwrap_or("unknown")
 }
 
-/// DB_SNAPSHOT_BACKUP_V1（fix123）：把與 `db_path` 同目錄、命名為
-/// `<stem>.backup-YYYYMMDD` 的快照檔輪替到最近 `keep` 份（其餘刪除）。
-/// 檔名含日期，字典序即時間序，排序後刪最舊的即正確。
+/// Only complete, app-named snapshots may be pruned. Never match temporary
+/// files or arbitrary files that happen to share the prefix.
+fn is_db_backup_name(name: &str, prefix: &str) -> bool {
+    let Some(rest) = name.strip_prefix(prefix) else { return false; };
+    if rest.len() == 8 && rest.bytes().all(|b| b.is_ascii_digit()) {
+        return true; // legacy YYYYMMDD
+    }
+    // New format YYYYMMDDTHHMMSS-<32 hex uuid>, UTC and lexically sortable.
+    let Some((stamp, id)) = rest.split_once('-') else { return false; };
+    stamp.len() == 15 && stamp.as_bytes()[8] == b'T'
+        && stamp.bytes().enumerate().all(|(i, b)| i == 8 || b.is_ascii_digit())
+        && id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 fn prune_db_backups(db_path: &std::path::Path, keep: usize) -> std::io::Result<()> {
-    let dir = db_path
-        .parent()
+    let dir = db_path.parent().filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
-    let stem = db_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "accounts".to_string());
+    let stem = db_path.file_stem().and_then(|s| s.to_str()).unwrap_or("accounts");
     let prefix = format!("{stem}.backup-");
     let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().map(|t| t.is_file()).unwrap_or(false))
         .map(|entry| entry.path())
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with(&prefix))
-        })
+        .filter(|p| p.file_name().and_then(|n| n.to_str())
+            .is_some_and(|n| is_db_backup_name(n, &prefix)))
         .collect();
     files.sort();
     while files.len() > keep {
@@ -1058,6 +1062,20 @@ fn prune_db_backups(db_path: &std::path::Path, keep: usize) -> std::io::Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod snapshot_name_tests {
+    use super::is_db_backup_name;
+    #[test]
+    fn matches_only_complete_legacy_and_new_names() {
+        let p = "accounts.backup-";
+        assert!(is_db_backup_name("accounts.backup-20261118", p));
+        assert!(is_db_backup_name("accounts.backup-20261118T133553-0123456789abcdef0123456789abcdef", p));
+        assert!(!is_db_backup_name("accounts.backup-20261118.tmp", p));
+        assert!(!is_db_backup_name("accounts.backup-20261118-notes", p));
+        assert!(!is_db_backup_name("other.backup-20261118", p));
+    }
 }
 
 #[tokio::main]
@@ -1259,7 +1277,7 @@ async fn main() -> Result<()> {
     // 憑證）就全數遺失。這裡以 SQLite 的線上安全快照（VACUUM INTO，WAL 下
     // 免停服）維護一份「每日輪替」副本：啟動 5 分鐘後做第一份（先讓
     // schema 遷移與 auto-reencrypt 跑完），之後每 24 小時一份，同目錄
-    // `accounts.backup-YYYYMMDD`，保留最近 7 份。失敗只 warn，不影響服務。
+    // 每次使用唯一檔名並先寫暫存檔，再發布完整快照；保留最近 7 份。
     {
         let backup_db = accounts_db.clone();
         let backup_base = args.accounts_path.clone();
@@ -1269,16 +1287,37 @@ async fn main() -> Result<()> {
             const KEEP: usize = 7;
             tokio::time::sleep(START_DELAY).await;
             loop {
-                let date = chrono::Local::now().format("%Y%m%d").to_string();
-                let dest = backup_base.with_extension(format!("backup-{date}"));
-                match backup_db.backup_snapshot(&dest).await {
-                    Ok(()) => {
-                        tracing::info!(path = %dest.display(), "accounts.db 每日安全快照完成");
-                        if let Err(e) = prune_db_backups(&backup_base, KEEP) {
-                            tracing::warn!(error = %e, "清理舊資料庫快照失敗");
+                let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%S").to_string();
+                let id = uuid::Uuid::new_v4().simple().to_string();
+                // Both paths are in the source DB directory. VACUUM INTO requires
+                // a nonexistent destination, including after same-day restarts.
+                let dest = backup_base.with_extension(format!("backup-{stamp}-{id}"));
+                let temp = backup_base.with_extension(format!("snapshot-tmp-{id}"));
+                match backup_db.backup_snapshot(&temp).await {
+                    Ok(()) => match tokio::fs::rename(&temp, &dest).await {
+                        Ok(()) => {
+                            tracing::info!(path = %dest.display(), "accounts.db 每日安全快照完成");
+                            if let Err(e) = prune_db_backups(&backup_base, KEEP) {
+                                tracing::warn!(error = %e, "清理舊資料庫快照失敗");
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "資料庫快照發布失敗；未輪替舊快照");
+                            if let Err(cleanup) = tokio::fs::remove_file(&temp).await {
+                                tracing::warn!(error = %cleanup, path = %temp.display(), "清理快照暫存檔失敗");
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        // Debug includes the underlying SQLite error, not just the
+                        // outer context. Failure never removes any prior backup.
+                        tracing::warn!(error = ?e, "accounts.db 每日安全快照失敗");
+                        if let Err(cleanup) = tokio::fs::remove_file(&temp).await {
+                            if cleanup.kind() != std::io::ErrorKind::NotFound {
+                                tracing::warn!(error = %cleanup, path = %temp.display(), "清理快照暫存檔失敗");
+                            }
                         }
                     }
-                    Err(e) => tracing::warn!(error = %e, "accounts.db 每日安全快照失敗"),
                 }
                 tokio::time::sleep(INTERVAL).await;
             }

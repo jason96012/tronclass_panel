@@ -894,7 +894,15 @@ pub(super) async fn csp_report_handler(
     let directive = csp_report_field(report, &["violated-directive", "effectiveDirective"], 100);
     let blocked = strip_url_query(&csp_report_field(report, &["blocked-uri", "blockedURL"], 300));
     let document = strip_url_query(&csp_report_field(report, &["document-uri", "documentURL"], 300));
-    let message = format!("violated={directive} blocked={blocked}");
+    // CSP reports may explicitly distinguish report-only from enforcement;
+    // legacy reports can omit it, so never infer enforcement from the endpoint.
+    let disposition = csp_report_field(report, &["disposition"], 30);
+    let disposition = match disposition.as_str() {
+        "report" => "report-only",
+        "enforce" => "enforced",
+        _ => "unknown",
+    };
+    let message = format!("disposition={disposition} violated={directive} blocked={blocked}");
     let details = format!("document={document} ip={ip}");
     // 主控台一定輸出（在全站主控台上限內）。
     tracing::warn!(target: "client:csp_violation", message = %message, details = %details, "CSP 違規報告");
