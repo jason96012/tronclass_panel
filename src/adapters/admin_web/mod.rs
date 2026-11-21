@@ -351,6 +351,7 @@ impl RateLimiter {
                 Ok(allowed) => allowed,
                 Err(error) => {
                     warn!(error = %error, "SQLite 節流器故障，拒絕受限制的管理操作");
+                    warn!(target: "security_event", event = "admin_rate_backend_unavailable", outcome = "denied", "admin operation denied");
                     false
                 }
             };
@@ -1082,8 +1083,39 @@ struct LoginLock {
     until: Instant,
 }
 
-static LOGIN_LOCKS: once_cell::sync::Lazy<Mutex<HashMap<String, LoginLock>>> =
-    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+#[derive(Default)]
+struct LoginLockTable {
+    locks: HashMap<String, LoginLock>,
+    // If fallback capacity is exhausted, retain existing locks and temporarily
+    // deny password logins rather than silently forgetting protection.
+    overflow_until: Option<Instant>,
+}
+
+static LOGIN_LOCKS: once_cell::sync::Lazy<Mutex<LoginLockTable>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(LoginLockTable::default()));
+
+fn insert_memory_login_locks(table: &mut LoginLockTable, keys: &[&str], now: Instant, capacity: usize) -> bool {
+    table.locks.retain(|_, lock| lock.until > now);
+    let mut created = false;
+    let mut overflow = false;
+    for key in keys {
+        let key = login_lock_key(key);
+        if key.is_empty() || table.locks.contains_key(&key) { continue; }
+        if table.locks.len() >= capacity {
+            overflow = true;
+            continue;
+        }
+        table.locks.insert(key, LoginLock { until: now + ACCOUNT_LOGIN_LOCK_TTL });
+        created = true;
+    }
+    if overflow {
+        let until = now + ACCOUNT_LOGIN_LOCK_TTL;
+        table.overflow_until = Some(table.overflow_until.map_or(until, |old| old.max(until)));
+        // Treat the fallback global denial as newly created for alerting.
+        created = true;
+    }
+    created
+}
 
 fn login_lock_key(value: &str) -> String {
     value.trim().to_lowercase()
@@ -1103,33 +1135,8 @@ async fn lock_account_login(keys: &[&str]) -> bool {
             Err(error) => warn!(error = %error, "登入鎖定寫入 SQLite 失敗，退回記憶體鎖定"),
         }
     }
-    let mut locks = LOGIN_LOCKS.lock().await;
-    let now = Instant::now();
-    locks.retain(|_, lock| lock.until > now);
-    if locks.len() >= MAX_SECURITY_WATCH_KEYS {
-        // 極端情況（大量帳號同時被打）：整表清空重來，只是少鎖幾個帳號，不會 panic 或無限成長。
-        locks.clear();
-    }
-    let mut created = false;
-    for key in keys {
-        let key = login_lock_key(key);
-        if key.is_empty() {
-            continue;
-        }
-        // 鎖定是「從第一次觸發起固定 10 分鐘」：已在鎖定中的鍵不延長，
-        // 否則攻擊者只要持續打就能無限期把持有人擋在密碼登入之外。
-        if locks.contains_key(&key) {
-            continue;
-        }
-        created = true;
-        locks.insert(
-            key,
-            LoginLock {
-                until: now + ACCOUNT_LOGIN_LOCK_TTL,
-            },
-        );
-    }
-    created
+    let mut table = LOGIN_LOCKS.lock().await;
+    insert_memory_login_locks(&mut table, keys, Instant::now(), MAX_SECURITY_WATCH_KEYS)
 }
 
 /// 任一鍵仍在鎖定中 → 回傳剩餘秒數（取最大值）。
@@ -1158,12 +1165,15 @@ async fn login_lock_remaining(keys: &[String]) -> std::result::Result<Option<u64
 }
 
 async fn login_lock_remaining_memory(keys: &[String]) -> Option<u64> {
-    let mut locks = LOGIN_LOCKS.lock().await;
+    let mut table = LOGIN_LOCKS.lock().await;
     let now = Instant::now();
-    locks.retain(|_, lock| lock.until > now);
+    table.locks.retain(|_, lock| lock.until > now);
+    if table.overflow_until.is_some_and(|until| until <= now) { table.overflow_until = None; }
+    let overflow = table.overflow_until.map(|until| until.saturating_duration_since(now).as_secs().max(1));
     keys.iter()
-        .filter_map(|key| locks.get(&login_lock_key(key)))
+        .filter_map(|key| table.locks.get(&login_lock_key(key)))
         .map(|lock| lock.until.saturating_duration_since(now).as_secs().max(1))
+        .chain(overflow)
         .max()
 }
 
@@ -1175,7 +1185,7 @@ pub async fn cancel_login_lock(keys: &[&str]) -> bool {
     {
         let mut locks = LOGIN_LOCKS.lock().await;
         for key in keys {
-            if locks.remove(&login_lock_key(key)).is_some() {
+            if locks.locks.remove(&login_lock_key(key)).is_some() {
                 removed = true;
             }
         }
@@ -1362,7 +1372,9 @@ fn waf_notice_should_send(ip: &str) -> bool {
         return false;
     }
     if map.len() >= WAF_NOTICE_MAX_KEYS {
-        map.clear();
+        // Keep existing dedupe entries; suppress new notifications when full
+        // instead of causing a repeat-alert storm by clearing the whole map.
+        return false;
     }
     map.insert(ip.to_string(), now);
     true
@@ -2678,17 +2690,20 @@ impl AdminWebState {
         None
     }
 
-    async fn revoke_sessions_for_account(&self, account_id: &str) {
-        // REVOKE_ORDER_V1：先刪 DB、再移除記憶體（理由見 revoke_session）。
-        if let Err(e) = self
-            .accounts_db
-            .delete_dashboard_sessions_by_account(account_id)
-            .await
-        {
-            warn!(error = %e, "從資料庫刪除帳號 Dashboard sessions 失敗");
-        }
+    async fn revoke_sessions_for_account(&self, account_id: &str) -> bool {
+        // Clear local access even on DB error, but never report durable success.
+        let durable_revocation = match self.accounts_db
+            .delete_dashboard_sessions_by_account(account_id).await {
+            Ok(_) => true,
+            Err(e) => {
+                warn!(error = %e, "從資料庫刪除帳號 Dashboard sessions 失敗");
+                warn!(target: "security_event", event = "account_session_revoke_failed", outcome = "unknown", "persistent session revocation failed");
+                false
+            }
+        };
         let mut sessions = self.sessions.write().await;
         sessions.retain(|_, session| session.account_id != account_id);
+        durable_revocation
     }
 
     /// 相容包裝：不帶來源資訊、非 viewer（測試與 refresh 輪換以外的舊呼叫點）。
@@ -2836,7 +2851,7 @@ impl AdminWebState {
 
         // 家族撤銷：記憶體＋DB 全清（revoke_sessions_for_account 走 account_id 路徑，
         // 與 token 形狀無關，SESSION_TOKEN_HASH_V1 之後照樣成立）。
-        self.revoke_sessions_for_account(&account_id).await;
+        let durable_revocation = self.revoke_sessions_for_account(&account_id).await;
 
         let _ = self
             .accounts_db
@@ -2846,11 +2861,12 @@ impl AdminWebState {
                 action: "refresh_token_reuse_detected".to_string(),
                 account_id: account_id.clone(),
                 path: "/admin/api/auth/refresh".to_string(),
-                result: "family_revoked".to_string(),
-                details: format!(
-                    "偵測到已輪換的 refresh token 被重複使用（輪換後 {warned_age_secs} 秒），\
-                     疑似憑證遭竊；已撤銷該帳號所有裝置的登入 session"
-                ),
+                result: if durable_revocation { "revocation_requested" } else { "revocation_failed" }.to_string(),
+                details: if durable_revocation {
+                    format!("偵測到 refresh 重複使用（輪換後 {warned_age_secs} 秒）；已刪除資料庫 session，其他程序快取狀態未知")
+                } else {
+                    format!("偵測到 refresh 重複使用（輪換後 {warned_age_secs} 秒）；資料庫撤銷失敗，session 可能仍有效")
+                },
                 ip: String::new(),
                 user_agent: String::new(),
             })
@@ -2859,10 +2875,11 @@ impl AdminWebState {
         crate::web_push_notifications::notify_security_alert(
             vec![account_id.clone()],
             "您的登入憑證疑似遭竊用".to_string(),
-            format!(
-                "系統偵測到帳號 {account_id} 的舊登入憑證被重複使用，可能已遭他人截取。\
-                 已立即登出該帳號在所有裝置上的 session，請盡快重新登入並更改密碼。"
-            ),
+            if durable_revocation {
+                format!("系統偵測到帳號 {account_id} 的舊登入憑證被重複使用。已刪除資料庫中的登入 session；其他程序快取狀態未知，請盡快更改密碼並聯絡管理員。")
+            } else {
+                format!("系統偵測到帳號 {account_id} 的舊登入憑證被重複使用，但資料庫撤銷失敗，登入可能仍有效；請立即聯絡管理員處理。")
+            },
             "refresh-token-reuse".to_string(),
         );
     }
@@ -5782,5 +5799,20 @@ mod outer_security_header_tests {
             .body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         assert!(!response.headers().contains_key(header::CONTENT_SECURITY_POLICY));
+    }
+}
+
+#[cfg(test)]
+mod fallback_login_lock_capacity_tests {
+    use super::*;
+    #[test]
+    fn saturation_keeps_existing_lock_and_denies_globally() {
+        let now = Instant::now();
+        let mut table = LoginLockTable::default();
+        assert!(insert_memory_login_locks(&mut table, &["first"], now, 1));
+        assert!(insert_memory_login_locks(&mut table, &["second"], now, 1));
+        assert!(table.locks.contains_key("first"));
+        assert!(!table.locks.contains_key("second"));
+        assert!(table.overflow_until.is_some_and(|until| until > now));
     }
 }

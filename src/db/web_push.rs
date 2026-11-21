@@ -5,6 +5,9 @@ use sqlx::FromRow;
 
 use super::AccountsDb;
 
+const COMPARE_EXCHANGE_SETTING_SQL: &str =
+    "UPDATE web_push_settings SET value = ? WHERE key = ? AND value = ?";
+
 #[derive(Debug, Clone, FromRow)]
 pub struct WebPushSubscriptionRow {
     pub account_id: String,
@@ -47,6 +50,23 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err("儲存 Web Push 設定失敗")?;
         Ok(())
+    }
+
+    /// First initializer wins; never replace an existing VAPID key.
+    pub async fn insert_web_push_setting_if_absent(&self, key: &str, value: &str) -> Result<bool> {
+        let result = sqlx::query("INSERT INTO web_push_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING")
+            .bind(key.trim()).bind(value).execute(&self.pool).await.into_diagnostic()
+            .wrap_err("建立 Web Push 設定失敗")?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Upgrade only the value we observed; never overwrite concurrent rotation.
+    pub async fn compare_exchange_web_push_setting(&self, key: &str, old: &str, new: &str) -> Result<bool> {
+        let result = sqlx::query(COMPARE_EXCHANGE_SETTING_SQL)
+            .bind(new).bind(key.trim()).bind(old)
+            .execute(&self.pool).await.into_diagnostic()
+            .wrap_err("更新 Web Push 設定失敗")?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn upsert_web_push_subscription(
@@ -381,5 +401,43 @@ impl AccountsDb {
         .into_diagnostic()
         .wrap_err("刪除 Web Push 訂閱失敗")?;
         Ok(result.rows_affected() > 0)
+    }
+}
+
+#[cfg(test)]
+mod setting_compare_exchange_tests {
+    use super::COMPARE_EXCHANGE_SETTING_SQL;
+
+    #[tokio::test]
+    async fn inserting_existing_setting_does_not_replace_it() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+            .connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE web_push_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO web_push_settings VALUES (?, ?)")
+            .bind("key").bind("original").execute(&pool).await.unwrap();
+        let result = sqlx::query("INSERT INTO web_push_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING")
+            .bind("key").bind("replacement").execute(&pool).await.unwrap();
+        assert_eq!(result.rows_affected(), 0);
+        let current: String = sqlx::query_scalar("SELECT value FROM web_push_settings WHERE key = ?")
+            .bind("key").fetch_one(&pool).await.unwrap();
+        assert_eq!(current, "original");
+    }
+
+    #[tokio::test]
+    async fn stale_observation_never_overwrites_new_value() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new().max_connections(1)
+            .connect("sqlite::memory:").await.unwrap();
+        sqlx::query("CREATE TABLE web_push_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO web_push_settings VALUES (?, ?)")
+            .bind("key").bind("newer").execute(&pool).await.unwrap();
+        let result = sqlx::query(COMPARE_EXCHANGE_SETTING_SQL)
+            .bind("encrypted").bind("key").bind("old")
+            .execute(&pool).await.unwrap();
+        assert_eq!(result.rows_affected(), 0);
+        let current: String = sqlx::query_scalar("SELECT value FROM web_push_settings WHERE key = ?")
+            .bind("key").fetch_one(&pool).await.unwrap();
+        assert_eq!(current, "newer");
     }
 }

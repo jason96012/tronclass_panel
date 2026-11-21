@@ -143,18 +143,31 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
         }
         match db.get_web_push_setting(VAPID_PRIVATE_KEY_SETTING).await? {
             Some(value) => {
-                // 優先以 StoreSecret 解密（enc: 信 envelopes）；純文字舊值
-                // 直接透過，相容既有部署，下次寫入自動升級。
-                StoreSecret::from_stored_with_purpose(&value, "web_push.vapid_private_key")
-                    .as_str()
-                    .to_string()
+                let decoded = StoreSecret::from_stored_with_purpose(&value, "web_push.vapid_private_key")
+                    .as_str().to_string();
+                // Validate before changing durable data. Only migrate legacy
+                // plaintext; a failed decryption must never overwrite a key.
+                if !valid_private_key(&decoded) {
+                    return Err(miette::miette!("VAPID private key 無效或無法解密；原始資料未修改"));
+                }
+                if !value.starts_with("enc:") {
+                    let encrypted = StoreSecret::new(decoded.as_str())
+                        .store_value_with_purpose("web_push.vapid_private_key")?;
+                    if !db.compare_exchange_web_push_setting(VAPID_PRIVATE_KEY_SETTING, &value, &encrypted).await? {
+                        return Err(miette::miette!("VAPID key 已在遷移期間變更；暫停 Web Push 並重新初始化"));
+                    }
+                }
+                decoded
             }
             None => {
                 let value = generate_private_key()?;
                 let encrypted = StoreSecret::new(value.as_str())
                     .store_value_with_purpose("web_push.vapid_private_key")?;
-                db.set_web_push_setting(VAPID_PRIVATE_KEY_SETTING, &encrypted)
-                    .await?;
+                // Another initializer may have installed a key since our read.
+                // Never silently replace it: existing subscriptions bind to it.
+                if !db.insert_web_push_setting_if_absent(VAPID_PRIVATE_KEY_SETTING, &encrypted).await? {
+                    return Err(miette::miette!("VAPID key 已由其他初始化程序建立；暫停 Web Push 並重新初始化"));
+                }
                 value
             }
         }

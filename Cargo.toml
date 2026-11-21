@@ -68,7 +68,7 @@ qrcode = "0.14"
 regex = "1"
 
 # OCR（驗證碼識別）。Pterodactyl 預設映像沒有 libstdc++，請用 --no-default-features 編譯。
-ddddocr = { git = "https://github.com/86maid/ddddocr.git", branch = "master", optional = true }
+ddddocr = { git = "https://github.com/86maid/ddddocr.git", rev = "cc249cc4d79c6d609d808c540689f0187257a74f", optional = true }
 
 # Async utilities
 futures = "0.3"
@@ -94,7 +94,7 @@ rand = "0.10.0"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio"] }
 
 [features]
-# SEC_OCR_OPT_IN_V1（審查 H-01）：ddddocr 是 git master 依賴（不可重現、供應鏈風險），
+# SEC_OCR_OPT_IN_V1（審查 H-01）：ddddocr 是 Git 依賴，已固定 commit 但仍須審核來源與建置環境；
 # 預設不再啟用；需要驗證碼 OCR 時明確加 `--features ocr`。ptero-start.sh 本來就用
 # `--no-default-features` 建置，行為不變。
 default = []

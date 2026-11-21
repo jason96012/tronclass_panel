@@ -318,7 +318,7 @@ pub(super) async fn admin_passkey_register_finish_handler(
                 &ceremony.account_id,
                 "passkey_register",
                 Some(&ceremony.account_id),
-                Some(&credential_id),
+                None,
                 "Web 管理頁新增通行密鑰",
             );
             (
@@ -602,11 +602,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
         {
             Some(stored) => (ceremony.account_id.clone(), stored),
             None => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({ "error": "unknown passkey credential" })),
-                )
-                    .into_response();
+                return unauthorized_response();
             }
         }
     };
@@ -624,7 +620,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
     }
     let outcome = match wa.finish_authentication(&ceremony.state, &req.response, &mut stored) {
         Ok(outcome) => outcome,
-        Err(e) => {
+        Err(_e) => {
             record_persistent_login_event(
                 &state,
                 &account_id,
@@ -637,11 +633,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
                 &SessionOrigin::from_request(&headers, &ip).user_agent,
             )
             .await;
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": super::public_error("passkey verify failed: ", &e) })),
-            )
-                .into_response();
+            return unauthorized_response();
         }
     };
     stored.counter = outcome.new_counter;
