@@ -1488,6 +1488,11 @@ async fn main() -> Result<()> {
         None
     };
 
+    // Best-effort cleanup only for expired QR groups without registered workers.
+    if let Some(registry) = scanner_registry.as_ref() {
+        adapters::scanner::QrScannerRegistry::start_qr_idle_cleanup(registry);
+    }
+
     // ── 4b. 監控器改為背景啟動（LOGIN_BEFORE_HTTP_V1）──────────────────────
     // 舊行為：這裡依序「同步登入」所有帳號，Admin 後台／LINE webhook／掃碼頁／Discord
     // 必須等全部登入結束才會啟動；學校端慢或卡住時，後台完全打不開。

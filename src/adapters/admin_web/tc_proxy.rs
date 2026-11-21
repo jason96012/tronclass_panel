@@ -46,6 +46,12 @@ pub(super) const TC_PROXY_BODY_LIMIT: usize = 32 * 1024 * 1024;
 pub(super) const TC_PROXY_NON_MULTIPART_BODY_LIMIT: usize = 4 * 1024 * 1024;
 /// HTML requires injection and must be buffered; attachments are streamed.
 const TC_PROXY_HTML_LIMIT: usize = 10 * 1024 * 1024;
+// Bound the number of simultaneously buffered and rewritten HTML documents.
+// This budget is isolated from scanner / rollcall submission paths.
+const TC_PROXY_HTML_SLOTS: usize = 8;
+const TC_PROXY_HTML_SLOT_WAIT: Duration = Duration::from_secs(2);
+static TC_PROXY_HTML_BUDGET: once_cell::sync::Lazy<tokio::sync::Semaphore> =
+    once_cell::sync::Lazy::new(|| tokio::sync::Semaphore::new(TC_PROXY_HTML_SLOTS));
 /// 請求轉發到上游的 header 白名單（原始 Cookie 一律不轉發）。
 const FORWARD_REQ_HEADERS: &[&str] = &[
     "content-type",
@@ -865,6 +871,14 @@ async fn tc_proxy_core(
     if upstream.content_length().is_some_and(|len| len > TC_PROXY_HTML_LIMIT as u64) {
         return tc_error_page(StatusCode::BAD_GATEWAY, "iClass HTML 回應過大，無法代理");
     }
+    // Keep the permit through injection and response construction. This caps
+    // concurrent HTML buffering, not total process memory or binary streams.
+    let _html_slot = match tokio::time::timeout(
+        TC_PROXY_HTML_SLOT_WAIT, TC_PROXY_HTML_BUDGET.acquire()
+    ).await {
+        Ok(Ok(slot)) => slot,
+        _ => return tc_error_page(StatusCode::SERVICE_UNAVAILABLE, "iClass 代理忙碌中，請稍後再試"),
+    };
     let mut bytes = Vec::new();
     loop {
         match upstream.chunk().await {
@@ -1177,6 +1191,15 @@ fn tc_error_page(status: StatusCode, message: &str) -> Response {
                 axum::http::header::CACHE_CONTROL,
                 axum::http::HeaderValue::from_static("no-store"),
             ),
+            // This is our own static error page, not iClass HTML. It needs
+            // inline style attributes but no script or external resources.
+            (
+                axum::http::header::CONTENT_SECURITY_POLICY,
+                axum::http::HeaderValue::from_static("default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"),
+            ),
+            (axum::http::header::X_CONTENT_TYPE_OPTIONS, axum::http::HeaderValue::from_static("nosniff")),
+            (axum::http::header::X_FRAME_OPTIONS, axum::http::HeaderValue::from_static("DENY")),
+            (axum::http::header::REFERRER_POLICY, axum::http::HeaderValue::from_static("no-referrer")),
         ],
         html,
     )
@@ -1222,5 +1245,21 @@ mod tc_body_limit_tests {
     fn multipart_lookalike_is_not_multipart() {
         // 只看媒體型別前綴：`multipart-x` 之類不得借用 32MB。
         assert_eq!(tc_body_limit_for(&with_ct(Some("multipartx/foo"))), 4 * MB);
+    }
+}
+
+#[cfg(test)]
+mod proxy_security_regression_tests {
+    use super::*;
+
+    #[test]
+    fn proxy_error_page_has_restrictive_csp_and_no_store() {
+        let response = tc_error_page(StatusCode::BAD_GATEWAY, "<invalid>");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let headers = response.headers();
+        assert_eq!(headers.get(axum::http::header::CACHE_CONTROL).unwrap(), "no-store");
+        assert!(headers.get(axum::http::header::CONTENT_SECURITY_POLICY).unwrap()
+            .to_str().unwrap().contains("default-src 'none'"));
+        assert_eq!(headers.get(axum::http::header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
     }
 }

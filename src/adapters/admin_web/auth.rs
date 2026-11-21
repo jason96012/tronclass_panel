@@ -248,7 +248,11 @@ pub(super) async fn admin_login_handler(
             lock_keys.push(account.username.clone());
         }
         // 帳號鎖定檢查一律啟動，不再以 pen_test feature 放寬。
-        let lock_remaining = login_lock_remaining(&lock_keys).await;
+        let lock_remaining = match login_lock_remaining(&lock_keys).await {
+            Ok(remaining) => remaining,
+            Err(()) => return (StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "login_security_unavailable" }))).into_response(),
+        };
         if let Some(remaining) = lock_remaining {
             warn!(username = %username, client = %client, remaining, "admin web login rejected: account temporarily locked");
             {
@@ -522,14 +526,136 @@ pub(super) async fn admin_login_handler(
     )
 }
 
+// Return failure to API clients instead of silently claiming server revocation.
+// Cookies are cleared by the caller even on DB failure; a copied refresh token
+// may remain usable, so operators must investigate and revoke sessions.
+async fn revoke_logout_refresh_candidates(state: &AdminWebState, headers: &HeaderMap) -> bool {
+    let candidates = refresh_cookie_candidates(headers);
+    let (candidates, grace_access_keys, mut failed) = {
+        let mut grace = state.refresh_grace.lock().unwrap_or_else(|poison| poison.into_inner());
+        take_logout_grace_chain(&mut grace, candidates)
+    };
+    // Evict descendants even when the DB delete fails. DB failure is still
+    // reported because the durable token may remain usable after restart.
+    {
+        let mut sessions = state.sessions.write().await;
+        for key in grace_access_keys { sessions.remove(&key); }
+    }
+    for refresh in candidates {
+        match state.accounts_db.delete_dashboard_sessions_by_refresh_returning_keys(&refresh).await {
+            Ok(keys) => {
+                let mut sessions = state.sessions.write().await;
+                for key in keys { sessions.remove(&key); }
+            }
+            Err(_) => {
+                failed = true;
+                // Do not log the credential or raw database error.
+                warn!(target: "security_event", event = "logout_refresh_revoke_failed", outcome = "unknown", "server-side session may remain active");
+            }
+        }
+    }
+    failed
+}
+
+// The caller holds refresh_logout_lock. Follow only grace entries reachable
+// from the presented cookies; never revoke other devices by account id. Bound
+// traversal and signal failure rather than silently claiming complete logout.
+fn take_logout_grace_chain(
+    grace: &mut HashMap<String, GraceEntry>,
+    mut candidates: Vec<String>,
+) -> (Vec<String>, Vec<String>, bool) {
+    const MAX_CHAIN: usize = 256;
+    let mut access_keys = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut index = 0;
+    let mut failed = false;
+    while index < candidates.len() {
+        if index >= MAX_CHAIN {
+            failed = true;
+            break;
+        }
+        let token = candidates[index].clone();
+        index += 1;
+        if !seen.insert(token.clone()) { continue; }
+        if let Some(entry) = grace.remove(&token) {
+            access_keys.push(crate::db::session_lookup_key(&entry.access));
+            if !seen.contains(&entry.refresh) { candidates.push(entry.refresh); }
+        }
+    }
+    (candidates, access_keys, failed)
+}
+
+fn logout_api_result(failed: bool) -> Response {
+    if failed {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+            "ok": false, "error": "logout_revocation_failed",
+            "message": "已要求瀏覽器清除登入資料，但伺服器工作階段撤銷失敗，請聯絡管理員"
+        }))).into_response()
+    } else {
+        (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+    }
+}
+
+fn logout_navigation_result(failed: bool) -> Response {
+    if failed {
+        logout_api_result(true)
+    } else {
+        (StatusCode::FOUND, [(header::LOCATION, "/admin")]).into_response()
+    }
+}
+
+#[cfg(test)]
+mod logout_revocation_result_tests {
+    use super::*;
+
+    #[test]
+    fn both_distinct_refresh_cookie_candidates_are_included() {
+        let mut headers = HeaderMap::new();
+        let secure = "a".repeat(64);
+        let local = "b".repeat(64);
+        let cookie = format!("{}={}; {}={}", SECURE_REFRESH_COOKIE, secure, LOCAL_REFRESH_COOKIE, local);
+        headers.insert(header::COOKIE, cookie.parse().unwrap());
+        assert_eq!(refresh_cookie_candidates(&headers), vec![secure, local]);
+    }
+
+    #[test]
+    fn logout_follows_only_reachable_refresh_grace_chain() {
+        let mut grace = HashMap::new();
+        let entry = |access: &str, refresh: &str| GraceEntry {
+            access: access.to_string(), refresh: refresh.to_string(),
+            expires_at: Instant::now() + Duration::from_secs(60),
+            access_max_age: 60, refresh_max_age: 60,
+        };
+        grace.insert("old".into(), entry("access-1", "next"));
+        grace.insert("next".into(), entry("access-2", "last"));
+        grace.insert("other".into(), entry("access-other", "other-next"));
+        let (tokens, access_keys, failed) = take_logout_grace_chain(&mut grace, vec!["old".into()]);
+        assert!(!failed);
+        assert_eq!(tokens, vec!["old", "next", "last"]);
+        assert_eq!(access_keys, vec![crate::db::session_lookup_key("access-1"), crate::db::session_lookup_key("access-2")]);
+        assert!(grace.contains_key("other"));
+        assert!(!grace.contains_key("old"));
+    }
+
+    #[test]
+    fn reports_server_failure_in_both_logout_flows() {
+        assert_eq!(logout_api_result(true).status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(logout_navigation_result(true).status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(logout_api_result(false).status(), StatusCode::OK);
+        assert_eq!(logout_navigation_result(false).status(), StatusCode::FOUND);
+    }
+}
+
 pub(super) async fn admin_logout_handler(
     State(state): State<AdminWebState>,
     headers: HeaderMap,
     Query(query): Query<AdminQuery>,
 ) -> Response {
+    let _refresh_logout_guard = state.refresh_logout_lock.lock().await;
+    let mut access_revoke_failed = false;
     if let Some(session) = state.authorize(&query.token).await {
         if session.account_id != "<token-admin>" {
-            state.revoke_session(&query.token).await;
+            access_revoke_failed = state.revoke_session(&query.token).await;
             crate::logs::record_audit(
                 "web",
                 &session.account_id,
@@ -542,18 +668,16 @@ pub(super) async fn admin_logout_handler(
     }
 
     // LOGOUT_SERVER_SIDE_V1：API 登出也撤銷 refresh 列，與導覽式登出行為一致。
-    if let Some(refresh) = refresh_cookie_from_headers(&headers) {
-        let _ = state
-            .accounts_db
-            .delete_dashboard_session_by_refresh(&refresh)
-            .await;
-    }
+    // Revoke every distinct valid cookie candidate, not just the first name.
+    // Refresh supports both names, so logout must not leave the second usable.
+    let refresh_revoke_failed = revoke_logout_refresh_candidates(&state, &headers).await;
+    let revocation_failed = access_revoke_failed || refresh_revoke_failed;
     // LOGOUT_CLEAR_SITE_DATA_V1（fix118）：登出時同時要求瀏覽器清空本站
     // cache／cookies／storage——與 Set-Cookie 過期並行互補：即使某顆 cookie 因
     // Path/Domain 不一致沒清掉、或 localStorage 殘留前端快取，共用電腦上也不會
     // 留下任何本站痕跡。瀏覽器不支援時僅忽略標頭，不影響登出行為。
     let mut response = fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
-        (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        logout_api_result(revocation_failed),
     ));
     response.headers_mut().insert(
         header::HeaderName::from_static("clear-site-data"),
@@ -584,9 +708,11 @@ pub(super) async fn admin_logout_redirect_handler(
         )
             .into_response();
     }
+    let _refresh_logout_guard = state.refresh_logout_lock.lock().await;
+    let mut access_revoke_failed = false;
     if let Some(session) = state.authorize_any(&query.token).await {
         if session.account_id != "<token-admin>" {
-            state.revoke_session(&query.token).await;
+            access_revoke_failed = state.revoke_session(&query.token).await;
             crate::logs::record_audit(
                 "web",
                 &session.account_id,
@@ -598,14 +724,12 @@ pub(super) async fn admin_logout_redirect_handler(
         }
     }
     // 同時讓 refresh token 失效：否則清掉 cookie 後，DB 裡的 refresh 列仍可被重放。
-    if let Some(refresh) = refresh_cookie_from_headers(&headers) {
-        let _ = state
-            .accounts_db
-            .delete_dashboard_session_by_refresh(&refresh)
-            .await;
-    }
+    // Revoke every distinct valid cookie candidate, not just the first name.
+    // Refresh supports both names, so logout must not leave the second usable.
+    let refresh_revoke_failed = revoke_logout_refresh_candidates(&state, &headers).await;
+    let revocation_failed = access_revoke_failed || refresh_revoke_failed;
     let mut response = fb_sso::append_expired_fb_sso_cookie(append_expired_session_cookies(
-        (StatusCode::FOUND, [(header::LOCATION, "/admin")]).into_response(),
+        logout_navigation_result(revocation_failed),
     ));
     // LOGOUT_CLEAR_SITE_DATA_V1（fix118）：導覽式登出同樣清空本站
     // cache／cookies／storage（細節見 admin_logout_handler 的同名註解）。

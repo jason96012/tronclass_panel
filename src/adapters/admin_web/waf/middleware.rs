@@ -319,14 +319,10 @@ pub async fn waf_firewall_middleware(
     {
         waf.telemetry.rate_limited.fetch_add(1, Ordering::Relaxed);
         warn!(ip = %ip, "🛡️ [最高級 WAF 防火牆] 客戶端觸發全域 L7 速率上限，予以暫時限流！");
-        let mut response = (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({
-                "error": "rate_limited",
-                "message": "WAF: 請求頻率過高，已觸發最高級安全防禦限流，請稍候再試"
-            })),
-        )
-            .into_response();
+        let mut response = waf_error_response(StatusCode::TOO_MANY_REQUESTS, json!({
+            "error": "rate_limited",
+            "message": "WAF: 請求頻率過高，已觸發最高級安全防禦限流，請稍候再試"
+        }));
         response.headers_mut().insert(
             HeaderName::from_static("retry-after"),
             HeaderValue::from_static("60"),
@@ -522,14 +518,10 @@ pub(super) fn waf_forbidden_response(body: serde_json::Value) -> Response {
 /// 構建帶有安全響應標頭的 WAF 錯誤回應。
 /// 本體超過檢查上限（C5 預檢或緩衝時超限）：413，不掃描、不放行。
 fn waf_payload_too_large() -> Response {
-    (
-        StatusCode::PAYLOAD_TOO_LARGE,
-        Json(json!({
-            "error": "payload_too_large",
-            "message": "WAF: 請求本體超過檢查上限，已拒絕"
-        })),
-    )
-        .into_response()
+    waf_error_response(StatusCode::PAYLOAD_TOO_LARGE, json!({
+        "error": "payload_too_large",
+        "message": "WAF: 請求本體超過檢查上限，已拒絕"
+    }))
 }
 
 pub(super) fn waf_error_response(status: StatusCode, body: serde_json::Value) -> Response {
@@ -567,5 +559,17 @@ mod fingerprint_fail_closed_tests {
         assert!(!f(false, true, false), "未達可疑門檻不回 503");
         assert!(!f(true, false, false), "沒有近期信號不回 503");
         assert!(!f(true, true, true), "已驗證的 Google 爬蟲不回 503");
+    }
+}
+
+#[cfg(test)]
+mod waf_short_circuit_headers_tests {
+    use super::*;
+    #[test]
+    fn rejected_payload_has_restrictive_security_headers() {
+        let response = waf_payload_too_large();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.headers().get(header::CONTENT_SECURITY_POLICY).unwrap(), "default-src 'none'");
+        assert_eq!(response.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
     }
 }

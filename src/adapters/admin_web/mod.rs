@@ -1133,21 +1133,28 @@ async fn lock_account_login(keys: &[&str]) -> bool {
 }
 
 /// 任一鍵仍在鎖定中 → 回傳剩餘秒數（取最大值）。
-async fn login_lock_remaining(keys: &[String]) -> Option<u64> {
-    if let Some(db) = throttle_db() {
-        match db.login_lock_remaining(keys, unix_now_secs()).await {
-            Ok(remaining) => {
-                // DB 是主要來源；記憶體只在 DB 失敗時才有東西，但仍看一下以免退路期間的鎖被略過。
-                let memory = login_lock_remaining_memory(keys).await;
-                return match (remaining, memory) {
-                    (Some(a), Some(b)) => Some(a.max(b)),
-                    (a, b) => a.or(b),
-                };
-            }
-            Err(error) => warn!(error = %error, "讀取 SQLite 登入鎖定失敗，退回記憶體鎖定"),
+async fn login_lock_remaining(keys: &[String]) -> std::result::Result<Option<u64>, ()> {
+    let Some(db) = throttle_db() else {
+        warn!("登入鎖定資料庫未初始化，拒絕密碼登入");
+        return Err(());
+    };
+    match db.login_lock_remaining(keys, unix_now_secs()).await {
+        Ok(remaining) => {
+            // Memory may contain a lock recorded during an earlier DB outage.
+            let memory = login_lock_remaining_memory(keys).await;
+            Ok(match (remaining, memory) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (a, b) => a.or(b),
+            })
+        }
+        Err(error) => {
+            // Deliberately omit database error text and request identifiers
+            // from this allowlisted local security event.
+            let _ = error;
+            warn!(target: "security_event", event = "login_lock_backend_unavailable", outcome = "denied", "security control unavailable");
+            Err(())
         }
     }
-    login_lock_remaining_memory(keys).await
 }
 
 async fn login_lock_remaining_memory(keys: &[String]) -> Option<u64> {
@@ -2134,6 +2141,9 @@ pub struct AdminWebState {
     /// REFRESH_ROTATE_GRACE_V1（fix38）：舊 refresh → 該次輪換發出的新 token。
     /// 讓並行／重播的 refresh 拿回同一組結果，而不是被判失敗。
     refresh_grace: Arc<std::sync::Mutex<HashMap<String, GraceEntry>>>,
+    // Serialize refresh and logout within this process. This does not provide
+    // cross-process or crash-atomic rotation; those require a DB transaction.
+    refresh_logout_lock: Arc<Mutex<()>>,
     /// PROXY_CSRF_BRIDGE_V1（fix40）：account_id → 最近一次從 iClass 收到的
     /// `csrftoken`。上游 cookie 不再落地，CSRF 需求靠這裡＋注入頁面的 script。
     proxied_csrf: Arc<std::sync::Mutex<HashMap<String, ProxiedCsrfEntry>>>,
@@ -2394,6 +2404,7 @@ impl AdminWebState {
             sessions,
             tc_nav_tokens,
             refresh_grace: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            refresh_logout_lock: Arc::new(Mutex::new(())),
             proxied_csrf: Arc::new(std::sync::Mutex::new(HashMap::new())),
             default_poll_interval_secs: default_poll_interval_secs.max(1),
         };
@@ -2874,6 +2885,9 @@ impl AdminWebState {
         if !is_valid_session_token_format(refresh_token) {
             return None;
         }
+        // Same-process duplicate refreshes and logout must not interleave with
+        // the DB lookup, token creation, revocation and grace publication.
+        let _refresh_logout_guard = self.refresh_logout_lock.lock().await;
         // REFRESH_ROTATE_GRACE_V1（fix38）：這顆 refresh 剛被輪換過（並行分頁、
         // 前端重試、或「背景分頁 refresh 撞上剛完成的新登入」）→ 直接回同一次
         // 輪換的結果。舊版在這裡一定失敗，前端就把 cookie 當失效、跳登入頁。
@@ -3091,15 +3105,20 @@ impl AdminWebState {
 
     /// SESSION_TOKEN_HASH_V1：刪「明文 token」路徑（logout／middleware 注入）。
     /// 記憶體鍵先散列對齊；DB 由 `delete_dashboard_session` 內部散列。
-    async fn revoke_session(&self, token: &str) {
+    // Returns true when persistent revocation failed; always evict memory.
+    async fn revoke_session(&self, token: &str) -> bool {
         let token_trimmed = token.trim();
         let key = crate::db::session_lookup_key(token_trimmed);
         // REVOKE_ORDER_V1：先刪 DB、再移除記憶體。反過來的話，寫回記憶體的一方
         // （開機水合、DB 回填）可能在兩步之間讀到還沒刪的列，把已撤銷的 session 復活。
-        if let Err(e) = self.accounts_db.delete_dashboard_session(token_trimmed).await {
+        let failed = if let Err(e) = self.accounts_db.delete_dashboard_session(token_trimmed).await {
             warn!(error = %e, "從資料庫刪除 Dashboard session 失敗");
-        }
+            true
+        } else {
+            false
+        };
         self.sessions.write().await.remove(&key);
+        failed
     }
 
     /// SESSION_TOKEN_HASH_V1：刪「DB 散列鍵」路徑——給已持有 `row.token`（散列
@@ -4130,7 +4149,6 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
             "/admin/credits",
             axum::routing::get(pages::admin_credits_page_handler),
         )
-        .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         .layer(axum::middleware::from_fn_with_state(
             password_guard_state,
             require_dashboard_password_change_middleware,
@@ -4199,6 +4217,10 @@ pub fn build_admin_router(state: AdminWebState) -> Router {
         .layer(axum::middleware::from_fn(
             noindex_private_paths_middleware,
         ))
+        // Response-only header layer wraps WAF, HTTPS, authentication and other
+        // short circuits. It still honors their CSP and the iClass passthrough
+        // exclusions; do not change the relative order of the security guards.
+        .layer(axum::middleware::from_fn(admin_security_headers_middleware))
         .with_state(state)
 }
 
@@ -5725,5 +5747,40 @@ mod network_https_route_tests {
         for path in ["/scanner", "/number", "/radar", "/healthz"] {
             assert!(!admin_path_requires_https(path), "{path}");
         }
+    }
+}
+
+#[cfg(test)]
+mod outer_security_header_tests {
+    use axum::{body::Body, http::{Request, StatusCode, header}, middleware, routing::get, Router};
+    use tower::ServiceExt;
+
+    async fn reject(_req: axum::extract::Request, _next: middleware::Next) -> StatusCode {
+        StatusCode::FORBIDDEN
+    }
+
+    #[tokio::test]
+    async fn outer_headers_cover_short_circuited_admin_response() {
+        let app = Router::new()
+            .route("/admin/api/example", get(|| async { "ok" }))
+            .layer(middleware::from_fn(reject))
+            .layer(middleware::from_fn(super::admin_security_headers_middleware));
+        let response = app.oneshot(Request::builder().uri("/admin/api/example")
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().contains_key(header::CONTENT_SECURITY_POLICY));
+        assert_eq!(response.headers().get(header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+        assert!(response.headers().contains_key(header::STRICT_TRANSPORT_SECURITY));
+    }
+
+    #[tokio::test]
+    async fn explicit_proxy_passthrough_is_not_rewritten() {
+        let app = Router::new().route("/tc/example", get(|| async { "ok" }))
+            .layer(middleware::from_fn(reject))
+            .layer(middleware::from_fn(super::admin_security_headers_middleware));
+        let response = app.oneshot(Request::builder().uri("/tc/example")
+            .body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!response.headers().contains_key(header::CONTENT_SECURITY_POLICY));
     }
 }

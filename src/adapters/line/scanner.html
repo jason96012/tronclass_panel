@@ -931,6 +931,8 @@
     let lastHitLabel = "";          // 上一次成功解碼用的尺度／分區（顯示在相機資訊列）
     let lastHitVia = "";            // QR_ZXING_V1：上一次是用哪個解碼器解到的（zxing／jsQR）
     let cameraStarting = false;      // QR_CAMERA_SINGLETON_V1：開啟流程互斥
+    let cameraStartGeneration = null;
+    let queuedCameraStart = null;
     let cameraGeneration = 0;       // invalidates old start/focus/frame callbacks on stop or switch
     let scanFrameId = null;
 
@@ -5052,12 +5054,22 @@ void main() {
          頁面載入時會自動開相機，使用者若在那之前又按「開啟相機」，
          兩條 getUserMedia 會互相搶：後開的覆蓋 videoTrack，先開的 stream
          沒人關（手機上會出現「相機被佔住／畫面卡住」）。 */
-      if (cameraStarting) return;
+      if (cameraStarting) {
+        if (cameraStartGeneration !== cameraGeneration) {
+          // A previous start was invalidated by stop, but getUserMedia/play
+          // might still be pending. Keep only the newest requested restart;
+          // never open a second stream concurrently.
+          queuedCameraStart = { deviceId, options, generation: cameraGeneration };
+          setScanHint("等待先前的相機開啟完成後自動開始；若權限視窗仍在，請先處理。", "warn");
+        }
+        return;
+      }
       const switching = scanning;
       const previousZoom = options && Number.isFinite(options.restoreZoom) ? options.restoreZoom : targetZoom;
       if (switching) stopCamera(true); // invalidate old pixels but keep a fresh, already-decoded QR
       cameraStarting = true;
       const generation = ++cameraGeneration;
+      cameraStartGeneration = generation;
       if (scanFrameId !== null) { cancelAnimationFrame(scanFrameId); scanFrameId = null; }
       try {
         if (!validScannerParams()) {
@@ -5191,10 +5203,18 @@ void main() {
         setScanHint("相機打不開：請確認已允許相機權限（或用瀏覽器開啟，不要在 App 內建瀏覽器）", "error");
       } finally {
         cameraStarting = false;
+        cameraStartGeneration = null;
+        const next = queuedCameraStart;
+        queuedCameraStart = null;
+        // A further stop/switch invalidates the queued request as well.
+        if (next && next.generation === cameraGeneration) {
+          startCamera(next.deviceId, next.options).catch(() => {});
+        }
       }
     }
 
     function stopCamera(preserveQueuedQr = false) {
+      queuedCameraStart = null; // explicit stop wins over a queued start
       const retainedQr = preserveQueuedQr ? queuedQr : null;
       cameraGeneration += 1;
       if (scanFrameId !== null) { cancelAnimationFrame(scanFrameId); scanFrameId = null; }
@@ -5272,6 +5292,12 @@ void main() {
       beginManualQrRecovery(true);
     });
     document.getElementById("start").addEventListener("click", () => {
+      if (cameraStarting && cameraStartGeneration === cameraGeneration) {
+        // Don't reset epochs or lose queued QR merely because the initial
+        // automatic open is still running.
+        setScanHint("相機正在開啟，請先處理可能出現的權限提示。", "");
+        return;
+      }
       noHitRecoveryUsed = false;
       autoRecoveryState = "未執行";
       beginManualQrRecovery();

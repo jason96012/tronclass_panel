@@ -227,8 +227,14 @@
       redirect: 'manual',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: ''
+    }).then(function (response) {
+      // A manual same-origin redirect is exposed as opaqueredirect (status 0).
+      // Do not mistake that normal successful logout redirect for a failure.
+      if (response.type !== 'opaqueredirect' && !response.ok) {
+        window.alert('無法確認伺服器已撤銷登入，請聯絡管理員檢查工作階段。');
+      }
     }).catch(function () {
-      // 網路失敗也要離開頁面；伺服器端 session 會在到期時自然失效。
+      window.alert('網路錯誤，無法確認登出或清除登入資料。請聯絡管理員檢查工作階段。');
     }).then(function () {
       location.replace('/admin');
     });

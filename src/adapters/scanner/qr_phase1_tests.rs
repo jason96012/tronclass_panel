@@ -133,3 +133,29 @@ async fn reregistration_does_not_send_new_qr_to_old_receiver() {
     assert_eq!(timeout(LIMIT, new_rx.recv()).await.unwrap().as_deref(), Some("synthetic-new"));
     assert!(matches!(old_rx.try_recv(), Err(mpsc::error::TryRecvError::Disconnected)));
 }
+
+#[tokio::test]
+async fn idle_cleanup_preserves_registered_accounts_even_after_expiry() {
+    let registry = QrScannerRegistry::new("http://localhost:12345");
+    let (tx, _rx) = mpsc::channel(2);
+    registry.register_pending(PROVIDER, ROLLCALL, "mock-0", tx,
+        Duration::from_secs(60), None).await.unwrap();
+    let key = PendingQrKey::new(PROVIDER, ROLLCALL);
+    let now = Instant::now();
+    registry.inner.lock().await.get_mut(&key).unwrap().expires_at = now - Duration::from_secs(1);
+    registry.cleanup_expired_idle_qr(now);
+    assert!(registry.inner.lock().await.contains_key(&key));
+    // Completed status is retained by unregister, making the inactive entry
+    // a useful regression case for the periodic sweep.
+    registry.mark_completed(PROVIDER, ROLLCALL, "mock-0").await;
+    registry.cleanup_expired_idle_qr(now);
+    assert!(!registry.inner.lock().await.contains_key(&key));
+}
+
+#[tokio::test]
+async fn idle_cleanup_never_waits_for_a_busy_registry() {
+    let registry = QrScannerRegistry::new("http://localhost:12345");
+    let guard = registry.inner.lock().await;
+    registry.cleanup_expired_idle_qr(Instant::now());
+    drop(guard);
+}

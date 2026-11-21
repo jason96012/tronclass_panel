@@ -45,6 +45,16 @@ const MAX_PENDING_REGISTRATIONS_PER_ACCOUNT: usize = 4;
 const MAX_PENDING_AUTH_PER_IP_GROUP: usize = 16;
 const MAX_PASSKEY_CREDENTIALS_PER_ACCOUNT: usize = 32;
 
+// Both registration and authentication generate Uuid::simple() identifiers.
+// Check their wire shape before looking up ceremony state; never log the value.
+fn valid_passkey_ceremony_id(id: &str) -> bool {
+    id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn invalid_passkey_ceremony_id() -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid passkey ceremony" }))).into_response()
+}
+
 pub(super) fn passkey_user_handle(account_id: &str) -> Vec<u8> {
     let mut hasher = Sha256::new();
     hasher.update(b"tronclass-rollcall-passkey-user-handle-v1");
@@ -252,10 +262,8 @@ pub(super) async fn admin_passkey_register_finish_handler(
     headers: HeaderMap,
     Json(req): Json<AdminPasskeyRegisterFinishRequest>,
 ) -> Response {
-    if let Err(response) =
-        validate_admin_text(&req.ceremony_id, ADMIN_MAX_IDENTIFIER_BYTES, "ceremony_id")
-    {
-        return response;
+    if !valid_passkey_ceremony_id(&req.ceremony_id) {
+        return invalid_passkey_ceremony_id();
     }
     let wa = match passkey_webauthn_from_headers(&headers) {
         Ok(wa) => wa,
@@ -490,10 +498,8 @@ pub(super) async fn admin_passkey_login_finish_handler(
         alert_abnormal_traffic(&state, "通行密鑰驗證", "", &ip).await;
         return rate_limited_response();
     }
-    if let Err(response) =
-        validate_admin_text(&req.ceremony_id, ADMIN_MAX_IDENTIFIER_BYTES, "ceremony_id")
-    {
-        return response;
+    if !valid_passkey_ceremony_id(&req.ceremony_id) {
+        return invalid_passkey_ceremony_id();
     }
     if let Err(response) = validate_admin_text(&req.response.id, 4096, "credential id") {
         return response;
@@ -752,4 +758,17 @@ pub(super) async fn admin_passkey_login_finish_handler(
         });
     }
     session_login_response(&headers, &tokens, account_id, is_admin, false)
+}
+
+#[cfg(test)]
+mod passkey_ceremony_input_tests {
+    use super::valid_passkey_ceremony_id;
+    #[test]
+    fn accepts_only_exact_32_byte_hex_identifiers() {
+        assert!(valid_passkey_ceremony_id("0123456789abcdef0123456789abcdef"));
+        assert!(!valid_passkey_ceremony_id(""));
+        assert!(!valid_passkey_ceremony_id("0123456789abcdef0123456789abcde"));
+        assert!(!valid_passkey_ceremony_id("0123456789abcdef0123456789abcdeg"));
+        assert!(!valid_passkey_ceremony_id("01234567-89ab-cdef-0123-456789abcdef"));
+    }
 }

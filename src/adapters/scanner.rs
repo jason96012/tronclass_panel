@@ -216,6 +216,28 @@ impl QrScannerRegistry {
         &self.public_base_url
     }
 
+    /// Periodically reclaim only expired, inactive QR entries. Never wait on
+    /// the registry lock: submission and registration take priority. A Weak
+    /// reference prevents this maintenance task from keeping the registry alive.
+    pub fn start_qr_idle_cleanup(registry: &Arc<Self>) {
+        let registry = Arc::downgrade(registry);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                let Some(registry) = registry.upgrade() else { break };
+                registry.cleanup_expired_idle_qr(Instant::now());
+            }
+        });
+    }
+
+    fn cleanup_expired_idle_qr(&self, now: Instant) {
+        if let Ok(mut entries) = self.inner.try_lock() {
+            // Accounts still registered may have a worker or submitted code in
+            // flight. Preserve them regardless of the link expiration time.
+            entries.retain(|_, entry| entry.expires_at >= now || !entry.accounts.is_empty());
+        }
+    }
+
     /// Register one account as waiting for a shared QR scan.
     pub async fn register_pending(
         &self,

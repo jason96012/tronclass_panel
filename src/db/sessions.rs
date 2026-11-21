@@ -350,6 +350,24 @@ impl AccountsDb {
         Ok(())
     }
 
+    /// Logout: atomically return every deleted access hash so the caller can
+    /// evict the corresponding in-memory sessions as well. Never return a
+    /// plaintext credential or use this helper with an unvalidated token.
+    pub async fn delete_dashboard_sessions_by_refresh_returning_keys(
+        &self,
+        refresh_token: &str,
+    ) -> Result<Vec<String>> {
+        let keys = sqlx::query_scalar::<_, String>(
+            "DELETE FROM dashboard_sessions WHERE refresh_token = ? RETURNING token",
+        )
+        .bind(session_lookup_key(refresh_token))
+        .fetch_all(&self.pool)
+        .await
+        .into_diagnostic()
+        .wrap_err("依 refresh token 撤銷 dashboard_sessions 失敗")?;
+        Ok(keys)
+    }
+
     /// 依 Refresh Token 刪除該 Session（refresh 輪換時撤銷舊 token）。
     pub async fn delete_dashboard_session_by_refresh(&self, refresh_token: &str) -> Result<u64> {
         let result = sqlx::query("DELETE FROM dashboard_sessions WHERE refresh_token = ?")
