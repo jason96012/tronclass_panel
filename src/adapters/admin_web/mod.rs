@@ -398,11 +398,16 @@ impl RateLimiter {
 }
 
 fn rate_limited_response() -> Response {
-    (
+    let mut response = (
         StatusCode::TOO_MANY_REQUESTS,
         Json(json!({ "error": "too many attempts; please wait" })),
-    )
-        .into_response()
+    ).into_response();
+    // Conservative window-sized advice, not a guarantee of admission: the
+    // shared limiter also denies on database errors and other controls may apply.
+    if let Ok(value) = HeaderValue::from_str(&RATE_LIMIT_WINDOW.as_secs().to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+    response
 }
 
 /// TEST_NOTIFICATION_RATE_LIMIT_V1：測試通知端點的每帳號節流。
@@ -5814,5 +5819,16 @@ mod fallback_login_lock_capacity_tests {
         assert!(table.locks.contains_key("first"));
         assert!(!table.locks.contains_key("second"));
         assert!(table.overflow_until.is_some_and(|until| until > now));
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_response_header_tests {
+    use super::*;
+    #[test]
+    fn shared_rate_limit_response_advises_full_window() {
+        let response = rate_limited_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap().to_str().unwrap(), RATE_LIMIT_WINDOW.as_secs().to_string());
     }
 }
