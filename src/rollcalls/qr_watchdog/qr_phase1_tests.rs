@@ -52,3 +52,18 @@ fn repeated_uncertain_outcomes_remain_unknown_until_cleared() {
     health.clear_uncertain();
     assert!(health.stall_reason(now + Duration::from_secs(91)).is_none());
 }
+
+#[test]
+fn auto_recovery_does_not_interrupt_inflight_submit_or_verification() {
+    let now = Instant::now();
+    let mut health = QrHealth::new(now);
+    health.enter(QrPhase::WaitingTurn, now);
+    for phase in [QrPhase::Submitting, QrPhase::Verifying] {
+        health.enter(phase, now);
+        assert!(health.stall_reason(now + Duration::from_secs(120)).is_some());
+        assert!(!health.can_recover(now + Duration::from_secs(120)));
+        assert!(!health.begin_recovery(now + Duration::from_secs(120)));
+    }
+    health.enter(QrPhase::WaitingInput, now + Duration::from_secs(120));
+    assert!(health.can_recover(now + Duration::from_secs(120)));
+}

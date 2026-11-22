@@ -49,6 +49,12 @@ impl LineBotClient {
     }
 
     pub fn verify_signature(&self, body: &[u8], signature: &str) -> bool {
+        // An empty HMAC key is valid cryptographically but publicly guessable.
+        // Reject webhook events without a configured LINE channel secret;
+        // do not prevent the rest of the service from starting.
+        if self.channel_secret.trim().is_empty() {
+            return false;
+        }
         let sig_bytes = match BASE64.decode(signature) {
             Ok(bytes) => bytes,
             Err(e) => {
@@ -66,9 +72,7 @@ impl LineBotClient {
         };
 
         mac.update(body);
-        let computed = mac.finalize().into_bytes();
-
-        constant_time_compare(&computed, &sig_bytes)
+        mac.verify_slice(&sig_bytes).is_ok()
     }
 
     #[allow(dead_code)]
@@ -707,21 +711,31 @@ async fn handle_line_api_response(resp: reqwest::Response, api_name: &str) -> Re
     }
 }
 
-fn constant_time_compare(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        let dummy = &vec![0u8; a.len()][..];
-        let _ = constant_time_compare_inner(a, dummy);
-        return false;
-    }
-    constant_time_compare_inner(a, b)
-}
+#[cfg(test)]
+mod webhook_signature_security_tests {
+    use super::*;
 
-fn constant_time_compare_inner(a: &[u8], b: &[u8]) -> bool {
-    debug_assert_eq!(a.len(), b.len());
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
+    #[test]
+    fn valid_test_secret_verifies_and_tampering_fails() {
+        let mut config = LineBotConfig::default();
+        config.channel_secret = "isolated-test-secret".to_string();
+        let client = LineBotClient::new(&config).unwrap();
+        let body = br#"{"events":[]}"#;
+        let mut mac = Hmac::<Sha256>::new_from_slice(config.channel_secret.as_bytes()).unwrap();
+        mac.update(body);
+        let signature = BASE64.encode(mac.finalize().into_bytes());
+        assert!(client.verify_signature(body, &signature));
+        assert!(!client.verify_signature(br#"{"events":[1]}"#, &signature));
+        assert!(!client.verify_signature(body, "not base64!"));
     }
-    diff == 0
-}
 
+    #[test]
+    fn blank_secret_cannot_authenticate_even_with_its_matching_mac() {
+        let client = LineBotClient::new(&LineBotConfig::default()).unwrap();
+        let body = b"test";
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"").unwrap();
+        mac.update(body);
+        let signature = BASE64.encode(mac.finalize().into_bytes());
+        assert!(!client.verify_signature(body, &signature));
+    }
+}

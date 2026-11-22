@@ -91,9 +91,7 @@ impl QrScannerRegistry {
         let provider = query.provider.trim();
         let account = query.account_id.trim();
         let token = query.token.trim();
-        if provider.is_empty() || account.is_empty() || token.is_empty() {
-            return Err(ScannerError::InvalidSubmission("missing required field"));
-        }
+        validate_scanner_identity(provider, account, token)?;
         // Authorize before reading any wake handles; then revalidate after releasing locks.
         let members: HashSet<String> = {
             let inner = self.inner.lock().await;

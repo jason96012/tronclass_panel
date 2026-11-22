@@ -163,14 +163,11 @@ pub(super) async fn admin_login_handler(
     }
     // IP_BLACKLIST_V6_GROUP_V1：速率限制同樣以群組鍵計數——IPv6 位址輪換
     // 不能重置 60 秒窗口，也與黑名單／失敗計數用同一個 IP 身分。
-    if !state
-        .rate_limiter
-        .check_limit(
-            &format!("login-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)),
-            IP_RATE_LIMIT_MAX_ATTEMPTS,
-        )
-        .await
-    {
+    let ip_allowed = match auth_rate_check(state.rate_limiter.check_limit_result(
+        &format!("login-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)),
+        IP_RATE_LIMIT_MAX_ATTEMPTS,
+    ).await) { Ok(allowed) => allowed, Err(response) => return response };
+    if !ip_allowed {
         warn!(ip = %ip, "login rate limited by ip");
         alert_abnormal_traffic(&state, "密碼登入", "", &ip).await;
         return rate_limited_response();
@@ -190,7 +187,10 @@ pub(super) async fn admin_login_handler(
     // IP_BLACKLIST_V6_GROUP_V1：rate key 取群組鍵，與 login-ip: 計數同一把尺。
     let client = crate::trusted_ip::blacklist_group_key(&ip);
     let rate_key = format!("login:{}:{client}", username.to_lowercase());
-    if !state.rate_limiter.check(&rate_key).await {
+    let account_allowed = match auth_rate_check(state.rate_limiter.check_limit_result(&rate_key, RATE_LIMIT_MAX_ATTEMPTS).await) {
+        Ok(allowed) => allowed, Err(response) => return response,
+    };
+    if !account_allowed {
         warn!(username = %username, client = %client, "admin web login rate limited");
         // The sixth request is rejected by the five-attempt login rate limiter
         // before password verification. It must still count as a failed login;

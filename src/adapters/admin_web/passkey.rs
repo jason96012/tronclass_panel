@@ -202,11 +202,12 @@ pub(super) async fn admin_passkey_register_start_handler(
                 .into_response();
         }
     }
-    let existing_credentials = state
-        .accounts_db
-        .list_passkey_credentials(&account.id)
-        .await
-        .unwrap_or_default();
+    // Never silently omit the exclusion list on DB failure.
+    let existing_credentials = match state.accounts_db.list_passkey_credentials(&account.id).await {
+        Ok(credentials) => credentials,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "passkey_storage_unavailable" }))).into_response(),
+    };
     let existing: Vec<CredentialId> = existing_credentials
         .iter()
         .map(|credential| credential.id.clone())
@@ -392,11 +393,10 @@ pub(super) async fn admin_passkey_login_start_handler(
         warn!(ip = %ip, "passkey login rejected for blacklisted IP");
         return blocked_ip_response();
     }
-    if !state
-        .rate_limiter
-        .check_limit(&format!("passkey-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)), IP_RATE_LIMIT_MAX_ATTEMPTS)
-        .await
-    {
+    let ip_allowed = match auth_rate_check(state.rate_limiter.check_limit_result(
+        &format!("passkey-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)), IP_RATE_LIMIT_MAX_ATTEMPTS,
+    ).await) { Ok(allowed) => allowed, Err(response) => return response };
+    if !ip_allowed {
         warn!(ip = %ip, "passkey login rate limited by ip");
         alert_abnormal_traffic(&state, "通行密鑰登入", &req.username, &ip).await;
         return rate_limited_response();
@@ -406,12 +406,12 @@ pub(super) async fn admin_passkey_login_start_handler(
         return response;
     }
     let username_key = req.username.trim().to_lowercase();
-    if !username_key.is_empty()
-        && !state
-            .rate_limiter
-            .check_limit(&format!("passkey-user:{username_key}"), RATE_LIMIT_MAX_ATTEMPTS)
-            .await
-    {
+    let user_allowed = if username_key.is_empty() { true } else {
+        match auth_rate_check(state.rate_limiter.check_limit_result(
+            &format!("passkey-user:{username_key}"), RATE_LIMIT_MAX_ATTEMPTS,
+        ).await) { Ok(allowed) => allowed, Err(response) => return response }
+    };
+    if !user_allowed {
         warn!(ip = %ip, "passkey login rate limited by username");
         alert_abnormal_traffic(&state, "通行密鑰帳號探測", &req.username, &ip).await;
         return rate_limited_response();
@@ -489,11 +489,10 @@ pub(super) async fn admin_passkey_login_finish_handler(
         warn!(ip = %ip, "passkey finish rejected for blacklisted IP");
         return blocked_ip_response();
     }
-    if !state
-        .rate_limiter
-        .check_limit(&format!("passkey-finish-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)), IP_RATE_LIMIT_MAX_ATTEMPTS)
-        .await
-    {
+    let ip_allowed = match auth_rate_check(state.rate_limiter.check_limit_result(
+        &format!("passkey-finish-ip:{}", crate::trusted_ip::blacklist_group_key(&ip)), IP_RATE_LIMIT_MAX_ATTEMPTS,
+    ).await) { Ok(allowed) => allowed, Err(response) => return response };
+    if !ip_allowed {
         warn!(ip = %ip, "passkey finish rate limited by ip");
         alert_abnormal_traffic(&state, "通行密鑰驗證", "", &ip).await;
         return rate_limited_response();
@@ -606,14 +605,10 @@ pub(super) async fn admin_passkey_login_finish_handler(
             }
         }
     };
-    if !state
-        .rate_limiter
-        .check_limit(
-            &format!("passkey-finish-account:{account_id}"),
-            RATE_LIMIT_MAX_ATTEMPTS,
-        )
-        .await
-    {
+    let account_allowed = match auth_rate_check(state.rate_limiter.check_limit_result(
+        &format!("passkey-finish-account:{account_id}"), RATE_LIMIT_MAX_ATTEMPTS,
+    ).await) { Ok(allowed) => allowed, Err(response) => return response };
+    if !account_allowed {
         warn!(account = %account_id, ip = %ip, "passkey finish rate limited by account");
         alert_abnormal_traffic(&state, "通行密鑰驗證", &account_id, &ip).await;
         return rate_limited_response();

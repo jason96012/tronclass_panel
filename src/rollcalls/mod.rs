@@ -2416,7 +2416,7 @@ async fn process_qr_with_watchdog(
                             let notice = if recoveries >= QR_MAX_RECOVERIES {
                                 format!("{reason}；已達每場每帳號{QR_MAX_RECOVERIES}次自動恢復上限，請檢查學校狀態、登入及目前QR；系統不會無限重啟")
                             } else {
-                                format!("{reason}；目前在120秒恢復冷卻期，系統會自動再檢查")
+                                format!("{reason}；可能仍在送出／確認或恢復冷卻中，系統會再次檢查，不會因此立即中斷在途作業")
                             };
                             registry.qr_watchdog_notice(&config.provider, id, &config.id, &notice).await;
                             continue;

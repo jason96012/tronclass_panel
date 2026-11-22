@@ -344,19 +344,23 @@ impl RateLimiter {
     }
 
     async fn check_limit(&self, key: &str, max_attempts: u32) -> bool {
-        // A single SQL statement performs the limit check and write atomically.
-        // If persistence fails, deny instead of losing shared history on fallback.
+        self.check_limit_result(key, max_attempts).await.unwrap_or(false)
+    }
+
+    // Authentication handlers distinguish backend failure from exhaustion.
+    // Other existing callers retain fail-closed boolean behaviour.
+    async fn check_limit_result(&self, key: &str, max_attempts: u32) -> std::result::Result<bool, ()> {
         if let Some(db) = self.db.as_ref() {
             return match db.throttle_try_record_rate(key, unix_now_secs(), RATE_LIMIT_WINDOW.as_secs() as i64, max_attempts).await {
-                Ok(allowed) => allowed,
+                Ok(allowed) => Ok(allowed),
                 Err(error) => {
                     warn!(error = %error, "SQLite 節流器故障，拒絕受限制的管理操作");
                     warn!(target: "security_event", event = "admin_rate_backend_unavailable", outcome = "denied", "admin operation denied");
-                    false
+                    Err(())
                 }
             };
         }
-        self.check_limit_memory(key, max_attempts).await
+        Ok(self.check_limit_memory(key, max_attempts).await)
     }
 
     async fn check_limit_memory(&self, key: &str, max_attempts: u32) -> bool {
@@ -395,6 +399,11 @@ impl RateLimiter {
         }
         self.attempts.lock().await.remove(key);
     }
+}
+
+fn auth_rate_check(result: std::result::Result<bool, ()>) -> Result<bool, Response> {
+    result.map_err(|()| (StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({ "error": "login_security_unavailable" }))).into_response())
 }
 
 fn rate_limited_response() -> Response {
@@ -5830,5 +5839,16 @@ mod rate_limit_response_header_tests {
         let response = rate_limited_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers().get(header::RETRY_AFTER).unwrap().to_str().unwrap(), RATE_LIMIT_WINDOW.as_secs().to_string());
+    }
+}
+
+#[cfg(test)]
+mod auth_rate_backend_status_tests {
+    use super::*;
+    #[test]
+    fn backend_failure_is_distinct_from_exhaustion() {
+        assert_eq!(auth_rate_check(Err(())).unwrap_err().status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!auth_rate_check(Ok(false)).unwrap());
+        assert!(auth_rate_check(Ok(true)).unwrap());
     }
 }

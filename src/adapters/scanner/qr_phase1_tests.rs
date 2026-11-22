@@ -159,3 +159,30 @@ async fn idle_cleanup_never_waits_for_a_busy_registry() {
     registry.cleanup_expired_idle_qr(Instant::now());
     drop(guard);
 }
+
+// These exercise in-memory registry behavior only; no school API is called.
+#[tokio::test]
+async fn number_closed_receiver_does_not_publish_failed_value() {
+    let registry = QrScannerRegistry::new("http://localhost:12345");
+    let (tx, rx) = mpsc::channel(2);
+    let link = registry.register_number_pending(PROVIDER, ROLLCALL, "mock-0", tx, Duration::from_secs(60)).await.unwrap();
+    drop(rx);
+    let submitted = registry.submit_number(NumberCodeSubmission { provider: PROVIDER.into(), rollcall_id: ROLLCALL,
+        account_id: "mock-0".into(), token: link.token, code: Some("1234".into()), auto_lookup: Some(false) }).await;
+    assert!(matches!(submitted, Err(ScannerError::NoDeliveredAccounts)));
+    let inner = registry.number_inner.lock().await;
+    assert!(inner.get(&PendingNumberKey::new(PROVIDER, ROLLCALL)).unwrap().submitted_input.is_none());
+}
+
+#[tokio::test]
+async fn radar_closed_receiver_does_not_publish_failed_value() {
+    let registry = QrScannerRegistry::new("http://localhost:12345");
+    let (tx, rx) = mpsc::channel(2);
+    let link = registry.register_radar_pending(PROVIDER, ROLLCALL, "mock-0", tx, Duration::from_secs(60), &[], "").await.unwrap();
+    drop(rx);
+    let submitted = registry.submit_radar(RadarPointSubmission { provider: PROVIDER.into(), rollcall_id: ROLLCALL,
+        account_id: "mock-0".into(), token: link.token, latitude: 25.0, longitude: 121.0, accuracy: None, from_device: None }).await;
+    assert!(matches!(submitted, Err(ScannerError::NoDeliveredAccounts)));
+    let inner = registry.radar_inner.lock().await;
+    assert!(inner.get(&PendingNumberKey::new(PROVIDER, ROLLCALL)).unwrap().submitted_point.is_none());
+}

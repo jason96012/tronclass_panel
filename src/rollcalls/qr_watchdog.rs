@@ -114,7 +114,11 @@ impl QrHealth {
     }
 
     pub(crate) fn can_recover(&self, now: Instant) -> bool {
-        self.recoveries < QR_MAX_RECOVERIES
+        // Report a long phase as stalled, but never cancel an in-flight PUT or
+        // status verification to recover it: its outcome may already exist at
+        // the school. The request's own timeout and supervision still apply.
+        self.manual_recheck_safe()
+            && self.recoveries < QR_MAX_RECOVERIES
             && self.last_recovery.map_or(true, |at| now.saturating_duration_since(at) >= RECOVERY_COOLDOWN)
     }
 

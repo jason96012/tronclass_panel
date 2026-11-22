@@ -49,6 +49,21 @@ const DEFAULT_NUMBER_PATH: &str = "/number";
 // RADAR_INPUT_PAGE_V1（fix71）：雷達點名輸入頁（輸入座標）。
 const DEFAULT_RADAR_PATH: &str = "/radar";
 const MAX_QR_DATA_LEN: usize = 16 * 1024;
+// Generous byte ceilings for public identity fields, after request extraction.
+// These are not proxy/HTTP body limits and compatibility still needs testing.
+const MAX_SCANNER_IDENTITY_BYTES: usize = 4096;
+const MAX_SCANNER_TOKEN_BYTES: usize = 1024;
+
+fn validate_scanner_identity(provider: &str, account: &str, token: &str) -> Result<(), ScannerError> {
+    if provider.is_empty() || account.is_empty() || token.is_empty() {
+        return Err(ScannerError::InvalidSubmission("missing required field"));
+    }
+    if provider.len() > MAX_SCANNER_IDENTITY_BYTES || account.len() > MAX_SCANNER_IDENTITY_BYTES
+        || token.len() > MAX_SCANNER_TOKEN_BYTES {
+        return Err(ScannerError::InvalidSubmission("identity field too long"));
+    }
+    Ok(())
+}
 // Grace period, not a guarantee that every monitor has already detected the class.
 const QR_REGISTRATION_QUIET: Duration = Duration::from_secs(15);
 /// AUTO_SUBMIT_BY_CLASS_PROGRESS_V1（fix72）：同一個點名的班上進度最多每幾秒真的讀一次。
@@ -503,9 +518,7 @@ impl QrScannerRegistry {
         let account_id = query.account_id.trim();
         let token = query.token.trim();
 
-        if provider.is_empty() || account_id.is_empty() || token.is_empty() {
-            return Err(ScannerError::InvalidSubmission("missing required field"));
-        }
+        validate_scanner_identity(provider, account_id, token)?;
 
         let key = PendingQrKey::new(provider, query.rollcall_id);
         let now = Instant::now();
@@ -733,9 +746,7 @@ impl QrScannerRegistry {
         let account_id = query.account_id.trim();
         let token = query.token.trim();
 
-        if provider.is_empty() || account_id.is_empty() || token.is_empty() {
-            return Err(ScannerError::InvalidSubmission("missing required field"));
-        }
+        validate_scanner_identity(provider, account_id, token)?;
 
         let key = PendingNumberKey::new(provider, query.rollcall_id);
         let now = Instant::now();
@@ -779,9 +790,7 @@ impl QrScannerRegistry {
         let account_id = submission.account_id.trim();
         let token = submission.token.trim();
 
-        if provider.is_empty() || account_id.is_empty() || token.is_empty() {
-            return Err(ScannerError::InvalidSubmission("missing required field"));
-        }
+        validate_scanner_identity(provider, account_id, token)?;
 
         let input = if submission.auto_lookup.unwrap_or(false) {
             NumberCodeInput::AutoLookup
@@ -794,54 +803,33 @@ impl QrScannerRegistry {
         };
 
         let key = PendingNumberKey::new(provider, submission.rollcall_id);
-        let (account_senders, previous_state) = {
+        // Validation, nonblocking fan-out and state publication are one
+        // registry operation. A failed older submit cannot roll back a newer
+        // submit or a reset/re-registration between two lock acquisitions.
+        let (delivered_accounts, failed_accounts) = {
             let now = Instant::now();
             let mut inner = self.number_inner.lock().await;
             cleanup_expired_number_locked(&mut inner, now);
             let entry = inner.get_mut(&key).ok_or(ScannerError::PendingNotFound)?;
-
-            if now > entry.expires_at {
-                return Err(ScannerError::Expired);
-            }
-            if entry.token != token {
-                return Err(ScannerError::InvalidToken);
-            }
-            if !entry.accounts.contains_key(account_id) && !entry.all_accounts.contains(account_id)
-            {
+            if now > entry.expires_at { return Err(ScannerError::Expired); }
+            if entry.token != token { return Err(ScannerError::InvalidToken); }
+            if !entry.accounts.contains_key(account_id) && !entry.all_accounts.contains(account_id) {
                 return Err(ScannerError::AccountNotPending);
             }
-            // M3：記下舊狀態；一個都沒送到時還原。
-            let previous_state = (entry.submitted_input.clone(), entry.last_error.clone());
+            let mut delivered = Vec::new();
+            let mut failed = Vec::new();
+            for (id, account) in &entry.accounts {
+                if queue_for_account(&account.tx, input.clone(), id) {
+                    delivered.push(id.clone());
+                } else {
+                    failed.push(id.clone());
+                }
+            }
+            if delivered.is_empty() { return Err(ScannerError::NoDeliveredAccounts); }
             entry.submitted_input = Some(input.clone());
             entry.last_error = None;
-
-            let senders = entry
-                .accounts
-                .iter()
-                .map(|(account_id, account)| (account_id.clone(), account.tx.clone()))
-                .collect::<Vec<_>>();
-            (senders, previous_state)
+            (delivered, failed)
         };
-
-        let mut delivered_accounts = Vec::new();
-        let mut failed_accounts = Vec::new();
-        for (account_id, tx) in account_senders {
-            if queue_for_account(&tx, input.clone(), &account_id) {
-                delivered_accounts.push(account_id);
-            } else {
-                warn!(account_id = %account_id, "數字點名頁傳送輸入失敗（帳號已結束）");
-                failed_accounts.push(account_id);
-            }
-        }
-
-        if delivered_accounts.is_empty() {
-            let mut inner = self.number_inner.lock().await;
-            if let Some(entry) = inner.get_mut(&key) {
-                entry.submitted_input = previous_state.0;
-                entry.last_error = previous_state.1;
-            }
-            return Err(ScannerError::NoDeliveredAccounts);
-        }
 
         Ok(NumberCodeSubmitResult {
             delivered_count: delivered_accounts.len(),
@@ -1075,9 +1063,7 @@ impl QrScannerRegistry {
         let account_id = query.account_id.trim();
         let token = query.token.trim();
 
-        if provider.is_empty() || account_id.is_empty() || token.is_empty() {
-            return Err(ScannerError::InvalidSubmission("missing required field"));
-        }
+        validate_scanner_identity(provider, account_id, token)?;
 
         let key = PendingNumberKey::new(provider, query.rollcall_id);
         let now = Instant::now();
@@ -1280,9 +1266,7 @@ impl QrScannerRegistry {
         let account_id = submission.account_id.trim();
         let token = submission.token.trim();
 
-        if provider.is_empty() || account_id.is_empty() || token.is_empty() {
-            return Err(ScannerError::InvalidSubmission("missing required field"));
-        }
+        validate_scanner_identity(provider, account_id, token)?;
 
         let point = RadarPointInput {
             latitude: submission.latitude,
@@ -1295,54 +1279,32 @@ impl QrScannerRegistry {
         }
 
         let key = PendingNumberKey::new(provider, submission.rollcall_id);
-        let (account_senders, previous_state) = {
+        // Keep snapshot, nonblocking fan-out and publication serialized with
+        // registration/reset; do not restore stale state after a later submit.
+        let (delivered_accounts, failed_accounts) = {
             let now = Instant::now();
             let mut inner = self.radar_inner.lock().await;
             cleanup_expired_radar_locked(&mut inner, now);
             let entry = inner.get_mut(&key).ok_or(ScannerError::PendingNotFound)?;
-
-            if now > entry.expires_at {
-                return Err(ScannerError::Expired);
-            }
-            if entry.token != token {
-                return Err(ScannerError::InvalidToken);
-            }
-            if !entry.accounts.contains_key(account_id) && !entry.all_accounts.contains(account_id)
-            {
+            if now > entry.expires_at { return Err(ScannerError::Expired); }
+            if entry.token != token { return Err(ScannerError::InvalidToken); }
+            if !entry.accounts.contains_key(account_id) && !entry.all_accounts.contains(account_id) {
                 return Err(ScannerError::AccountNotPending);
             }
-            // M3：記下舊狀態；一個都沒送到時還原。
-            let previous_state = (entry.submitted_point.clone(), entry.last_error.clone());
+            let mut delivered = Vec::new();
+            let mut failed = Vec::new();
+            for (id, account) in &entry.accounts {
+                if queue_for_account(&account.tx, point, id) {
+                    delivered.push(id.clone());
+                } else {
+                    failed.push(id.clone());
+                }
+            }
+            if delivered.is_empty() { return Err(ScannerError::NoDeliveredAccounts); }
             entry.submitted_point = Some(RadarPointPayload::from_input(&point));
             entry.last_error = None;
-
-            let senders = entry
-                .accounts
-                .iter()
-                .map(|(account_id, account)| (account_id.clone(), account.tx.clone()))
-                .collect::<Vec<_>>();
-            (senders, previous_state)
+            (delivered, failed)
         };
-
-        let mut delivered_accounts = Vec::new();
-        let mut failed_accounts = Vec::new();
-        for (account_id, tx) in account_senders {
-            if queue_for_account(&tx, point, &account_id) {
-                delivered_accounts.push(account_id);
-            } else {
-                warn!(account_id = %account_id, "雷達點名頁傳送座標失敗（帳號已結束）");
-                failed_accounts.push(account_id);
-            }
-        }
-
-        if delivered_accounts.is_empty() {
-            let mut inner = self.radar_inner.lock().await;
-            if let Some(entry) = inner.get_mut(&key) {
-                entry.submitted_point = previous_state.0;
-                entry.last_error = previous_state.1;
-            }
-            return Err(ScannerError::NoDeliveredAccounts);
-        }
 
         info!(
             provider = %provider,
@@ -1375,7 +1337,8 @@ impl QrScannerRegistry {
         let token = submission.token.trim();
         let qr_data = submission.qr_data.trim();
 
-        if provider.is_empty() || account_id.is_empty() || token.is_empty() || qr_data.is_empty() {
+        validate_scanner_identity(provider, account_id, token)?;
+        if qr_data.is_empty() {
             return Err(ScannerError::InvalidSubmission("missing required field"));
         }
         if qr_data.len() > MAX_QR_DATA_LEN {
@@ -1651,6 +1614,44 @@ impl ScannerSubmitRateLimiter {
 static SCANNER_SUBMIT_RATE_LIMITER: once_cell::sync::Lazy<ScannerSubmitRateLimiter> =
     once_cell::sync::Lazy::new(ScannerSubmitRateLimiter::new);
 
+// QR scanning can repeatedly submit while a phone remains aimed at a rotating
+// code. Give QR a separate, higher shared-IP budget so number/radar attempts
+// cannot exhaust it. Coarse fixed windows bound per-IP memory, not traffic.
+const QR_SUBMIT_WINDOW: Duration = Duration::from_secs(60);
+const QR_SUBMIT_MAX_REQUESTS: u32 = 2000;
+const QR_SUBMIT_MAX_IPS: usize = 10_000;
+
+#[derive(Default)]
+struct QrSubmitLimiter {
+    attempts: Mutex<HashMap<String, (Instant, u32)>>,
+}
+
+fn qr_submit_limit_at(map: &mut HashMap<String, (Instant, u32)>, ip: &str, now: Instant) -> bool {
+    if !map.contains_key(ip) && map.len() >= QR_SUBMIT_MAX_IPS {
+        map.retain(|_, (start, _)| now.saturating_duration_since(*start) < QR_SUBMIT_WINDOW);
+        // Do not block new legitimate shared-IP scanners solely because the
+        // table is full. Global tool limiter still applies: this is fail-open
+        // for new IPs and must be monitored / tested under load.
+        if map.len() >= QR_SUBMIT_MAX_IPS {
+            // Emit only at powers of two; no IP, token or QR content.
+            static CAPACITY_BYPASS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let count = CAPACITY_BYPASS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).saturating_add(1);
+            if count.is_power_of_two() {
+                warn!(target: "security_event", event = "qr_limiter_capacity_bypass", outcome = "degraded", "QR limiter at capacity; shared tool limiter remains active");
+            }
+            return true;
+        }
+    }
+    let entry = map.entry(ip.to_string()).or_insert((now, 0));
+    if now.saturating_duration_since(entry.0) >= QR_SUBMIT_WINDOW { *entry = (now, 0); }
+    if entry.1 >= QR_SUBMIT_MAX_REQUESTS { return false; }
+    entry.1 += 1;
+    true
+}
+
+static QR_SUBMIT_LIMITER: once_cell::sync::Lazy<QrSubmitLimiter> =
+    once_cell::sync::Lazy::new(QrSubmitLimiter::default);
+
 /// 判斷路徑是否為「提交」類端點（寫入操作，需要更嚴格限流）。
 fn is_scanner_submit_path(path: &str) -> bool {
     path.ends_with("/submit")
@@ -1670,8 +1671,15 @@ pub(crate) async fn tool_rate_limit_middleware(
 ) -> Response {
     let path = request.uri().path().to_string();
 
-    // 先執行提交端點獨立限流（更嚴格）。
-    if is_scanner_submit_path(&path) && !SCANNER_SUBMIT_RATE_LIMITER.check_limit(&ip).await {
+    // QR has a separate budget: a held camera and NAT-sharing class must not
+    // consume number/radar's small per-IP quota (or vice versa).
+    let allowed = if path == "/scanner/submit" {
+        let mut map = QR_SUBMIT_LIMITER.attempts.lock().await;
+        qr_submit_limit_at(&mut map, &ip, Instant::now())
+    } else if is_scanner_submit_path(&path) {
+        SCANNER_SUBMIT_RATE_LIMITER.check_limit(&ip).await
+    } else { true };
+    if !allowed {
         warn!(
             ip = %ip,
             path = %path,
@@ -2638,3 +2646,29 @@ mod qr_reset_fanout_tests {
 #[cfg(test)]
 #[path = "scanner/qr_phase1_tests.rs"]
 mod qr_phase1_tests;
+
+#[cfg(test)]
+mod qr_shared_ip_limiter_tests {
+    use super::*;
+    #[test]
+    fn continuous_camera_and_shared_ip_do_not_hit_legacy_60_limit() {
+        let mut map = HashMap::new();
+        let now = Instant::now();
+        for _ in 0..1000 { assert!(qr_submit_limit_at(&mut map, "192.0.2.1", now)); }
+        for _ in 1000..QR_SUBMIT_MAX_REQUESTS { assert!(qr_submit_limit_at(&mut map, "192.0.2.1", now)); }
+        assert!(!qr_submit_limit_at(&mut map, "192.0.2.1", now));
+        assert!(qr_submit_limit_at(&mut map, "192.0.2.1", now + QR_SUBMIT_WINDOW));
+    }
+}
+
+#[cfg(test)]
+mod scanner_identity_boundary_tests {
+    use super::*;
+    #[test]
+    fn generous_identity_limits_are_byte_based() {
+        assert!(validate_scanner_identity("provider", "account", "token").is_ok());
+        assert!(validate_scanner_identity(&"a".repeat(MAX_SCANNER_IDENTITY_BYTES), "a", "b").is_ok());
+        assert!(validate_scanner_identity(&"a".repeat(MAX_SCANNER_IDENTITY_BYTES + 1), "a", "b").is_err());
+        assert!(validate_scanner_identity("a", "a", &"b".repeat(MAX_SCANNER_TOKEN_BYTES + 1)).is_err());
+    }
+}

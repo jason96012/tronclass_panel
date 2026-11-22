@@ -833,7 +833,7 @@
     const SUBMIT_TIMEOUT_MS = 8000;
     /* SCANNER_QUALITY_V1（fix110）：送出失敗的自動重試。後端 `scanner.rs` 的 submit 明確寫著
        「同一個 scanner token 在過期前允許重複送出…流程成功的帳號會自行 unregister」，
-       所以重試只會補送給**仍在等待**的帳號，不會造成重複簽到。 */
+       重試可能送給仍在等待的帳號；先前請求逾時不代表學校端沒有收到，不能保證不會重送。 */
     const SUBMIT_ATTEMPTS = 3;          /* 1 次 + 最多 2 次重試 */
     /* QR_RECOVERY_V1：單一帳號不再等待不代表整場完成；只有真正失效的連結才終止掃描。 */
     const SCANNER_TERMINAL_CODES = ["pending_not_found", "expired", "invalid_token"];
@@ -1272,7 +1272,7 @@
            那是學校系統的明確答案，重試只會多打三次、還把真正的錯誤訊息蓋掉。
          * **手機沒網路**（`navigator.onLine === false`）→ 不重試（重試必然失敗），改提示離線。
        安全性：後端同一個 token 本來就允許重複送出（見 scanner.rs 的註解），
-       成功簽到的帳號會自行 unregister，所以重試只補送給還在等待的人。 */
+       成功簽到的帳號會自行 unregister；尚未確認時可能仍在等待，不能假設不會重送。 */
     function sleepMs(ms) {
       return new Promise(function (resolve) { setTimeout(resolve, Math.max(0, ms || 0)); });
     }
@@ -1366,7 +1366,7 @@
             const verdict = submitRetryVerdict(err, attempts);
             if (verdict.offline) {
               offlineThisTime = true;
-              setStatus("手機目前沒有網路連線，這次 QR 沒有送出：等連線恢復後可以直接重掃，或按「立即回傳」。", "warn");
+              setStatus("手機目前沒有網路連線，這次回傳結果無法確認；恢復連線後請查看點名狀態，再決定是否重掃。", "warn");
             }
             if (!verdict.retry) break;
             setStatus(verdict.message, "warn");
@@ -1414,9 +1414,11 @@
           const tried = attempts > 1 ? `（已嘗試 ${attempts} 次）` : "";
           /* 離線時留著白話說明：原生錯誤（Failed to fetch）對老師沒有任何意義。 */
           const reason = offlineThisTime
-            ? "手機沒有網路連線，這次 QR 沒有送出去（連線恢復後重掃，或按「立即回傳」）"
-            : (aborted
-              ? `回傳卡住超過 ${Math.round(SUBMIT_TIMEOUT_MS / 1000)} 秒，已放棄這一次`
+            ? "手機沒有網路連線，這次回傳結果無法確認（恢復連線後請查看點名狀態）"
+            : (err && err.scannerStatus === 429
+              ? "目前回傳頻率過高，暫時受限；請保持鏡頭開啟並稍候，這不是永久封鎖"
+              : aborted
+              ? `回傳超過 ${Math.round(SUBMIT_TIMEOUT_MS / 1000)} 秒，接收狀態未知，請查看點名狀態`
               : ((err && err.message) || "回傳失敗"));
           setStatus(reason + tried + "（仍會持續掃描）", offlineThisTime ? "warn" : "error");
           reportSubmitOnPreview(false, aborted ? "❌ 送出逾時（仍持續掃描）" : "❌ 送出失敗（仍持續掃描）");
