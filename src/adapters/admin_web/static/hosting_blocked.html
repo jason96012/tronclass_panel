@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>偵測到雲端／機房連線｜Tronclass Dashboard</title>
+  <style>
+    :root{color-scheme:light;font-family:Inter,"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 18% 8%,#dbeafe 0,transparent 38%),radial-gradient(circle at 88% 88%,#fef3c7 0,transparent 38%),#f7f9ff;color:#17233b}
+    .card{width:min(100%,650px);overflow:hidden;border:1px solid rgba(148,163,184,.25);border-radius:30px;background:rgba(255,255,255,.92);box-shadow:0 26px 75px rgba(30,64,175,.16);backdrop-filter:blur(12px)}
+    .banner{height:8px;background:linear-gradient(90deg,#2563eb,#38bdf8,#f59e0b)} .content{padding:42px 42px 36px}.icon{width:68px;height:68px;display:grid;place-items:center;border-radius:22px;background:#eff6ff;color:#1d4ed8;box-shadow:inset 0 0 0 1px #bfdbfe}
+    h1{margin:23px 0 10px;font-size:clamp(27px,5vw,38px);letter-spacing:-.04em}.lead{margin:0;color:#64748b;font-size:16px;line-height:1.8}
+    .notice{display:flex;gap:12px;margin:27px 0 20px;padding:16px 17px;border:1px solid #fde68a;border-radius:17px;background:#fffbeb;color:#92400e;font-weight:750;line-height:1.6}.dot{width:10px;height:10px;flex:0 0 auto;margin-top:8px;border-radius:50%;background:#f59e0b;box-shadow:0 0 0 5px #fef3c7}
+    .loc{margin:0 0 20px;padding:14px 17px;border:1px solid #e2e8f0;border-radius:15px;background:#fbfdff;color:#334155;font-size:14px;line-height:1.6}.loc b{color:#1d4ed8}
+    h2{margin:22px 0 12px;font-size:16px}.reasons{display:grid;gap:10px;margin:0;padding:0;list-style:none}.reasons li{position:relative;padding:13px 15px 13px 42px;border:1px solid #e2e8f0;border-radius:14px;background:#fbfdff;color:#475569;font-size:14px;line-height:1.55}.reasons li::before{content:"✓";position:absolute;left:15px;top:12px;width:19px;height:19px;display:grid;place-items:center;border-radius:50%;background:#e0e7ff;color:#4338ca;font-size:12px;font-weight:900}
+    .help{margin:24px 0 0;padding:16px 17px;border-radius:16px;background:#eff6ff;color:#1e40af;font-size:14px;line-height:1.7}.help b{color:#1d4ed8}
+    .contact{margin:18px 0 0;text-align:center}.contact-btn{width:100%;padding:14px 18px;border:none;border-radius:14px;background:#1d4ed8;color:#fff;font-size:15px;font-weight:750;cursor:pointer;transition:background .15s ease}.contact-btn:hover{background:#1e40af}.contact-btn:disabled{background:#94a3b8;cursor:default}.contact-status{margin:12px 0 0;min-height:18px;color:#475569;font-size:13px;line-height:1.6}
+    .footer{margin-top:25px;color:#94a3b8;font-size:12px}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800;color:#64748b}@media(max-width:540px){body{padding:15px}.content{padding:30px 24px}.card{border-radius:24px}}
+  </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區；原 body padding-top 為 24px，用 calc 疊加
+     （無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:calc(24px + env(safe-area-inset-top,0px))}
+</style>
+</head>
+<body>
+  <main class="card" role="alert" aria-labelledby="title">
+    <div class="banner"></div>
+    <div class="content">
+      <div class="icon" aria-hidden="true">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="6" rx="1.6"></rect>
+          <rect x="3" y="14" width="18" height="6" rx="1.6"></rect>
+          <circle cx="7" cy="7" r="0.9" fill="currentColor" stroke="none"></circle>
+          <circle cx="7" cy="17" r="0.9" fill="currentColor" stroke="none"></circle>
+        </svg>
+      </div>
+      <h1 id="title">偵測到雲端／機房連線</h1>
+      <p class="lead">Tronclass Dashboard 目前不開放雲端主機、VPS 或機房代管商出口的連線存取。</p>
+      <div class="notice"><span class="dot"></span><span>這是依連線來源「是不是雲端／機房 IP」做的存取限制，不代表你的 Dashboard 帳號已被刪除、停用或列入黑名單。</span></div>
+      <div class="loc">系統判斷這次連線的來源：<b>__HOSTING_LOCATION__</b></div>
+      <h2>可能原因</h2>
+      <ul class="reasons">
+        <li>透過雲端虛擬主機（例如 AWS、Google Cloud、Azure 或其他 VPS 業者）連線，而不是家用寬頻、校園網路或行動網路。</li>
+        <li>使用了架在雲端機房的 VPN、代理伺服器或跳板主機連線。</li>
+        <li>自動化工具、掃描器或機器人從機房 IP 發出的連線（這類來源本來就是這項限制主要想擋下的對象）。</li>
+      </ul>
+      <div class="help"><b>你是真人、確實需要從這個連線存取？</b><br>請改用一般家用寬頻、校園網路或行動網路連線，或按下方按鈕聯絡管理員，請他視情況暫時放行這個連線，或在「IP 黑名單」管理頁關閉「封鎖雲端／VPS機房 IP」開關。</div>
+      <div class="contact">
+        <button type="button" id="contactBtn" class="contact-btn">聯絡管理員，申請暫時放行</button>
+        <p id="contactStatus" class="contact-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="footer">錯誤代碼：<span class="code">ACCESS_DENIED_HOSTING_IP</span></div>
+    </div>
+  </main>
+  <script>
+    (function () {
+      var btn = document.getElementById('contactBtn');
+      var status = document.getElementById('contactStatus');
+      if (!btn || !status) { return; }
+
+      // HOSTING_IP_BLOCK_V1：沿用 ADMIN_GEO_RESTRICT_V1 既有的「聯絡管理員」＋
+      // 輪詢端點（`/admin/api/geo-restrict/*`）——這兩支端點本來就只認 IP，
+      // 不管被擋原因是地區還是機房，管理員核准一次兩邊都會放行，不需要
+      // 另外一套 JS 邏輯。管理員核准「暫時放行」之後，這個分頁不用手動重新
+      // 整理——背景每 5 秒問一次自己是不是已經被放行，是的話自動跳轉回原本
+      // 要去的頁面。
+      var POLL_INTERVAL_MS = 5000;
+      var MAX_POLL_ATTEMPTS = 360; // 5 秒 * 360 = 30 分鐘，避免分頁開著忘了關就無限輪詢。
+      var pollAttempts = 0;
+      var pollTimer = null;
+
+      function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      }
+
+      function checkAccessStatus() {
+        pollAttempts += 1;
+        fetch('/admin/api/geo-restrict/access-status', { cache: 'no-store' })
+          .then(function (res) { return res.json().catch(function () { return {}; }); })
+          .then(function (data) {
+            if (data && data.allowed) {
+              stopPolling();
+              status.textContent = '已經放行，正在為你跳轉...';
+              setTimeout(function () { location.reload(); }, 1200);
+              return;
+            }
+            if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+              stopPolling();
+              // 放棄前不覆蓋使用者可能正看著的其他狀態文字，除非目前是空的。
+              if (!status.textContent) {
+                status.textContent = '等候時間較久，請確認處理進度後手動重新整理頁面。';
+              }
+            }
+          })
+          .catch(function () {
+            // 單次輪詢失敗（網路閃斷等）不用特別提示，下一次會再試。
+          });
+      }
+
+      pollTimer = setInterval(checkAccessStatus, POLL_INTERVAL_MS);
+      checkAccessStatus();
+
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        status.textContent = '傳送中...';
+        fetch('/admin/api/geo-restrict/request-access', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          // 「想前往」欄位本來就是自由文字顯示用（不影響放行邏輯），加上
+          // 「[機房IP]」前綴，讓管理員在共用的待處理清單／Discord 通知裡
+          // 能一眼分辨這筆是被哪種限制擋下，不需要後端另外加欄位。
+          body: JSON.stringify({ path: '[機房IP] ' + location.pathname })
+        }).then(function (res) {
+          return res.json().catch(function () { return {}; }).then(function (data) {
+            return { ok: res.ok, data: data };
+          });
+        }).then(function (result) {
+          if (result.ok) {
+            status.textContent = result.data.already_pending
+              ? '已經通知過管理員了，請耐心等候處理（這個頁面會在放行後自動跳轉，不用手動重新整理）。'
+              : '已通知管理員，請耐心等候處理（不會自動放行，需要管理員確認；放行後這個頁面會自動跳轉）。';
+          } else if (result.data && result.data.error === 'too_many_requests') {
+            status.textContent = '請求太頻繁，請稍後再試。';
+            btn.disabled = false;
+          } else {
+            status.textContent = '傳送失敗，請稍後再試。';
+            btn.disabled = false;
+          }
+        }).catch(function () {
+          status.textContent = '傳送失敗，請確認網路連線後再試一次。';
+          btn.disabled = false;
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

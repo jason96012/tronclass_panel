@@ -1,0 +1,302 @@
+/* DASHBOARD_LATE_FIXES_CSS_PHASE1_V1
+ * First low-risk CSS cleanup pass.
+ *
+ * These rules intentionally remain a final cascade layer. They were moved
+ * verbatim from late inline <style> blocks in dashboard.html so their order
+ * and specificity continue to protect the already validated iPhone fixes.
+ */
+
+/* MOBILE_FIXED_NAV_BOTTOM_CLEARANCE_V1 */
+@media(max-width:820px){
+  html.dash-auth-ok body main,
+  html.tron-auth-ok body main,
+  html.mobile-nav-final-auth body main,
+  body.dash-auth-ok main,
+  body.auth-ok main,
+  body.logged-in main{
+    padding-bottom:calc(132px + env(safe-area-inset-bottom,0px))!important;
+  }
+  body.keyboard-open main{
+    padding-bottom:calc(28px + env(safe-area-inset-bottom,0px))!important;
+  }
+}
+
+/* CLASS_REMINDER_ACCOUNT_CARD_CONTRAST_FIX_V1 */
+#classReminderPanel .class-reminder-side,
+#view-notifications .notify-side-card{
+  color:var(--text,#172033)!important;
+}
+#classReminderPanel .class-reminder-side > label,
+#view-notifications .notify-side-card > label{
+  color:var(--text,#172033)!important;
+  opacity:1!important;
+}
+@media(prefers-color-scheme:dark){
+  #classReminderPanel .class-reminder-side,
+  #view-notifications .notify-side-card{
+    background:rgba(30,41,59,.92)!important;
+    border-color:rgba(148,163,184,.24)!important;
+    color:#f1f5f9!important;
+  }
+  #classReminderPanel .class-reminder-side > label,
+  #view-notifications .notify-side-card > label{
+    color:#e2e8f0!important;
+  }
+  #classReminderPanel #classReminderInfo,
+  #view-notifications #notifyInfo{
+    color:#cbd5e1!important;
+    opacity:1!important;
+  }
+  #classReminderPanel #classReminderAccount,
+  #view-notifications #notifyAccount{
+    background:#172238!important;
+    border-color:rgba(148,163,184,.32)!important;
+    color:#f8fafc!important;
+    -webkit-text-fill-color:#f8fafc!important;
+  }
+  #view-notifications .notify-badge{
+    color:#cbd5e1!important;
+    border-color:rgba(148,163,184,.28)!important;
+  }
+}
+
+/* LOGIN_FORM_VISUAL_RECOVERY_V1 */
+html.tron-auth-logged-out body #loginCard,
+html.tron-auth-logged-out body #loginPanel,
+html.tron-auth-logged-out body .login-card,
+body.animated-login-active #loginCard,
+body.animated-login-active #loginPanel,
+body.animated-login-active .login-card{
+  opacity:1!important;
+  filter:none!important;
+  pointer-events:auto!important;
+}
+/* iOS Autofill can update values without firing input. Labels therefore stay
+   permanently above the field value and do not depend on an .active class. */
+html body #animatedLoginForm .animated-login-field > label,
+html body .animated-login-card-inner .animated-login-field > label{
+  top:6px!important;
+  left:16px!important;
+  transform:none!important;
+  font-size:11px!important;
+  line-height:13px!important;
+  font-weight:900!important;
+  color:#2563eb!important;
+  z-index:2!important;
+  pointer-events:none!important;
+}
+html body #animatedLoginForm .animated-login-field > input,
+html body .animated-login-card-inner .animated-login-field > input{
+  padding:23px 48px 7px 16px!important;
+  line-height:20px!important;
+  opacity:1!important;
+  filter:none!important;
+  pointer-events:auto!important;
+}
+@media(prefers-color-scheme:dark){
+  html.tron-auth-logged-out body #loginCard,
+  html.tron-auth-logged-out body #loginPanel,
+  html.tron-auth-logged-out body .login-card,
+  body.animated-login-active #loginCard,
+  body.animated-login-active #loginPanel,
+  body.animated-login-active .login-card{
+    background:rgba(15,23,42,.92)!important;
+    color:#e5eefb!important;
+    box-shadow:0 30px 90px rgba(0,0,0,.42)!important;
+  }
+  .animated-login-card-inner{color:#e5eefb!important}
+  .animated-login-logo{background:rgba(96,165,250,.16)!important;color:#93c5fd!important}
+  .animated-login-header p,
+  .animated-login-options label,
+  .animated-secure-note{color:#94a3b8!important}
+  html body #animatedLoginForm .animated-login-field > label,
+  html body .animated-login-card-inner .animated-login-field > label{color:#93c5fd!important}
+  html body #animatedLoginForm .animated-login-field > input,
+  html body .animated-login-card-inner .animated-login-field > input{
+    background:#172238!important;
+    border-color:rgba(148,163,184,.30)!important;
+    color:#f1f5f9!important;
+    -webkit-text-fill-color:#f1f5f9!important;
+  }
+  html body #animatedLoginForm .animated-login-field > input:-webkit-autofill,
+  html body .animated-login-card-inner .animated-login-field > input:-webkit-autofill{
+    -webkit-box-shadow:0 0 0 1000px #172238 inset!important;
+    -webkit-text-fill-color:#f1f5f9!important;
+    caret-color:#f1f5f9!important;
+  }
+  .animated-passkey-btn{
+    background:#172238!important;
+    color:#e5eefb!important;
+    border-color:rgba(148,163,184,.28)!important;
+  }
+  .animated-login-chip{
+    background:rgba(15,23,42,.64)!important;
+    border-color:rgba(148,163,184,.22)!important;
+    color:#cbd5e1!important;
+  }
+}
+
+/* ROLLCALL_HISTORY_SCROLL_V1（fix76）
+ * 點名紀錄（#rollcallHistoryList）一次只放 20 筆，而且清單自己有固定高度：
+ * 紀錄一多不會再把整頁往下無限撐長，使用者要看更多就按「顯示更多」或在清單內捲動。 */
+.list.capped{
+  max-height:min(60vh,520px);
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+  padding-right:6px;
+  scrollbar-gutter:stable;
+}
+.list .list-meta{
+  position:sticky;top:0;z-index:2;
+  margin:0 0 2px;padding:6px 8px;
+  border-radius:10px;
+  background:var(--soft2,var(--soft,#eef2f7));
+  color:var(--muted,#64748b);
+  font-size:12px;font-weight:800;
+}
+.list .list-more{width:100%;min-height:42px}
+@media(max-width:820px){
+  .list.capped{max-height:min(64vh,440px)}
+}
+
+/* STUCK_ACCOUNT_RESTART_V1：「重啟監控」原本只在帳號分頁的操作欄，但真正會用到它
+ * 的時機是在「點名」分頁看「目前偵測到點名」時發現某個帳號一直卡住（數字碼／QR Code
+ * 都還沒過期卻一直沒送出）。改成直接長在每個帳號旁邊，看到誰卡住就按誰，不用切分頁
+ * 回頭去帳號列表裡找同一個帳號。 */
+.item-accounts{
+  display:flex;flex-direction:column;gap:6px;
+  margin-top:8px;padding-top:8px;
+  border-top:1px dashed var(--line2);
+}
+.item-account-row{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;
+}
+.item-account-row .pill{flex:0 0 auto}
+.item-account-row button{
+  min-height:30px;padding:0 10px;font-size:12.5px;
+}
+
+/* DETECTED_CARD_BUTTON_ALIGN_V1：「目前偵測到點名」卡片原本「開啟點名頁」自己一個
+ * 按鈕孤零零黏在卡片最下面、靠左，跟上面每個帳號列右側的「重啟監控」按鈕完全對不齊，
+ * 兩顆按鈕一左一右，視覺上像卡片排版亂掉。這裡加一個靠右對齊的 footer，讓「開啟點名頁」
+ * 跟上面「重啟監控」同樣貼右邊，形成一直排對齊的「右側操作欄」，視覺上一致、不會亂跳。 */
+.item-footer{
+  display:flex;justify-content:flex-end;
+  margin-top:10px;
+}
+.item-footer .button{margin:0}
+
+/* ROLLCALL_MOBILE_REORDER_V1：手機版把「目前偵測到點名」移到「出席統計」上面
+ * ——偵測到的點名是當下要處理的事，統計是回顧用的資料，手機螢幕小，應該先看
+ * 當下要處理的事。桌機版維持原本排版（上：統計全寬；下：偵測到點名／點名結果
+ * 並排），只有 900px 以下的手機排版改變順序。用 #view-rollcall.active 的 ID
+ * 選擇器蓋過 dashboard.css 既有的 .view.active{display:block}（ID 優先權較高，
+ * 不需要 !important，也不會動到其他分頁的 .view.active）。 */
+#view-rollcall.active{
+  display:grid;
+  gap:14px;
+  grid-template-columns:1fr 1fr;
+  grid-template-areas:
+    "stats stats"
+    "detected results";
+}
+#view-rollcall .rc-stats{grid-area:stats;margin:0}
+#view-rollcall .rc-detected{grid-area:detected;margin:0}
+#view-rollcall .rc-results{grid-area:results;margin:0}
+/* MOCK_PANEL_FULLWIDTH_V1：模擬點名測試面板（mock-rollcall.js 動態 append）是
+ * #view-rollcall 這個 CSS grid 的直接子元素，先前沒有指定 grid-area，被自動排到
+ * 左欄、右半邊整片空白（2026-11-01 回報）。讓它橫跨整個 grid（1 / -1）佔滿寬度。 */
+#view-rollcall .mock-panel{grid-column:1 / -1;margin-top:0}
+@media(max-width:900px){
+  #view-rollcall.active{
+    grid-template-columns:1fr;
+    grid-template-areas:
+      "detected"
+      "stats"
+      "results";
+  }
+}
+
+/* ACCOUNTS_TABLE_COURSE_OVERFLOW_V1：帳號分頁表格的「最後成功」「近期點名」兩欄是
+ * 課程名稱，長度不固定。表格是預設的 auto table layout（沒有設 table-layout:fixed），
+ * 欄寬會跟著「這一欄裡最寬的那個儲存格」自動撐開——遇到長課程名稱，整張表（含帳號、
+ * 操作按鈕那些欄）都會被擠壓變形。用內層 span 的 max-width + overflow:hidden +
+ * text-overflow:ellipsis 把超長文字截斷顯示「...」，撐開的來源被限制住了，表格就不會
+ * 再跑版；title 屬性讓使用者 hover 還是看得到完整課程名。 */
+.accounts-table .cell-ellipsis{
+  display:inline-block;
+  max-width:220px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  vertical-align:middle;
+}
+@media(max-width:900px){
+  .accounts-table .cell-ellipsis{max-width:140px}
+}
+
+/* ACCOUNTS_NAME_NOWRAP_V1：帳號欄（帳號 ID 與姓名）不可在字中間斷行，欄寬設下限。
+ * 之前課程欄變寬時，auto table layout 會把剩下的空間分給其他欄，帳號欄被壓到只剩
+ * 一個字寬，「ai-王奕凱」「王奕凱」逐字直排。這裡讓帳號欄 nowrap＋最小寬度，
+ * 寧可表格橫向捲動，也不擠壓人名。 */
+.accounts-table th:nth-child(2),
+.accounts-table td:nth-child(2){
+  white-space:nowrap;
+  min-width:130px;
+}
+
+/* TKU_NOTICE_BEFORE_ONBOARDING_V1：淡江網段提示要在新手導覽「前面」——主要是靠
+ * dashboard-onboarding.js 的 autoTick() 判斷 window.__tkuNoticeOpen 延後開導覽
+ * （時間序上先後顯示，不會疊在一起）。這裡的 z-index 是防呆：萬一使用者手動按
+ * 頂欄「?」在淡江提示還開著時硬開導覽，淡江提示的 z-index 要蓋過
+ * .ob-layer（dashboard-components.css 裡是 2147483000），不能被導覽蓋住。 */
+#tkuNoticeModal{z-index:2147483100}
+
+/* ATT_SUMMARY_CARDS_COMPACT_V1：點名分頁「出席統計」頂部六張卡片縮小。
+ * 原因：theme.css 全域把 .stat-value 設成 42px !important，六張卡片又都是大數字，
+ * 「最後班上總人數」的「1119 / 1799 人」還會換成兩行，同一排的卡片高度不一致。
+ * 這裡改成 3 欄（手機 2 欄）、數字 24px 不換行、標籤與留白縮小，六張卡片等高。
+ * 選擇器加上 #view-rollcall #attSummary 以蓋過 theme.css 與 inline style 的 grid 設定。 */
+#view-rollcall #attSummary{
+  grid-template-columns:repeat(3,minmax(0,1fr))!important;
+  gap:10px!important;
+  margin-bottom:12px!important;
+}
+#view-rollcall #attSummary .stat{
+  padding:12px 14px 12px 18px!important;
+}
+#view-rollcall #attSummary .stat-label{
+  font-size:11px!important;
+  letter-spacing:.04em!important;
+}
+#view-rollcall #attSummary .stat-value{
+  margin-top:6px!important;
+  font-size:24px!important;
+  line-height:1.15!important;
+  white-space:nowrap!important;
+  overflow:hidden;
+  text-overflow:clip;
+}
+#view-rollcall #attSummary .stat-hint{
+  margin-top:4px!important;
+  font-size:11.5px!important;
+  line-height:1.4;
+}
+@media (max-width:599px){
+  #view-rollcall #attSummary{
+    grid-template-columns:repeat(2,minmax(0,1fr))!important;
+  }
+  /* ATT_MOBILE_HIDE_V1：手機隱藏「最後班上總人數」與「未點到名」兩張卡（電腦／平板保留）。
+     剩下 4 張卡排成 2×2。資料與未點到名名單（下方區塊）不受影響。 */
+  #view-rollcall #attSummary .stat.att-mobile-hide{display:none!important}
+  #view-rollcall #attSummary .stat-value{font-size:20px!important}
+}
+
+/* ACCOUNTS_ACTIONS_ALIGN_LEFT_V1：帳號操作鈕改為靠左對齊（與「操作」表頭同一起點）。
+ * theme.css（≥821px）原本把 .actions-cell 設為 justify-content:flex-end，按鈕較少的列
+ * （管理員：取消管理員、無「設為檢視者」）會被推到右邊，與一般帳號列的起點對不齊。
+ * 這裡以更高特異性覆蓋，所有列的第一顆按鈕都從同一個 x 座標開始。 */
+@media (min-width:821px){
+  #accountsBody td:last-child .actions-cell{justify-content:flex-start!important}
+}

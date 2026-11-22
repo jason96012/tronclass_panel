@@ -1,0 +1,340 @@
+/* Weekly timetable grid — matches dashboard tokens, readable type. */
+.tt-poster-wrap{
+  background:var(--soft,#eef3fb);
+  border:1px solid var(--line,#dbe3ef);
+  border-radius:28px;
+  padding:26px 20px 28px;
+  overflow:auto;
+}
+.tt-poster-title{
+  margin:0 0 16px;
+  text-align:center;
+  font-size:32px;
+  font-weight:850;
+  letter-spacing:.04em;
+  color:var(--text,#172033);
+}
+.tt-poster{
+  display:grid;
+  min-width:680px;
+  min-height:680px;
+  gap:10px;
+  /* Grid tracks must be allowed to shrink; otherwise a long course title
+     contributes its intrinsic height and pushes the whole timetable cell out. */
+  grid-template-rows:48px repeat(10,minmax(0,1fr));
+}
+.tt-poster-corner{min-height:1px}
+.tt-poster-day{
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+  padding-bottom:6px;
+  font-size:16px;
+  font-weight:850;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:var(--text,#172033);
+}
+.tt-poster-period{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:4px;
+  background:var(--muted,#64748b);
+  color:#fff;
+  border-radius:16px;
+  padding:8px 6px;
+  min-height:0;
+  overflow:hidden;
+}
+.tt-poster-period .n{
+  font-size:22px;
+  font-weight:900;
+  line-height:1;
+  color:#fff;
+}
+.tt-poster-period .t{
+  font-size:12px;
+  font-weight:750;
+  letter-spacing:0;
+  opacity:1;
+  white-space:nowrap;
+  color:#fff;
+}
+.tt-poster-empty,
+.tt-poster-course{
+  background:var(--card,#fff);
+  border-radius:16px;
+  min-height:0;
+  box-shadow:0 1px 2px rgba(15,23,42,.04);
+  border:1px solid var(--line2,#e7ebf1);
+}
+.tt-poster-course{
+  appearance:none;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:10px 12px;
+  width:100%;
+  height:100%;
+  min-width:0;
+  min-height:0;
+  box-sizing:border-box;
+  cursor:pointer;
+  color:var(--text,#172033);
+  text-align:center;
+  overflow:hidden;
+}
+.tt-poster-course:hover{
+  border-color:var(--primary,#2563eb);
+  box-shadow:0 0 0 3px rgba(37,99,235,.12);
+}
+.tt-poster-name{
+  writing-mode:horizontal-tb;
+  text-orientation:mixed;
+  font-family:inherit;
+  font-size:17px;
+  font-weight:850;
+  letter-spacing:.01em;
+  line-height:1.35;
+  color:var(--text,#172033);
+  min-width:0;
+  min-height:0;
+}
+.tt-poster .tt-poster-name{
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  /* Keep space for classroom/teacher metadata in a one-period cell. The full
+     course name remains available through the button title tooltip. */
+  -webkit-line-clamp:2;
+  overflow:hidden;
+  overflow-wrap:anywhere;
+  word-break:break-word;
+  max-width:100%;
+}
+.tt-poster-meta{
+  position:static;
+  right:auto;
+  top:auto;
+  transform:none;
+  writing-mode:horizontal-tb;
+  max-height:none;
+  overflow:hidden;
+  font-size:13px;
+  font-weight:750;
+  letter-spacing:0;
+  line-height:1.3;
+  color:var(--muted,#64748b);
+  pointer-events:none;
+}
+.tt-poster .tt-poster-meta{
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  max-width:100%;
+}
+.tt-poster-empty-msg{
+  border:1px dashed var(--line,#dbe3ef);
+  border-radius:18px;
+  min-height:220px;
+  display:grid;
+  place-items:center;
+  text-align:center;
+  color:var(--muted,#64748b);
+  background:var(--soft2,#f8fafc);
+  padding:20px;
+  font-size:16px;
+}
+.tt-mobile-week{display:none}
+
+@media(max-width:820px){
+  #pageSub,
+  .tt-stable-sub,
+  .tt-poster-title{display:none!important}
+  #pageTitle,
+  .tt-stable-title h2{font-size:22px!important;letter-spacing:-.02em}
+  .tt-poster-wrap{
+    background:transparent;
+    border:0;
+    border-radius:0;
+    padding:0;
+    overflow:visible;
+  }
+  .tt-poster{display:none!important}
+  .tt-mobile-week{display:block}
+  .tt-mobile-days{
+    display:grid;
+    gap:8px;
+    margin:0 0 14px;
+    position:sticky;
+    top:0;
+    z-index:8;
+    padding:4px 0 12px;
+    background:var(--card,#fff);
+  }
+  .tt-mobile-day{
+    appearance:none;
+    min-height:46px;
+    border-radius:14px;
+    border:1.5px solid rgba(148,163,184,.38);
+    background:transparent;
+    color:var(--muted,#64748b);
+    font-size:16px;
+    font-weight:750;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    gap:4px;
+    padding:0 6px;
+    cursor:pointer;
+  }
+  .tt-mobile-day .now{
+    font-size:10px;
+    font-weight:900;
+    letter-spacing:.04em;
+    padding:2px 5px;
+    border-radius:999px;
+    background:rgba(37,99,235,.14);
+    color:var(--primary,#2563eb);
+  }
+  .tt-mobile-day.is-today:not(.is-active){
+    color:var(--text,#172033);
+    border-color:rgba(37,99,235,.4);
+  }
+  .tt-mobile-day.is-active{
+    background:var(--primary,#2563eb);
+    border-color:var(--primary,#2563eb);
+    color:#fff;
+    font-weight:900;
+    box-shadow:0 8px 18px rgba(37,99,235,.38);
+  }
+  .tt-mobile-day.is-active .now{
+    background:rgba(255,255,255,.22);
+    color:#fff;
+  }
+  .tt-mobile-panel{display:none}
+  .tt-mobile-panel.is-active{display:block}
+  .tt-mobile-slot{
+    display:grid;
+    grid-template-columns:78px minmax(0,1fr);
+    gap:10px;
+    margin:0 0 10px;
+    align-items:stretch;
+  }
+  .tt-mobile-period{
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:4px;
+    background:#64748b;
+    color:#fff;
+    border-radius:16px;
+    padding:10px 4px;
+    min-height:76px;
+    text-align:center;
+  }
+  .tt-mobile-period .n{
+    font-size:20px;
+    font-weight:900;
+    line-height:1.1;
+    color:#fff;
+  }
+  .tt-mobile-period .t{
+    font-size:11px;
+    font-weight:750;
+    line-height:1.25;
+    letter-spacing:0;
+    white-space:normal;
+    color:#fff;
+    opacity:.95;
+  }
+  .tt-mobile-course.tt-poster-course{
+    align-items:flex-start;
+    justify-content:center;
+    text-align:left;
+    gap:6px;
+    padding:14px 16px;
+    min-height:76px;
+    border-radius:18px;
+    overflow:visible;
+    box-shadow:0 8px 22px rgba(15,23,42,.08);
+  }
+  .tt-mobile-course .tt-poster-name{
+    display:block;
+    -webkit-line-clamp:unset;
+    overflow:visible;
+    font-size:18px;
+    font-weight:850;
+    line-height:1.45;
+    letter-spacing:.01em;
+    word-break:break-word;
+    overflow-wrap:anywhere;
+    max-width:100%;
+  }
+  .tt-mobile-course .tt-poster-meta{
+    display:block;
+    font-size:14px;
+    font-weight:750;
+    line-height:1.35;
+    white-space:normal;
+    overflow:visible;
+    color:var(--muted,#64748b);
+  }
+  .tt-mobile-empty{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:48px;
+    border-radius:16px;
+    border:1px dashed var(--line,#dbe3ef);
+    background:transparent;
+    color:var(--muted,#64748b);
+    font-size:13px;
+    font-weight:750;
+  }
+  .tt-mobile-slot.is-empty{
+    opacity:.72;
+  }
+  .tt-mobile-slot.is-empty .tt-mobile-period{
+    min-height:48px;
+    padding:8px 4px;
+  }
+  .tt-mobile-slot.is-empty .tt-mobile-period .n{font-size:16px}
+  .tt-mobile-empty-day{
+    border:1px dashed var(--line,#dbe3ef);
+    border-radius:18px;
+    min-height:140px;
+    display:grid;
+    place-items:center;
+    color:var(--muted,#64748b);
+    font-size:16px;
+    font-weight:750;
+    padding:20px;
+  }
+  @media(prefers-color-scheme:dark){
+    .tt-mobile-days{background:var(--card,#182232)}
+    .tt-mobile-day:not(.is-active){background:transparent;border-color:#3d4d63;color:#94a3b8}
+    .tt-mobile-day.is-active{background:#3b82f6;border-color:#60a5fa;color:#fff}
+    .tt-mobile-period{background:#334155}
+    .tt-mobile-course.tt-poster-course{box-shadow:0 10px 24px rgba(0,0,0,.28)}
+  }
+  html[data-theme="dark"] .tt-mobile-days{background:var(--card,#182232)}
+  html[data-theme="dark"] .tt-mobile-day:not(.is-active){background:transparent;border-color:#3d4d63;color:#94a3b8}
+  html[data-theme="dark"] .tt-mobile-day.is-active{background:#3b82f6;border-color:#60a5fa;color:#fff}
+  html[data-theme="dark"] .tt-mobile-period{background:#334155}
+}
+
+@media(prefers-color-scheme:dark){
+  .tt-poster-period{background:#334155;color:#f1f5f9}
+  .tt-poster-period .n,.tt-poster-period .t{color:#f1f5f9}
+  .tt-poster-empty,.tt-poster-course{
+    background:var(--card,#182232);
+    border-color:var(--line,#334155);
+  }
+}
+html[data-theme="dark"] .tt-poster-period{background:#334155}
+html[data-theme="dark"] .tt-poster-period .n,
+html[data-theme="dark"] .tt-poster-period .t{color:#f1f5f9}
