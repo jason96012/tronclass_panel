@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <title>僅限台灣地區存取｜Tronclass Dashboard</title>
+  <style>
+    :root{color-scheme:light;font-family:Inter,"Noto Sans TC","Microsoft JhengHei",system-ui,sans-serif}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:radial-gradient(circle at 18% 8%,#dbeafe 0,transparent 38%),radial-gradient(circle at 88% 88%,#fef3c7 0,transparent 38%),#f7f9ff;color:#17233b}
+    .card{width:min(100%,650px);overflow:hidden;border:1px solid rgba(148,163,184,.25);border-radius:30px;background:rgba(255,255,255,.92);box-shadow:0 26px 75px rgba(30,64,175,.16);backdrop-filter:blur(12px)}
+    .banner{height:8px;background:linear-gradient(90deg,#2563eb,#38bdf8,#f59e0b)} .content{padding:42px 42px 36px}.icon{width:68px;height:68px;display:grid;place-items:center;border-radius:22px;background:#eff6ff;color:#1d4ed8;box-shadow:inset 0 0 0 1px #bfdbfe}
+    h1{margin:23px 0 10px;font-size:clamp(27px,5vw,38px);letter-spacing:-.04em}.lead{margin:0;color:#64748b;font-size:16px;line-height:1.8}
+    .notice{display:flex;gap:12px;margin:27px 0 20px;padding:16px 17px;border:1px solid #fde68a;border-radius:17px;background:#fffbeb;color:#92400e;font-weight:750;line-height:1.6}.dot{width:10px;height:10px;flex:0 0 auto;margin-top:8px;border-radius:50%;background:#f59e0b;box-shadow:0 0 0 5px #fef3c7}
+    .loc{margin:0 0 20px;padding:14px 17px;border:1px solid #e2e8f0;border-radius:15px;background:#fbfdff;color:#334155;font-size:14px;line-height:1.6}.loc b{color:#1d4ed8}
+    h2{margin:22px 0 12px;font-size:16px}.reasons{display:grid;gap:10px;margin:0;padding:0;list-style:none}.reasons li{position:relative;padding:13px 15px 13px 42px;border:1px solid #e2e8f0;border-radius:14px;background:#fbfdff;color:#475569;font-size:14px;line-height:1.55}.reasons li::before{content:"✓";position:absolute;left:15px;top:12px;width:19px;height:19px;display:grid;place-items:center;border-radius:50%;background:#e0e7ff;color:#4338ca;font-size:12px;font-weight:900}
+    .help{margin:24px 0 0;padding:16px 17px;border-radius:16px;background:#eff6ff;color:#1e40af;font-size:14px;line-height:1.7}.help b{color:#1d4ed8}
+    .contact{margin:18px 0 0;text-align:center}.contact-btn{width:100%;padding:14px 18px;border:none;border-radius:14px;background:#1d4ed8;color:#fff;font-size:15px;font-weight:750;cursor:pointer;transition:background .15s ease}.contact-btn:hover{background:#1e40af}.contact-btn:disabled{background:#94a3b8;cursor:default}.contact-status{margin:12px 0 0;min-height:18px;color:#475569;font-size:13px;line-height:1.6}
+    .footer{margin-top:25px;color:#94a3b8;font-size:12px}.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:800;color:#64748b}@media(max-width:540px){body{padding:15px}.content{padding:30px 24px}.card{border-radius:24px}}
+  </style>
+<style id="SAFE_AREA_TOP_V1">
+  /* 手機鏡頭／瀏海安全區：viewport-fit=cover 讓頁面延伸到系統列底下，
+     把 body 頂部墊高到安全區；原 body padding-top 為 24px，用 calc 疊加
+     （無劉海裝置 env()=0，外觀完全不變）。 */
+  body{padding-top:calc(24px + env(safe-area-inset-top,0px))}
+</style>
+</head>
+<body>
+  <main class="card" role="alert" aria-labelledby="title">
+    <div class="banner"></div>
+    <div class="content">
+      <div class="icon" aria-hidden="true">
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="9"></circle>
+          <path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.7-3.8-9s1.3-6.4 3.8-9z"></path>
+        </svg>
+      </div>
+      <h1 id="title">僅限台灣地區存取</h1>
+      <p class="lead">Tronclass Dashboard 的管理後台目前只開放台灣地區的網路連線存取。</p>
+      <div class="notice"><span class="dot"></span><span>這是依連線所在地區做的存取限制，不代表你的 Dashboard 帳號已被刪除、停用或列入黑名單。</span></div>
+      <div class="loc">系統判斷這次連線的位置：<b>__GEO_LOCATION__</b></div>
+      <h2>可能原因</h2>
+      <ul class="reasons">
+        <li>目前人在國外（出國旅遊、交換、工作等），透過當地網路直接連線。</li>
+        <li>使用了會把連線位置顯示為國外的服務（例如部分 VPN、代理伺服器）。</li>
+        <li>所在地的網路服務商，把連線路由判斷成境外出口。</li>
+      </ul>
+      <div class="help"><b>人在國外、需要存取？</b><br>請改用能連回台灣的網路方式（例如連回台灣的 VPN），或按下方按鈕聯絡管理員，請他視情況暫時放行這個連線，或在「IP 黑名單」管理頁關閉「僅限台灣 IP 存取」開關。</div>
+      <div class="contact">
+        <button type="button" id="contactBtn" class="contact-btn">聯絡管理員，申請暫時放行</button>
+        <p id="contactStatus" class="contact-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="footer">錯誤代碼：<span class="code">ACCESS_DENIED_GEO_RESTRICTED</span></div>
+    </div>
+  </main>
+  <script>
+    (function () {
+      var btn = document.getElementById('contactBtn');
+      var status = document.getElementById('contactStatus');
+      if (!btn || !status) { return; }
+
+      // GEO_ACCESS_AUTO_REDIRECT_V1：管理員核准「暫時放行」之後，這個分頁不用
+      // 手動重新整理——背景每 5 秒問一次自己是不是已經被放行，是的話自動跳轉
+      // 回原本要去的頁面。輪詢一開頁就會開始，不需要先按「聯絡管理員」才啟動
+      // （萬一管理員主動放行、或這之前已經申請過，一樣會自動生效）。
+      var POLL_INTERVAL_MS = 5000;
+      var MAX_POLL_ATTEMPTS = 360; // 5 秒 * 360 = 30 分鐘，避免分頁開著忘了關就無限輪詢。
+      var pollAttempts = 0;
+      var pollTimer = null;
+
+      function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      }
+
+      function checkAccessStatus() {
+        pollAttempts += 1;
+        fetch('/admin/api/geo-restrict/access-status', { cache: 'no-store' })
+          .then(function (res) { return res.json().catch(function () { return {}; }); })
+          .then(function (data) {
+            if (data && data.allowed) {
+              stopPolling();
+              status.textContent = '已經放行，正在為你跳轉...';
+              setTimeout(function () { location.reload(); }, 1200);
+              return;
+            }
+            if (pollAttempts >= MAX_POLL_ATTEMPTS) {
+              stopPolling();
+              // 放棄前不覆蓋使用者可能正看著的其他狀態文字，除非目前是空的。
+              if (!status.textContent) {
+                status.textContent = '等候時間較久，請確認處理進度後手動重新整理頁面。';
+              }
+            }
+          })
+          .catch(function () {
+            // 單次輪詢失敗（網路閃斷等）不用特別提示，下一次會再試。
+          });
+      }
+
+      pollTimer = setInterval(checkAccessStatus, POLL_INTERVAL_MS);
+      checkAccessStatus();
+
+      btn.addEventListener('click', function () {
+        btn.disabled = true;
+        status.textContent = '傳送中...';
+        fetch('/admin/api/geo-restrict/request-access', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: location.pathname })
+        }).then(function (res) {
+          return res.json().catch(function () { return {}; }).then(function (data) {
+            return { ok: res.ok, data: data };
+          });
+        }).then(function (result) {
+          if (result.ok) {
+            status.textContent = result.data.already_pending
+              ? '已經通知過管理員了，請耐心等候處理（這個頁面會在放行後自動跳轉，不用手動重新整理）。'
+              : '已通知管理員，請耐心等候處理（不會自動放行，需要管理員確認；放行後這個頁面會自動跳轉）。';
+          } else if (result.data && result.data.error === 'too_many_requests') {
+            status.textContent = '請求太頻繁，請稍後再試。';
+            btn.disabled = false;
+          } else {
+            status.textContent = '傳送失敗，請稍後再試。';
+            btn.disabled = false;
+          }
+        }).catch(function () {
+          status.textContent = '傳送失敗，請確認網路連線後再試一次。';
+          btn.disabled = false;
+        });
+      });
+    })();
+  </script>
+</body>
+</html>
+

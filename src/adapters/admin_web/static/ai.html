@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>AI 對話</title>
+<link rel="stylesheet" href="/admin/static/ai/opencode.css?v=3">
+</head>
+<body>
+<!-- 版面規格：static/ai-interface-layout.md（v1.0）。樣式在 opencode.css，行為在 js/opencode.js。 -->
+<div class="app">
+  <div class="app-body">
+
+    <!-- 左側欄（桌機 280px；手機為抽屜） -->
+    <aside class="sidebar" id="leftSidebar" data-panel="left">
+      <div class="sidebar-header">
+        <h2 class="sidebar-title">AI 對話</h2>
+        <button class="icon-btn icon-btn-sm sidebar-close" id="leftSidebarClose" type="button" aria-label="關閉側邊欄">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <nav class="sidebar-tabs" role="tablist" id="leftTabs">
+        <button class="tab active" role="tab" data-tab="sessions" aria-selected="true" type="button">會話</button>
+        <button class="tab" role="tab" data-tab="models" aria-selected="false" type="button">模型</button>
+        <button class="tab" role="tab" data-tab="opencode" aria-selected="false" type="button">opencode</button>
+      </nav>
+      <div class="sidebar-content" id="leftContent">
+
+        <section class="tab-panel sessions-panel" data-panel="sessions" id="sessionsPanel">
+          <button class="btn btn-primary btn-block" id="newSessionBtn" type="button">+ 新會話</button>
+          <div class="session-list" id="sessionList" role="list"></div>
+          <input class="input input-sm session-search" id="sessionSearch" type="search" placeholder="搜尋對話…" aria-label="搜尋對話">
+        </section>
+
+        <section class="tab-panel hidden" data-panel="models" id="modelsPanel">
+          <div class="row-actions" role="group" aria-label="模型供應商">
+            <button class="btn btn-primary btn-sm" id="ocManageNvidia" type="button" aria-pressed="true">NVIDIA</button>
+            <button class="btn btn-secondary btn-sm" id="ocManageCustom" type="button" aria-pressed="false">自訂供應商</button>
+          </div>
+          <div class="card">
+            <h3 class="card-title" id="ocModelTitle">NVIDIA 模型</h3>
+            <p class="field-hint">清單會寫入 opencode 設定。預設模型用於新訊息；聊天時可在右上角切換清單內的模型。</p>
+            <div class="model-manage-list" id="ocModelList" role="list"></div>
+            <div class="field-hint" id="ocModelNote" aria-live="polite"></div>
+          </div>
+          <div class="card" id="ocModelAddCard">
+            <h3 class="card-title">新增模型</h3>
+            <p class="field-hint" id="ocModelAddHint">請輸入 NVIDIA 的完整模型 ID（廠商/模型名），例如 nvidia/nemotron-3-super-120b-a12b</p>
+            <div class="row-actions">
+              <input class="input input-sm" id="ocModelInput" type="text" placeholder="nvidia/模型名" autocomplete="off" aria-label="新增模型 ID">
+              <button class="btn btn-secondary btn-sm" id="ocModelAddBtn" type="button">新增</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="tab-panel hidden" data-panel="opencode" id="opencodePanel">
+          <div class="card">
+            <h3 class="card-title">連線設定</h3>
+            <div class="field">
+              <label class="field-label" for="ocEnabled">啟用</label>
+              <select class="input input-sm" id="ocEnabled">
+                <option value="1">啟用</option>
+                <option value="0">停用</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocBaseUrl">Base URL</label>
+              <input class="input input-sm" id="ocBaseUrl" type="text" autocomplete="off">
+            </div>
+            <div class="field-hint">模型請在「模型」分頁管理。</div>
+            <div class="field">
+              <label class="field-label" for="ocApiKey">NVIDIA API Key（所有 NVIDIA 模型共用）</label>
+              <input class="input input-sm" id="ocApiKey" type="password" placeholder="輸入新金鑰（留空不更動）" autocomplete="off">
+              <div class="field-hint" id="ocKeyHint">載入中…</div>
+            </div>
+            <div class="field-status" id="ocStatus" aria-live="polite">載入中…</div>
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" id="ocSaveBtn" type="button">儲存設定</button>
+              <button class="btn btn-secondary btn-sm" id="ocTestBtn" type="button">測試連線</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">自訂供應商（OpenAI 相容）</h3>
+            <p class="field-hint">任何提供 OpenAI 相容 /chat/completions 的服務都可以，例如 OpenRouter 或自架的 vLLM、Ollama。模型清單請在「模型」分頁切換到「自訂供應商」管理。</p>
+            <div class="field">
+              <label class="field-label" for="ocCustomName">顯示名稱</label>
+              <input class="input input-sm" id="ocCustomName" type="text" maxlength="40" placeholder="自訂供應商" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocCustomBaseUrl">Base URL</label>
+              <input class="input input-sm" id="ocCustomBaseUrl" type="text" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
+            </div>
+            <div class="field">
+              <label class="field-label" for="ocCustomApiKey">API Key（此供應商的模型共用）</label>
+              <input class="input input-sm" id="ocCustomApiKey" type="password" placeholder="輸入新金鑰（留空不更動）" autocomplete="off">
+              <div class="field-hint" id="ocCustomKeyHint">載入中…</div>
+            </div>
+            <div class="field-status" id="ocCustomStatus" aria-live="polite"></div>
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" id="ocCustomSaveBtn" type="button">儲存自訂供應商</button>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">存取名單</h3>
+            <p class="field-hint">只有列在名單裡的帳號（或管理員）才能使用 opencode。</p>
+            <div class="account-chips" id="ocAccountChips"></div>
+            <div class="row-actions">
+              <input class="input input-sm" id="ocAccountInput" type="text" placeholder="帳號 ID" autocomplete="off" aria-label="新增帳號 ID">
+              <button class="btn btn-secondary btn-sm" id="ocAddAccountBtn" type="button">新增</button>
+            </div>
+            <div class="field-hint" id="ocAccessNote"></div>
+            <div class="row-actions">
+              <button class="btn btn-primary btn-sm" id="ocSaveAccessBtn" type="button">儲存授權</button>
+            </div>
+          </div>
+        </section>
+
+      </div>
+    </aside>
+
+    <div class="resize-handle resize-handle-v" id="resizeLeft" data-resize="left" role="separator" aria-orientation="vertical" aria-label="調整左側面板寬度"></div>
+
+    <!-- 中央聊天區（flex: 1） -->
+    <main class="chat-panel" id="chatPanel">
+      <header class="chat-header">
+        <div class="chat-header-left">
+          <button class="icon-btn mobile-menu-btn" id="menuBtn" type="button" aria-label="開啟選單">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+          </button>
+          <h1 class="chat-title" id="chatTitle">新對話</h1>
+        </div>
+        <div class="chat-header-right">
+          <div class="model-picker" id="modelPickerContainer">
+            <button class="btn btn-secondary btn-sm model-picker-btn" id="modelPickerBtn" type="button" aria-haspopup="listbox">
+              <span id="currentModelName">載入中…</span>
+              <span aria-hidden="true">▾</span>
+            </button>
+            <div class="model-dropdown hidden" id="modelPickerDropdown" role="listbox"></div>
+          </div>
+          <button class="icon-btn" id="opencodeToggle" type="button" aria-label="開啟 opencode 面板" title="opencode"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></button>
+          <button class="icon-btn" id="rightSidebarToggle" type="button" aria-label="切換右側面板" title="上下文">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="timeline" id="timeline" role="log" aria-live="polite" aria-label="對話訊息">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div>
+          <div class="empty-state-title">歡迎使用 AI 對話</div>
+          <div class="empty-state-desc" id="emptyStateDesc">輸入需求，opencode agent 會在工作區內協助你</div>
+          <div class="suggestions" id="suggestions"></div>
+        </div>
+      </div>
+
+      <div class="composer-dropzone" id="dropzone"></div>
+
+      <div class="composer">
+        <div class="composer-wrap" id="composerWrap">
+          <button class="icon-btn" id="attachBtn" type="button" aria-label="附加檔案" title="附加檔案 (Ctrl+U)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg></button>
+          <textarea id="composerInput" rows="1" placeholder="輸入訊息… (Enter 發送，Shift+Enter 換行)" aria-label="訊息輸入"></textarea>
+          <div class="composer-actions">
+            <button class="icon-btn send-btn" id="sendBtn" type="button" aria-label="發送訊息" title="發送 (Enter)">↑</button>
+            <button class="icon-btn stop-btn hidden" id="stopBtn" type="button" aria-label="停止生成" title="停止 (Esc)">■</button>
+          </div>
+        </div>
+        <input type="file" id="fileInput" multiple class="hidden" aria-hidden="true" tabindex="-1"
+               accept="image/*,text/*,.md,.txt,.json,.js,.ts,.py,.rs,.java,.cpp,.c,.h,.css,.html,.xml,.yaml,.yml,.toml,.ini,.cfg,.csv,.log">
+      </div>
+    </main>
+
+    <div class="resize-handle resize-handle-v" id="resizeRight" data-resize="right" role="separator" aria-orientation="vertical" aria-label="調整右側面板寬度"></div>
+
+    <!-- 右側欄：上下文（預設隱藏，寬 320px） -->
+    <aside class="sidebar sidebar-right" id="rightSidebar" data-panel="right" hidden>
+      <div class="sidebar-header">
+        <h2 class="sidebar-title">上下文</h2>
+        <button class="icon-btn icon-btn-sm sidebar-close" id="rightSidebarClose" type="button" aria-label="關閉右側面板">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <nav class="sidebar-tabs" role="tablist" id="rightTabs">
+        <button class="tab active" role="tab" data-tab="files" aria-selected="true" type="button">檔案</button>
+        <button class="tab" role="tab" data-tab="symbols" aria-selected="false" type="button">符號</button>
+        <button class="tab" role="tab" data-tab="plugins" aria-selected="false" type="button">插件</button>
+      </nav>
+      <div class="sidebar-content" id="rightContent">
+        <section class="tab-panel" data-panel="files" id="filesPanel">
+          <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg></div>
+            <div class="empty-state-title">尚未開啟專案</div>
+            <div class="empty-state-desc">在 opencode 中開啟專案以查看檔案</div>
+          </div>
+        </section>
+        <section class="tab-panel hidden" data-panel="symbols" id="symbolsPanel">
+          <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div>
+            <div class="empty-state-title">無符號資料</div>
+            <div class="empty-state-desc">開啟程式碼檔案以查看符號</div>
+          </div>
+        </section>
+        <section class="tab-panel hidden" data-panel="plugins" id="pluginsPanel">
+          <div class="empty-state">
+            <div class="empty-state-icon" aria-hidden="true"><svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0z"/><path d="M12 18v4"/></svg></div>
+            <div class="empty-state-title">無可用插件</div>
+            <div class="empty-state-desc">安裝 opencode 插件以擴充功能</div>
+          </div>
+        </section>
+      </div>
+    </aside>
+
+  </div>
+
+  <!-- 底部面板：終端機／工具步驟輸出（全寬，預設隱藏，高 200px） -->
+  <div class="resize-handle resize-handle-h" id="resizeBottom" data-resize="bottom" role="separator" aria-orientation="horizontal" aria-label="調整底部面板高度"></div>
+  <section class="bottom-panel hidden" id="bottomPanel" aria-label="終端機">
+    <div class="bottom-panel-header">
+      <span class="bottom-panel-title">終端機</span>
+      <button class="icon-btn icon-btn-sm" id="bottomPanelClose" type="button" aria-label="關閉底部面板">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="terminal-output" id="terminalOutput">
+      <div class="term-empty">Agent 工具步驟會顯示在這裡</div>
+    </div>
+  </section>
+</div>
+
+<div class="sidebar-overlay" id="sidebarOverlay" aria-hidden="true"></div>
+
+<!-- 命令面板（Cmd/Ctrl+K） -->
+<div class="command-palette" id="commandPalette" role="dialog" aria-modal="true" aria-label="命令面板">
+  <input type="text" class="cmd-input" id="cmdInput" placeholder="輸入命令或搜尋… (⌘K)" autocomplete="off" spellcheck="false">
+  <div class="cmd-results" id="cmdResults"></div>
+</div>
+
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+<script type="module" src="/admin/static/ai/js/opencode.js?v=2"></script>
+</body>
+</html>
