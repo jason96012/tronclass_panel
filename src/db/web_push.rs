@@ -341,6 +341,20 @@ impl AccountsDb {
         Ok(count)
     }
 
+    /// One-time ownership migration. Serialize marker and deletion so a
+    /// concurrent initializer cannot erase subscriptions created after it.
+    pub async fn migrate_explicit_push_bindings(&self, marker: &str) -> Result<Option<u64>> {
+        let mut tx = self.pool.begin().await.into_diagnostic().wrap_err("開始推播綁定遷移失敗")?;
+        let changed = sqlx::query("INSERT INTO web_push_settings (key, value) VALUES (?, '1') ON CONFLICT(key) DO UPDATE SET value = '1' WHERE value <> '1'")
+            .bind(marker).execute(&mut *tx).await.into_diagnostic().wrap_err("標記推播綁定遷移失敗")?.rows_affected();
+        let removed = if changed > 0 {
+            Some(sqlx::query("DELETE FROM web_push_subscriptions").execute(&mut *tx).await
+                .into_diagnostic().wrap_err("清除舊版推播綁定失敗")?.rows_affected())
+        } else { None };
+        tx.commit().await.into_diagnostic().wrap_err("提交推播綁定遷移失敗")?;
+        Ok(removed)
+    }
+
     pub async fn clear_all_web_push_subscriptions(&self) -> Result<u64> {
         let result = sqlx::query("DELETE FROM web_push_subscriptions")
             .execute(&self.pool)
@@ -439,5 +453,38 @@ mod setting_compare_exchange_tests {
         let current: String = sqlx::query_scalar("SELECT value FROM web_push_settings WHERE key = ?")
             .bind("key").fetch_one(&pool).await.unwrap();
         assert_eq!(current, "newer");
+    }
+}
+
+#[cfg(test)]
+mod explicit_binding_migration_tests {
+    use super::*;
+    #[tokio::test]
+    async fn migration_is_once_and_does_not_delete_later_subscriptions() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.db");
+        let db = AccountsDb::open(&path).await.unwrap();
+        let other = AccountsDb::open(&path).await.unwrap();
+        sqlx::query("INSERT INTO web_push_subscriptions (endpoint) VALUES ('synthetic-old')").execute(&db.pool).await.unwrap();
+        let (a,b) = tokio::join!(db.migrate_explicit_push_bindings("test-marker"), other.migrate_explicit_push_bindings("test-marker"));
+        let a = a.unwrap(); let b = b.unwrap();
+        assert_eq!(usize::from(a.is_some()) + usize::from(b.is_some()), 1);
+        assert_eq!(a.unwrap_or(0) + b.unwrap_or(0), 1);
+        sqlx::query("INSERT INTO web_push_subscriptions (endpoint) VALUES ('synthetic-new')").execute(&db.pool).await.unwrap();
+        assert!(db.migrate_explicit_push_bindings("test-marker").await.unwrap().is_none());
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM web_push_subscriptions")
+            .fetch_one(&db.pool).await.unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_delete_does_not_commit_migration_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AccountsDb::open(dir.path().join("test.db")).await.unwrap();
+        sqlx::query("INSERT INTO web_push_subscriptions (endpoint) VALUES ('synthetic-old')").execute(&db.pool).await.unwrap();
+        sqlx::query("CREATE TRIGGER reject_test_delete BEFORE DELETE ON web_push_subscriptions BEGIN SELECT RAISE(ABORT, 'test'); END")
+            .execute(&db.pool).await.unwrap();
+        assert!(db.migrate_explicit_push_bindings("test-marker").await.is_err());
+        assert!(db.get_web_push_setting("test-marker").await.unwrap().is_none());
     }
 }

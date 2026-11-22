@@ -406,6 +406,10 @@ fn auth_rate_check(result: std::result::Result<bool, ()>) -> Result<bool, Respon
         Json(json!({ "error": "login_security_unavailable" }))).into_response())
 }
 
+fn session_storage_unavailable_response() -> Response {
+    (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "session_storage_unavailable" }))).into_response()
+}
+
 fn rate_limited_response() -> Response {
     let mut response = (
         StatusCode::TOO_MANY_REQUESTS,
@@ -1123,6 +1127,9 @@ fn insert_memory_login_locks(table: &mut LoginLockTable, keys: &[&str], now: Ins
         created = true;
     }
     if overflow {
+        if !table.overflow_until.is_some_and(|until| until > now) {
+            warn!(target: "security_event", event = "login_lock_fallback_capacity_exhausted", outcome = "denied", "password login fallback capacity exhausted");
+        }
         let until = now + ACCOUNT_LOGIN_LOCK_TTL;
         table.overflow_until = Some(table.overflow_until.map_or(until, |old| old.max(until)));
         // Treat the fallback global denial as newly created for alerting.
@@ -2726,7 +2733,7 @@ impl AdminWebState {
         account_id: String,
         is_admin: bool,
         must_change_password: bool,
-    ) -> SessionTokens {
+    ) -> Option<SessionTokens> {
         self.create_session_with(NewSession {
             account_id,
             is_admin,
@@ -2738,7 +2745,11 @@ impl AdminWebState {
     }
 
     /// VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：完整版建立 session。
-    async fn create_session_with(&self, new: NewSession) -> SessionTokens {
+    async fn create_session_with(&self, new: NewSession) -> Option<SessionTokens> {
+        self.create_session_with_rotation(new, None).await
+    }
+
+    async fn create_session_with_rotation(&self, new: NewSession, old_refresh: Option<&str>) -> Option<SessionTokens> {
         let NewSession {
             account_id,
             is_admin,
@@ -2772,24 +2783,25 @@ impl AdminWebState {
         let access_expires_at = now_unix + access_ttl.as_secs() as i64;
         let refresh_expires_at = now_unix + refresh_ttl.as_secs() as i64;
 
-        if let Err(e) = self
-            .accounts_db
-            .insert_dashboard_session_full(&crate::db::DashboardSessionInsert {
-                token: access.clone(),
-                account_id: account_id.clone(),
-                is_admin,
-                is_viewer,
-                must_change_password,
-                expires_at: access_expires_at,
-                refresh_token: refresh.clone(),
-                refresh_expires_at,
-                ip: origin.ip,
-                user_agent: origin.user_agent,
-                created_at: origin.first_login_at,
-            })
-            .await
-        {
-            warn!(error = %e, "無法將 Dashboard session 寫入資料庫");
+        let new_row = crate::db::DashboardSessionInsert {
+            token: access.clone(), account_id: account_id.clone(), is_admin, is_viewer,
+            must_change_password, expires_at: access_expires_at, refresh_token: refresh.clone(),
+            refresh_expires_at, ip: origin.ip, user_agent: origin.user_agent,
+            created_at: origin.first_login_at,
+        };
+        let persisted = if let Some(old_refresh) = old_refresh {
+            self.accounts_db.rotate_dashboard_session_atomic(old_refresh, &new_row, now_unix).await
+        } else {
+            self.accounts_db.insert_dashboard_session_full(&new_row).await.map(|()| true)
+        };
+        match persisted {
+            Ok(true) => {},
+            Ok(false) => return None, // concurrent consumption or revocation
+            Err(e) => {
+                warn!(error = %e, "無法持久化 Dashboard session，拒絕發放");
+                warn!(target: "security_event", event = "session_persist_failed", outcome = "denied", "session creation denied");
+                return None;
+            }
         }
 
         let mut sessions = self.sessions.write().await;
@@ -2806,12 +2818,12 @@ impl AdminWebState {
         // SESSION_TOKEN_HASH_V1：map 鍵 = SHA-256(access)；回給呼叫端的
         // SessionTokens 仍是明文（走 cookie），伺服器端不留明文。
         sessions.insert(crate::db::session_lookup_key(&access), session);
-        SessionTokens {
+        Some(SessionTokens {
             access,
             refresh,
             access_max_age: access_ttl.as_secs(),
             refresh_max_age: refresh_ttl.as_secs(),
-        }
+        })
     }
 
     /// Rotate a refresh token into a fresh access+refresh pair.
@@ -2958,6 +2970,28 @@ impl AdminWebState {
             return None;
         }
 
+        // VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：輪換後沿用 viewer 旗標與原始登入來源
+        // （裝置頁看到的仍是「同一台裝置」，不會因為每 12 小時輪換而變成新裝置）。
+        let tokens = self
+            .create_session_with_rotation(NewSession {
+                account_id: row.account_id.clone(),
+                is_admin: row.is_admin,
+                is_viewer: row.is_viewer,
+                must_change_password: row.must_change_password,
+                origin: {
+                    let stored = SessionOrigin {
+                        ip: row.ip.clone(),
+                        user_agent: row.user_agent.clone(),
+                        first_login_at: row.created_at,
+                    };
+                    match current.as_ref() {
+                        Some(now) => stored.or_fill(now),
+                        None => stored,
+                    }
+                },
+            }, Some(refresh_token))
+            .await?;
+
         // ROTATE_ACCESS_GRACE_V1（fix38）：舊 access **不立即撤銷**。它可能還拿在
         // 另一個分頁／另一個行程手上（面板總覽＋子頁面＋iClass 分頁同時開著是常態），
         // 舊版直接 remove＋delete＝那些分頁下一個請求就 401 → 前端清 cookie、跳登入頁
@@ -2982,42 +3016,7 @@ impl AdminWebState {
             });
         }
 
-        // VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：輪換後沿用 viewer 旗標與原始登入來源
-        // （裝置頁看到的仍是「同一台裝置」，不會因為每 12 小時輪換而變成新裝置）。
-        let tokens = self
-            .create_session_with(NewSession {
-                account_id: row.account_id.clone(),
-                is_admin: row.is_admin,
-                is_viewer: row.is_viewer,
-                must_change_password: row.must_change_password,
-                origin: {
-                    let stored = SessionOrigin {
-                        ip: row.ip.clone(),
-                        user_agent: row.user_agent.clone(),
-                        first_login_at: row.created_at,
-                    };
-                    match current.as_ref() {
-                        Some(now) => stored.or_fill(now),
-                        None => stored,
-                    }
-                },
-            })
-            .await;
-
-        // Revoke the old row (identified by its refresh token) so the old
-        // refresh token cannot be used again——唯一的例外是寬限視窗內的**重播**：
-        // 那條路徑由 refresh_grace 直接回同一組 token，不會走到這裡。
-        let _ = self
-            .accounts_db
-            .delete_dashboard_session_by_refresh(refresh_token)
-            .await;
-
-        // REFRESH_REUSE_DETECT_V1（fix126）：為剛廢棄的舊 refresh 立碑——日後同一把
-        // 舊值再現（超出寬限窗的重播）＝疑似憑證遭竊，觸發帳號家族撤銷＋安全警報。
-        let _ = self
-            .accounts_db
-            .record_refresh_tombstone(refresh_token, &row.account_id, now_unix)
-            .await;
+        // Old refresh deletion, new row and tombstone committed atomically above.
 
         // REFRESH_ROTATE_GRACE_V1（fix38）：記下「舊 refresh → 這次的新 token」，
         // 讓晚到的重複請求拿回同一組結果（等同同一顆 session，不會互相撤銷）。
@@ -3057,6 +3056,20 @@ impl AdminWebState {
         if !alive {
             self.refresh_grace_forget(refresh_token);
             return None;
+        }
+        // A different process may have revoked the new row while this process
+        // still has its local session and grace entry. Never replay on DB error.
+        match self.accounts_db.get_dashboard_session_by_refresh(&refresh).await {
+            Ok(Some(row)) if row.token == crate::db::session_lookup_key(&access)
+                && row.refresh_expires_at > unix_now_secs() => {}
+            Ok(_) => {
+                self.refresh_grace_forget(refresh_token);
+                return None;
+            }
+            Err(_) => {
+                warn!(target: "security_event", event = "refresh_grace_backend_unavailable", outcome = "denied", "refresh grace replay denied");
+                return None;
+            }
         }
         Some(SessionTokens {
             access,
@@ -3168,8 +3181,8 @@ impl AdminWebState {
     }
 
     /// Password changes invalidate every Dashboard session for the account.
-    async fn revoke_account_sessions(&self, account_id: &str) {
-        self.revoke_sessions_for_account(account_id).await;
+    async fn revoke_account_sessions(&self, account_id: &str) -> bool {
+        self.revoke_sessions_for_account(account_id).await
     }
 
     /// LOGIN_DEVICES_V1：回寫 session 最近活動時間。以 token 為 key 做 60 秒節流，

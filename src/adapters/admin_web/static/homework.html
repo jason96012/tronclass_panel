@@ -2459,17 +2459,24 @@ html[data-theme="dark"] .pill-btn.notify{color:#fbbf24!important;background:rgba
 
       // 伺服器回傳的是上次快照 → 背景正在更新，稍後自動再取一次最新結果。
       // 最多追蹤 MAX_REVALIDATE_POLLS 次，避免上游持續失敗時無限輪詢。
-      if (data.stale === true && revalidatePolls < MAX_REVALIDATE_POLLS) {
-        revalidatePolls += 1;
+      if (data.stale === true) {
         const when = data.fetched_at
-          ? new Date(data.fetched_at * 1000).toLocaleTimeString()
-          : '稍早';
-        q('lastUpdated').textContent = `${when}（更新中…）`;
-        if (revalidateTimer) clearTimeout(revalidateTimer);
-        revalidateTimer = setTimeout(() => loadData(), 6000);
+          ? new Date(data.fetched_at * 1000).toLocaleString()
+          : '未知';
+        const canPoll = !data.warning && revalidatePolls < MAX_REVALIDATE_POLLS;
+        q('lastUpdated').textContent = canPoll
+          ? `${when}（舊資料，更新中…）`
+          : `${when}（資料過期或更新失敗，請以 iClass 為準）`;
+        if (canPoll) {
+          revalidatePolls += 1;
+          if (revalidateTimer) clearTimeout(revalidateTimer);
+          revalidateTimer = setTimeout(() => loadData(), 6000);
+        }
       } else {
         revalidatePolls = 0;
-        q('lastUpdated').textContent = new Date().toLocaleTimeString();
+        q('lastUpdated').textContent = data.fetched_at
+          ? new Date(data.fetched_at * 1000).toLocaleString()
+          : new Date().toLocaleString();
       }
 
       updateMetrics();

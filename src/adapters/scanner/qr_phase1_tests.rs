@@ -186,3 +186,38 @@ async fn radar_closed_receiver_does_not_publish_failed_value() {
     let inner = registry.radar_inner.lock().await;
     assert!(inner.get(&PendingNumberKey::new(PROVIDER, ROLLCALL)).unwrap().submitted_point.is_none());
 }
+
+#[tokio::test]
+async fn expired_link_requests_do_not_remove_active_qr_entry() {
+    let registry = QrScannerRegistry::new("http://localhost:12345");
+    let (tx, _rx) = mpsc::channel(2);
+    let link = registry.register_pending(PROVIDER, ROLLCALL, "mock-0", tx,
+        Duration::from_secs(60), None).await.unwrap();
+    let key = PendingQrKey::new(PROVIDER, ROLLCALL);
+    registry.inner.lock().await.get_mut(&key).unwrap().expires_at = Instant::now() - Duration::from_secs(1);
+    assert!(matches!(registry.status(query("mock-0", &link.token)).await, Err(ScannerError::Expired)));
+    assert!(matches!(registry.submit(submission("mock-0", &link.token, "synthetic")).await, Err(ScannerError::Expired)));
+    assert!(registry.inner.lock().await.contains_key(&key));
+    registry.unregister_pending(PROVIDER, ROLLCALL, "mock-0").await;
+    registry.cleanup_expired_idle_qr(Instant::now());
+    assert!(!registry.inner.lock().await.contains_key(&key));
+}
+
+#[tokio::test]
+async fn radar_broadcast_publishes_only_when_a_receiver_accepts() {
+    let registry = QrScannerRegistry::new("http://localhost:12345");
+    let (tx, mut rx) = mpsc::channel(2);
+    registry.register_radar_pending(PROVIDER, ROLLCALL, "mock-0", tx,
+        Duration::from_secs(60), &[], "").await.unwrap();
+    let point = RadarPointInput { latitude: 25.0, longitude: 121.0, accuracy: None, from_device: false };
+    let result = registry.broadcast_radar_point(PROVIDER, Some(ROLLCALL), point).await;
+    assert_eq!(result.delivered_count, 1);
+    assert_eq!(timeout(LIMIT, rx.recv()).await.unwrap(), Some(point));
+    let key = PendingNumberKey::new(PROVIDER, ROLLCALL);
+    assert_eq!(registry.radar_inner.lock().await.get(&key).unwrap().submitted_point.as_ref().unwrap().latitude, 25.0);
+    drop(rx);
+    let other = RadarPointInput { latitude: 26.0, ..point };
+    let failed = registry.broadcast_radar_point(PROVIDER, Some(ROLLCALL), other).await;
+    assert_eq!(failed.delivered_count, 0);
+    assert_eq!(registry.radar_inner.lock().await.get(&key).unwrap().submitted_point.as_ref().unwrap().latitude, 25.0);
+}

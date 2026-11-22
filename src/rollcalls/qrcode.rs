@@ -562,6 +562,10 @@ impl std::fmt::Display for QrCodeResult {
 /// - `rollcall_id`：要簽到的 rollcall ID
 /// - `qr_input`：QR code 的完整 URL，或 p 參數值，或解析後的 `data` 字串
 /// - `is_raw_data`：若為 true，`qr_input` 直接作為 data 傳給 API（跳過解析步驟）
+fn qr_rollcall_mismatch(parsed: Option<u64>, expected: u64) -> bool {
+    parsed.is_some_and(|id| id != expected)
+}
+
 #[instrument(skip(api, qr_input), fields(rollcall_id = rollcall_id))]
 pub async fn attempt_qrcode_rollcall(
     api: Arc<ApiClient>,
@@ -581,6 +585,13 @@ pub async fn attempt_qrcode_rollcall(
         match parse_qr_url(qr_input) {
             Ok(parsed) => {
                 debug!(rollcall_id = ?parsed.rollcall_id, "QR code 解析成功");
+                // Only reject a clearly present, parsed rollcall ID mismatch. Older
+                // payloads without an ID remain compatible; this is not authenticity.
+                if qr_rollcall_mismatch(parsed.rollcall_id, rollcall_id) {
+                    return QrCodeResult::ParseError {
+                        reason: "QR 所屬點名與目前場次不一致，請掃描本場 QR".to_string(),
+                    };
+                }
 
                 if let Some(d) = parsed.data {
                     d
@@ -740,5 +751,19 @@ mod qr_size_and_display_regression_tests {
     fn success_display_does_not_reveal_payload() {
         let result = QrCodeResult::Success { data: "sensitive-payload".to_string() };
         assert!(!result.to_string().contains("sensitive-payload"));
+    }
+}
+
+#[cfg(test)]
+mod qr_rollcall_match_tests {
+    use super::{parse_qr_url, qr_rollcall_mismatch};
+    #[test]
+    fn explicit_id_must_match_but_missing_id_remains_compatible() {
+        let matched = parse_qr_url("https://example.invalid/j?p=3~synthetic!4~42").unwrap();
+        let other = parse_qr_url("/scanner-jumper?p=3~synthetic!4~43").unwrap();
+        let missing = parse_qr_url("3~synthetic").unwrap();
+        assert!(!qr_rollcall_mismatch(matched.rollcall_id, 42));
+        assert!(qr_rollcall_mismatch(other.rollcall_id, 42));
+        assert!(!qr_rollcall_mismatch(missing.rollcall_id, 42));
     }
 }

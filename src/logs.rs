@@ -382,11 +382,17 @@ fn push(entry: WebLogEntry) {
 }
 
 fn report_dropped_db_log(reason: &str) {
-    let dropped = DROPPED_DB_LOGS.fetch_add(1, Ordering::Relaxed) + 1;
+    report_dropped_db_logs(reason, 1);
+}
+
+fn report_dropped_db_logs(reason: &str, count: u64) {
+    let previous = DROPPED_DB_LOGS.fetch_add(count, Ordering::Relaxed);
+    let dropped = previous.saturating_add(count);
     // Avoid turning an overload into another log storm. Powers of two provide
     // exponentially backed-off diagnostics without re-entering tracing.
-    if dropped.is_power_of_two() {
-        eprintln!("⚠️ web_logs SQLite queue dropped {dropped} record(s): {reason}");
+    // A failed batch can cross a power-of-two boundary without landing on it.
+    if previous == 0 || (previous > 0 && dropped > 0 && previous.ilog2() != dropped.ilog2()) {
+        eprintln!("⚠️ web_logs SQLite dropped {dropped} record(s): {reason}");
     }
 }
 
@@ -421,6 +427,7 @@ async fn sqlite_writer(pool: SqlitePool, mut rx: mpsc::Receiver<WebLogEntry>) {
         let batch_len = batch.len();
         if let Err(e) = insert_sqlite_logs_batch(&pool, &batch).await {
             eprintln!("⚠️ 批次寫入 web_logs SQLite 失敗（{batch_len} 筆）：{e}");
+            report_dropped_db_logs("SQLite batch write failed", batch_len as u64);
             continue;
         }
         writes_since_prune += batch_len;

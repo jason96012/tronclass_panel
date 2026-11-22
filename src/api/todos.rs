@@ -26,6 +26,9 @@ const SEMESTER_START_GRACE_DAYS: i64 = 14;
 /// 設為 8：足以把 20 次往返壓進 3 波，又不會像爆破那樣打爆學校 WAF。
 /// 背景排程器仍會在帳號之間 sleep 1 秒，整體流量依舊平緩。
 const COURSE_FETCH_CONCURRENCY: usize = 8;
+/// 每批課程數及單次總上限，避免一次建立無界請求。
+const COURSE_FETCH_BATCH_SIZE: usize = 25;
+const COURSE_FETCH_MAX_COURSES: usize = 500;
 
 /// 單次抓取 `/homework-activities` 的分頁大小。
 ///
@@ -242,19 +245,24 @@ impl super::ApiClient {
                         // 「作業/活動」端點只會回 homework/material/web_link/page/...，
                         // 不會有測驗；若漏抓 exams，測驗就永遠進不了待辦、也不會發截止提醒。
                         // 因此每門課多抓一筆 /exams。
-                        if courses.len() > 25 {
-                            // Do not persist a silently truncated replacement snapshot.
-                            // The request budget is retained to avoid overloading the school.
-                            return Err(miette::miette!("課程超過 25 門的抓取上限；保留既有快照，請檢查作業來源設定"));
+                        if courses.len() > COURSE_FETCH_MAX_COURSES {
+                            return Err(miette::miette!("課程數超過安全上限；保留既有快照"));
                         }
+                        // 每批完成再處理下一批，避免把所有課程請求一次排入記憶體。
+                        // 既有每批最多 8 個並行請求，批次之間稍作間隔。
                         let course_list: Vec<CourseBrief> = courses;
+                        let mut merged: HashMap<u64, TronclassTodoItem> = HashMap::new();
+                        for (batch_index, batch) in course_list.chunks(COURSE_FETCH_BATCH_SIZE).enumerate() {
+                            if batch_index > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                            }
                         // SUBMISSION_PAGINATION_V1
                         // 第三個布林 = 是否要做分頁抓取。只有 `/homework-activities`
                         // 需要分頁（因為它帶正確的 submitted 旗標且預設只有 10 筆／頁）；
                         // `/activities` 的 homework 雖然也會回傳，但 submitted 一律為
                         // null（無法判斷繳交）——它只提供「項目存在」而非「是否已繳」。
-                        let mut request_urls = Vec::with_capacity(course_list.len() * 3);
-                        for course in &course_list {
+                        let mut request_urls = Vec::with_capacity(batch.len() * 3);
+                        for course in batch {
                             request_urls.push((
                                 format!(
                                     "{}/api/courses/{}/homework-activities",
@@ -292,22 +300,32 @@ impl super::ApiClient {
                                         );
                                         let Ok(resp) = self.client.get(&effective_url).send().await else {
                                             warn!(course_id, page, "作業來源請求失敗，清單可能不完整");
+                                            if paginate { return Err(miette::miette!("課程作業來源請求失敗；保留既有快照")); }
                                             break;
                                         };
+                                        if resp.status() == StatusCode::UNAUTHORIZED {
+                                            return Err(miette::miette!(crate::api::ApiError::Unauthorized));
+                                        }
                                         if !resp.status().is_success() {
                                             warn!(course_id, page, status = %resp.status(), "作業來源回應失敗，清單可能不完整");
+                                            if paginate { return Err(miette::miette!("課程作業來源回應失敗；保留既有快照")); }
                                             break;
                                         }
                                         let Ok(bytes) = resp.bytes().await else {
                                             warn!(course_id, page, "作業來源讀取失敗，清單可能不完整");
+                                            if paginate { return Err(miette::miette!("課程作業來源讀取失敗；保留既有快照")); }
                                             break;
                                         };
                                         let Ok(json) =
                                             serde_json::from_slice::<serde_json::Value>(&bytes)
                                         else {
                                             warn!(course_id, page, "作業來源 JSON 無法解析，清單可能不完整");
+                                            if paginate { return Err(miette::miette!("課程作業來源格式錯誤；保留既有快照")); }
                                             break;
                                         };
+                                        if paginate && !has_todos_container(&json) {
+                                            return Err(miette::miette!("課程作業來源格式不完整；保留既有快照"));
+                                        }
                                         all_items.extend(parse_todos_json(
                                             &json,
                                             Some(course_name.as_str()),
@@ -342,7 +360,6 @@ impl super::ApiClient {
                         // 兩個端點。合併時**優先採用「已繳交」版本**：因為 activities 的
                         // 版本永遠是 submitted=false（欄位為 null），若任由它覆蓋，就會把
                         // 其實已繳交的作業誤判成未繳交。
-                        let mut merged: HashMap<u64, TronclassTodoItem> = HashMap::new();
                         for items in fetched {
                             for item in items? {
                                 // SUBMISSION_PAGINATION_V1
@@ -364,6 +381,7 @@ impl super::ApiClient {
                                 }
                             }
                         }
+                        } // 完成本批後才處理下一批
                         // HOMEWORK_SCORE_PREFER_V1：全域待辦（/api/todos）先進 results，
                         // 同一份作業若也出現在逐課端點，優先採「已繳交／帶分數」的版本，
                         // 避免 homework-activities 的分數被無分數的全域版本卡掉。
@@ -2235,5 +2253,19 @@ mod functional_gap_tests {
         merge_todo(&mut item, later);
         assert!(item.is_submitted);
         assert_eq!(item.score, Some(90.0));
+    }
+}
+
+#[cfg(test)]
+mod homework_course_batch_tests {
+    use super::{COURSE_FETCH_BATCH_SIZE, COURSE_FETCH_MAX_COURSES};
+
+    #[test]
+    fn batches_cover_more_than_25_courses_without_truncation() {
+        let courses: Vec<usize> = (0..76).collect();
+        let batches: Vec<&[usize]> = courses.chunks(COURSE_FETCH_BATCH_SIZE).collect();
+        assert_eq!(batches.iter().map(|b| b.len()).collect::<Vec<_>>(), vec![25, 25, 25, 1]);
+        assert_eq!(batches.concat(), courses);
+        assert!(COURSE_FETCH_MAX_COURSES >= courses.len());
     }
 }

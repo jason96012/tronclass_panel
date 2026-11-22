@@ -441,7 +441,7 @@ pub(super) async fn admin_login_handler(
     // LOGIN_PERF_V1：`RawAccountConfig` 本來就帶 `is_viewer`（accounts 表同一列），
     // 不必再多查一次 SQLite。
     let is_viewer = !is_admin && account.is_viewer;
-    let tokens = state
+    let Some(tokens) = state
         .create_session_with(NewSession {
             account_id: account_id.clone(),
             is_admin,
@@ -449,7 +449,7 @@ pub(super) async fn admin_login_handler(
             must_change_password,
             origin: SessionOrigin::from_request(&headers, &ip),
         })
-        .await;
+        .await else { return session_storage_unavailable_response(); };
     let login_action = if must_change_password {
         "login_bootstrap"
     } else {
@@ -1023,10 +1023,15 @@ pub(super) async fn admin_password_change_handler(
     }
 
     // Revoke all prior sessions, including this one, then issue a fresh cookie.
-    state.revoke_account_sessions(&account.id).await;
+    if !state.revoke_account_sessions(&account.id).await {
+        // Password already changed; never claim prior sessions were revoked.
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
+            "error": "password_changed_session_revocation_unconfirmed"
+        }))).into_response();
+    }
     // VIEWER_ROLE_V1 / LOGIN_DEVICES_V1：改密碼後的新 session 沿用 viewer 旗標與
     // 這次請求的來源（改密碼不是角色變更；裝置頁也要能看到這台裝置）。
-    let tokens = state
+    let Some(tokens) = state
         .create_session_with(NewSession {
             account_id: account.id.clone(),
             is_admin: account.is_admin,
@@ -1034,7 +1039,7 @@ pub(super) async fn admin_password_change_handler(
             must_change_password: false,
             origin: SessionOrigin::from_request(&headers, &ip),
         })
-        .await;
+        .await else { return session_storage_unavailable_response(); };
     crate::logs::record_audit(
         "web",
         &account.id,

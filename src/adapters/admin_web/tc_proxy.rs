@@ -73,7 +73,6 @@ const FORWARD_REQ_HEADERS: &[&str] = &[
 const DROP_RESP_HEADERS: &[&str] = &[
     "set-cookie",
     "content-length",
-    "content-encoding",
     "transfer-encoding",
     "connection",
     "keep-alive",
@@ -290,7 +289,7 @@ pub(super) async fn tc_proxy_handler(
         Ok(bytes) => bytes,
         Err(_) => {
             // 量測用：若正式站有合法的大 JSON 被擋，這裡的 log 會留下路徑與上限。
-            warn!(path = %upstream_pq, limit, "iClass 代理請求本體超過上限或讀取失敗，已拒絕（R-22）");
+            warn!(limit, "iClass 代理請求本體超過上限或讀取失敗，已拒絕（R-22）");
             return tc_error_page(StatusCode::PAYLOAD_TOO_LARGE, "請求內容過大或讀取失敗");
         }
     };
@@ -650,7 +649,6 @@ async fn tc_proxy_core(
             referer_had_token = referer_token.is_some(),
             has_header_token = header_token.is_some(),
             is_navigation = is_tc_navigation_request(headers),
-            path = %upstream_pq,
             "tc proxy 面板鑑權失敗"
         );
         // 導航請求（HTML 文檔）改送登入頁而非錯誤頁：登入頁會再做一次
@@ -862,11 +860,20 @@ async fn tc_proxy_core(
     // Binary downloads and JSON need no injection. Forward incrementally rather
     // than collecting an unbounded upstream body in server memory. Stream errors
     // after headers have been sent terminate the response, not a fake success.
-    if !content_type_is_html {
+    if !should_rewrite_html(content_type_is_html, &method, status) {
         let mut response = Response::new(axum::body::Body::from_stream(upstream.bytes_stream()));
         *response.status_mut() = status;
         *response.headers_mut() = response_headers;
         return response;
+    }
+    // Once rewritten, upstream entity validators no longer describe these bytes.
+    response_headers.remove(axum::http::header::ETAG);
+    response_headers.remove(axum::http::header::LAST_MODIFIED);
+    response_headers.remove(axum::http::header::CONTENT_ENCODING);
+    if has_non_identity_encoding(upstream.headers()) {
+        // Never inject into compressed or otherwise encoded HTML bytes. A server
+        // ignoring identity is a compatibility error, not a corrupt 200 response.
+        return tc_error_page(StatusCode::BAD_GATEWAY, "iClass 回傳不支援的 HTML 壓縮格式，無法安全代理");
     }
     if upstream.content_length().is_some_and(|len| len > TC_PROXY_HTML_LIMIT as u64) {
         return tc_error_page(StatusCode::BAD_GATEWAY, "iClass HTML 回應過大，無法代理");
@@ -925,6 +932,17 @@ async fn tc_proxy_core(
     // 與面板登入互相污染（轉圈、被登出、要清網站資料才恢復）。CSRF 改由
     // PROXY_CSRF_BRIDGE_V1 承擔：token 只留在伺服器記憶體＋注入頁面的 script。
     response
+}
+
+// A partial HTML body or HEAD/304 cannot safely receive injected markup.
+fn should_rewrite_html(is_html: bool, method: &axum::http::Method, status: StatusCode) -> bool {
+    is_html && *method != axum::http::Method::HEAD
+        && status != StatusCode::PARTIAL_CONTENT && status != StatusCode::NOT_MODIFIED
+}
+
+fn has_non_identity_encoding(headers: &HeaderMap) -> bool {
+    headers.get_all(axum::http::header::CONTENT_ENCODING).iter().any(|value|
+        value.to_str().map_or(true, |v| !v.trim().eq_ignore_ascii_case("identity")))
 }
 
 /// PROXY_NO_COOKIE_PLANT_V1（fix40）：面板自己（含 Filebrowser SSO）使用的
@@ -1033,7 +1051,10 @@ async fn send_upstream(
 ) -> Result<reqwest::Response, reqwest::Error> {
     let mut req = http
         .request(method, url)
-        .header("cookie", upstream_cookie_header(headers, cookie, csrf));
+        .header("cookie", upstream_cookie_header(headers, cookie, csrf))
+        // HTML needs rewriting; request uncompressed bytes. If upstream ignores
+        // this for other resources retain Content-Encoding on the response.
+        .header("accept-encoding", "identity");
     for name in FORWARD_REQ_HEADERS {
         if let Some(value) = headers.get(*name) {
             req = req.header(*name, value.as_bytes());
@@ -1261,5 +1282,39 @@ mod proxy_security_regression_tests {
         assert!(headers.get(axum::http::header::CONTENT_SECURITY_POLICY).unwrap()
             .to_str().unwrap().contains("default-src 'none'"));
         assert_eq!(headers.get(axum::http::header::X_CONTENT_TYPE_OPTIONS).unwrap(), "nosniff");
+    }
+}
+
+#[cfg(test)]
+mod proxy_response_representation_tests {
+    use super::*;
+    #[test]
+    fn html_rewrite_skips_range_head_and_not_modified() {
+        use axum::http::Method;
+        assert!(should_rewrite_html(true, &Method::GET, StatusCode::OK));
+        assert!(!should_rewrite_html(true, &Method::GET, StatusCode::PARTIAL_CONTENT));
+        assert!(!should_rewrite_html(true, &Method::HEAD, StatusCode::OK));
+        assert!(!should_rewrite_html(true, &Method::GET, StatusCode::NOT_MODIFIED));
+        assert!(!should_rewrite_html(false, &Method::GET, StatusCode::OK));
+    }
+    #[test]
+    fn encoding_is_preserved_for_streams_and_checked_for_html() {
+        let mut headers = HeaderMap::new();
+        assert!(!has_non_identity_encoding(&headers));
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("identity"));
+        assert!(!has_non_identity_encoding(&headers));
+        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+        assert!(has_non_identity_encoding(&headers));
+        assert!(!DROP_RESP_HEADERS.contains(&"content-encoding"));
+    }
+    #[test]
+    fn browser_session_does_not_replace_stored_school_session() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_static("session=browser-panel; tronclass_test=secret; csrftoken=abc123"));
+        let actual = upstream_cookie_header(&headers, "session=synthetic-school", None);
+        assert!(actual.contains("session=synthetic-school"));
+        assert!(!actual.contains("browser-panel"));
+        assert!(!actual.contains("tronclass_test"));
+        assert!(actual.contains("csrftoken=abc123"));
     }
 }

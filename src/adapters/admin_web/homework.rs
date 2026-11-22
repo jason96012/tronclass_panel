@@ -523,19 +523,31 @@ pub(super) async fn admin_homework_list_handler(
             .into_response(),
         Err(e) => {
             warn!(account = %resolved_account.id, error = %e, "讀取作業清單失敗");
-            // 確保任何非預期情況皆安全回傳結構化 JSON，絕不丟出 502
+            // 更新失敗不把空列表當成成功；有快照時明確標示過期並保留時間。
+            if let Some((items, fetched_at)) = crate::homework_cache::peek_stale(&cache_key, &state.accounts_db).await {
+                return (StatusCode::OK, Json(json!({
+                    "account_id": raw_account.id,
+                    "user_name": cached_user_name,
+                    "items": items.as_ref(),
+                    "fetched_at": fetched_at,
+                    "stale": true,
+                    "user_completed": user_completed,
+                    "iclass_base": iclass_base,
+                    "warning": "更新失敗，顯示舊資料；請以 iClass 為準",
+                }))).into_response();
+            }
             (
                 StatusCode::OK,
                 Json(json!({
                     "account_id": raw_account.id,
                     "user_name": cached_user_name,
                     "items": Vec::<crate::api::todos::TronclassTodoItem>::new(),
+                    "stale": true,
                     "user_completed": user_completed,
                     "iclass_base": iclass_base,
-                    "warning": super::public_error("", &e),
+                    "warning": "更新失敗且沒有快照；請以 iClass 為準",
                 })),
-            )
-                .into_response()
+            ).into_response()
         }
     }
 }

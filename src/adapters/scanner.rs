@@ -249,7 +249,7 @@ impl QrScannerRegistry {
         if let Ok(mut entries) = self.inner.try_lock() {
             // Accounts still registered may have a worker or submitted code in
             // flight. Preserve them regardless of the link expiration time.
-            entries.retain(|_, entry| entry.expires_at >= now || !entry.accounts.is_empty());
+            cleanup_expired_locked(&mut entries, now);
         }
     }
 
@@ -1140,65 +1140,39 @@ impl QrScannerRegistry {
         let provider = provider.trim();
         let now = Instant::now();
         let payload = RadarPointPayload::from_input(&point);
-        // H3（RADAR_BROADCAST_UNLOCKED_V1）：鎖內只挑出目標並複製 Sender，送出在鎖外進行。
-        // 舊寫法在鎖內 `send().await`，一個滿載的帳號會卡住整個雷達註冊表（其他點名與狀態頁）。
-        let plans: Vec<(u64, String, Vec<(String, tokio::sync::mpsc::Sender<RadarPointInput>)>)> = {
+        // Serialize selection, nonblocking queueing, and publication against page
+        // submission and reset. Never await a channel send under the registry lock.
+        let (mut targets, delivered_total) = {
             let mut inner = self.radar_inner.lock().await;
             cleanup_expired_radar_locked(&mut inner, now);
-            let mut plans = Vec::new();
-            for (key, entry) in inner.iter() {
-                if key.provider != provider {
+            let mut targets: Vec<RadarBroadcastTarget> = Vec::new();
+            let mut delivered_total = 0usize;
+            for (key, entry) in inner.iter_mut() {
+                if key.provider != provider || rollcall_id.is_some_and(|id| key.rollcall_id != id) {
                     continue;
                 }
-                if let Some(id) = rollcall_id {
-                    if key.rollcall_id != id {
-                        continue;
+                let mut delivered = 0usize;
+                for (account_id, account) in &entry.accounts {
+                    if queue_for_account(&account.tx, point, account_id) {
+                        delivered += 1;
+                    } else {
+                        warn!(account_id = %account_id, "面板送出雷達座標失敗（帳號已結束）");
                     }
                 }
-                let senders = entry
-                    .accounts
-                    .iter()
-                    .map(|(account_id, account)| (account_id.clone(), account.tx.clone()))
-                    .collect::<Vec<_>>();
-                plans.push((key.rollcall_id, entry.course_name.clone(), senders));
-            }
-            plans
-        };
-
-        let mut targets: Vec<RadarBroadcastTarget> = Vec::new();
-        let mut delivered_total = 0usize;
-        let mut delivered_rollcalls: Vec<u64> = Vec::new();
-        for (target_rollcall_id, course_name, senders) in plans {
-            let mut delivered = 0usize;
-            for (account_id, tx) in senders {
-                if queue_for_account(&tx, point, &account_id) {
-                    delivered += 1;
-                } else {
-                    warn!(account_id = %account_id, "面板送出雷達座標失敗（帳號已結束）");
-                }
-            }
-            if delivered > 0 {
-                delivered_rollcalls.push(target_rollcall_id);
-            }
-            delivered_total += delivered;
-            targets.push(RadarBroadcastTarget {
-                rollcall_id: target_rollcall_id,
-                course_name,
-                delivered_count: delivered,
-            });
-        }
-        targets.sort_by_key(|target| target.rollcall_id);
-
-        // M3：只有真的送到的點名才記為「已送出的座標」。
-        if !delivered_rollcalls.is_empty() {
-            let mut inner = self.radar_inner.lock().await;
-            for target_rollcall_id in delivered_rollcalls {
-                if let Some(entry) = inner.get_mut(&PendingNumberKey::new(provider, target_rollcall_id)) {
+                if delivered > 0 {
                     entry.submitted_point = Some(payload.clone());
                     entry.last_error = None;
                 }
+                delivered_total += delivered;
+                targets.push(RadarBroadcastTarget {
+                    rollcall_id: key.rollcall_id,
+                    course_name: entry.course_name.clone(),
+                    delivered_count: delivered,
+                });
             }
-        }
+            (targets, delivered_total)
+        };
+        targets.sort_by_key(|target| target.rollcall_id);
 
         if delivered_total > 0 {
             info!(
@@ -1359,7 +1333,7 @@ impl QrScannerRegistry {
             let entry = inner.get_mut(&key).ok_or(ScannerError::PendingNotFound)?;
 
             if now > entry.expires_at {
-                inner.remove(&key);
+                // Link expiry must not delete registered workers or in-flight state.
                 return Err(ScannerError::Expired);
             }
             if entry.token != token {
@@ -2286,7 +2260,7 @@ fn queue_for_account<T: Send + 'static>(
 }
 
 fn cleanup_expired_locked(inner: &mut HashMap<PendingQrKey, PendingQrEntry>, now: Instant) {
-    inner.retain(|_, entry| entry.expires_at >= now);
+    inner.retain(|_, entry| entry.expires_at >= now || !entry.accounts.is_empty());
 }
 
 fn cleanup_expired_number_locked(

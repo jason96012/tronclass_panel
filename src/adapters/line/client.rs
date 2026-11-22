@@ -727,6 +727,10 @@ mod webhook_signature_security_tests {
         assert!(client.verify_signature(body, &signature));
         assert!(!client.verify_signature(br#"{"events":[1]}"#, &signature));
         assert!(!client.verify_signature(body, "not base64!"));
+        assert!(!client.verify_signature(body, ""));
+        let mut other = Hmac::<Sha256>::new_from_slice(b"other-test-secret").unwrap();
+        other.update(body);
+        assert!(!client.verify_signature(body, &BASE64.encode(other.finalize().into_bytes())));
     }
 
     #[test]

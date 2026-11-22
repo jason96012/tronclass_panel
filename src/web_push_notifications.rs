@@ -118,21 +118,6 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
     if SERVICE.get().is_some() {
         return Ok(());
     }
-    // Older clients silently rebound the browser's one PushSubscription to
-    // whichever account happened to log in next. Those rows cannot be trusted
-    // for owner-only delivery, so clear them once and require an explicit tap.
-    const EXPLICIT_BINDING_MIGRATION: &str = "web_push_explicit_binding_v2";
-    if db
-        .get_web_push_setting(EXPLICIT_BINDING_MIGRATION)
-        .await?
-        .as_deref()
-        != Some("1")
-    {
-        let removed = db.clear_all_web_push_subscriptions().await?;
-        db.set_web_push_setting(EXPLICIT_BINDING_MIGRATION, "1")
-            .await?;
-        warn!(removed, "已清除舊版可能錯綁帳號的 Web Push 訂閱；需由手機重新明確啟用");
-    }
     let private_key = {
         // F-004：VAPID 私鑰納入 at-rest 加密。未設定 master key 時
         // 採 fail-closed，不以純文字寫入資料庫。
@@ -165,10 +150,22 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
                     .store_value_with_purpose("web_push.vapid_private_key")?;
                 // Another initializer may have installed a key since our read.
                 // Never silently replace it: existing subscriptions bind to it.
-                if !db.insert_web_push_setting_if_absent(VAPID_PRIVATE_KEY_SETTING, &encrypted).await? {
-                    return Err(miette::miette!("VAPID key 已由其他初始化程序建立；暫停 Web Push 並重新初始化"));
+                if db.insert_web_push_setting_if_absent(VAPID_PRIVATE_KEY_SETTING, &encrypted).await? {
+                    value
+                } else {
+                    // The other initializer won. Re-read, decrypt and validate its
+                    // encrypted value; never overwrite an established key.
+                    let stored = db.get_web_push_setting(VAPID_PRIVATE_KEY_SETTING).await?
+                        .ok_or_else(|| miette::miette!("VAPID key 並發建立後無法讀取；暫停 Web Push"))?;
+                    if !stored.starts_with("enc:") {
+                        return Err(miette::miette!("VAPID key 並發建立結果尚未加密；暫停 Web Push"));
+                    }
+                    let winner = StoreSecret::from_stored_with_purpose(&stored, "web_push.vapid_private_key").as_str().to_string();
+                    if !valid_private_key(&winner) {
+                        return Err(miette::miette!("VAPID key 並發建立結果無效；暫停 Web Push"));
+                    }
+                    winner
                 }
-                value
             }
         }
     };
@@ -190,6 +187,11 @@ pub async fn initialize(db: AccountsDb) -> Result<()> {
         .use_rustls_tls()
         .build()
         .map_err(|error| miette::miette!("建立 Web Push HTTP client 失敗：{error}"))?;
+    // Validate the key and HTTP client before the one-time destructive
+    // ownership migration. Marker and deletion are one transaction.
+    if let Some(removed) = db.migrate_explicit_push_bindings("web_push_explicit_binding_v2").await? {
+        warn!(removed, "已清除舊版可能錯綁帳號的 Web Push 訂閱；需由手機重新明確啟用");
+    }
     // VAPID sub 欄位：從全域設定讀取，未設定則使用預設值。
     let vapid_sub = crate::config::try_get_config()
         .map(|cfg| cfg.vapid_sub.clone())

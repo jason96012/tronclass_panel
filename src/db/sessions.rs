@@ -132,6 +132,36 @@ impl AccountsDb {
         Ok(())
     }
 
+    /// Atomically consume the old refresh row, create its successor, and record
+    /// reuse evidence. Does not implement cross-process grace or session families.
+    pub async fn rotate_dashboard_session_atomic(
+        &self, old_refresh: &str, row: &DashboardSessionInsert, now: i64,
+    ) -> Result<bool> {
+        let mut tx = self.pool.begin().await.into_diagnostic().wrap_err("開始 session 輪換交易失敗")?;
+        let removed = sqlx::query("DELETE FROM dashboard_sessions WHERE refresh_token = ? AND account_id = ? AND refresh_expires_at > ?")
+            .bind(session_lookup_key(old_refresh)).bind(row.account_id.trim()).bind(now)
+            .execute(&mut *tx).await.into_diagnostic().wrap_err("消耗舊 refresh 失敗")?.rows_affected();
+        if removed != 1 {
+            tx.rollback().await.into_diagnostic().wrap_err("回滾 session 輪換失敗")?;
+            return Ok(false);
+        }
+        let created_at = if row.created_at > 0 { row.created_at } else { now };
+        sqlx::query("INSERT INTO dashboard_sessions (token, account_id, is_admin, must_change_password, created_at, expires_at, refresh_token, refresh_expires_at, ip, user_agent, last_seen_at, is_viewer) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(session_lookup_key(&row.token)).bind(row.account_id.trim()).bind(row.is_admin)
+            .bind(row.must_change_password).bind(created_at).bind(row.expires_at)
+            .bind(session_lookup_key(&row.refresh_token)).bind(row.refresh_expires_at)
+            .bind(row.ip.trim()).bind(row.user_agent.trim()).bind(now).bind(row.is_viewer)
+            .execute(&mut *tx).await.into_diagnostic().wrap_err("寫入輪換 session 失敗")?;
+        sqlx::query("INSERT INTO refresh_token_tombstones (lookup_key, account_id, rotated_at) VALUES (?, ?, ?)")
+            .bind(session_lookup_key(old_refresh)).bind(row.account_id.trim()).bind(now)
+            .execute(&mut *tx).await.into_diagnostic().wrap_err("寫入 refresh 石碑失敗")?;
+        sqlx::query("DELETE FROM refresh_token_tombstones WHERE rotated_at < ?")
+            .bind(now - 8 * 24 * 60 * 60).execute(&mut *tx).await.into_diagnostic()
+            .wrap_err("清理 refresh 石碑失敗")?;
+        tx.commit().await.into_diagnostic().wrap_err("提交 session 輪換失敗")?;
+        Ok(true)
+    }
+
     /// LOGIN_DEVICES_V1：更新 session 最近活動時間（呼叫端已做 60 秒節流）。
     ///
     /// 同時「只在欄位仍為空時」回填 `ip` / `user_agent`：功能上線前就存在的
@@ -431,3 +461,47 @@ impl AccountsDb {
     }
 }
 
+
+#[cfg(test)]
+mod session_rotation_transaction_tests {
+    use super::*;
+
+    fn row(token: &str, refresh: &str) -> DashboardSessionInsert {
+        DashboardSessionInsert {
+            token: token.into(), refresh_token: refresh.into(), account_id: "test-account".into(),
+            expires_at: 2000, refresh_expires_at: 2000, ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn rotation_consumes_refresh_once_and_records_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AccountsDb::open(dir.path().join("sessions.db")).await.unwrap();
+        let other = AccountsDb::open(dir.path().join("sessions.db")).await.unwrap();
+        db.insert_dashboard_session_full(&row("old-access", "old-refresh")).await.unwrap();
+        let row_a = row("new-a", "refresh-a");
+        let row_b = row("new-b", "refresh-b");
+        let (a, b) = tokio::join!(
+            db.rotate_dashboard_session_atomic("old-refresh", &row_a, 1000),
+            other.rotate_dashboard_session_atomic("old-refresh", &row_b, 1000),
+        );
+        assert_eq!(usize::from(a.unwrap()) + usize::from(b.unwrap()), 1);
+        assert!(db.get_dashboard_session_by_refresh("old-refresh").await.unwrap().is_none());
+        assert!(db.lookup_refresh_tombstone("old-refresh").await.unwrap().is_some());
+        let present = usize::from(db.get_dashboard_session_by_refresh("refresh-a").await.unwrap().is_some())
+            + usize::from(db.get_dashboard_session_by_refresh("refresh-b").await.unwrap().is_some());
+        assert_eq!(present, 1);
+    }
+
+    #[tokio::test]
+    async fn insert_failure_rolls_back_consumption_and_tombstone() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = AccountsDb::open(dir.path().join("sessions.db")).await.unwrap();
+        db.insert_dashboard_session_full(&row("old-access", "old-refresh")).await.unwrap();
+        db.insert_dashboard_session_full(&row("occupied", "other-refresh")).await.unwrap();
+        assert!(db.rotate_dashboard_session_atomic("old-refresh", &row("occupied", "new-refresh"), 1000).await.is_err());
+        assert!(db.get_dashboard_session_by_refresh("old-refresh").await.unwrap().is_some());
+        assert!(db.lookup_refresh_tombstone("old-refresh").await.unwrap().is_none());
+        assert!(db.get_dashboard_session_by_refresh("new-refresh").await.unwrap().is_none());
+    }
+}

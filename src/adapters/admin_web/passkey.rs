@@ -280,20 +280,19 @@ pub(super) async fn admin_passkey_register_finish_handler(
     let Some(session) = state.authorize_any_from_cookies(&headers).await else {
         return unauthorized_response();
     };
-    let ceremony = match PASSKEY_REG_STATES.lock().await.remove(&req.ceremony_id) {
-        Some(ceremony)
-            if ceremony.expires_at > Instant::now()
-                && ceremony.account_id == session.account_id =>
-        {
-            ceremony
-        }
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "passkey registration expired; please try again" })),
-            )
-                .into_response();
-        }
+    // Do not let an unrelated authenticated account consume someone else's
+    // pending registration ceremony. Check and remove under the same lock.
+    let ceremony = {
+        let mut pending = PASSKEY_REG_STATES.lock().await;
+        let owned = pending.get(&req.ceremony_id).is_some_and(|ceremony|
+            ceremony.expires_at > Instant::now() && ceremony.account_id == session.account_id);
+        if owned { pending.remove(&req.ceremony_id) } else { None }
+    };
+    let Some(ceremony) = ceremony else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "passkey registration expired; please try again" })),
+        ).into_response();
     };
     let credential = match wa.finish_registration(&ceremony.state, &req.response) {
         Ok(credential) => credential,
@@ -632,10 +631,12 @@ pub(super) async fn admin_passkey_login_finish_handler(
         }
     };
     stored.counter = outcome.new_counter;
-    let _ = state
-        .accounts_db
-        .upsert_passkey_credential(&account_id, &stored)
-        .await;
+    if let Err(error) = state.accounts_db.upsert_passkey_credential(&account_id, &stored).await {
+        warn!(error = %error, "passkey credential update failed; login denied");
+        warn!(target: "security_event", event = "passkey_credential_update_failed", outcome = "denied", "passkey login denied");
+        return (StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "passkey_storage_unavailable" }))).into_response();
+    }
 
     let account = match state.accounts_db.get(&account_id).await {
         Ok(Some(account)) => account,
@@ -692,7 +693,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
     // VIEWER_ROLE_V1（LOGIN_PERF_V1：直接用同一列的 `is_viewer`，省一次查詢）
     let is_viewer = !is_admin && account.is_viewer;
     let origin = SessionOrigin::from_request(&headers, &ip);
-    let tokens = state
+    let Some(tokens) = state
         .create_session_with(NewSession {
             account_id: account_id.clone(),
             is_admin,
@@ -700,7 +701,7 @@ pub(super) async fn admin_passkey_login_finish_handler(
             must_change_password: false,
             origin: origin.clone(),
         })
-        .await;
+        .await else { return session_storage_unavailable_response(); };
     crate::logs::record_audit(
         "web",
         &account_id,
