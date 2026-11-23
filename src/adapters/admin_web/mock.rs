@@ -605,7 +605,7 @@ pub(super) async fn admin_mock_start_handler(
             for account in &targets {
                 let (tx, rx) = mpsc::channel(8);
                 let link = match scanner
-                    .register_pending(provider, rollcall_id, &account.account_id, tx, timeout)
+                    .register_pending(provider, rollcall_id, &account.account_id, tx, timeout, None)
                     .await
                 {
                     Ok(link) => link,
@@ -1434,7 +1434,7 @@ pub(super) async fn handle_mock_rollcall_action(
         "qr" | "qrcode" | "quick" => {
             let (tx, mut rx) = mpsc::channel(8);
             let link = match scanner
-                .register_pending("mock", rollcall_id, &account.account_id, tx, timeout)
+                .register_pending("mock", rollcall_id, &account.account_id, tx, timeout, None)
                 .await
             {
                 Ok(link) => link,
